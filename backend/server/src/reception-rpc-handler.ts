@@ -129,6 +129,9 @@ import {
   type ReceptionPageUpsertResult,
   type ReceptionRpcErrorCode,
   type ReceptionTemplateListResult,
+  // D-220 Slice B — pack-shipped intake templates on the list result.
+  type PackReceptionTemplateListing,
+  type PackReceptionTemplateUnavailable,
   type ProposedEndpointConfig,
   type RecuedPlan,
   type ServerEvent,
@@ -370,6 +373,15 @@ export interface ReceptionRpcDeps {
    *  Production leaves it unset (resolved off the bundled `community/`
    *  tree); tests pin a fixture / the repo's real directory. */
   readonly getConfigTemplatesDir?: () => string;
+  /** D-220 Slice B — the `intake_form` templates INSTALLED PACKS shipped,
+   *  read from the rows the pack install persisted (`pack-reception-templates.ts`
+   *  over the contract store). Wired by the composition root whenever it has
+   *  the store; absent ⇒ `reception.template.list` carries empty pack arrays,
+   *  which a gallery renders as "no pack templates", never as an error. */
+  readonly listPackReceptionTemplates?: () => {
+    readonly listings: ReadonlyArray<PackReceptionTemplateListing>;
+    readonly unavailable: ReadonlyArray<PackReceptionTemplateUnavailable>;
+  };
   /** D-151 P2 — intent-first Compose proposal substrate. When wired,
    *  `reception.compose.propose` routes its fixed endpoint-authoring
    *  policy through `executeRecuedRequest`; when absent the method is
@@ -3700,9 +3712,22 @@ export const handleReceptionTemplateList = async (
   requireCallerInstance(caller, method);
   const dir = deps.getTemplatesDir?.() ?? findFoundationTemplatesDir();
   const configDir = deps.getConfigTemplatesDir?.() ?? findFoundationConfigTemplatesDir();
+  // D-220 Slice B — pack-shipped templates come from the store, not a
+  // directory: a marketplace-installed pack has no files on this server.
+  // Skip-don't-throw, like the Foundation loaders: a store hiccup must not
+  // blank the Foundation gallery for the sake of the pack section.
+  let packTemplates: { listings: ReadonlyArray<PackReceptionTemplateListing>; unavailable: ReadonlyArray<PackReceptionTemplateUnavailable> } =
+    { listings: [], unavailable: [] };
+  try {
+    packTemplates = deps.listPackReceptionTemplates?.() ?? packTemplates;
+  } catch (e) {
+    console.warn(`[d-220.b] reception.template.list: pack templates unreadable: ${(e as Error).message ?? String(e)}`);
+  }
   return {
     templates: loadFoundationIntakeFormTemplates(dir),
     config_templates: loadFoundationConfigTemplates(configDir),
+    pack_templates: packTemplates.listings,
+    pack_templates_unavailable: packTemplates.unavailable,
   };
 };
 

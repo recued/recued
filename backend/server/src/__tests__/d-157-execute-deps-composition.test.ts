@@ -88,6 +88,11 @@ const conditionalExecuteDepKeys = [
   // R2 step 6 — the same notification block, threaded as the torn-saga
   // notifier (rides the identical conditional spread as preflightNotifier).
   'sagaNotifier',
+  // D-157 A.1 step 1, runtime half — the same block again, handed to the commit
+  // Gateway so a dispatch that settles `in_doubt` asks the owner at the settle
+  // point. The boot sweep only ever saw NON-TERMINAL rows, so a runtime
+  // `in_doubt` was durably recorded and never asked about.
+  'inDoubtNotifier',
   // Doc §4 close-out — the same block, threaded as the >1-provider pick
   // notifier (identical conditional spread).
   'pickNotifier',

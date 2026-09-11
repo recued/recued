@@ -214,6 +214,9 @@ export interface ExecutionActiveRequest {
 export interface ExecutionActiveResponse {
   entries: ActiveExecutionEntry[];
   lanes: LaneStatus[];
+  /** Pending chat calls, including interrupted calls from a previous process.
+   * Optional for compatibility with servers predating durable chat calls. */
+  tool_calls?: import('./chat-tool-call.js').ChatToolCallRecord[];
 }
 
 /** `execution.kill` — SIGKILL / abandon a *running* op; the run terminates in

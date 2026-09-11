@@ -448,11 +448,59 @@ describe('D-139 P4 — cross-topic registry invariants', () => {
       expect(def.default_pool_policy).toBe('free_only');
     }
   });
-  it('all 6 P4 topics ship producer_kind = reactive + policy = aggregate', () => {
+  it('every P4 topic is policy = aggregate, and producer_kind tracks whether a producer is REGISTERED', () => {
+    // ⛔ This asserted `producer_kind === 'reactive'` for all six until
+    // slice 3 (2026-09-09), when two of them gained registered housekeeping
+    // producers. Splitting the set rather than relaxing the assertion is
+    // deliberate: `producer_kind` drives which execution mode owns the topic
+    // AND how Settings → Housekeeping renders it (a reactive row shows
+    // "live, N events processed" and offers no Run-Now), so a topic that a
+    // housekeeping task now produces must not still claim `'reactive'`.
+    //
+    // ⚠ THE FOUR BELOW ARE STILL `'reactive'` AND STILL HAVE NO PRODUCER OF
+    // ANY KIND. Their kernels exist and are tested but do not fit the
+    // record-aggregate shell: three need a projected row type
+    // (`account_engagement_breadth`, `champion_deal_count`,
+    // `multi_account_contact`) and one needs cross-source input
+    // (`out_of_band_engagement`). This list shrinking is the progress
+    // marker — when it empties, the reactive lane is gone.
+    const PRODUCED_BY_HOUSEKEEPING = [
+      'meeting_to_followup_lag',
+      'account_reentry_signal',
+      'account_engagement_breadth',
+      'champion_deal_count',
+      'multi_account_contact',
+      // Landed last of the three shells, and only after its quadruple
+      // fallback got a join key at all (`meta.subject_hash`, ec8f55872) —
+      // wiring it before that would have shipped a producer whose headline
+      // claim was false by construction.
+      'out_of_band_engagement',
+    ];
+    // 🏁 EMPTY. Every P4 topic now has a registered producer — the last
+    // three landed on `_record-projected-task.ts`, whose only addition over
+    // the deterministic shell is a `project` seam between resolving a
+    // record's engagements and running its kernel.
+    //
+    // ⛔ KEEP THE ASSERTION EVEN AT ZERO. Its job is not to hold a list, it
+    // is to make `producer_kind` and "is there a producer" agree — a future
+    // topic added as `'reactive'` with no producer belongs here, and an
+    // empty array is the state that says the reactive lane is gone rather
+    // than merely untracked.
+    const STILL_UNPRODUCED: string[] = [];
+    expect([...PRODUCED_BY_HOUSEKEEPING, ...STILL_UNPRODUCED].sort())
+      .toEqual([...P4_TOPICS].sort());
+
     for (const topic of P4_TOPICS) {
       const def = ENRICHMENT_REGISTRY[topic];
-      expect(def.producer_kind).toBe('reactive');
-      expect(def.policy).toBe('aggregate');
+      expect(def.policy, topic).toBe('aggregate');
+    }
+    for (const topic of PRODUCED_BY_HOUSEKEEPING) {
+      expect(ENRICHMENT_REGISTRY[topic as keyof typeof ENRICHMENT_REGISTRY].producer_kind, topic)
+        .toBe('housekeeping');
+    }
+    for (const topic of STILL_UNPRODUCED) {
+      expect(ENRICHMENT_REGISTRY[topic as keyof typeof ENRICHMENT_REGISTRY].producer_kind, topic)
+        .toBe('reactive');
     }
   });
   it('all 6 P4 topics declare compression_class = derived (deterministic counts/buckets)', () => {

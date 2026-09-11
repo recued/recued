@@ -673,10 +673,6 @@ export {
   readTaskErrorHistory,
   type TrustStore,
 } from './trust-store.js';
-export {
-  shouldFireReactive,
-  type ReactiveGateContext,
-} from './reactive-gate.js';
 
 // D-134 Phase 2 — declarative registration tables. `bin.ts` iterates
 // these instead of calling `registerHousekeepingTask` 25 times by hand.

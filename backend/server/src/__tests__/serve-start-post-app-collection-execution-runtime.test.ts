@@ -282,6 +282,7 @@ describe('startPostAppCollectionExecutionRuntime', () => {
         await recovery.recoverPeerDeliveries();
         expect(bridgeMocks.createPeerAnswerStore).toHaveBeenCalledWith(peerDb);
         expect(bridgeMocks.recoverPeerAskDeliveries).toHaveBeenCalledWith({
+          canPublishReviewedCheckpoint: expect.any(Function),
           outbox: peerOutbox,
           auditLog: peerAuditLog,
           checkpoints: peerCheckpoints,

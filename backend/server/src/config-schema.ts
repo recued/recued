@@ -19,6 +19,7 @@ import {
   type ServerConfigField,
   type ServerConfigValue,
   type ServerRpcRegistry,
+  type ServerLlmUsageSource,
 } from '@recued/contracts';
 import {
   RUNTIME_SCHEMA,
@@ -34,13 +35,16 @@ import {
   LLM_GATEWAY_CALLER_SYSTEM_POLICIES,
   probeEmbeddingsSource,
   probeLlmSource,
+  probeTranscriptionSource,
   type AdapterRegistry,
   type EmbeddingsAdapterRegistry,
+  type TranscriptionAdapterRegistry,
   type LLMSlot,
   type LLMConfig,
   type QuotaTracker,
 } from '@recued/llm';
 import type { LLMConfigManager, LlmPromptSurfaceKey } from './llm-config.js';
+import { transcriptionProbeSample } from './transcription-probe-sample.js';
 import { LLM_PROMPT_SURFACE_KEYS } from './llm-config.js';
 import {
   alwaysOnPromptText,
@@ -74,6 +78,10 @@ export interface ConfigSchemaDeps {
     quota: QuotaTracker;
     /** Separate registry — embeddings is `embed`, not `complete`. */
     embeddingsAdapters?: EmbeddingsAdapterRegistry;
+    /** D-262 § B7 — separate again: transcription is `transcribe`, and a chat
+     *  completion sent to a Whisper endpoint reports its 404 as a missing
+     *  model. */
+    transcriptionAdapters?: TranscriptionAdapterRegistry;
   };
 }
 
@@ -222,6 +230,7 @@ const redactLLMConfig = (config: LLMConfig): Record<string, unknown> => {
   if (config.slot_1) out.slot_1 = redactSlot(config.slot_1);
   if (config.slot_2) out.slot_2 = redactSlot(config.slot_2);
   if (config.embeddings_slot) out.embeddings_slot = redactSlot(config.embeddings_slot);
+  if (config.transcription_slot) out.transcription_slot = redactSlot(config.transcription_slot);
   if (Array.isArray(config.free_pool)) {
     out.free_pool = config.free_pool.map((entry) => {
       const { api_key, ...rest } = entry as unknown as Record<string, unknown>;
@@ -254,6 +263,7 @@ const normalizeRedactedConfig = (config: unknown): unknown => {
   if ('slot_1' in src) out.slot_1 = fill(src.slot_1);
   if ('slot_2' in src) out.slot_2 = fill(src.slot_2);
   if ('embeddings_slot' in src) out.embeddings_slot = fill(src.embeddings_slot);
+  if ('transcription_slot' in src) out.transcription_slot = fill(src.transcription_slot);
   if (Array.isArray(src.free_pool)) out.free_pool = src.free_pool.map(fill);
   return out;
 };
@@ -269,6 +279,10 @@ export type ConfigMethods =
   | 'server.setLLMConfig'
   | 'server.setLLMSlot'
   | 'server.setEmbeddingsSlot'
+  | 'server.setTranscriptionSlot'
+  | 'server.setTranscriptionLanguage'
+  | 'server.setTranscriptionDailyRequests'
+  | 'server.getLLMUsage'
   | 'server.upsertFreePoolEntry'
   | 'server.removeFreePoolEntry'
   | 'server.setFreePoolEntryEnabled'
@@ -307,6 +321,10 @@ export const makeConfigHandlers = (
       'server.setLLMConfig',
       'server.setLLMSlot',
       'server.setEmbeddingsSlot',
+      'server.setTranscriptionSlot',
+      'server.setTranscriptionLanguage',
+      'server.setTranscriptionDailyRequests',
+      'server.getLLMUsage',
       'server.upsertFreePoolEntry',
       'server.removeFreePoolEntry',
       'server.setFreePoolEntryEnabled',
@@ -374,6 +392,15 @@ export const makeConfigHandlers = (
           if (cfg.slot_1 !== undefined) llmManager.setSlot1(cfg.slot_1 ?? null);
           if (cfg.slot_2 !== undefined) llmManager.setSlot2(cfg.slot_2 ?? null);
           if (cfg.embeddings_slot !== undefined) llmManager.setEmbeddingsSlot(cfg.embeddings_slot ?? null);
+          if (cfg.transcription_slot !== undefined) llmManager.setTranscriptionSlot(cfg.transcription_slot ?? null);
+          // ⛔ `in`, not `!== undefined`: absent means auto-detect and clearing
+          // is an explicit `null`, so the two have to stay distinguishable.
+          if ('transcription_language' in (cfg as Record<string, unknown>)) {
+            llmManager.setTranscriptionLanguage(cfg.transcription_language ?? null);
+          }
+          if ('transcription_daily_requests' in (cfg as Record<string, unknown>)) {
+            llmManager.setTranscriptionDailyRequests(cfg.transcription_daily_requests ?? null);
+          }
           if (cfg.free_pool !== undefined) llmManager.setPool(cfg.free_pool ?? []);
           if (cfg.free_pool_strategy !== undefined) llmManager.setPoolStrategy(cfg.free_pool_strategy);
           if (cfg.allow_upgrade_default !== undefined) llmManager.setAllowUpgradeDefault(cfg.allow_upgrade_default);
@@ -447,6 +474,187 @@ export const makeConfigHandlers = (
           return rethrowLocked(e, 'write LLM config');
         }
         return { ok: true };
+      },
+      // D-262 § B1 — same shape as the embeddings write above: validate through
+      // `parseLLMConfig`, and let `saveSlot` handle the blank-key preserve rule.
+      'server.setTranscriptionSlot': async (args) => {
+        let slot: LLMSlot | null = null;
+        if (args.slot !== null && args.slot !== undefined) {
+          try {
+            const parsed = parseLLMConfig({ transcription_slot: args.slot });
+            slot = parsed.transcription_slot ?? null;
+          } catch (e) {
+            if (e instanceof LLMConfigValidationError) {
+              throw new RpcError('bad_request', e.message, 400);
+            }
+            throw e;
+          }
+        }
+        try {
+          llmManager.setTranscriptionSlot(slot);
+        } catch (e) {
+          return rethrowLocked(e, 'write LLM config');
+        }
+        return { ok: true };
+      },
+      // D-262 § B6 — ⛔ an empty/blank language is CLEARING, not a value: the
+      // provider reads an empty string as a pin and renders speech into
+      // nothing. Absence is auto-detect and is the default.
+      'server.setTranscriptionLanguage': async (args) => {
+        const raw = args.language;
+        if (raw !== null && typeof raw !== 'string') {
+          throw new RpcError('bad_request', 'language must be a string or null', 400);
+        }
+        try {
+          llmManager.setTranscriptionLanguage(
+            raw === null || raw.trim().length === 0 ? null : raw.trim(),
+          );
+        } catch (e) {
+          return rethrowLocked(e, 'write LLM config');
+        }
+        return { ok: true };
+      },
+      // D-262 § B12.3 — ⛔ zero and negative both mean UNLIMITED here, the same
+      // reading `daily_budget_tokens` has. A cap of 0 that meant "block
+      // everything" would turn a fat-fingered field into a silently disabled
+      // feature, and the owner would have no way to tell it apart from a
+      // broken slot.
+      'server.setTranscriptionDailyRequests': async (args) => {
+        const raw = args.limit;
+        if (raw !== null && typeof raw !== 'number') {
+          throw new RpcError('bad_request', 'limit must be a number or null', 400);
+        }
+        if (raw !== null && !Number.isFinite(raw)) {
+          throw new RpcError('bad_request', 'limit must be a finite number', 400);
+        }
+        try {
+          llmManager.setTranscriptionDailyRequests(raw === null || raw <= 0 ? null : raw);
+        } catch (e) {
+          return rethrowLocked(e, 'write LLM config');
+        }
+        return { ok: true };
+      },
+      // D-262 follow-on — what each source has spent today, against its cap.
+      //
+      // ⛔ EVERY BUDGET WAS ENFORCED AND INVISIBLE before this. A pool entry's
+      // `daily_cap_tokens`, a slot's `daily_budget_tokens`, the embeddings
+      // cutoff and the transcription cap all decided whether a call could
+      // proceed, and nothing showed the number they decided on — so an owner
+      // could be refused with no way to tell a spent budget from a bad key.
+      'server.getLLMUsage': async () => {
+        const quota = deps.probe?.quota;
+        if (!quota) {
+          throw new RpcError(
+            'unavailable',
+            'Usage tracking is not wired on this server',
+            503,
+          );
+        }
+        const config = llmManager.getConfig();
+        const sources: ServerLlmUsageSource[] = [];
+
+        const chatSlot = (
+          key: 'slot_1' | 'slot_2',
+          label: string,
+        ): void => {
+          const slot = config[key];
+          if (!slot) return;
+          const used = quota.tokensToday(key);
+          const limit = slot.daily_budget_tokens;
+          sources.push({
+            id: key,
+            kind: 'chat_slot',
+            label,
+            provider: slot.provider,
+            model: slot.model,
+            tokens_today: used,
+            // ⚠ Non-positive is UNLIMITED, matching `slotOverCutoff` — the
+            // surface must agree with the enforcement or it teaches the owner
+            // something false.
+            ...(limit !== undefined && limit > 0
+              ? { limit, limit_unit: 'tokens' as const }
+              : {}),
+            over_limit: limit !== undefined && limit > 0 && used >= limit,
+            in_cooldown: quota.isInCooldown(key),
+          });
+        };
+        chatSlot('slot_1', 'Slot 1: fast');
+        chatSlot('slot_2', 'Slot 2: quality / thinking');
+
+        if (config.embeddings_slot) {
+          const slot = config.embeddings_slot;
+          const used = quota.tokensToday('embeddings_slot');
+          const limit = slot.daily_budget_tokens;
+          sources.push({
+            id: 'embeddings_slot',
+            kind: 'embeddings_slot',
+            label: 'Embeddings slot',
+            provider: slot.provider,
+            model: slot.model,
+            tokens_today: used,
+            ...(limit !== undefined && limit > 0
+              ? { limit, limit_unit: 'tokens' as const }
+              : {}),
+            over_limit: limit !== undefined && limit > 0 && used >= limit,
+            in_cooldown: quota.isInCooldown('embeddings_slot'),
+          });
+        }
+
+        if (config.transcription_slot) {
+          const slot = config.transcription_slot;
+          // ⛔ REQUESTS, not tokens — the unit its cap is counted in, and the
+          // only one that is always exact. Bytes and seconds ride along for
+          // orientation; seconds is an under-count by construction.
+          const used = quota.transcriptionRequestsToday('transcription_slot');
+          const limit = config.transcription_daily_requests;
+          sources.push({
+            id: 'transcription_slot',
+            kind: 'transcription_slot',
+            label: 'Transcription slot',
+            provider: slot.provider,
+            model: slot.model,
+            transcription_requests_today: used,
+            transcription_bytes_today: quota.transcriptionBytesToday('transcription_slot'),
+            transcription_seconds_today: quota.transcriptionSecondsToday('transcription_slot'),
+            ...(limit !== undefined && limit > 0
+              ? { limit, limit_unit: 'requests' as const }
+              : {}),
+            over_limit: limit !== undefined && limit > 0 && used >= limit,
+            in_cooldown: quota.isInCooldown('transcription_slot'),
+          });
+        }
+
+        for (const entry of config.free_pool ?? []) {
+          const used = quota.tokensToday(entry.id);
+          const limit = entry.daily_cap_tokens;
+          sources.push({
+            id: entry.id,
+            kind: 'pool_entry',
+            label: `Free pool: ${entry.id}`,
+            provider: entry.provider,
+            model: entry.model,
+            tokens_today: used,
+            ...(limit !== undefined && limit > 0
+              ? { limit, limit_unit: 'tokens' as const }
+              : {}),
+            over_limit: limit !== undefined && limit > 0 && used >= limit,
+            in_cooldown: quota.isInCooldown(entry.id),
+          });
+        }
+
+        const budget = llmManager.getBudget();
+        return {
+          // ⛔ `currentDay()`, NOT `snapshot().daily_reset_at`. The snapshot's
+          // key is the day the buckets were last WRITTEN on and stays stale
+          // until the next write; every counter above is day-aware and reports
+          // 0 the moment the UTC day rolls. Labelling today's (correctly
+          // empty) numbers with yesterday's date is the exact disagreement
+          // this field exists to prevent.
+          day: quota.currentDay(),
+          sources,
+          server_tokens_today: llmManager.getUsage(),
+          ...(budget > 0 ? { server_budget_tokens: budget } : {}),
+        };
       },
       'server.upsertFreePoolEntry': async (args) => {
         let entry;
@@ -564,15 +772,20 @@ export const makeConfigHandlers = (
         ) {
           throw new RpcError('bad_request', "target.kind must be 'slot' | 'pool_entry'", 400);
         }
+        // ⚠ The accepted set and the message it advertises are ONE list in
+        // three places (this guard, the rpc type, and the string below). A
+        // guard that accepts a key the message does not name is the shape where
+        // accept ≠ advertise, so they move together or not at all.
         if (
           target.kind === 'slot'
           && target.slot_key !== 'slot_1'
           && target.slot_key !== 'slot_2'
           && target.slot_key !== 'embeddings_slot'
+          && target.slot_key !== 'transcription_slot'
         ) {
           throw new RpcError(
             'bad_request',
-            "slot_key must be 'slot_1' | 'slot_2' | 'embeddings_slot'",
+            "slot_key must be 'slot_1' | 'slot_2' | 'embeddings_slot' | 'transcription_slot'",
             400,
           );
         }
@@ -619,7 +832,9 @@ export const makeConfigHandlers = (
             ? config.slot_1
             : target.slot_key === 'slot_2'
               ? config.slot_2
-              : config.embeddings_slot;
+              : target.slot_key === 'embeddings_slot'
+                ? config.embeddings_slot
+                : config.transcription_slot;
         }
 
         // A draft probe answers "will this WORK if I save it" — so it must
@@ -695,6 +910,59 @@ export const makeConfigHandlers = (
             slot,
             onUsage,
           });
+        }
+
+        // D-262 § B7 — and the transcription slot is a THIRD provider call
+        // (`transcribe`), for the same reason spelled out above.
+        if (target.kind === 'slot' && target.slot_key === 'transcription_slot') {
+          if (!deps.probe.transcriptionAdapters) {
+            throw new RpcError(
+              'unavailable',
+              'Transcription test connection is not wired on this server',
+              503,
+            );
+          }
+          const language = deps.llmManager.getTranscriptionLanguage();
+          // ⛔⛔ THE PROBE IS METERED AND CAPPED LIKE ANY OTHER CALL. The rule is
+          // already stated at this handler's head — "an unmetered probe behind a
+          // button is a hole in the daily budget" — and the chat path keeps it
+          // via `onUsage`. This branch reaches the adapter directly, so it kept
+          // neither half: two presses at the limit spent two real provider
+          // calls, moved no counter, and left the usage surface under-reporting
+          // by exactly the calls the owner had just made.
+          const cap = deps.llmManager.getTranscriptionDailyRequests();
+          if (cap !== null && cap > 0) {
+            const usedToday = quota.transcriptionRequestsToday('transcription_slot');
+            if (usedToday >= cap) {
+              return {
+                ok: false,
+                diagnosis: 'rejected' as const,
+                detail: `Transcription is over its daily limit `
+                  + `(${String(usedToday)}/${String(cap)} calls). It resets at 00:00 UTC, `
+                  + `or raise the limit above.`,
+                elapsed_ms: 0,
+              };
+            }
+          }
+          const sample = transcriptionProbeSample();
+          const probed = await probeTranscriptionSource({
+            adapters: deps.probe.transcriptionAdapters,
+            slot,
+            // ⚠ The owner's pin rides the probe deliberately: a language they
+            // did not mean returns fluent nonsense rather than an error, and
+            // this is the one surface that shows them the difference.
+            ...(language ? { language } : {}),
+            ...(sample ? { sample } : {}),
+          });
+          // ⚠ Recorded only when the call actually happened and succeeded —
+          // matching `transcribe`'s posture, and `no_sample` never left the
+          // process at all.
+          if (probed.ok && sample) {
+            quota.recordTranscriptionUsage('transcription_slot', {
+              bytes: sample.bytes.length,
+            });
+          }
+          return probed;
         }
 
         const adapter = deps.probe.adapters(slot.provider);

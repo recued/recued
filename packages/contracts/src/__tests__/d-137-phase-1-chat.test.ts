@@ -381,6 +381,10 @@ describe('D-137 P1 — CHAT_RPC_METHODS closed list (§ Wire A)', () => {
       'chat.session.clear_model_pref',
       'chat.default_model_pref.get',
       'chat.default_model_pref.set',
+      'chat.rolling_brief.get',
+      'chat.rolling_brief.set',
+      'chat.session.brief.get',
+      'chat.session.brief.clear',
       'chat.tool_catalog.get',
       'chat.tool_catalog.set',
       'chat.connection_mcp.list',
@@ -608,15 +612,16 @@ describe('D-137 P1 — CHAT_SESSION_CHANGED_FIELDS closed list (§ Wire A)', () 
    *  them. It rides this kind rather than a new one because `chat.session_changed`
    *  is already in `WEBCLIENT_DEFAULT_SUBSCRIPTIONS`, and a kind no client names
    *  is dead on the wire. */
-  it('lists exactly five field discriminators', () => {
+  it('lists session fields and durable tool-call lifecycle changes', () => {
     expect(CHAT_SESSION_CHANGED_FIELDS).toEqual([
       'picker',
       'model_pref',
       'title',
       'archived',
+      'tool_call',
       'busy',
     ]);
-    expect(CHAT_SESSION_CHANGED_FIELD_SET.size).toBe(5);
+    expect(CHAT_SESSION_CHANGED_FIELD_SET.size).toBe(6);
   });
 
   it('isChatSessionChangedField accepts every field + rejects unknown', () => {

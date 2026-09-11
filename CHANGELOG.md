@@ -7,6 +7,49 @@ checkpoint was cut. One entry per published export; the machine-readable
 provenance for each — source commit, tree, payload digest, and what was omitted
 — lives in `.recued-public-export.json`.
 
+## 26.9.10 — 2026-09-10
+
+Three things this time. Recued now keeps a short running summary of what a
+conversation is about, and — this is the part that was missing — you can read it
+and clear it. Automations you trust can be approved once instead of asking you
+every time. And you can answer an approval out loud.
+
+### Added
+
+- **You can see what Recued is carrying in a conversation.** It keeps a short
+  running summary so it does not lose the thread over a long chat. Until now that
+  summary was invisible and disappeared whenever the server restarted. It is now
+  saved, encrypted, survives a restart, and is shown in the chat — and there is a
+  button to clear it if it has picked up something you would rather it forgot.
+  It is on by default, and one setting controls it.
+- **Approve an automation once, instead of every time.** If you trust a
+  particular automation to do a particular thing, you can say so up front, with
+  your own limits on it. Recued still asks about anything outside what you
+  allowed. It also warns you if two automations are about to do the same thing,
+  rather than quietly doing it twice.
+- **Answer an approval by voice.** You can deny something by speaking. Approving
+  still needs a tap — saying yes by accident should be harder than saying no.
+
+### Fixed
+
+- **A daily limit could switch itself off permanently.** Once it had been hit,
+  the only thing that would have reset it was the request it was refusing, so it
+  stayed stuck. It now resets on time.
+- **Long conversations are summarised more carefully.** What you actually typed
+  is always kept; only Recued's own notes get compressed. If a summary cannot be
+  made shorter it is skipped rather than run for nothing, and if it fails near the
+  end of a reply the reply stops and says so instead of quietly continuing with
+  less than it should have.
+- **A restart shows what was running.** Work that was in progress is no longer
+  invisible afterwards.
+- **A round of background work where every item failed no longer reports
+  success.**
+
+### Improved
+
+- **Recued checks once whether AI is available at the start of a background
+  round**, instead of rediscovering it item by item.
+
 ## 26.9.5 — 2026-09-05
 
 You can now sell through Paddle and Lemon Squeezy, not just Stripe. The other

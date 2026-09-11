@@ -27,7 +27,7 @@ import {
   snapshotContextRecipe,
 } from './context-recipe.js';
 import { findRoleRestrictions } from './preflight.js';
-import { runPrefetch } from './prefetch.js';
+import { runPrefetch, PrefetchPause } from './prefetch.js';
 import { runStep, trackContextSize } from './step-runner.js';
 import { throwIfRunKilled } from './lane.js';
 import { analyzeSteps, type StepSeed } from './step-seed.js';
@@ -324,23 +324,26 @@ const executeRecipeInner = async (ctx: ExecutionContext): Promise<ExecutionResul
   // commit policy.
   injectContextRecipe(ctx.stores, ctx.contextRecipeSnapshot ?? null);
 
-  // D-157 P1 slice 3 — resume from a preflight checkpoint. The host
-  // pre-seeded `ctx.stores.step` with `Checkpoint.step_state` (outputs
-  // of every step that completed before the gate); we now find where
-  // in `recipe.steps` to pick up. Trigger steps + prefetch are skipped
-  // on resume — they ran before the gate, their outputs are recipe-
-  // static (`config` / `meta`) or live in the seeded `step.*`. The
-  // gated step itself re-runs: its boundary-crossing call now dispatches
-  // exactly once, with approval threaded by the gateway (slice 4) so it
-  // does not re-raise `PreflightRequiredSignal`.
+  // Resume the exact phase and occurrence. Legacy checkpoints start at a
+  // sequential step; watcher holds must still qualify, and prefetch holds
+  // preserve completed parallel reads rather than repeating their effects.
   const sequentialSteps = recipe.steps;
+  const resumePhase = ctx.resumeFrom?.execution_phase ?? 'sequential';
   let startIndex = 0;
+  let triggerStartIndex = 0;
   if (ctx.resumeFrom) {
     const gated = ctx.resumeFrom.gated_step_id;
-    startIndex = sequentialSteps.findIndex(
+    const phaseSteps = resumePhase === 'trigger' ? recipe.trigger_steps ?? []
+      : resumePhase === 'prefetch' ? recipe.prefetch_steps ?? [] : sequentialSteps;
+    const gatedIndex = phaseSteps.findIndex(
       (s) => (s as { id?: string }).id === gated,
     );
-    if (startIndex < 0) {
+    if (resumePhase === 'sequential') startIndex = gatedIndex;
+    if (resumePhase === 'trigger') triggerStartIndex = gatedIndex;
+    const completed = ctx.resumeFrom.prefetch_completed ?? [];
+    if (gatedIndex < 0 || (resumePhase === 'prefetch' && (completed.includes(gated)
+      || new Set(completed).size !== completed.length
+      || completed.some(id => !phaseSteps.some(step => step.id === id) || !hasOwnSafe(ctx.stores.step as Record<string, unknown>, id))))) {
       // The recipe drifted between pause and resume — the checkpoint
       // names a step the current recipe doesn't have. Fatal: the run
       // cannot be resumed (the gated call's identity is lost).
@@ -371,6 +374,10 @@ const executeRecipeInner = async (ctx: ExecutionContext): Promise<ExecutionResul
         validation_issues: [],
       };
     }
+    if (ctx.resumeFrom.trigger_state) {
+      ctx.stores.trigger = Object.create(null) as Record<string, unknown>;
+      assignOwnSafe(ctx.stores.trigger, ctx.resumeFrom.trigger_state);
+    }
   }
 
   // D-115 Phase 5 — trigger phase. Runs BEFORE prefetch on reactive
@@ -380,13 +387,14 @@ const executeRecipeInner = async (ctx: ExecutionContext): Promise<ExecutionResul
   // inside a trigger step halts the run as a regular failure (halts
   // the counter toward circuit breaker).
   //
-  // Skipped on resume — trigger steps ran before the gate (a resumed
-  // run by definition already passed its trigger gate to reach the
-  // sequential phase).
-  if (!ctx.resumeFrom && recipe.trigger_steps && recipe.trigger_steps.length > 0) {
-    const triggerResult = await runTriggerSteps(ctx);
+  // A watcher hold resumes only its remaining trigger calls. Later-phase
+  // holds already qualified and must not repeat polling.
+  ctx.executionPhase = 'trigger';
+  if ((!ctx.resumeFrom || resumePhase === 'trigger') && recipe.trigger_steps && recipe.trigger_steps.length > 0) {
+    const triggerResult = await runTriggerSteps(ctx, triggerStartIndex, recipe_hash, start);
     throwIfRunKilled(ctx);
     logs.push(...triggerResult.logs);
+    if (triggerResult.held) return triggerResult.held;
     if (triggerResult.error) {
       errors.push(triggerResult.error);
       fireProgress(ctx, { type: 'focus_update', phase: 'done', step_id: null });
@@ -400,12 +408,32 @@ const executeRecipeInner = async (ctx: ExecutionContext): Promise<ExecutionResul
     }
   }
 
+  // D-261: only a qualifying auto-run candidate can claim the future run. The
+  // claim must precede prefetch because those reads may be approved members.
+  if ((!ctx.resumeFrom || resumePhase === 'trigger') && ctx.afterTriggerQualification) {
+    const claimed = await ctx.afterTriggerQualification();
+    throwIfRunKilled(ctx);
+    if (claimed) {
+      // executeRecipe may own a cloned context (including its PII ledger).
+      // Install the host-issued run into that live context, not the caller's
+      // original options object. Trigger polling has already used normal gates.
+      ctx.reviewedExecution = claimed.reviewedExecution;
+      ctx.preapprovalAddressing = claimed.preapprovalAddressing;
+      ctx.stepCache = undefined;
+    }
+  }
+
   // Prefetch (parallel, per-step progress events fired from within runPrefetch).
-  // Skipped on resume — prefetch outputs land in `step.*`, which the
-  // host pre-seeded from `Checkpoint.step_state` (TR-5 — no step before
-  // the gate runs twice).
-  if (!ctx.resumeFrom) {
-    const prefetchLogs = await runPrefetch(ctx);
+  // Sequential holds skip this phase. A prefetch hold retains its completed
+  // set and resumes only unfinished calls (TR-5).
+  ctx.executionPhase = 'prefetch';
+  if (!ctx.resumeFrom || resumePhase !== 'sequential') {
+    let prefetchLogs: StepLog[];
+    try { prefetchLogs = await runPrefetch(ctx); }
+    catch (error) {
+      if (!(error instanceof PrefetchPause)) throw error;
+      return pauseExecution(ctx, recipe_hash, [...logs, ...error.logs], start, error.step_id, error.signal, 'prefetch');
+    }
     throwIfRunKilled(ctx);
     logs.push(...prefetchLogs);
     const fatal = prefetchLogs.find(l => l.error);
@@ -415,6 +443,7 @@ const executeRecipeInner = async (ctx: ExecutionContext): Promise<ExecutionResul
       return buildResult(ctx, recipe_hash, false, logs, errors, start);
     }
   }
+  ctx.executionPhase = 'sequential';
 
   // Sequential steps — halt on first error. Each step gets focus_update
   // followed by sequential_step_started (one for display, one for audit).
@@ -424,7 +453,7 @@ const executeRecipeInner = async (ctx: ExecutionContext): Promise<ExecutionResul
   // Prefetch stays uncached at this level — L1 ingredient cache
   // handles it, and prefetch outputs flow into the sequential seeds'
   // dep hashes via the `prefetch` namespace in ctx.stores.
-  const executeStep = ctx.stepCache
+  const executeStep = ctx.stepCache && !ctx.preapprovalAddressing
     ? await buildCachedStepRunner(ctx, sequentialSteps)
     : (step: RecipeStep) => runStep(step, ctx);
 
@@ -455,146 +484,7 @@ const executeRecipeInner = async (ctx: ExecutionContext): Promise<ExecutionResul
     try {
       log = await executeStep(step);
     } catch (e) {
-      // D-157 P1 slice 3 — preflight pause. The gateway wrapper around
-      // `ctx.ingredientExecutor` raised `PreflightRequiredSignal`; the
-      // step-runner re-threw it (not a normal step error). Snapshot the
-      // run's `step.*` and end the execution with `awaiting_approval`
-      // (I-4 — no held call). The host mints + persists the
-      // `Checkpoint` from the snapshot; on `Approve` it re-instantiates
-      // a fresh execution with `ctx.resumeFrom = { gated_step_id }` and
-      // `ctx.stores.step` seeded from the checkpoint.
-      // D-234 § 234.4 — THE SECOND CHECKPOINT MINT POINT. Structurally identical
-      // to the preflight pause below it: a control-flow signal raised inside the
-      // step, caught here rather than captured as a step error, ending the run
-      // with a snapshot the host turns into a `Checkpoint`.
-      //
-      // ⛔ IT MUST PRECEDE THE PREFLIGHT BRANCH ONLY IF THE GUARDS OVERLAP — they
-      // do not (different marker names), so order is not load-bearing here. What
-      // IS load-bearing is that `step-runner` re-throws this signal instead of
-      // swallowing it into `StepLog.error`; without that it never reaches this
-      // loop and the run fails with an opaque error instead of pausing.
-      if (isPeerAnswerRequiredSignal(e)) {
-        fireProgress(ctx, { type: 'focus_update', phase: 'done', step_id: null });
-        const piiSnapshot = ctx.piiLedgerStore?.serialize();
-        return {
-          recipe_id: recipe.recipe_id,
-          recipe_hash,
-          success: false,
-          output: emptyOutput(),
-          steps: logs,
-          errors: [],
-          duration_ms: Date.now() - start,
-          validation_issues: [],
-          awaiting_peer: {
-            gated_step_id: stepId,
-            // Same structured clone the preflight pause takes — the host passes
-            // it straight to `CheckpointStore.write` with no further copying.
-            step_state: structuredClone(ctx.stores.step as Record<string, unknown>),
-            ...(e.foreach_progress !== undefined
-              ? { foreach_progress: structuredClone(e.foreach_progress) }
-              : {}),
-            ...(piiSnapshot !== undefined ? { pii_ledgers: piiSnapshot } : {}),
-            exchange_ref: e.exchange_ref,
-            spec: e.spec,
-          },
-        };
-      }
-      if (isPreflightRequiredSignal(e)) {
-        fireProgress(ctx, { type: 'focus_update', phase: 'done', step_id: null });
-        // § 7 follow-on (pii-ledger-in-checkpoint) — serialize the run's pii
-        // ledgers BEFORE the execution ends (the caller disposes the store on
-        // settle). Undefined for the ~all runs that never minted a ledger —
-        // the checkpoint then carries no snapshot field at all.
-        const piiSnapshot = ctx.piiLedgerStore?.serialize();
-        // D-157 server-wiring — read the gateway-attached `(tool_slug,
-        // risk_tier, reason)` trio off the caught signal (when present)
-        // and surface it on `awaiting_approval` so the host can pass it
-        // straight into `PreflightAskContext`. Each field is forwarded
-        // only when set — a legacy raise site (no details) leaves them
-        // undefined and the host falls back to a bare ask.
-        return {
-          recipe_id: recipe.recipe_id,
-          recipe_hash,
-          success: false,
-          output: emptyOutput(),
-          steps: logs,
-          errors: [],
-          duration_ms: Date.now() - start,
-          validation_issues: [],
-          awaiting_approval: {
-            gated_step_id: stepId,
-            step_state: structuredClone(ctx.stores.step as Record<string, unknown>),
-            ...(e.foreach_progress !== undefined
-              ? { foreach_progress: structuredClone(e.foreach_progress) }
-              : {}),
-            ...(e.tool_slug !== undefined ? { tool_slug: e.tool_slug } : {}),
-            ...(e.risk_tier !== undefined ? { risk_tier: e.risk_tier } : {}),
-            ...(e.reason !== undefined ? { reason: e.reason } : {}),
-            // D-165 follow-on (op-identity binding) — forward the resolved
-            // identity so the host persists it on `Checkpoint.approved_target`
-            // for resume-time re-verification.
-            ...(e.ingredient_slug !== undefined
-              ? { ingredient_slug: e.ingredient_slug }
-              : {}),
-            ...(e.operation_id !== undefined
-              ? { operation_id: e.operation_id }
-              : {}),
-            ...(e.connection_name !== undefined
-              ? { connection_name: e.connection_name }
-              : {}),
-            // D-177 P5a (N.10) — forward the gateway-attached action-identity
-            // hashes + resolved-args preview so the host can register the
-            // hold as a batch-ask member. Absent on a non-canonicalizable
-            // payload (per-hold ask fallback).
-            ...(e.arg_shape_hash !== undefined
-              ? { arg_shape_hash: e.arg_shape_hash }
-              : {}),
-            ...(e.canonical_payload_hash !== undefined
-              ? { canonical_payload_hash: e.canonical_payload_hash }
-              : {}),
-            ...(e.args_preview !== undefined
-              ? { args_preview: e.args_preview }
-              : {}),
-            // D-177 P5b (N.11) — forward the open-projection preview: the
-            // host's `grant_mode: 'open'` offer-feasibility marker + the
-            // ask body's pinned/varies rendering. Absent on a refused walk
-            // (the offer stays exact).
-            ...(e.open_projection_preview !== undefined
-              ? { open_projection_preview: e.open_projection_preview }
-              : {}),
-            // D-217 § 6.1 — forward the amplification bound so the ask body can
-            // state what ONE approval actually buys. Absent on every
-            // single-request hold.
-            ...(e.egress_bound !== undefined
-              ? { egress_bound: e.egress_bound }
-              : {}),
-            // D-202 Slice 1b — forward the quality-relevance marker so the host
-            // persists it onto `Checkpoint.quality_relevant` and the answer-path
-            // resumer records the owner's reject-driven quality signal. Absent on
-            // every non-quality ask ⇒ no signal (behaviour-preserving).
-            ...(e.quality_relevant !== undefined
-              ? { quality_relevant: e.quality_relevant }
-              : {}),
-            ...(e.owner_override_offer !== undefined
-              ? { owner_override_offer: e.owner_override_offer }
-              : {}),
-            ...(e.approval_clamped_from !== undefined
-              ? { approval_clamped_from: e.approval_clamped_from }
-              : {}),
-            ...(e.authorization_provenance !== undefined
-              ? { authorization_provenance: e.authorization_provenance }
-              : {}),
-            // § 7 follow-on — the run's pii ledgers ride the pause so a
-            // fresh-process resume can still restore its aliases.
-            ...(piiSnapshot !== undefined ? { pii_ledgers: piiSnapshot } : {}),
-          },
-        };
-      }
-      // Non-preflight exceptions are wrapped by `runStep` into a
-      // `StepLog.error` — they never reach this catch in practice.
-      // Defensive re-throw preserves the originating stack so a
-      // genuine engine bug surfaces.
-      throw e;
+      return pauseExecution(ctx, recipe_hash, logs, start, stepId, e);
     }
     logs.push(log);
     fireProgress(ctx, {
@@ -683,6 +573,161 @@ const executeRecipeInner = async (ctx: ExecutionContext): Promise<ExecutionResul
   return result;
 };
 
+/** Capture the same bounded hold in every execution phase. */
+const pauseExecution = (
+  ctx: ExecutionContext, recipe_hash: string, logs: StepLog[], start: number,
+  stepId: string, e: unknown, phase: 'trigger' | 'prefetch' | 'sequential' = 'sequential',
+): ExecutionResult => {
+  const recipe = requireRecipe(ctx);
+  // D-157 P1 slice 3 — preflight pause. The gateway wrapper around
+  // `ctx.ingredientExecutor` raised `PreflightRequiredSignal`; the
+  // step-runner re-threw it (not a normal step error). Snapshot the
+  // run's `step.*` and end the execution with `awaiting_approval`
+  // (I-4 — no held call). The host mints + persists the
+  // `Checkpoint` from the snapshot; on `Approve` it re-instantiates
+  // a fresh execution with `ctx.resumeFrom = { gated_step_id }` and
+  // `ctx.stores.step` seeded from the checkpoint.
+  // D-234 § 234.4 — THE SECOND CHECKPOINT MINT POINT. Structurally identical
+  // to the preflight pause below it: a control-flow signal raised inside the
+  // step, caught here rather than captured as a step error, ending the run
+  // with a snapshot the host turns into a `Checkpoint`.
+  //
+  // ⛔ IT MUST PRECEDE THE PREFLIGHT BRANCH ONLY IF THE GUARDS OVERLAP — they
+  // do not (different marker names), so order is not load-bearing here. What
+  // IS load-bearing is that `step-runner` re-throws this signal instead of
+  // swallowing it into `StepLog.error`; without that it never reaches this
+  // loop and the run fails with an opaque error instead of pausing.
+  if (isPeerAnswerRequiredSignal(e)) {
+    fireProgress(ctx, { type: 'focus_update', phase: 'done', step_id: null });
+    const piiSnapshot = ctx.piiLedgerStore?.serialize();
+    return {
+      recipe_id: recipe.recipe_id,
+      recipe_hash,
+      success: false,
+      output: emptyOutput(),
+      steps: logs,
+      errors: [],
+      duration_ms: Date.now() - start,
+      validation_issues: [],
+      awaiting_peer: {
+        gated_step_id: stepId,
+        ...(phase !== 'sequential' ? { execution_phase: phase } : {}),
+        ...(ctx.stores.trigger ? { trigger_state: structuredClone(ctx.stores.trigger) } : {}),
+        ...(phase === 'prefetch' ? { prefetch_completed: [...ctx.prefetchCompleted ?? []] } : {}),
+        // Same structured clone the preflight pause takes — the host passes
+        // it straight to `CheckpointStore.write` with no further copying.
+        step_state: structuredClone(ctx.stores.step as Record<string, unknown>),
+        ...(e.foreach_progress !== undefined
+          ? { foreach_progress: structuredClone(e.foreach_progress) }
+          : {}),
+        ...(piiSnapshot !== undefined ? { pii_ledgers: piiSnapshot } : {}),
+        exchange_ref: e.exchange_ref,
+        spec: e.spec,
+      },
+    };
+  }
+  if (isPreflightRequiredSignal(e)) {
+    fireProgress(ctx, { type: 'focus_update', phase: 'done', step_id: null });
+    // § 7 follow-on (pii-ledger-in-checkpoint) — serialize the run's pii
+    // ledgers BEFORE the execution ends (the caller disposes the store on
+    // settle). Undefined for the ~all runs that never minted a ledger —
+    // the checkpoint then carries no snapshot field at all.
+    const piiSnapshot = ctx.piiLedgerStore?.serialize();
+    // D-157 server-wiring — read the gateway-attached `(tool_slug,
+    // risk_tier, reason)` trio off the caught signal (when present)
+    // and surface it on `awaiting_approval` so the host can pass it
+    // straight into `PreflightAskContext`. Each field is forwarded
+    // only when set — a legacy raise site (no details) leaves them
+    // undefined and the host falls back to a bare ask.
+    return {
+      recipe_id: recipe.recipe_id,
+      recipe_hash,
+      success: false,
+      output: emptyOutput(),
+      steps: logs,
+      errors: [],
+      duration_ms: Date.now() - start,
+      validation_issues: [],
+      awaiting_approval: {
+        ...(e.preapproval_nested_wait ? { preapproval_nested_wait: e.preapproval_nested_wait } : {}),
+        gated_step_id: stepId,
+        ...(phase !== 'sequential' ? { execution_phase: phase } : {}),
+        ...(ctx.stores.trigger ? { trigger_state: structuredClone(ctx.stores.trigger) } : {}),
+        ...(phase === 'prefetch' ? { prefetch_completed: [...ctx.prefetchCompleted ?? []] } : {}),
+        step_state: structuredClone(ctx.stores.step as Record<string, unknown>),
+        ...(e.foreach_progress !== undefined
+          ? { foreach_progress: structuredClone(e.foreach_progress) }
+          : {}),
+        ...(e.tool_slug !== undefined ? { tool_slug: e.tool_slug } : {}),
+        ...(e.risk_tier !== undefined ? { risk_tier: e.risk_tier } : {}),
+        ...(e.reason !== undefined ? { reason: e.reason } : {}),
+        // D-165 follow-on (op-identity binding) — forward the resolved
+        // identity so the host persists it on `Checkpoint.approved_target`
+        // for resume-time re-verification.
+        ...(e.ingredient_slug !== undefined
+          ? { ingredient_slug: e.ingredient_slug }
+          : {}),
+        ...(e.operation_id !== undefined
+          ? { operation_id: e.operation_id }
+          : {}),
+        ...(e.connection_name !== undefined
+          ? { connection_name: e.connection_name }
+          : {}),
+        // D-177 P5a (N.10) — forward the gateway-attached action-identity
+        // hashes + resolved-args preview so the host can register the
+        // hold as a batch-ask member. Absent on a non-canonicalizable
+        // payload (per-hold ask fallback).
+        ...(e.arg_shape_hash !== undefined
+          ? { arg_shape_hash: e.arg_shape_hash }
+          : {}),
+        ...(e.canonical_payload_hash !== undefined
+          ? { canonical_payload_hash: e.canonical_payload_hash }
+          : {}),
+        ...(e.args_preview !== undefined
+          ? { args_preview: e.args_preview }
+          : {}),
+        // D-177 P5b (N.11) — forward the open-projection preview: the
+        // host's `grant_mode: 'open'` offer-feasibility marker + the
+        // ask body's pinned/varies rendering. Absent on a refused walk
+        // (the offer stays exact).
+        ...(e.open_projection_preview !== undefined
+          ? { open_projection_preview: e.open_projection_preview }
+          : {}),
+        // D-217 § 6.1 — forward the amplification bound so the ask body can
+        // state what ONE approval actually buys. Absent on every
+        // single-request hold.
+        ...(e.egress_bound !== undefined
+          ? { egress_bound: e.egress_bound }
+          : {}),
+        // D-202 Slice 1b — forward the quality-relevance marker so the host
+        // persists it onto `Checkpoint.quality_relevant` and the answer-path
+        // resumer records the owner's reject-driven quality signal. Absent on
+        // every non-quality ask ⇒ no signal (behaviour-preserving).
+        ...(e.quality_relevant !== undefined
+          ? { quality_relevant: e.quality_relevant }
+          : {}),
+        ...(e.owner_override_offer !== undefined
+          ? { owner_override_offer: e.owner_override_offer }
+          : {}),
+        ...(e.approval_clamped_from !== undefined
+          ? { approval_clamped_from: e.approval_clamped_from }
+          : {}),
+        ...(e.authorization_provenance !== undefined
+          ? { authorization_provenance: e.authorization_provenance }
+          : {}),
+        // § 7 follow-on — the run's pii ledgers ride the pause so a
+        // fresh-process resume can still restore its aliases.
+        ...(piiSnapshot !== undefined ? { pii_ledgers: piiSnapshot } : {}),
+      },
+    };
+  }
+  // Non-preflight exceptions are wrapped by `runStep` into a
+  // `StepLog.error` — they never reach this catch in practice.
+  // Defensive re-throw preserves the originating stack so a
+  // genuine engine bug surfaces.
+  throw e;
+};
+
 /** D-115 Phase 5 — run the `trigger_steps` phase.
  *
  *  Each trigger step executes via the same `runStep` path as sequential
@@ -703,40 +748,48 @@ const executeRecipeInner = async (ctx: ExecutionContext): Promise<ExecutionResul
  *    - any `should_run: false` → silent-skip, NO further trigger steps run.
  *    - all true            → proceed; `stores.trigger` stays populated. */
 const runTriggerSteps = async (
-  ctx: ExecutionContext,
-): Promise<{ logs: StepLog[]; skipped: boolean; error?: ExecutionResult['errors'][number] }> => {
+  ctx: ExecutionContext, startIndex: number, recipeHash: string, startedAt: number,
+): Promise<{ logs: StepLog[]; skipped: boolean; error?: ExecutionResult['errors'][number]; held?: ExecutionResult }> => {
   const recipe = requireRecipe(ctx);
   const triggerSteps = recipe.trigger_steps ?? [];
   const logs: StepLog[] = [];
   const storesMut = ctx.stores as { trigger?: Record<string, unknown> };
   if (!storesMut.trigger) storesMut.trigger = Object.create(null) as Record<string, unknown>;
+  const previousAddressing = ctx.preapprovalAddressing;
+  if (previousAddressing) ctx.preapprovalAddressing = { ...previousAddressing, phase: 'trigger' };
+  try {
+    for (const step of triggerSteps.slice(startIndex)) {
+      let log: StepLog;
+      try { log = await runStep(step, ctx); }
+      catch (error) {
+        return { logs, skipped: false, held: pauseExecution(ctx, recipeHash, logs, startedAt, step.id, error, 'trigger') };
+      }
+      logs.push(log);
 
-  for (const step of triggerSteps) {
-    const log = await runStep(step, ctx);
-    logs.push(log);
+      if (log.error) {
+        return { logs, skipped: false, error: log.error };
+      }
 
-    if (log.error) {
-      return { logs, skipped: false, error: log.error };
+      if (log.skipped) {
+        // `skip_when` or D-101 account gate zeroed the step result; treat
+        // as should_run=false (the author's skip_when expresses "don't
+        // run this tick", which is exactly the silent-skip semantics).
+        return { logs, skipped: true };
+      }
+
+      const out = log.result;
+      const shouldRun = isTriggerShouldRun(out);
+      const triggerStore = storesMut.trigger as Record<string, unknown>;
+      setNamespaceValue(triggerStore, step.id, stripShouldRun(out));
+
+      if (!shouldRun) {
+        return { logs, skipped: true };
+      }
     }
-
-    if (log.skipped) {
-      // `skip_when` or D-101 account gate zeroed the step result; treat
-      // as should_run=false (the author's skip_when expresses "don't
-      // run this tick", which is exactly the silent-skip semantics).
-      return { logs, skipped: true };
-    }
-
-    const out = log.result;
-    const shouldRun = isTriggerShouldRun(out);
-    const triggerStore = storesMut.trigger as Record<string, unknown>;
-    setNamespaceValue(triggerStore, step.id, stripShouldRun(out));
-
-    if (!shouldRun) {
-      return { logs, skipped: true };
-    }
+    return { logs, skipped: false };
+  } finally {
+    if (previousAddressing) ctx.preapprovalAddressing = previousAddressing;
   }
-
-  return { logs, skipped: false };
 };
 
 const isTriggerShouldRun = (result: unknown): boolean => {

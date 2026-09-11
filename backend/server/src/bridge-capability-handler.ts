@@ -24,6 +24,8 @@
 
 import {
   RpcError,
+  BRIDGE_REVIEW_DOCUMENT_LIMIT,
+  isBridgeDocumentIdentity,
   type BridgeCapabilityProfile,
   type HandlerSlice,
   type ServerRpcRegistry,
@@ -110,6 +112,13 @@ export const handleBridgeCapabilityProfilePush = (
       undefined,
       'bridge.capabilityProfile.push',
     );
+  }
+  const documents = profile.dom_documents;
+  if (documents !== undefined && (!documents || documents.version !== 1 || !Array.isArray(documents.documents)
+    || documents.documents.length > BRIDGE_REVIEW_DOCUMENT_LIMIT || !documents.documents.every(isBridgeDocumentIdentity)
+    || new Set(documents.documents.map(row => row.tab_id)).size !== documents.documents.length
+    || Object.keys(documents).some(key => !['version', 'documents'].includes(key)))) {
+    throw new RpcError('invalid_argument', 'The bridge document inventory is invalid.', undefined, 'bridge.capabilityProfile.push');
   }
   const now = (deps.now ?? Date.now)();
   // The registry returns `false` when no record exists for this

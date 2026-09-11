@@ -405,7 +405,11 @@ export const composeNotificationBlock = (
                 ? { title: event.message.title }
                 : {}),
               text: event.message.text,
+              ...(event.message.link_url !== undefined ? { link_url: event.message.link_url } : {}),
             });
+            // Durable producers already wrote their uniquely keyed history
+            // before claiming this best-effort delivery.
+            if (event.persisted_activity_id) return;
             // D-169 P2 — persist the fired notification as a
             // `notification_fired` activity row so the bridge side panel
             // section #3 (N.5 #3) historical view (`notification.recent`)
@@ -800,6 +804,7 @@ export const composeNotificationBlock = (
  *  recovery needs. All three are required by `sweepAwaitingCheckpoints`;
  *  the bare `recoverPendingAsks` call only reads the block. */
 export interface NotificationBlockBootRecoveryDeps {
+  canPublishReviewedCheckpoint?: PreflightBootSweepDeps['canPublishReviewedCheckpoint'];
   block: NotificationBlock;
   checkpointStore: CheckpointStore;
   auditLog: AuditLogStore;
@@ -965,6 +970,7 @@ export const recoverNotificationBlockAtBoot = async (
 
   try {
     const sweepResult = await sweepAwaitingCheckpoints({
+      ...(deps.canPublishReviewedCheckpoint ? { canPublishReviewedCheckpoint: deps.canPublishReviewedCheckpoint } : {}),
       checkpointStore,
       auditLog,
       notifier: block,

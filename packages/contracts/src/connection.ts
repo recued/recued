@@ -759,6 +759,30 @@ export interface ConnectionRecord {
 /** Health snapshot from the most recent probe. Re-probable via
  *  `collection.connection.probe` (P2.1). Failures don't block
  *  enrollment — `unknown` is the default. */
+/** The push surface of one MCP connection, captured at probe time. */
+export interface McpPushCapability {
+  /** Resource URIs the server listed — the candidates worth subscribing to.
+   *  Empty is meaningful: a server can honour list-changed signals and expose
+   *  no subscribable resource at all. */
+  resources: string[];
+  /** The filter the server ACKNOWLEDGED. Present iff it opened a listen stream
+   *  and named what it would send. */
+  acknowledged?: {
+    toolsListChanged?: boolean;
+    promptsListChanged?: boolean;
+    resourcesListChanged?: boolean;
+    resourceSubscriptions?: string[];
+  };
+  /** Why push is unavailable, when it is. ⛔ NONE OF THESE ARE HEALTH FAILURES:
+   *  a server that refuses `subscriptions/listen` is legacy-era or simply does
+   *  not push, which is an expected answer about an ordinary server. */
+  reason?:
+    | 'listen_method_unsupported'
+    | 'listen_not_streamed'
+    | 'listen_no_acknowledgement'
+    | 'listen_error';
+}
+
 export interface ConnectionHealth {
   status: 'ok' | 'auth_failed' | 'unreachable' | 'unknown';
   last_probed_at?: number;
@@ -788,6 +812,27 @@ export interface ConnectionHealth {
    * runtime dispatch can construct those headers without trusting recipe
    * input or issuing an unbounded discovery call during a write. */
   mcp_tool_schemas?: Record<string, unknown>;
+  /** What this MCP connection will PUSH, as the server itself declared it.
+   *
+   *  🔑 ASKED AT PROBE TIME, NOT INFERRED. MCP 2026-07-28 removed the GET
+   *  stream and protocol sessions; the only server→client channel is
+   *  `subscriptions/listen`, so "does this connection push" is an ordinary
+   *  request with an ordinary answer, taken alongside `tools` on the same
+   *  probe. The `acknowledged` filter is the server's own statement of the
+   *  subset it will honour — the revision requires it to omit what the server
+   *  does not support — so this records a declaration rather than our guess.
+   *
+   *  ⚠ ABSENT MEANS UNKNOWN, NOT UNSUPPORTED (the same posture as `tools`):
+   *  a non-MCP kind, a probe that has not run since this field existed, or a
+   *  legacy-era server. A reader must treat absence as "do not subscribe yet",
+   *  never as "this server refuses".
+   *
+   *  ⛔ AND IT AUTHORISES NOTHING. A listen stream carries only "resource X
+   *  changed" — no payload — so everything it can tell us is already reachable
+   *  by reading under this connection's existing credential. The connection is
+   *  the authority, the stream is transport, and the client's own filter is the
+   *  consent; a subscription needs no grant of its own. */
+  push?: McpPushCapability;
 }
 
 /** Non-secret receipt returned only after a replacement credential has been

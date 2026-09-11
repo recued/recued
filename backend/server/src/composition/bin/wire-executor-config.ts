@@ -222,7 +222,9 @@ export interface ComposeExecutorConfigDeps {
    *  this config, so a kernel dispatcher cannot capture it at construction. Same
    *  seam the container-pick and saga wirings use for the same reason. Absent ⇒
    *  the door refuses rather than raising nothing silently. */
-  getExecuteDeps?: () => { preflightNotifier?: unknown; auditLog?: unknown } | undefined;
+  getExecuteDeps?: () => { preflightNotifier?: unknown; auditLog?: unknown;
+    mailDraft?: import('../../execute-handler.js').ExecuteHandlerDeps['mailDraft'];
+    preapprovalRequest?: import('../../execute-handler.js').ExecuteHandlerDeps['preapprovalRequest'] } | undefined;
   auditLog: AuditLogStore | undefined;
   keys: KeyManager | undefined;
   connectionNotificationDeps: ConnectionNotificationHandlerDeps | undefined;
@@ -390,6 +392,12 @@ const makeRefreshPersistAuth = (
       { kind: row.kind, name: row.name },
       keyProvider,
     );
+    if (connectionStore.persistRefreshedAuth) {
+      if (!connectionStore.persistRefreshedAuth(row, auth_ciphertext, Date.now(), configPatch)) {
+        throw new Error('The connection changed during credential refresh.');
+      }
+      return;
+    }
     let config_json = row.config_json;
     if (configPatch !== undefined) {
       const parsed: unknown = JSON.parse(row.config_json);
@@ -1709,6 +1717,16 @@ export const composeExecutorConfig = async (
             },
           }
         : {}),
+      mailDraft: async (method, input, meta) => {
+        const draft = deps.getExecuteDeps?.()?.mailDraft;
+        if (!draft) throw new Error('Saved drafts are unavailable until the owner service is ready.');
+        return draft(method, input, meta);
+      },
+      preapprovalRequest: async (input, meta) => {
+        const request = deps.getExecuteDeps?.()?.preapprovalRequest;
+        if (!request) throw new Error('Pre-approval requests are unavailable until the owner review service is ready.');
+        return request(input, meta);
+      },
       scheduleRecipe: async (input) => {
         const scheduleDeps = deps.getScheduleDeps?.();
         if (!scheduleDeps) {

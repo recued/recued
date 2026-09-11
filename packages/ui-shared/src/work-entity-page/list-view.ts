@@ -184,9 +184,13 @@ export const renderWorkEntityListView = (
     props.kind,
     props.booking_lifecycle_filter ?? 'all',
   );
+  const filters = props.kind === 'task' && props.task_filters !== undefined
+    ? renderTaskFilters(props.task_filters) : '';
   const body =
     props.rows.length === 0
-      ? renderEmptyState(props.kind, props.empty_state_copy, props.search_query)
+      ? renderEmptyState(props.kind,
+          props.task_filters !== undefined && (props.task_filters.completion !== 'all' || props.task_filters.due !== 'all')
+            ? 'No tasks match these filters.' : props.empty_state_copy, props.search_query)
       : renderRows(
           props.rows,
           props.show_source_label,
@@ -195,6 +199,7 @@ export const renderWorkEntityListView = (
   return `
     <div class="work-entity-list-view" data-kind="${e(props.kind)}">
       ${search}
+      ${filters}
       ${body}
     </div>
   `;
@@ -214,6 +219,7 @@ const renderSearchInput = (
         placeholder="Search ${e(kind)}s"
         value="${e(search_query)}"
         aria-label="Search ${e(kind)}s"
+        ${kind === 'task' ? 'maxlength="2000"' : ''}
       />
       ${kind === 'booking' ? `
         <label class="work-entity-list-filter-label">
@@ -233,6 +239,20 @@ const renderSearchInput = (
       ` : ''}
     </div>
   `;
+
+const renderTaskFilters = (filters: NonNullable<WorkEntityListViewProps['task_filters']>): string => {
+  const select = (field: 'completion' | 'due' | 'sort', label: string, options: readonly (readonly [string, string])[]): string => `
+    <label class="work-entity-list-filter-label">${label}
+      <select class="work-entity-list-filter" data-action="filter-task-${field}" aria-label="${label}">
+        ${options.map(([value, text]) => `<option value="${value}"${filters[field] === value ? ' selected' : ''}>${text}</option>`).join('')}
+      </select>
+    </label>`;
+  return `<div class="work-entity-list-search work-entity-task-filters" role="group" aria-label="Task filters">
+    ${select('completion', 'Task status', [['all', 'All tasks'], ['open', 'Open'], ['completed', 'Completed']])}
+    ${select('due', 'Due date', [['all', 'Any time'], ['overdue', 'Overdue'], ['today', 'Today'], ['next_7_days', 'Next seven days']])}
+    ${select('sort', 'Sort tasks', [['default', 'Open first'], ['due_asc', 'Due date — earliest first']])}
+  </div>${filters.due === 'all' ? '' : '<p class="work-entity-list-date-hint">Dates use your local time. Next seven days includes today; overdue shows unfinished tasks.</p>'}`;
+};
 
 const renderRows = (
   rows: readonly WorkEntityListRow[],

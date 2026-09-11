@@ -761,5 +761,7 @@ export const shouldRemountForSameRoute = (
   previousHash: string,
   nextHash: string,
 ): boolean =>
-  WEBCLIENT_DEEP_LINK_ROUTES.has(route)
+  (WEBCLIENT_DEEP_LINK_ROUTES.has(route)
+    || (route === 'approvals' && [previousHash, nextHash].some(hash =>
+      parseShellRoute(hash).segments[0] === 'preapproval')))
   && normalizeShellHash(previousHash) !== normalizeShellHash(nextHash);

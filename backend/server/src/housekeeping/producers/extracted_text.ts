@@ -24,6 +24,7 @@ import {
   fileEventAtOf,
   fileMimeTypeOf,
   isFileMediaClass,
+  mayAiEnrichFile,
 } from './_file-media.js';
 
 const baseProducerVersionHash = computeProducerVersionHash({
@@ -90,6 +91,10 @@ export const extractedTextProducer: HousekeepingEnrichmentProducer<CollectionRec
     source_record: SourceRecord<CollectionRecord>,
   ) {
     if (!isFileMediaClass(source_record.data, 'document')) return null;
+    // D-262 § B12.2 — ⛔ a stranger's reception drop does not spend the owner's
+    // tokens on an unattended cycle. See `mayAiEnrichFile` for why this is an
+    // allowlist and what is deliberately not in it.
+    if (!mayAiEnrichFile(source_record.data)) return null;
     if (!ctx.llmWithMeta) {
       throw new Error(
         'extracted_text_producer_misconfigured: ctx.llmWithMeta is required for document file enrichment',

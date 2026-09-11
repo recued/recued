@@ -34,7 +34,22 @@
  *   - `activeRoute()`  — the bootstrap's tracked active route id.
  *   - `fireMessage(m)` — inject an inbound WS frame (e.g. a server_heartbeat).
  *   - `releaseServerControlResponses()` — settle held pause/restart RPCs.
+ *   - `releaseRpcResponses(method)` — settle responses held by `hold_rpc`.
  */
+import type {
+  PacksUnrunnableResult,
+  RegistryDescribeRpcOutput,
+  ServerLlmUsageResponse,
+} from '@recued/contracts';
+import {
+  HARNESS_SERVER_FINGERPRINT,
+  HARNESS_SERVER_PUBLIC_KEY,
+} from './server-identity.js';
+import { savedViewsDemoReply } from './saved-data-views.js';
+import { todayDemoReply } from './today-view.js';
+import { recipeSimulationDemoReply } from './recipe-simulation.js';
+import { preapprovalDemoReply } from './preapproval.js';
+import type { GrantRecipeOpUsageCaller } from '../../src/contracts/contract-grants-panel.js';
 import {
   bootstrapWebclient,
   type WebclientHandle,
@@ -83,6 +98,8 @@ import type {
   WebclientLocalKey,
   WebclientLocalStorage,
   WebclientTokenRecord,
+  WorkEntityListRpcRequest,
+  Task,
 } from '@recued/contracts';
 // A VALUE import, deliberately. `ExposureState.resolution` is a full
 // `Record<PathRole, PathResolution>` table, and `applyPreset` is the contract's
@@ -111,10 +128,8 @@ import {
 } from '../../src/realtime/ws-client.js';
 
 // ──────────────────────────────────────────────────────────────────
-// Fakes — ported verbatim from webclient-bootstrap.test.ts (the shapes
-// that suite proves boot the full app). Only the import depth changed
-// (`../` → `../../src/`); the semantics are identical so the browser boot
-// matches the jsdom acceptance byte-for-byte.
+// Fakes based on webclient-bootstrap.test.ts, with real public-key bytes
+// for the browser's account-binding fingerprint calculation.
 // ──────────────────────────────────────────────────────────────────
 
 const FIXED_NOW = 1_700_000_000_000;
@@ -129,7 +144,7 @@ const sampleToken = (token_id = 'tok-abc'): WebclientTokenRecord => ({
 const buildPairedStore = (): WebclientProfileAwareStore =>
   createInMemoryWebclientLocalStore({
     server_url: 'wss://alice.recued.cloud:8443/ws',
-    server_public_key: 'spki-base64',
+    server_public_key: HARNESS_SERVER_PUBLIC_KEY,
     webclient_token: sampleToken(),
     pair_metadata: {
       paired_at: FIXED_NOW,
@@ -160,7 +175,7 @@ const buildServerSwitchProfileStore = (): WebclientProfileAwareStore => {
       SERVER_SWITCH_PROFILE_STORAGE_KEY,
       JSON.stringify({
         server_url: 'wss://alice.recued.cloud:8443/ws',
-        server_public_key: 'spki-base64',
+        server_public_key: HARNESS_SERVER_PUBLIC_KEY,
         webclient_token: sampleToken(),
         pair_metadata: {
           paired_at: FIXED_NOW,
@@ -687,6 +702,7 @@ interface FakeTransportControls {
   forceReauth(): void;
   rpcCallCount(method: string): number;
   releaseServerControlResponses(): number;
+  releaseRpcResponses(method: string): number;
   fireState(state: WebclientWsState): void;
   fireMessage(message: unknown): void;
 }
@@ -730,7 +746,7 @@ const buildFakeTransport = (
   delayRecordsOutboxRefreshResponse = false,
   delayRecordsPurgeResponse = false,
   delayRecordsNavigationResponse = false,
-  liveControlDemo = false,
+  liveControlDemo: boolean | 'interrupted' = false,
   runPaletteDemo = false,
   runPaletteUpdateFails = false,
   imapEnrollFails = false,
@@ -873,6 +889,7 @@ const buildFakeTransport = (
   const messages = new Set<(m: unknown) => void>();
   const rpcCallCounts = new Map<string, number>();
   const heldServerControlResponses: Array<() => void> = [];
+  const heldRpcResponses = new Map<string, Array<() => void>>();
   let serverAvailable = true;
   let bridgeNotificationsEnabled = false;
   let pairedBridgeModes = { notification: false, approval: false };
@@ -1101,6 +1118,7 @@ const buildFakeTransport = (
   let sourceAnswerSessionCreated = false;
   let sourceAnswerSendCount = 0;
   const liveControlRetiredRunIds = new Set<string>();
+  let durableToolReviewed = false;
   const revokedLogsPassIds = new Set<string>();
   const longLogsTextDemo = searchParams.get('logs_text') === 'long';
   const logsPasses = [
@@ -1252,19 +1270,27 @@ const buildFakeTransport = (
     template_ref: formResponseDemoTemplate,
   });
   const workEntityDemoTitles = new Map<number, string>();
+  const taskFiltersDemo = new URLSearchParams(location.search).get('task_filters') === '1';
   const workEntityDemoTitle = `WorkEntity${'Identity'.repeat(30)}`;
   const workEntityDemoBody = `Details${'Provider'.repeat(30)}`;
   const workEntityDemoRelationship = `task-${'Related'.repeat(30)}`;
   const workEntityDemoSourceLabel = longWorkEntityTextDemo
     ? `Source${'Provider'.repeat(30)}`
     : 'Recued built-in';
-  const workEntityDemoRecord = (index: number) => ({
+  const workEntityDemoRecord = (index: number): Task & { _kind: 'task' } => ({
     _kind: 'task' as const,
     id: `task-${index}`,
     title: workEntityDemoTitles.get(index)
       ?? (longWorkEntityTextDemo ? workEntityDemoTitle : `Task ${index}`),
     ...(longWorkEntityTextDemo ? { body: workEntityDemoBody } : {}),
     done: false,
+    ...(taskFiltersDemo ? [
+      { due_at: Date.parse('2026-09-08T12:00:00-07:00') },
+      { due_at: Date.parse('2026-09-06T12:00:00-07:00') },
+      { done: true, due_at: Date.parse('2026-09-06T10:00:00-07:00'), completed_at: FIXED_NOW },
+      { due_at: Date.parse('2026-09-07T12:00:00-07:00') },
+      {},
+    ][index] : {}),
     source_id: 'recued.task',
     last_seen_at: FIXED_NOW,
     sync_state: 'live' as const,
@@ -2128,6 +2154,12 @@ const buildFakeTransport = (
                                   }
             : undefined;
         let error: { code: string; message: string } | undefined;
+        const savedViewsReply = savedViewsDemoReply(rpc.method, rpc.args);
+        if (savedViewsReply !== null) {
+          result = savedViewsReply.result;
+          error = savedViewsReply.error;
+        }
+        if (rpc.method === 'collection.searchAll') result = { groups: [] };
         let beforeRpcResponse: (() => void) | null = null;
         if (
           archiveRestorePreviewDemo
@@ -2241,6 +2273,16 @@ const buildFakeTransport = (
         }
         if (rpc.method === 'server.getLlmPrompts') {
           result = llmPromptSnapshot();
+        }
+        if (rpc.method === 'server.getLLMUsage') {
+          // This read participates in the AI page's initial load. Leaving it
+          // unanswered times out the connection and blocks later mutations.
+          result = {
+            day: new Date(FIXED_NOW).toISOString().slice(0, 10),
+            sources: [],
+            server_tokens_today: 0,
+            server_budget_tokens: aiBudget,
+          } satisfies ServerLlmUsageResponse;
         }
         if (rpc.method === 'server.getConfigSchema') {
           result = {
@@ -2744,7 +2786,7 @@ const buildFakeTransport = (
                   binding: {
                     account_id: boundAccount.id,
                     publisher_handle: boundAccount.handle,
-                    server_fingerprint: 'sha256:harness-server',
+                    server_fingerprint: HARNESS_SERVER_FINGERPRINT,
                     bound_at: FIXED_NOW,
                   },
                 }
@@ -2806,7 +2848,7 @@ const buildFakeTransport = (
               current_owner: {
                 account_id: 'acct-old',
                 publisher_handle: 'legacy',
-                server_fingerprint: 'sha256:harness-server',
+                server_fingerprint: HARNESS_SERVER_FINGERPRINT,
                 bound_at: FIXED_NOW - 86_400_000,
               },
               incoming: {
@@ -2824,7 +2866,7 @@ const buildFakeTransport = (
               binding: {
                 account_id: 'acct-main',
                 publisher_handle: 'morgan',
-                server_fingerprint: 'sha256:harness-server',
+                server_fingerprint: HARNESS_SERVER_FINGERPRINT,
                 bound_at: FIXED_NOW,
               },
               ...(previousAccountId !== undefined
@@ -2894,13 +2936,31 @@ const buildFakeTransport = (
           };
         }
         if (workEntitiesPagedDemo && rpc.method === 'work_entity.list') {
-          const args = rpc.args as { offset?: unknown };
+          const args = rpc.args as WorkEntityListRpcRequest;
           const offset = typeof args.offset === 'number' ? args.offset : 0;
+          let records = Array.from({ length: taskFiltersDemo ? 5 : 3 }, (_, index) => workEntityDemoRecord(index));
+          if (args.kind === 'task') {
+            if (args.search) {
+              const search = args.search.trim().toLowerCase();
+              records = records.filter((row) => row.title.toLowerCase().includes(search)
+                || row.body?.toLowerCase().includes(search));
+            }
+            const filter = args.task_filter;
+            if (filter !== undefined) {
+              const due = filter.due;
+              records = records.filter((row) =>
+                (filter.completion === 'all' || row.done === (filter.completion === 'completed'))
+                && (due.kind === 'all' || (row.due_at !== undefined && (due.kind === 'overdue'
+                  ? !row.done && row.due_at < due.before
+                  : row.due_at >= due.from && row.due_at < due.before))));
+              if (taskFiltersDemo) records.sort((a, b) =>
+                (filter.sort === 'default' ? Number(a.done) - Number(b.done) : 0)
+                || (a.due_at ?? Infinity) - (b.due_at ?? Infinity) || a.id.localeCompare(b.id));
+            }
+          }
           result = {
-            entities: offset >= 0 && offset < 3
-              ? [workEntityDemoRecord(offset)]
-              : [],
-            total: 3,
+            entities: records.slice(offset, offset + 1),
+            total: records.length,
           };
         }
         if (workEntitiesPagedDemo && rpc.method === 'work_entity.get') {
@@ -3400,9 +3460,15 @@ const buildFakeTransport = (
                 kill: { mechanism: 'sigkill', pid: 4243 },
               },
               ].filter(
-                (entry) => !liveControlRetiredRunIds.has(entry.run_id),
+                (entry) => liveControlDemo !== 'interrupted' && !liveControlRetiredRunIds.has(entry.run_id),
               ),
               lanes: [],
+              ...(liveControlDemo === 'interrupted' ? { tool_calls: durableToolReviewed ? [] : [{
+                message_id: 'tool-recovered', session_id: 'chat_1', turn_id: 'turn-recovered',
+                tool_name: 'recued/research', run_id: 'run-recovered', state: 'interrupted',
+                started_at: FIXED_NOW - 300_000, updated_at: FIXED_NOW - 240_000,
+                last_signal_at: FIXED_NOW - 240_000,
+              }] } : {}),
             };
           }
         }
@@ -3410,6 +3476,11 @@ const buildFakeTransport = (
           const runId = (rpc.args as { run_id?: unknown }).run_id;
           if (typeof runId === 'string') liveControlRetiredRunIds.add(runId);
           result = { status: 'killed' };
+        }
+        if (liveControlDemo === 'interrupted' && rpc.method === 'execution.tool_call.dismiss') {
+          const args = rpc.args as { session_id: string; message_id: string };
+          durableToolReviewed = args.session_id === 'chat_1' && args.message_id === 'tool-recovered';
+          result = { dismissed: durableToolReviewed };
         }
         if (
           (runPaletteDemo || recipesRouteDemo || automationRulesDemo)
@@ -4355,7 +4426,9 @@ const buildFakeTransport = (
         // because a WRONG shape throws inside the panel, which is worse than
         // the hang it replaces.
         if (packsDemo) {
-          if (rpc.method === 'supervision.list') result = { daemons: [] };
+          if (rpc.method === 'packs.unrunnable') {
+            result = { findings: [], exact_pack_identities: true } satisfies PacksUnrunnableResult;
+          } else if (rpc.method === 'supervision.list') result = { daemons: [] };
           else if (rpc.method === 'cli.reachability.list') result = { rows: [] };
           else if (rpc.method === 'cli.reachability.universe') result = { tools: [] };
           else if (rpc.method === 'collection.operation.listOperations') {
@@ -5292,7 +5365,7 @@ const buildFakeTransport = (
           result = {
             passport: {
               identity: {
-                server_public_key: 'spki-base64',
+                server_public_key: HARNESS_SERVER_PUBLIC_KEY,
                 current_handle: 'alice',
               },
               network: {},
@@ -5463,7 +5536,31 @@ const buildFakeTransport = (
           contractsPagedDemo
           && rpc.method === 'housekeeping.registry.describe'
         ) {
-          result = { topics: [], total_rows_visible: 0 };
+          // Entities now contains enrichment topics; collection fences live in Ops.
+          result = {
+            topics: [{
+              topic: 'summary',
+              temporal_class: 'stable_truth',
+              identity_aggregation: 'scenario',
+              lifecycle_policy: 'forward_only',
+              valid_scopes: ['mail'],
+              compression_class: 'lossy',
+              prompt_bias_hints: [],
+              description: 'Mail summary digest',
+              ai_surface: true,
+              mcp_exposed: 'public',
+              coverage: {
+                row_count: 0,
+                latest_event_at: null,
+                producer_last_run_at: null,
+                producer_failure_rate_24h: 0,
+                ai_surface: true,
+              },
+              coverage_quality: 'low',
+              coverage_quality_reasoning: 'No summaries have been produced yet.',
+            }],
+            total_rows_visible: 0,
+          } satisfies RegistryDescribeRpcOutput;
         }
         if (contractsPagedDemo && rpc.method === 'contract.grant.read') {
           result = {
@@ -5473,6 +5570,18 @@ const buildFakeTransport = (
               set_at: FIXED_NOW,
             })),
           };
+        }
+        if (
+          (contractsPagedDemo || resolveContractsReads)
+          && rpc.method === 'contract.recipeOpUsage'
+        ) {
+          // The grant matrix also awaits recipe usage, even for an empty roster.
+          result = {
+            operations: [],
+            window_days: 30,
+            oldest_scanned_at: null,
+            underivable: [],
+          } satisfies Awaited<ReturnType<GrantRecipeOpUsageCaller>>;
         }
         if (contractsPagedDemo && rpc.method === 'contract.grant.write') {
           const args = rpc.args as {
@@ -6411,6 +6520,12 @@ const buildFakeTransport = (
             };
           }
         }
+        const preapprovalReply = preapprovalDemoReply(rpc.method, rpc.args);
+        if (preapprovalReply !== null) { result = preapprovalReply.result; error = preapprovalReply.error; }
+        const todayReply = todayDemoReply(rpc.method, rpc.args);
+        if (todayReply !== null) { result = todayReply.result; error = todayReply.error; }
+        const simulationReply = recipeSimulationDemoReply(rpc.method, rpc.args);
+        if (simulationReply !== null) { result = simulationReply.result; error = undefined; }
         // `trace_pending=1` — name every read this transport never answers.
         // The list is how a coverage gap stops being archaeology: a route stuck
         // on "Loading…" tells you nothing, the method name tells you exactly
@@ -6434,6 +6549,18 @@ const buildFakeTransport = (
           }
         };
         if (
+          new URLSearchParams(location.search).getAll('hold_rpc').includes(rpc.method)
+        ) {
+          const pending = heldRpcResponses.get(rpc.method) ?? [];
+          pending.push(respond);
+          heldRpcResponses.set(rpc.method, pending);
+          return;
+        } else if ((rpc.method === 'data_views.get' && new URLSearchParams(location.search).get('saved_views_get') === 'slow')
+          || (['data_views.create', 'data_views.update', 'data_views.rename', 'data_views.delete'].includes(rpc.method)
+            && new URLSearchParams(location.search).get('saved_views_write') === 'slow')) {
+          setTimeout(respond, 750);
+          return;
+        } else if (
           delayChatSessionOpen
           && rpc.method === 'chat.session.get'
         ) {
@@ -7133,6 +7260,12 @@ const buildFakeTransport = (
       for (const respond of pending) respond();
       return pending.length;
     },
+    releaseRpcResponses: (method) => {
+      const pending = heldRpcResponses.get(method) ?? [];
+      heldRpcResponses.delete(method);
+      for (const respond of pending) respond();
+      return pending.length;
+    },
     fireState: (state) => {
       for (const listener of [...states]) listener(state);
     },
@@ -7211,6 +7344,8 @@ interface FullAppHooks {
   forceReauth(): void;
   rpcCallCount(method: string): number;
   releaseServerControlResponses?(): number;
+  /** Settle responses held by `hold_rpc` after pending-state assertions. */
+  releaseRpcResponses?(method: string): number;
   fireState(state: WebclientWsState): void;
   fireMessage(message: unknown): void;
   /** Multi-tab journey diagnostic: proves the passive sibling never POSTed. */
@@ -7442,6 +7577,7 @@ const recipeDependencyInstallDemo =
   delayRecipeDependencyInstall || failRecipeDependencyInstall;
 const accountDemoFetch = async (
   input: RequestInfo | URL,
+  init?: RequestInit,
 ): Promise<Response> => {
   const url = String(input);
   let payload: unknown;
@@ -7461,6 +7597,17 @@ const accountDemoFetch = async (
           csrfToken: 'csrf-account-demo-next',
         };
   } else if (url.endsWith('/v1/account/binding/token')) {
+    const body: unknown = typeof init?.body === 'string'
+      ? JSON.parse(init.body)
+      : null;
+    if (
+      body === null
+      || typeof body !== 'object'
+      || !('server_fingerprint' in body)
+      || body.server_fingerprint !== HARNESS_SERVER_FINGERPRINT
+    ) {
+      return new Response('Binding token must name the paired server.', { status: 400 });
+    }
     payload = {
       binding_token: 'binding-account-demo',
       expires_at: FIXED_NOW + 60_000,
@@ -7717,7 +7864,7 @@ const transport = buildFakeTransport(
   searchParams.get('records_outbox_response') === 'slow',
   searchParams.get('records_purge_response') === 'slow',
   searchParams.get('records_navigation_response') === 'slow',
-  searchParams.get('live') === 'running',
+  searchParams.get('live') === 'interrupted' ? 'interrupted' : searchParams.get('live') === 'running',
   searchParams.get('run_palette') === 'autorun'
     || searchParams.get('run_palette') === 'autorun-fail'
     || searchParams.get('run_palette') === 'inventory-retry'
@@ -8029,7 +8176,7 @@ const installRecoveryPairFetch = (
       identity: {
         server_public_key: replacementServer
           ? 'spki-replacement-verified'
-          : 'spki-base64',
+          : HARNESS_SERVER_PUBLIC_KEY,
         current_handle: replacementServer ? 'harbor' : 'alice',
       },
       network: {},
@@ -8275,6 +8422,7 @@ void (async (): Promise<void> => {
               transport.setServerAvailable(available),
             forceReauth: () => transport.forceReauth(),
             rpcCallCount: (method) => transport.rpcCallCount(method),
+            releaseRpcResponses: (method) => transport.releaseRpcResponses(method),
             fireState: (state) => transport.fireState(state),
             fireMessage: (message) => transport.fireMessage(message),
             pairSubmitCount: () => pairSubmitCount,
@@ -8366,6 +8514,7 @@ void (async (): Promise<void> => {
           transport.setServerAvailable(available),
         forceReauth: () => transport.forceReauth(),
         rpcCallCount: (method) => transport.rpcCallCount(method),
+        releaseRpcResponses: (method) => transport.releaseRpcResponses(method),
         fireState: (state) => transport.fireState(state),
         fireMessage: (message) => transport.fireMessage(message),
         pairSubmitCount: () => pairSubmitCount,
@@ -8855,6 +9004,7 @@ void (async (): Promise<void> => {
         rpcCallCount: (method) => transport.rpcCallCount(method),
         releaseServerControlResponses: () =>
           transport.releaseServerControlResponses(),
+        releaseRpcResponses: (method) => transport.releaseRpcResponses(method),
         fireState: (state) => transport.fireState(state),
         fireMessage: (message) => transport.fireMessage(message),
       };
@@ -8909,6 +9059,7 @@ void (async (): Promise<void> => {
       rpcCallCount: (method) => transport.rpcCallCount(method),
       releaseServerControlResponses: () =>
         transport.releaseServerControlResponses(),
+      releaseRpcResponses: (method) => transport.releaseRpcResponses(method),
       fireState: (state) => transport.fireState(state),
       fireMessage: (message) => transport.fireMessage(message),
       ...(accountDemo

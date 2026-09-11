@@ -1,8 +1,14 @@
 /** D-145 PA10 follow-on — `packs.list` rpc handler.
  *
- *  Reads bundled pack manifests off disk (`community/packs/*.json`),
- *  parses each via the contracts validator, and joins with the per-pair
- *  `RecipeStore` to compute the `installed` flag for each pack.
+ *  Reads the bundled pack roster through `bundled-pack-source.ts` — the
+ *  `community/packs` tree in a checkout, the manifests embedded in the server
+ *  bundle on a distribution (which ships no `community/`) — and joins it with
+ *  the per-pair `RecipeStore` to compute the `installed` flag for each pack.
+ *  ⛔ This handler read the directory itself, non-recursively, until
+ *  2026-09-07: a deployed server listed NOTHING while running the six
+ *  foundation packs its boot wire had installed, and a checkout hid the five
+ *  nested under `community/packs/recued-core/`. See
+ *  internal design notes.
  *
  *  The handler is the read counterpart to `packs.install` (PA10 follow-
  *  on). Together they back the Settings → Packs UI: `list` populates the
@@ -34,11 +40,7 @@
  *  Spec: D-145 § PA10 (pack-shipped Standing
  *  Instructions). */
 
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
-import { join, resolve } from 'node:path';
-
 import {
-  parseBulkPackManifest,
   type BulkPackManifest,
   type HandlerSlice,
   type PackListEntry,
@@ -46,6 +48,7 @@ import {
   type ServerRpcRegistry,
 } from '@recued/contracts';
 
+import { loadBundledPackManifests } from './bundled-pack-source.js';
 import { getInstalledPack, isPackInstalledAtVersion, listInstalledPacks } from './pack-inventory.js';
 import { reviewOwnerOperationsForPackUpdate } from './owner-operation-update-review.js';
 import {
@@ -79,47 +82,11 @@ export interface PackListRpcDeps {
   }) => Promise<readonly RecordsMigrationArtifact[]>;
   /** Override the default community/packs directory. Tests pass a
    *  scratch dir; production callers leave undefined to use the
-   *  bundled location. */
+   *  bundled location. ⚠ An explicit dir also means "this fixture is the
+   *  corpus" — the embedded foundation manifests are NOT unioned in, so a
+   *  harness sees exactly the packs it wrote. See `bundled-pack-source.ts`. */
   packDir?: string;
 }
-
-/** Default community/packs directory resolution. Mirrors
- *  `foundation-pack-pre-install.ts:findCommunityPackDir` and
- *  `recipe-store.ts:findCommunityDir` so test harnesses passing a
- *  custom community dir get the same shape regardless of which
- *  substrate's loader runs first. */
-const findCommunityPackDir = (): string => {
-  const projectRoot = resolve(import.meta.dirname ?? __dirname, '..', '..', '..');
-  return join(projectRoot, 'community', 'packs');
-};
-
-/** Scan + parse every `*.json` file in `packDir`. Malformed manifests
- *  are silently dropped so the rpc only surfaces installable packs;
- *  the boot wire (`foundation-pack-pre-install.ts`) is the surface
- *  that logs validation failures. */
-const loadPackManifests = (packDir: string): BulkPackManifest[] => {
-  if (!existsSync(packDir)) return [];
-  const out: BulkPackManifest[] = [];
-  for (const file of readdirSync(packDir)) {
-    if (!file.endsWith('.json')) continue;
-    let raw: string;
-    try {
-      raw = readFileSync(join(packDir, file), 'utf-8');
-    } catch {
-      continue;
-    }
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(raw);
-    } catch {
-      continue;
-    }
-    const result = parseBulkPackManifest(parsed);
-    if (!result.ok) continue;
-    out.push(result.manifest);
-  }
-  return out;
-};
 
 /** Fork 1 — the INSTALLED packs' manifests, for the connection-enroll scope
  *  union (the `startVendorOAuth` handler unions a vendor's installed packs'
@@ -136,8 +103,7 @@ export const listInstalledPackManifests = (
   packDir?: string,
 ): BulkPackManifest[] => {
   if (!contractStore) return [];
-  const dir = packDir ?? findCommunityPackDir();
-  return loadPackManifests(dir).filter((m) =>
+  return loadBundledPackManifests(packDir).filter((m) =>
     isPackInstalledAtVersion(contractStore, m.slug, m.version),
   );
 };
@@ -345,8 +311,7 @@ export const listVersionExactInstalledPackManifests = (
 ): BulkPackManifest[] => {
   const contractStore = deps.contractStore;
   if (contractStore === undefined) return [];
-  const packDir = deps.packDir ?? findCommunityPackDir();
-  return loadPackManifests(packDir).filter((manifest) =>
+  return loadBundledPackManifests(deps.packDir).filter((manifest) =>
     projectManifest(manifest, deps.recipeStore, contractStore, deps.recordsStore).installed
     && (
       deps.recordsStore?.getNamespace({
@@ -360,8 +325,7 @@ export const listVersionExactInstalledPackManifests = (
 export const handlePacksList = async (
   deps: PackListRpcDeps,
 ): Promise<PacksListResult> => {
-  const packDir = deps.packDir ?? findCommunityPackDir();
-  const manifests = loadPackManifests(packDir);
+  const manifests = loadBundledPackManifests(deps.packDir);
   // Sort alphabetically by slug for deterministic panel render order.
   // The panel can re-group visually (installed / foundation / rest) on
   // top of a stable sort without a second-pass server query.

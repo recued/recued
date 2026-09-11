@@ -174,6 +174,11 @@ describe('D-145 PA9 — value_schema accepts valid inputs', () => {
     expect(result.ok).toBe(true);
   });
 
+  // ⚠ NOT A LEFTOVER. `context_packet_quality`'s DECLARATION was retired
+  // 2026-09-10; its REGISTRY ENTRY survives as a reserved id, exactly like
+  // its five unproduced peers (`deal_health_score`, `deal_velocity_signal`,
+  // and the three recipe-produced rollups). A reserved id still owes a valid
+  // value schema — that is what makes it reservable rather than a hole.
   it('context_packet_quality accepts {score, sample_count, confidence, computed_at}', () => {
     const result = validate('context_packet_quality', {
       score: 0.75,
@@ -307,11 +312,13 @@ describe('D-145 PA9 — registry classifications match per-producer wiring', () 
   });
 
   it('PSI-eligible producers carry registry-side emits_confidence: true', () => {
+    // ⛔ `context_packet_quality` retired 2026-09-10 — it was the only
+    // declared D-145 producer with no producer, and PSI drift over a
+    // distribution that never existed can never score anything.
     const psiEligible = [
       'commitment_followthrough_score',
       'task_completion_velocity',
       'project_velocity',
-      'context_packet_quality',
     ] as const;
     for (const topic of psiEligible) {
       const def = ENRICHMENT_REGISTRY[topic];
@@ -324,8 +331,7 @@ describe('D-145 PA9 — registry classifications match per-producer wiring', () 
       (t) =>
         t !== 'commitment_followthrough_score'
         && t !== 'task_completion_velocity'
-        && t !== 'project_velocity'
-        && t !== 'context_packet_quality',
+        && t !== 'project_velocity',
     );
     for (const topic of nonPsi) {
       const def = ENRICHMENT_REGISTRY[topic as EnrichmentTopic];

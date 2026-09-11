@@ -52,6 +52,7 @@ export const RUN_MODAL_TRIGGER_ERROR_ATTR = 'data-recued-run-modal-trigger-error
 export interface RunModalCaps {
   canExecute: boolean;
   canSchedule: boolean;
+  canPreapprove?: boolean;
   /** R21 — the Trigger tab (list wired; create may still be absent). */
   canTrigger: boolean;
   /** D-200 — whether `file_ref` variables can use an owner-file picker. */
@@ -391,6 +392,10 @@ const renderScheduleTab = (
           ${RUN_MODAL_ACTION_ATTR}="add-schedule"${state.mutating ? ' aria-disabled="true" aria-busy="true"' : ''}>
           ${state.repeat ? 'Add schedule' : 'Schedule once'}
         </button>
+        ${caps.canPreapprove && !state.repeat ? `<button type="button" class="run-modal-button"
+          ${RUN_MODAL_ACTION_ATTR}="review-schedule"${state.mutating ? ' aria-disabled="true" aria-busy="true"' : ''}>
+          Review and pre-approve
+        </button>` : ''}
       </div>`;
 };
 

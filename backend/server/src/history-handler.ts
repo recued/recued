@@ -42,6 +42,7 @@ import type {
 // D-161 P3 — actor-lane default + wire-input sanitizer for the aggregate
 // "Recent activity" feed (`execution.recent`).
 import {
+  PREAPPROVAL_NOTIFICATION_HANDLER,
   TIMELINE_DEFAULT_ORIGIN_ACTORS,
   provenanceAttributionFromSource,
   sanitizeTimelineOriginFilter,
@@ -210,7 +211,10 @@ export const handlePendingAsks = async (
       ask_id: p.ask_id,
       ...(p.message.title !== undefined ? { title: p.message.title } : {}),
       text: p.message.text,
-      options: p.options.map((o) => ({ id: o.id, label: o.label })),
+      options: p.handler_kind === PREAPPROVAL_NOTIFICATION_HANDLER ? [] : p.options.map((o) => ({ id: o.id, label: o.label })),
+      ...(p.handler_kind === PREAPPROVAL_NOTIFICATION_HANDLER
+        && typeof p.handler_payload.proposal_id === 'string' && p.handler_payload.proposal_id.startsWith('pap_')
+        ? { owner_review: { kind: 'preapproval' as const, proposal_id: p.handler_payload.proposal_id } } : {}),
       created_at: p.created_at,
       // D-234 § 234.3 — forwarded because THIS LITERAL IS THE FILTER. Every
       // other channel gets `link_url` off the message itself; the in-app card

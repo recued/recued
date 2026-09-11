@@ -13,6 +13,7 @@
  *  is the whole reason this lands in an editor rather than in the recipe store.
  */
 
+import type { DraftRecovery } from './editor-history.js';
 import { humanizeRpcError } from '../../shell/rpc-error-copy.js';
 import { serializeShellRoute } from '../../shell/route.js';
 import type { StashedExecutionCaseDraft } from './execution-case-draft-stash.js';
@@ -150,11 +151,13 @@ const injectExecutionCaseDraftStyles = (doc: Document): void => {
 };
 
 export interface MountExecutionCaseDraftRouteOptions {
+  recovery?: DraftRecovery;
   root: HTMLElement;
   /** Null when the key matched nothing — a stale hash, another tab's draft, or
    *  a storage the browser cleared. */
   draft: StashedExecutionCaseDraft | null;
   validateCaller: Parameters<typeof bootstrapRecipeEditorRoute>[0]['validateCaller'];
+  simulateCaller?: Parameters<typeof bootstrapRecipeEditorRoute>[0]['simulateCaller'];
   saveCaller: Parameters<typeof bootstrapRecipeEditorRoute>[0]['saveCaller'];
   onSaved?: Parameters<typeof bootstrapRecipeEditorRoute>[0]['onSaved'];
   /** D-219 — iterative refinement. Wired as a PAIR with `onRefined`: a control
@@ -283,6 +286,7 @@ export const mountExecutionCaseDraftRoute = (
   }
   try {
     editor = bootstrapRecipeEditorRoute({
+      recovery: options.recovery,
       root: host,
       ...(options.document !== undefined ? { document: options.document } : {}),
       initialRecipe: options.draft.recipe as never,
@@ -291,6 +295,7 @@ export const mountExecutionCaseDraftRoute = (
       // the owner just paid for.
       initialDirty: true,
       validateCaller: options.validateCaller,
+      simulateCaller: options.simulateCaller,
       saveCaller: options.saveCaller,
       onSaved: (saved) => {
         // ⛔ RECORD FIRST, then forward. `onSaved` navigates away in the shell,

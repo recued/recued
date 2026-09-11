@@ -639,6 +639,27 @@ export const INGREDIENT_BUILDER_STYLES = `
   background: var(--surface);
   box-shadow: 0 1px 2px rgba(24, 24, 27, 0.035);
 }
+[${INGREDIENT_BUILDER_ROUTE_ATTR}] .ingredient-builder-search {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 12px;
+  border-radius: 9px;
+  background: var(--surface-sunk);
+}
+[${INGREDIENT_BUILDER_ROUTE_ATTR}] .ingredient-builder-search input {
+  flex: 1 1 220px;
+  width: auto;
+  min-width: 0;
+  max-width: 420px;
+}
+[${INGREDIENT_BUILDER_ROUTE_ATTR}] .ingredient-builder-search [hidden] { display: none; }
+[${INGREDIENT_BUILDER_ROUTE_ATTR}] .ingredient-builder-search p {
+  margin: 0 0 0 auto;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
 [${INGREDIENT_BUILDER_ROUTE_ATTR}] .ingredient-builder-identity-card {
   display: grid;
   grid-template-columns: minmax(220px, 1.2fr) minmax(170px, 0.8fr);
@@ -5204,6 +5225,68 @@ export const bootstrapIngredientBuilderRoute = (
   );
   let nextRowId = state.rows.length;
   let nextFieldId = state.entityFields.length;
+  let operationSearch = '';
+  let fieldSearch = '';
+  const appendSearch = (parent: HTMLElement, kind: 'operations' | 'fields'): void => {
+    const toolbar = doc.createElement('div'); toolbar.className = 'ingredient-builder-search';
+    const search = doc.createElement('input'); search.type = 'search';
+    search.value = kind === 'operations' ? operationSearch : fieldSearch;
+    search.setAttribute('aria-label', kind === 'operations' ? 'Search pack operations' : 'Search pack data fields');
+    search.setAttribute('data-recued-pack-search', kind);
+    search.setAttribute('placeholder', kind === 'operations' ? 'Find an operation…' : 'Find a data field…');
+    toolbar.appendChild(search);
+    const clear = makeButton(doc, 'Clear', 'secondary', 'sm', () => {
+      search.value = '';
+      if (kind === 'operations') operationSearch = ''; else fieldSearch = '';
+      filter(); search.focus();
+    });
+    clear.setAttribute('aria-label', kind === 'operations' ? 'Clear operation search' : 'Clear data field search');
+    toolbar.appendChild(clear);
+    const count = doc.createElement('p'); count.setAttribute('role', 'status');
+    toolbar.appendChild(count);
+    if (typeof parent.insertBefore === 'function') parent.insertBefore(toolbar, parent.children[1] ?? null);
+    else parent.appendChild(toolbar);
+    const filter = (): void => {
+      const query = search.value.trim().toLowerCase();
+      const rows = kind === 'operations' ? state.rows : state.entityFields;
+      const attr = kind === 'operations' ? INGREDIENT_BUILDER_ROW_ATTR : INGREDIENT_BUILDER_ENTITY_ROW_ATTR;
+      const matches = new Set(rows.filter(row => JSON.stringify(row).toLowerCase().includes(query)).map(row => row.id));
+      for (const el of Array.from(parent.querySelectorAll?.<HTMLElement>(`[${attr}]`) ?? [])) {
+        const shown = matches.has(el.getAttribute(attr) ?? '');
+        el.hidden = !shown;
+        if (shown) el.style?.removeProperty('display'); else el.style?.setProperty('display', 'none');
+        if (kind === 'fields') {
+          const extras = el.nextElementSibling as HTMLElement | null;
+          if (extras?.classList.contains('ingredient-builder-entity-extras-tr')) {
+            extras.hidden = !shown;
+            if (shown) extras.style.removeProperty('display'); else extras.style.setProperty('display', 'none');
+          }
+        }
+      }
+      for (const group of Array.from(parent.querySelectorAll?.<HTMLElement>(
+        '.ingredient-builder-op-group, .ingredient-builder-entity-group',
+      ) ?? [])) {
+        const shown = Array.from(group.querySelectorAll<HTMLElement>(`[${attr}]`))
+          .some(row => matches.has(row.getAttribute(attr) ?? ''));
+        group.hidden = !shown;
+        if (shown) group.style.removeProperty('display'); else group.style.setProperty('display', 'none');
+      }
+      clear.hidden = search.value.length === 0;
+      const label = kind === 'operations' ? 'operation' : 'field';
+      count.textContent = query
+        ? `${matches.size} of ${plural(rows.length, label)}${matches.size ? '' : ' · Try a different search'}`
+        : plural(rows.length, label);
+    };
+    search.addEventListener('input', () => {
+      if (kind === 'operations') operationSearch = search.value; else fieldSearch = search.value;
+      filter();
+    });
+    search.addEventListener('keydown', event => {
+      if (event.isComposing) return;
+      if (event.key === 'Escape' && search.value) { event.preventDefault(); event.stopPropagation(); clear.click(); }
+    });
+    filter();
+  };
   let disposed = false;
   /** True while a save→decompose chain is in flight (saveStage can't carry
    *  this — markDirty resets it to 'idle' on a mid-save edit). */
@@ -6164,6 +6247,7 @@ export const bootstrapIngredientBuilderRoute = (
       plural(authoredOperationRows(state.rows).length, 'operation'),
     );
     const add = makeButton(doc, 'Add operation', 'secondary', 'sm', () => {
+      operationSearch = '';
       const id = `row-${nextRowId}`;
       state.rows.push(defaultRow(id));
       nextRowId += 1;
@@ -6183,6 +6267,7 @@ export const bootstrapIngredientBuilderRoute = (
       rerenderOperationField,
       rerenderOperationArgument,
     );
+    appendSearch(operations, 'operations');
     operationsView.appendChild(operations);
 
     // ── Data fields — entity schema.
@@ -6202,6 +6287,7 @@ export const bootstrapIngredientBuilderRoute = (
       plural(state.entityFields.length, 'field'),
     );
     const addField = makeButton(doc, 'Add field', 'secondary', 'sm', () => {
+      fieldSearch = '';
       const id = `field-${nextFieldId}`;
       state.entityFields.push(defaultEntityField(id));
       nextFieldId += 1;
@@ -6221,6 +6307,7 @@ export const bootstrapIngredientBuilderRoute = (
       removeEntityField,
       rerenderEntityField,
     );
+    appendSearch(entitySection, 'fields');
     dataView.appendChild(entitySection);
 
     // ── Publish — pack metadata + (once validated) preview / install.

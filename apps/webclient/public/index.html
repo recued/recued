@@ -1,5 +1,14 @@
 <!doctype html>
-<html lang="en">
+<!-- ⛔ `data-recued-owner-surface` IS STATIC, AND THAT IS THE POINT. The Bridge
+     refuses to automate or capture any document carrying it (D-261 F32). It is
+     ALSO set by `bootstrapWebclient()`, but that runs only once the module
+     bundle has downloaded, parsed and executed — leaving a window after this
+     HTML is parsed in which the page renders, is scriptable, and is NOT marked.
+     A recipe that navigates a tab here and acts immediately would fall in it.
+     Marking the document itself closes the window for every guard at once, and
+     survives a bundle that fails to load. Keep BOTH: this covers the load, the
+     bootstrap covers a shell served from anywhere else. -->
+<html lang="en" data-recued-owner-surface>
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />

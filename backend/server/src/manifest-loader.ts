@@ -18,6 +18,8 @@ import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { isCoreSlug } from '@recued/contracts';
 import type { IngredientManifest } from '@recued/contracts';
+import type Database from 'better-sqlite3';
+import { initializePreapprovalLifecycle, synchronizePreapprovalIdentity } from './storage/preapproval-lifecycle.js';
 import { KERNEL_MANIFESTS } from './kernel-manifests.js';
 
 export interface ManifestRegistry {
@@ -99,7 +101,9 @@ const findCommunityDir = (): string => {
 /** Create a manifest registry pre-loaded with bundled community ingredients. */
 export const createManifestRegistry = (
   communityDir?: string,
+  db?: Database.Database,
 ): ManifestRegistry => {
+  if (db) initializePreapprovalLifecycle(db);
   const dir = communityDir ?? findCommunityDir();
   const bundledManifests = loadFromDirectory(dir);
   // Kernel substrate is inlined in code (KERNEL_MANIFESTS) so it ships in the server bundle —
@@ -110,6 +114,13 @@ export const createManifestRegistry = (
     for (const m of KERNEL_MANIFESTS) bundledManifests.set(m.slug, m);
   }
   const localManifests = new Map<string, IngredientManifest>();
+  const synchronize = (slug: string, value: IngredientManifest | null, removed = false): void => {
+    if (!db) return;
+    db.transaction(() => {
+      if (removed) synchronizePreapprovalIdentity(db, 'installed_manifest', slug, null);
+      synchronizePreapprovalIdentity(db, 'installed_manifest', slug, value);
+    }).immediate();
+  };
 
   return {
     get(slug, version) {
@@ -144,9 +155,11 @@ export const createManifestRegistry = (
       if (isCoreSlug(manifest.slug)) {
         return;
       }
+      synchronize(manifest.slug, manifest);
       localManifests.set(manifest.slug, manifest);
     },
     unregister(slug) {
+      if (localManifests.has(slug)) synchronize(slug, bundledManifests.get(slug) ?? null, true);
       return localManifests.delete(slug);
     },
   };

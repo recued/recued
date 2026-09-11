@@ -46,6 +46,7 @@ export {
 export { fetchSlackUserEmail, type FetchSlackUserEmailOptions } from './slack-users.js';
 export {
   createTelegramTransport,
+  telegramMessageFits,
   type TelegramTransportOptions,
 } from './telegram.js';
 // D-192 CORE #6 make-live — the third chat transport. The address codec is

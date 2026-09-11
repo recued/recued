@@ -5,11 +5,14 @@
  *  up the whole composition — and it carries two authority decisions (which
  *  corpus, whose session) that must not rest on review alone. */
 
-import { isExecutionSource, type ExecutionSource } from '@recued/contracts';
+import { isExecutionSource, type ExecutionSource, type RecuedServerSignature } from '@recued/contracts';
 import type { PreflightRunSettled } from './preflight-resumer.js';
+import { isNonTerminalToolResult } from './chat-tool-call-context.js';
+import { renderToolRow, type ChatBroadcastEmitter } from './chat-orchestrator.js';
 import {
   CHAT_MESSAGE_RECALL_ELIGIBILITY,
   deriveChatMessageRecallEligibility,
+  type ChatStore,
 } from './storage/chat-store.js';
 
 export interface RunSettledRow {
@@ -49,6 +52,7 @@ export interface RunSettledRow {
 export const planRunSettledRow = (
   settled: PreflightRunSettled,
 ): RunSettledRow | null => {
+  if (isNonTerminalToolResult(settled.result)) return null;
   const source = settled.execution_source;
   if (!isExecutionSource(source)) return null;
   if (
@@ -78,4 +82,50 @@ export const planRunSettledRow = (
     ts: settled.ts,
     execution_source: source,
   };
+};
+
+/** Shared by production composition and the restart/lifecycle tests. */
+export const createChatRunSettledSink = (
+  store: ChatStore,
+  signature: RecuedServerSignature,
+  broadcast: ChatBroadcastEmitter,
+) => async (settled: PreflightRunSettled): Promise<void> => {
+  let callIds: string[] = [];
+  try {
+    const plan = planRunSettledRow(settled);
+    if (!plan) return;
+    callIds = store.toolCalls?.findByRun(plan.session_id, plan.pair_id) ?? [];
+    const succeeded = plan.result !== null && typeof plan.result === 'object'
+      && (plan.result as { success?: unknown }).success === true;
+    await store.appendMessage({
+      id: `settle:${plan.pair_id}`, session_id: plan.session_id, role: 'tool',
+      content: renderToolRow(plan.tool_name, undefined, plan.result),
+      target_server: 'self', picker_at_send: { display_name: 'self', signature },
+      model_used: { provider: 'recued', model_id: 'run-settled' },
+      execution_source: plan.execution_source, ts: plan.ts, pair_id: plan.pair_id,
+      ...(plan.turn_id !== null ? { turn_id: plan.turn_id } : {}),
+      // A result delivered after the originating turn has no PII candidate
+      // pass to finalize it. Keep the encrypted owner-visible result outside
+      // model recall. Existing untracked pairs keep their legacy writer.
+      ...(callIds.length > 0 ? { source_lifecycle: 'failed' as const } : {}),
+      tool_call_settlements: callIds.map(message_id => ({ message_id,
+        state: settled.state ?? (succeeded ? 'succeeded' : 'failed') })),
+    });
+    for (const message_id of callIds) {
+      broadcast.emit({ kind: 'chat.session_changed', session_id: plan.session_id,
+        field: 'tool_call', value: store.toolCalls?.get(message_id) });
+    }
+  } catch (error) {
+    console.error('[chat] run-settled tool row append failed', error);
+    // In particular, a locked vault can refuse the result encryption while
+    // metadata remains writable. Leave an explicit owner-review path.
+    try {
+      for (const id of callIds) {
+        store.toolCalls?.interrupt(id, true);
+        const call = store.toolCalls?.get(id);
+        if (call) broadcast.emit({ kind: 'chat.session_changed', session_id: call.session_id,
+          field: 'tool_call', value: call });
+      }
+    } catch (writeError) { console.error('[chat] late-call interruption persistence failed', writeError); }
+  }
 };

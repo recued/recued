@@ -8,6 +8,8 @@
  */
 
 import type Database from 'better-sqlite3';
+import { initializePreapprovalLifecycle, synchronizePreapprovalIdentity } from './storage/preapproval-lifecycle.js';
+import { llmSourceMaterial } from './preapproval-ai-description.js';
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import type {
   FreePoolEntry, LLMConfig, LLMSlot, CoordinationStrategy, LlmGatewayDefaultRoute,
@@ -16,6 +18,7 @@ import type {
 import {
   isLLMMessageRole, isLlmGatewayCallerSystemPolicy,
   LLM_MESSAGE_ROLES, LLM_GATEWAY_CALLER_SYSTEM_POLICIES,
+  defaultTranscriptionModel,
 } from '@recued/llm';
 import {
   checkBudgetStatus, DEFAULT_BUDGET_THRESHOLDS,
@@ -92,6 +95,29 @@ export interface LLMConfigManager {
   /** D-174 R28 Slice C — set the dedicated embeddings slot. Pass null to
    *  clear. Its `model` field carries the embeddings model string. */
   setEmbeddingsSlot(slot: LLMSlot | null): void;
+  /** D-262 § B1 — the dedicated transcription source. `null` clears it. */
+  setTranscriptionSlot(slot: LLMSlot | null): void;
+  /** D-262 § B5 — the one-time upgrade step that fills `transcription_slot`
+   *  from a free-pool entry that used to serve transcription, so voice notes
+   *  do not stop working on a server that upgrades into the dedicated slot.
+   *  Returns what it did, for the boot log. Safe to call on every boot. */
+  deriveTranscriptionSlotOnce():
+    | 'derived'
+    | 'already_marked'
+    | 'no_candidate'
+    /** D-262 — the credentials could not be READ (locked server, encrypted
+     *  values, no DEK). Distinct from `no_candidate`, and the marker is NOT
+     *  written: retry after unlock. */
+    | 'deferred_locked';
+  /** D-262 § B6 — the owner's spoken language (ISO-639-1). `null` clears back
+   *  to auto-detect, which is a MEANINGFUL state and the default. */
+  setTranscriptionLanguage(lang: string | null): void;
+  getTranscriptionLanguage(): string | null;
+  /** D-262 § B12.3 — the daily transcription cap in REQUESTS. `null` clears to
+   *  unlimited. ⚠ Enforcement is process-lifetime only until the quota tracker
+   *  is persisted — see `transcription_daily_requests` in contracts. */
+  setTranscriptionDailyRequests(limit: number | null): void;
+  getTranscriptionDailyRequests(): number | null;
   // ── Free LLM pool ──
   /** Replace the entire free pool (entries are stored as a JSON blob). */
   setPool(entries: FreePoolEntry[]): void;
@@ -161,7 +187,7 @@ export interface LLMConfigManager {
    *  degraded. */
   setSourceCapability(
     source:
-      | { kind: 'slot'; slot_key: 'slot_1' | 'slot_2' | 'embeddings_slot' }
+      | { kind: 'slot'; slot_key: 'slot_1' | 'slot_2' | 'embeddings_slot' | 'transcription_slot' }
       | { kind: 'pool'; entry_id: string },
     patch: { system_role_ok?: boolean; native_json_ok?: boolean },
   ): void;
@@ -169,13 +195,19 @@ export interface LLMConfigManager {
    *  clears back to `'context'` (the pre-existing behaviour). */
   setCallerSystemPolicy(policy: LlmGatewayCallerSystemPolicy | null): void;
   getCallerSystemPolicy(): LlmGatewayCallerSystemPolicy | undefined;
-  // ── Per-entry pool usage ──
-  /** Record tokens consumed by a pool entry today. Returns the new running total. */
-  addPoolUsage(entryId: string, tokens: number): number;
-  /** Get today's tokens consumed for a pool entry. */
-  getPoolUsage(entryId: string): number;
-  /** Whether a pool entry has passed its daily_cap_tokens (caller supplies the cap). */
-  isPoolEntryOverCap(entryId: string, cap: number | undefined): boolean;
+  // ⛔ D-262 follow-on — `addPoolUsage` / `getPoolUsage` / `isPoolEntryOverCap`
+  // RETIRED here. They persisted `pool_usage.<entry>.<date>` rows and answered
+  // "is this pool entry over its cap" — but NOTHING EVER CALLED `addPoolUsage`,
+  // in this tree or in any commit since it was introduced, so the getter always
+  // read 0 and the cap check always answered false.
+  //
+  // 🔑 THE DANGER WAS NOT THE DEAD CODE, IT WAS THE PLAUSIBLE NAME. Pool caps
+  // ARE enforced — by `QuotaTracker.statusFor` against its own counter, which
+  // is now persisted. Someone wiring `addPoolUsage` would have believed they
+  // were feeding that enforcement and would have been feeding nothing, while
+  // the real path kept working and hid the mistake.
+  //
+  // ⚠ No stored rows to clean up: a writer that never ran leaves no data.
   // ── Budget (legacy single-pair slot) ──
   /** Get daily token budget (0 = unlimited). */
   getBudget(): number;
@@ -196,6 +228,22 @@ export interface LLMConfigManager {
   setThresholds(t: Partial<BudgetThresholds>): void;
   /** Reset daily usage (called on date change; prunes stale usage. and pool_usage. rows). */
   resetUsage(): void;
+  /** D-262 follow-on — the `QuotaTracker`'s persisted state.
+   *
+   *  ⛔ WITHOUT THIS EVERY PER-SOURCE BUDGET RESET ON RESTART. The tracker
+   *  holds the counters that `statusFor` compares against a pool entry's
+   *  `daily_cap_tokens`, that `slotOverCutoff` compares against a slot's
+   *  `daily_budget_tokens`, and that the embeddings and transcription caps
+   *  read. It was built unseeded and its `snapshot()` had no caller, so a
+   *  server that restarted — which a self-hoster does on every update — began
+   *  the day again. A daily cap you can clear by restarting is not a cap.
+   *
+   *  ⚠ Distinct from `getUsage`/`addUsage`, which persist ONE AGGREGATE
+   *  counter (`usage.<date>`) for the global budget. Two systems, two
+   *  questions: "how much has this server spent today" versus "how much has
+   *  THIS source spent today". Both are live; only the second was volatile. */
+  getQuotaSnapshot(): unknown;
+  setQuotaSnapshot(snapshot: unknown): void;
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -223,6 +271,20 @@ export interface LLMConfigManagerOptions {
   getEncryptionKey?: () => Uint8Array | null;
 }
 
+/** D-262 § B5 — set once the derivation has LOOKED, whatever it concluded.
+ *  Lives in the same prefixed key/value store as the slots it guards, so the
+ *  marker and the thing it protects cannot drift apart across a restore. */
+const TRANSCRIPTION_DERIVED_MARKER = 'transcription_slot.derived';
+
+/** D-262 follow-on — where the `QuotaTracker` snapshot lives.
+ *
+ *  ⚠ A PLAIN key, not a sensitive one: the blob holds per-source counters and
+ *  a round-robin cursor keyed by ids like `slot_1` or a pool entry's id. No
+ *  credential, nothing an attacker learns from that they could not read from
+ *  the config surface anyway — and keeping it plain means it survives a locked
+ *  server, which is precisely when a budget must keep counting. */
+const QUOTA_SNAPSHOT_KEY = 'quota.snapshot';
+
 export const createLLMConfigManager = (
   db: Database.Database,
   envConfigOrOptions?: LLMConfig | LLMConfigManagerOptions,
@@ -236,6 +298,7 @@ export const createLLMConfigManager = (
     : { envConfig: envConfigOrOptions as LLMConfig | undefined };
   const envConfig = opts.envConfig;
   const getKey = opts.getEncryptionKey;
+  initializePreapprovalLifecycle(db);
   // Ensure table
   db.exec(`
     CREATE TABLE IF NOT EXISTS llm_config (
@@ -349,8 +412,10 @@ export const createLLMConfigManager = (
     // D-172 P5 — round-trip the modality + transcription declarations so a
     // BYOK slot configured via the CLI can satisfy a media turn (without
     // these, `matchLLM` reads the slot as text-only).
-    const transcriptionModel = get(`${prefix}.transcription_model`);
-    if (transcriptionModel !== undefined) slot.transcription_model = transcriptionModel;
+    // D-262 § B4 — `transcription_model` is RETIRED and deliberately not
+    // hydrated. The row may still exist on an upgraded server; the one-time
+    // derivation reads it directly, and `writeSlot`'s clear list below removes
+    // it on the next save of that slot.
     const modalitiesRaw = get(`${prefix}.modalities`);
     if (modalitiesRaw !== undefined) {
       try {
@@ -362,7 +427,7 @@ export const createLLMConfigManager = (
     return slot;
   };
 
-  const saveSlot = (prefix: string, slot: LLMSlot | null): void => {
+  const writeSlot = (prefix: string, slot: LLMSlot | null): void => {
     const keys = [
       'provider',
       'model',
@@ -438,8 +503,22 @@ export const createLLMConfigManager = (
     else del(`${prefix}.supports_search`);
     if (slot.modalities !== undefined) set(`${prefix}.modalities`, JSON.stringify(slot.modalities));
     else del(`${prefix}.modalities`);
-    if (slot.transcription_model) set(`${prefix}.transcription_model`, slot.transcription_model);
-    else del(`${prefix}.transcription_model`);
+    // D-262 § B4 — never written again. ⚠ It stays in the `keys` clear-list
+    // above, so saving a slot removes the stale row rather than leaving a
+    // value nothing reads sitting in the owner's database forever.
+  };
+
+  const saveSlot = (
+    prefix: 'slot_1' | 'slot_2' | 'embeddings_slot' | 'transcription_slot',
+    slot: LLMSlot | null,
+  ): void => {
+    db.transaction(() => {
+      writeSlot(prefix, slot);
+      // Keep account/model destruction and edit-then-restore observable even
+      // if no execution reads the intermediate value. Usage counters do not
+      // change this identity; normal quota checks remain live at dispatch.
+      synchronizePreapprovalIdentity(db, 'llm_source', prefix, llmSourceMaterial(envConfig?.[prefix] ?? loadSlot(prefix)));
+    }).immediate();
   };
 
   const parsePoolBlob = (raw: string | undefined): FreePoolEntry[] => {
@@ -462,7 +541,6 @@ export const createLLMConfigManager = (
    *  the locked WRITE; this closes the locked-READ gap. */
   const readPoolStrict = (): FreePoolEntry[] => parsePoolBlob(getSensitive('pool'));
 
-  const poolUsageKey = (entryId: string): string => `pool_usage.${entryId}.${today()}`;
 
   return {
     getConfig() {
@@ -473,9 +551,27 @@ export const createLLMConfigManager = (
       // requires provider + model + api_key, so a present embeddings_slot
       // always carries its (embeddings) model.
       const embeddings_slot = envConfig?.embeddings_slot ?? loadSlot('embeddings_slot');
+      // D-262 § B1 — the dedicated transcription source. Same load path, same
+      // provider+model+api_key requirement, so a present slot always carries
+      // its (transcription) model.
+      const transcription_slot =
+        envConfig?.transcription_slot ?? loadSlot('transcription_slot');
       const free_pool = this.getPool();
       const config: LLMConfig = { slot_1, slot_2 };
       if (embeddings_slot) config.embeddings_slot = embeddings_slot;
+      if (transcription_slot) config.transcription_slot = transcription_slot;
+      // ⛔ Absent means AUTO-DETECT and is the default — so it is only written
+      // into the config when the owner set one. An empty string would be a
+      // pinned value to the provider, not an absence.
+      const transcriptionLanguage =
+        envConfig?.transcription_language ?? this.getTranscriptionLanguage();
+      if (transcriptionLanguage) config.transcription_language = transcriptionLanguage;
+      const transcriptionCap =
+        envConfig?.transcription_daily_requests ?? this.getTranscriptionDailyRequests();
+      // Absent means unlimited, so only a positive cap is written into config.
+      if (transcriptionCap !== null && transcriptionCap !== undefined && transcriptionCap > 0) {
+        config.transcription_daily_requests = transcriptionCap;
+      }
       if (free_pool.length > 0) config.free_pool = free_pool;
       const strat = this.getPoolStrategy();
       if (strat !== 'round_robin') config.free_pool_strategy = strat;
@@ -509,6 +605,168 @@ export const createLLMConfigManager = (
     setSlot1(slot) { saveSlot('slot_1', slot); },
     setSlot2(slot) { saveSlot('slot_2', slot); },
     setEmbeddingsSlot(slot) { saveSlot('embeddings_slot', slot); },
+    setTranscriptionSlot(slot) { saveSlot('transcription_slot', slot); },
+
+    /** D-262 § B5 — MIGRATION, NOT A FALLBACK.
+     *
+     *  Messenger voice notes transcribed off the free pool before this slot
+     *  existed, on servers that upgrade whenever their owner chooses. Deleting
+     *  that path outright would stop those notes the moment the release lands,
+     *  with nothing on screen explaining why. So the first boot after the
+     *  upgrade copies a pool entry that declared transcription into the slot —
+     *  the owner wakes to a visible, editable card holding credentials they
+     *  already had — and the pool path is then genuinely gone.
+     *
+     *  ⛔⛔ GATED ON A PERSISTED MARKER, NEVER ON THE SLOT BEING ABSENT. Keying
+     *  it on absence would re-run on EVERY boot, so an owner who deliberately
+     *  cleared the slot would find it silently restored on the next restart —
+     *  a default they cannot remove, which reads as the setting being ignored.
+     *
+     *  ⚠ And the marker is written whatever the outcome, so this is genuinely
+     *  ONE-TIME: a server with no audio pool entry today does not get a slot
+     *  conjured months later when it adds one. By then the owner is
+     *  configuring, not migrating.
+     *
+     *  ⛔⛔ ONE EXCEPTION, AND IT IS THE DIFFERENCE BETWEEN "NOTHING TO FIND"
+     *  AND "COULD NOT LOOK". On a locked server the pool blob is encrypted and
+     *  unreadable, and `getPool()` deliberately returns `[]` rather than
+     *  throwing — so a migration reading it saw an empty pool, concluded
+     *  `no_candidate`, and wrote the one-time marker. Unlocking and restarting
+     *  could never recover: the marker says the migration already ran, and the
+     *  owner's audio pool entry is silently never derived. ⇒ This reads the
+     *  pool STRICTLY (the same `readPoolStrict` every mutating op uses, for the
+     *  same reason) and returns `deferred_locked` WITHOUT the marker.
+     *
+     *  The model resolution mirrors what the retired pool path resolved
+     *  (`transcription_model` → provider default → the entry's chat model),
+     *  because preserving behaviour is the entire point. */
+    deriveTranscriptionSlotOnce() {
+      if (get(TRANSCRIPTION_DERIVED_MARKER) === '1') return 'already_marked';
+
+      const existing = envConfig?.transcription_slot ?? loadSlot('transcription_slot');
+      if (existing) {
+        set(TRANSCRIPTION_DERIVED_MARKER, '1');
+        return 'already_marked';
+      }
+
+      // ⛔ A MIGRATION READS THE OLD SHAPE. `transcription_model` is retired
+      // from `LLMSlot` / `FreePoolApiEntry`, but a server upgrading from the
+      // pool-routing era still has the VALUE persisted — in the pool blob
+      // (which `parsePoolBlob` JSON-parses without dropping unknown keys) and
+      // in the per-slot `<prefix>.transcription_model` rows. Reading it through
+      // a cast is the correct shape for a one-time upgrade step: the type
+      // describes what the code writes NOW, the migration describes what it
+      // finds.
+      const legacyModelOf = (e: unknown): string | undefined => {
+        const v = (e as { transcription_model?: unknown } | null)?.transcription_model;
+        return typeof v === 'string' && v.length > 0 ? v : undefined;
+      };
+
+      // ⚠ POOL FIRST, THEN THE CHAT SLOTS — because that is the order the
+      // retired `matchLLM` routing resolved in (free before BYOK). Preserving
+      // WHICH source served transcription matters as much as preserving that
+      // one did: deriving the paid slot when the free pool used to answer would
+      // start billing an owner who was not being billed.
+      //
+      // ⛔ SLOTS WERE MISSING FROM THE FIRST CUT OF THIS MIGRATION, and that was
+      // a real gap: `transcribe` used to match over slot_1 / slot_2 / free_pool
+      // alike, so an owner whose transcription ran off an audio-capable BYOK
+      // slot would have found voice notes simply stopped, with a correctly
+      // marked migration reporting `no_candidate`.
+      // ⛔ STRICT, so a locked read THROWS instead of reading as "empty". The
+      // lenient `getPool()` is right for serving (a locked pool is simply no
+      // source right now); it is wrong for a ONE-TIME migration, where an
+      // unreadable pool recorded as `no_candidate` is unrecoverable.
+      let poolCandidate: FreePoolEntry | undefined;
+      let slotCandidate: { slot: LLMSlot; transcription_model?: string } | undefined;
+      try {
+        poolCandidate = readPoolStrict().find(
+          // Only an ENABLED entry: a disabled one is an owner saying "not this".
+          (e) => e.enabled
+            && (legacyModelOf(e) !== undefined || e.modalities?.audio === true),
+        );
+        slotCandidate = poolCandidate
+          ? undefined
+          : (['slot_1', 'slot_2'] as const)
+            .map((key) => {
+              const slot = envConfig?.[key] ?? loadSlot(key);
+              if (!slot) return undefined;
+              const legacy = get(`${key}.transcription_model`);
+              const usable = (legacy !== undefined && legacy.length > 0)
+                || slot.modalities?.audio === true;
+              return usable
+                ? { slot, ...(legacy ? { transcription_model: legacy } : {}) }
+                : undefined;
+            })
+            .find((c) => c !== undefined);
+      } catch {
+        // ⛔ COULD NOT LOOK ≠ NOTHING TO FIND. Leave the marker unwritten so
+        // the next boot after an unlock runs the migration for real. Returning
+        // `no_candidate` here would spend the one-time run on a read that saw
+        // nothing because it was not allowed to see.
+        return 'deferred_locked';
+      }
+
+      const source = poolCandidate
+        ? {
+            provider: poolCandidate.provider,
+            model: legacyModelOf(poolCandidate)
+              ?? defaultTranscriptionModel(poolCandidate.provider)
+              ?? poolCandidate.model,
+            api_key: poolCandidate.api_key,
+            base_url: poolCandidate.base_url,
+          }
+        : slotCandidate
+          ? {
+              provider: slotCandidate.slot.provider,
+              model: slotCandidate.transcription_model
+                ?? defaultTranscriptionModel(slotCandidate.slot.provider)
+                ?? slotCandidate.slot.model,
+              api_key: slotCandidate.slot.api_key,
+              base_url: slotCandidate.slot.base_url,
+            }
+          : undefined;
+
+      if (!source) {
+        set(TRANSCRIPTION_DERIVED_MARKER, '1');
+        return 'no_candidate';
+      }
+
+      const derived: LLMSlot = {
+        provider: source.provider,
+        model: source.model,
+        api_key: source.api_key,
+        ...(source.base_url !== undefined ? { base_url: source.base_url } : {}),
+      };
+      db.transaction(() => {
+        writeSlot('transcription_slot', derived);
+        set(TRANSCRIPTION_DERIVED_MARKER, '1');
+      }).immediate();
+      return 'derived';
+    },
+
+    setTranscriptionLanguage(lang) {
+      const trimmed = lang?.trim() ?? '';
+      if (trimmed.length === 0) del('transcription_language');
+      else set('transcription_language', trimmed);
+    },
+    getTranscriptionLanguage() {
+      return get('transcription_language') ?? null;
+    },
+
+    setTranscriptionDailyRequests(limit) {
+      if (limit === null || !Number.isFinite(limit) || limit <= 0) {
+        del('transcription_daily_requests');
+      } else {
+        set('transcription_daily_requests', String(Math.floor(limit)));
+      }
+    },
+    getTranscriptionDailyRequests() {
+      const raw = get('transcription_daily_requests');
+      if (raw === undefined || raw === null) return null;
+      const n = Number(raw);
+      return Number.isFinite(n) && n > 0 ? n : null;
+    },
 
     setPool(entries) {
       if (entries.length === 0) {
@@ -745,22 +1003,6 @@ export const createLLMConfigManager = (
       return isLlmGatewayCallerSystemPolicy(raw) ? raw : undefined;
     },
 
-    addPoolUsage(entryId, tokens) {
-      const key = poolUsageKey(entryId);
-      const current = parseInt(get(key) ?? '0', 10);
-      const next = current + tokens;
-      set(key, String(next));
-      return next;
-    },
-    getPoolUsage(entryId) {
-      const key = poolUsageKey(entryId);
-      return parseInt(get(key) ?? '0', 10);
-    },
-    isPoolEntryOverCap(entryId, cap) {
-      if (cap == null || cap <= 0) return false;
-      return this.getPoolUsage(entryId) >= cap;
-    },
-
     getBudget() {
       return parseInt(get('budget') ?? '0', 10);
     },
@@ -772,6 +1014,23 @@ export const createLLMConfigManager = (
     getUsage() {
       const key = `usage.${today()}`;
       return parseInt(get(key) ?? '0', 10);
+    },
+
+    getQuotaSnapshot() {
+      const raw = get(QUOTA_SNAPSHOT_KEY);
+      if (raw === undefined || raw === null) return undefined;
+      try {
+        return JSON.parse(raw) as unknown;
+      } catch {
+        // ⚠ A malformed blob reads as ABSENT, not as an error. The counters it
+        // held are today's spend at worst; refusing to boot over them, or
+        // throwing into the first LLM call, would trade a small
+        // over-allowance for an unusable server.
+        return undefined;
+      }
+    },
+    setQuotaSnapshot(snapshot) {
+      set(QUOTA_SNAPSHOT_KEY, JSON.stringify(snapshot));
     },
 
     addUsage(tokens) {
@@ -807,16 +1066,31 @@ export const createLLMConfigManager = (
     },
 
     resetUsage() {
-      // Delete all usage.YYYY-MM-DD keys except today, plus stale
-      // pool_usage.<entry>.<YYYY-MM-DD> rows from earlier days.
-      const todayStr = today();
-      const todayKey = `usage.${todayStr}`;
+      // Delete all usage.YYYY-MM-DD keys except today.
+      //
+      // ⚠ D-262 follow-on — the `pool_usage.%` clause went with the retired
+      // trio above: nothing could create such a row any more.
+      //
+      // ⛔ AND THIS FUNCTION HAS NO CALLER, WHICH IS NOW A SETTLED HOLD RATHER
+      // THAN A PENDING ONE (2026-09-06). The usage surface it was waiting on
+      // shipped, and it reports TODAY ONLY — `server.getLLMUsage` returns one
+      // `day`, and `getUsage()` reads `usage.<today>`. So nothing reads a past
+      // day's row, which cuts both ways: pruning them is invisible, and they
+      // are the ONLY record of past daily spend there is. ⇒ Wiring this trades
+      // an irreversible loss of the sole spend history for one small row per
+      // day of growth. Not worth it. The rows stay; the function stays
+      // reachable for a future explicit "forget my history" decision.
+      //
+      // ⚠ NOT a per-slot reset and NOT a counter reset — the live daily
+      // counters clear themselves in `QuotaTracker.maybeReset` at UTC
+      // midnight, chat / embeddings / transcription buckets alike. Nothing
+      // here resets a budget.
+      const todayKey = `usage.${today()}`;
       const rows = db.prepare(
-        `SELECT key FROM llm_config WHERE key LIKE 'usage.%' OR key LIKE 'pool_usage.%'`,
+        `SELECT key FROM llm_config WHERE key LIKE 'usage.%'`,
       ).all() as { key: string }[];
       for (const { key } of rows) {
         if (key === todayKey) continue;
-        if (key.startsWith('pool_usage.') && key.endsWith(`.${todayStr}`)) continue;
         del(key);
       }
     },

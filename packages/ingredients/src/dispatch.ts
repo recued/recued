@@ -94,6 +94,14 @@ export const mergeManifestStepInput = (
   ...filterInputKeys(stepInput, { stripLocked: !opts.trustedSurfaceDispatch }),
 });
 
+/** Output selectors can be effects for DOM/chat adapters. Preparation must
+ * pin the same merged mapping that the real adapter receives. */
+export const mergeManifestStepOutput = (
+  manifestOutput: Record<string, string> | undefined,
+  stepOutput?: Record<string, string>,
+): Record<string, string> => stepOutput
+  ? { ...(manifestOutput ?? {}), ...stepOutput } : (manifestOutput ?? {});
+
 /** Resolve which dispatch slot a manifest routes to. Kernel-author
  *  ingredients take the `kernel` slot regardless of their `kind`
  *  (the kernel adapter routes internally by slug); everything else
@@ -111,11 +119,15 @@ export const mergeManifestStepInput = (
  *  engine layer. The carve-out is intentional + narrow: it fires only
  *  on the literal `connection` kind, leaving every other kernel-
  *  authored manifest (notification-send, enrichment-upsert, calendar-
- *  list, …) on the kernel slot. */
+ *  list, …) on the kernel slot. AI manifests likewise use the AI adapter:
+ *  the bundled ai-* and core-ai-* manifests have no kernel switch case and
+ *  must reach the shared provider executor, including its file-read gates.
+ *  The bundled dom-read/dom-write likewise use the real DOM adapter; the
+ *  kernel switch has no DOM implementation. */
 export type DispatchSlot = IngredientKind | 'kernel';
 
 export const resolveDispatchSlot = (manifest: IngredientManifest): DispatchSlot => {
-  if (manifest.kind === 'connection') return 'connection';
+  if (manifest.kind === 'connection' || manifest.kind === 'ai' || manifest.kind === 'dom') return manifest.kind;
   return isKernelManifest(manifest) ? 'kernel' : manifest.kind;
 };
 
@@ -247,6 +259,8 @@ export const createIngredientExecutor = (
   // gateway (`buildStepMeta` never copies it from recipe JSON, so a recipe
   // cannot forge a lock bypass).
   const trustedSurfaceDispatch = stepMeta?.surface_dispatch === true;
+  const riskTier = trustedSurfaceDispatch && stepMeta.surface_risk_tier !== undefined
+    ? stepMeta.surface_risk_tier : manifest.risk_tier;
   const mergedInput = mergeManifestStepInput(manifest.input, stepInput, {
     trustedSurfaceDispatch,
   });
@@ -255,9 +269,7 @@ export const createIngredientExecutor = (
     : mergedInput;
 
   // Merge output: manifest base + step extensions (step wins)
-  const mergedOutput = stepOutput
-    ? { ...(manifest.output ?? {}), ...stepOutput }
-    : (manifest.output ?? {});
+  const mergedOutput = mergeManifestStepOutput(manifest.output, stepOutput);
 
   // D-173 P1-dispatch — LOCAL re-route for a reception catalog op's
   // `materialize`. The D-165 catalog gateway has already RESOLVED the gate
@@ -288,7 +300,7 @@ export const createIngredientExecutor = (
     // id / title), so no input typing is asserted here.
     const receptionCall: ResolvedCall = {
       slug: RECEPTION_MATERIALIZE_SLUG,
-      risk_tier: manifest.risk_tier,
+      risk_tier: riskTier,
       input: extractReceptionMaterializeInput(resolvedInput),
       output: mergedOutput,
       ...(stepMeta ? { stepMeta } : {}),
@@ -327,7 +339,7 @@ export const createIngredientExecutor = (
 
   const resolved: ResolvedCall = {
     slug: manifest.slug,
-    risk_tier: manifest.risk_tier,
+    risk_tier: riskTier,
     input: resolvedInput,
     output: mergedOutput,
     fallback: manifest.fallback,

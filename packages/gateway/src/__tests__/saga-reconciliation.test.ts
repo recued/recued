@@ -240,9 +240,18 @@ describe('detectTornSaga', () => {
     expect(withLandedWrite!.landed_writes.map((w) => w.commit_id)).toEqual([
       'commit-create',
     ]);
-    expect(withLandedWrite!.uncertain).toEqual([
-      { commit_id: 'commit-uncertain', ingredient: 'hubspot-catalog' },
-    ]);
+    // ⛔ `write` IS THE CLASSIFICATION THE BRANCH USED TO SKIP. The same commit
+    // that could only be counted is fully classifiable — the `in_doubt` arm just
+    // `continue`d before the classifier two lines below it ever ran.
+    expect(withLandedWrite!.uncertain).toHaveLength(1);
+    const [uncertainRow] = withLandedWrite!.uncertain;
+    expect(uncertainRow).toMatchObject({
+      commit_id: 'commit-uncertain', ingredient: 'hubspot-catalog',
+    });
+    expect(uncertainRow!.write).toMatchObject({
+      commit_id: 'commit-uncertain', catalog_slug: 'hubspot-catalog',
+      connection_name: 'hubspot1',
+    });
 
     const uncertainOnly = detectTornSaga({
       run_id: 'run-2',
@@ -492,9 +501,9 @@ describe('buildSagaAsk', () => {
     );
 
     expect(ask.options).toEqual([SAGA_ASK_OPTIONS.undo, SAGA_ASK_OPTIONS.keep]);
-    expect(ask.message.text).toContain(
-      "recued-core/hubspot.deal.create on 'hubspot1'",
-    );
+    // Composed from the write's own catalog slug + operation key — the raw
+    // `operation_id` remains the fallback for anything uncomposable.
+    expect(ask.message.text).toContain("Create deal · Hubspot on 'hubspot1'");
     expect(ask.message.text).toContain('re-run the recipe');
     expect(ask.handler.kind).toBe(SAGA_HANDLER_KIND);
     expect(ask.handler.payload).toEqual({

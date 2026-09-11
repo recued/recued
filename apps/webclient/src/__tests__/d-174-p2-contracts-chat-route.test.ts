@@ -2484,6 +2484,8 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
       calls?: Array<{ method: string; payload?: unknown }>;
       llmConfig?: Record<string, unknown>;
       defaultSourceId?: 'slot_1' | 'slot_2' | 'free_pool' | null;
+      connectionRead?: Promise<{ connections: [] }>;
+      recipeRead?: Promise<{ recipes: [] }>;
       sessions?: ChatSessionSummary[];
       messages?: ChatMessage[] | ((sessionGetCall: number) => ChatMessage[]);
       plans?: ChatPlanRecord[] | ((sessionGetCall: number) => ChatPlanRecord[]);
@@ -2557,8 +2559,10 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
       }
       if (method === 'server.getLLMConfig') return { config: llmConfig };
       if (method === 'prefs.get') return { prefs: {} };
-      if (method === 'collection.connection.list') return { connections: [] };
-      if (method === 'recipe.list') return { recipes: [] };
+      if (method === 'collection.connection.list') {
+        return config.connectionRead ?? { connections: [] };
+      }
+      if (method === 'recipe.list') return config.recipeRead ?? { recipes: [] };
       throw new Error(`unexpected method ${method}`);
     }) as ChatRouteConn;
   };
@@ -6557,6 +6561,70 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     route.dispose();
   });
 
+  it.each([
+    { landing: 'session', pending: 'connections' },
+    { landing: 'session', pending: 'recipes' },
+    { landing: 'new', pending: 'connections' },
+    { landing: 'new', pending: 'recipes' },
+  ] as const)(
+    'restores a $landing draft while the $pending activation read is pending',
+    async ({ landing, pending }) => {
+      const doc = makeFakeDocument();
+      const root = doc.createElement('div');
+      const calls: Array<{ method: string; payload?: unknown }> = [];
+      let release!: () => void;
+      const activationRead = new Promise<void>((resolve) => { release = resolve; });
+      const recoveryDraft = {
+        text: 'Keep these unsent words through reconnect.',
+        protected: true,
+        modelSourceId: null,
+      } as const;
+      const route = bootstrapChatRoute({
+        root: root as unknown as HTMLElement,
+        document: doc as unknown as Document,
+        conn: stepConn({
+          calls,
+          sessions: [sessionSummary()],
+          messages: [chatMessage()],
+          ...(pending === 'connections'
+            ? { connectionRead: activationRead.then(() => ({ connections: [] })) }
+            : { recipeRead: activationRead.then(() => ({ recipes: [] })) }),
+        }),
+        ...(landing === 'session'
+          ? { initialSessionId: 'chat_1' }
+          : { initialLanding: 'new' as const }),
+        initialRecoveryDraft: recoveryDraft,
+      });
+      try {
+        const loaded = vi.fn();
+        void route.whenLoaded().then(loaded);
+        await vi.waitFor(() => expect(loaded).toHaveBeenCalledOnce());
+        const input = collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!;
+        expect(route.getThread().session?.id ?? null)
+          .toBe(landing === 'session' ? 'chat_1' : null);
+        expect(input.value).toBe(recoveryDraft.text);
+        expect(doc.activeElement).toBe(input);
+        expect(route.getRecoveryDraft()?.text).toBe(recoveryDraft.text);
+        expect(route.hasUnsavedChanges()).toBe(true);
+
+        // The optional card can finish after the person resumes editing.
+        // It must preserve both the newer text and its focus ownership.
+        fireEvent(input, 'input', 'The recovered draft, now edited.');
+        release();
+        await tick(8);
+        const edited = collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!;
+        expect(edited.value).toBe('The recovered draft, now edited.');
+        expect(doc.activeElement).toBe(edited);
+        expect(route.hasUnsavedChanges()).toBe(true);
+        expect(calls.some((call) => call.method === 'chat.send')).toBe(false);
+        expect(calls.some((call) => call.method === 'chat.session.create')).toBe(false);
+      } finally {
+        release();
+        route.dispose();
+      }
+    },
+  );
+
   it('serializes a double first-send into ONE session (lazy-create lock)', async () => {
     const doc = makeFakeDocument();
     const root = doc.createElement('div');
@@ -6646,6 +6714,78 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     expect(route.hasInFlightWork()).toBe(false);
     route.dispose();
   });
+
+  it.each([
+    { draft: 'sent', focus: 'composer' },
+    { draft: 'edited', focus: 'composer' },
+    { draft: 'edited', focus: 'model picker' },
+  ] as const)(
+    'keeps $focus focus after acknowledging a $draft draft with uploads wired',
+    async ({ draft, focus }) => {
+      const doc = makeFakeDocument();
+      const root = doc.createElement('div');
+      let acknowledge!: (value: { turn_id: string }) => void;
+      const sendAck = new Promise<{ turn_id: string }>((resolve) => {
+        acknowledge = resolve;
+      });
+      const baseConn = stepConn() as unknown as (
+        method: string,
+        payload?: unknown,
+      ) => Promise<unknown>;
+      const conn = (async (method: string, payload?: unknown) => {
+        if (method === 'chat.send') return sendAck;
+        return baseConn(method, payload);
+      }) as ChatRouteConn;
+      const unexpectedUpload = vi.fn(async () => {
+        throw new Error('A text-only send must not upload a file');
+      });
+      const route = bootstrapChatRoute({
+        root: root as unknown as HTMLElement,
+        document: doc as unknown as Document,
+        conn,
+        initialSessionId: 'chat_1',
+        // The full app always wires this controller. Its empty clear() on
+        // acknowledgement must preserve the currently focused control too.
+        uploadCallers: {
+          create: unexpectedUpload,
+          probe: unexpectedUpload,
+          finalize: unexpectedUpload,
+          delete: unexpectedUpload,
+        },
+        uploadConnect: unexpectedUpload,
+        voiceCapture: null,
+      });
+      try {
+        await route.whenLoaded();
+        const input = collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!;
+        fireEvent(input, 'input', 'The first message');
+        input.focus();
+        const sending = route.sendMessage(input.value);
+        const pendingInput = collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!;
+        if (draft === 'edited') {
+          fireEvent(pendingInput, 'input', 'Keep this next thought');
+        }
+        const focusAttr = focus === 'composer'
+          ? CHAT_ROUTE_INPUT_ATTR
+          : CHAT_ROUTE_MODEL_PICKER_ATTR;
+        collectByAttr(root, focusAttr)[0]!.focus();
+
+        acknowledge({ turn_id: 'turn_1' });
+        await sending;
+
+        expect(collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!.value)
+          .toBe(draft === 'edited' ? 'Keep this next thought' : '');
+        expect(doc.activeElement).toBe(collectByAttr(root, focusAttr)[0]);
+        expect(collectByAttr(root, CHAT_ROUTE_SEND_ATTR)[0]!.disabled)
+          .toBe(draft === 'sent');
+        expect(route.hasInFlightWork()).toBe(true);
+        expect(unexpectedUpload).not.toHaveBeenCalled();
+      } finally {
+        acknowledge({ turn_id: 'turn_1' });
+        route.dispose();
+      }
+    },
+  );
 
   it('keeps a pending send attached while the next composer draft stays editable', async () => {
     const doc = makeFakeDocument();

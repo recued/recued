@@ -70,6 +70,32 @@ export const captureQualityDelegationSignal = (
     // checkpoint (undefined / false) records nothing — behaviour-preserving.
     if (checkpoint.quality_relevant !== true) return;
 
+    // ⛔⛔ AN ASK INSIDE A PRE-APPROVED RUN IS NOT A CLEAN QUALITY VERDICT.
+    //
+    // The learner's whole justification is that these are "precisely the asks a
+    // quality delegation would remove, so the owner's own reviews are the
+    // non-circular learning signal". That holds for a manual run, where the
+    // owner meets the ask cold. It does not hold inside a D-261 execution the
+    // owner has ALREADY approved: they have committed to the run, the covered
+    // members are going to fire either way, and the only thing left to answer is
+    // an uncovered call in the middle of it. That is approval under momentum,
+    // drawn from a different distribution than the ask it would later suppress.
+    //
+    // 🔑 THE LEAK IS CONCRETE, NOT THEORETICAL. Signals aggregate by
+    // `(recipe, ingredient, operation)` — the same grain the resolver matches on
+    // — so an approve earned in the pre-approved context helps mint a standing
+    // delegation that then auto-accepts that pair in MANUAL runs. Approval given
+    // in the easy frame would buy silence in the hard one.
+    //
+    // ⚠ DENIES ARE EXCLUDED TOO, and deliberately. A reject inside a committed
+    // run is arguably a STRONGER signal than an ordinary one — but the defect is
+    // mixing two distributions, not the sign of either, and a rule that keeps
+    // whichever half looks convenient is not a rule. Same shape as the
+    // `authorization_ask` exclusion above it: a whole class of ask that does not
+    // train the quality axis.
+    if (checkpoint.preapproval_execution_ref !== undefined
+      || checkpoint.preapproval_candidate_ref !== undefined) return;
+
     const recipe_id = checkpoint.recipe_id ?? anchor.recipe_id;
     const recipe_hash = anchor.recipe_hash;
     const ingredient_id = checkpoint.approved_target?.ingredient_slug;

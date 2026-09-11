@@ -32,6 +32,14 @@ import type { MetaFieldType } from './entity-schema.js';
 import type { EntityFieldPrivacy } from './pii-alias.js';
 import type { AcctAlias, CrmAlias, DateGranularity, FieldDerivation } from './connection-vendors.js';
 import type { WorkEntitySourceDeclaration } from './work-entity-sources.js';
+// D-220 Slice B — pack-shipped intake templates ride `contents[]` by value and
+// are validated in full (ref grammar + provenance + body + safety matrix)
+// wherever the manifest is validated.
+import {
+  validatePackIntakeFormTemplate,
+  type PackIntakeFormTemplate,
+  type PackIntakeFormTemplateOwner,
+} from './pack-intake-form-template.js';
 // D-182 §4 (3b) — the two authoring tables. TYPE-only import (no runtime cycle:
 // op-model imports the `SLUG_RE` value + `CanonicalWorkflowTemplate` type from
 // here; this side is erased at emit). `CompositionIngredient` (below) embeds
@@ -242,20 +250,56 @@ export interface BulkPackManifest {
    *  this to `['data.contact.engagements.body_content']`; every
    *  other pack omits the field (or declares an empty array). */
   mcp_body_visibility_grants?: ReadonlyArray<BulkPackBodyVisibilityGrantKey>;
-  /** D-145 PA10 — opt-in flag marking the pack as a foundation pack
-   *  that auto-installs on first server init. Server-side boot wire
-   *  (`backend/server/src/foundation-pack-pre-install.ts`) scans
-   *  bundled pack manifests for this flag, runs `installBulkPackOnServer`
-   *  with the bundled recipes resolved as the input, and skips
-   *  packs whose recipes are already represented in the recipe
-   *  store (idempotent). Only first-party publishers (`recued-core`)
-   *  may declare the flag — the validator rejects third-party packs
-   *  marked `pre_install: true` because the auto-install path
-   *  would otherwise let any community-published pack ship without
-   *  user consent. Pre-launch packs (D-122 personal-crm-foundation,
-   *  D-145 personal-organizer-foundation) ship with this flag; vendor
-   *  + augmentation packs leave it unset / `false`. */
+  /** D-145 PA10 — a CORE FEATURE the server installs itself and the owner
+   *  never manages. The boot wire (`foundation-pack-pre-install.ts`) installs
+   *  it on every init (idempotent), `packs.list` never lists it, and
+   *  `packs.install` / `packs.uninstall` refuse it. Implies {@link bundled}.
+   *
+   *  🔑 THE OWNER'S RULE, 2026-09-07: *"core features such as reception are
+   *  automatically installed and never show up in Packs because the user cannot
+   *  manage them — if it can be managed like a normal pack, show it in Packs."*
+   *  So auto-install and visibility are not two settings: a pack the owner
+   *  cannot manage has nothing to render, and a pack worth rendering is one the
+   *  owner installs. The reception core-packs provision the reception door,
+   *  which has its own settings surface; a Packs row for them would offer a
+   *  Delete the next boot silently undid.
+   *
+   *  ⛔ THIS FLAG MEANT THREE THINGS UNTIL THAT RULING, and the third was never
+   *  written down: it selected the release embed
+   *  (`gen-bundled-foundation.mjs`), it drove the boot install, and — because
+   *  every bundled pack was listed — it decided visibility by omission. A pack
+   *  that merely ships in the binary now says so with {@link bundled}.
+   *
+   *  🔑 THE MECHANICAL TEST, so the next pack is classified without re-arguing:
+   *  **does contracts or a shipped surface pin the recipe id?** If it does, the
+   *  pack is a core feature — removing it breaks a screen the product ships, so
+   *  the owner cannot manage it. `mail-compose-foundation` is the case that
+   *  taught it: `mail-compose/dispatch.ts` pins
+   *  `SEND_COMPOSED_MAIL_RECIPE_ID`, and the Compose window's only path to
+   *  sending is dispatching that recipe (`collection.mail.send` was removed from
+   *  the wire, with a ratchet pinning its absence). It looked like content and
+   *  was shipped as `bundled` for an hour on that basis.
+   *  `personal-organizer-foundation` passes the same test the other way: ten
+   *  recipes, none referenced by any first-party surface.
+   *
+   *  Only first-party publishers (`recued-core`) may declare it: the validator
+   *  rejects third-party packs marked `pre_install: true`, because a pack that
+   *  installs itself and cannot be uninstalled from the UI is exactly what a
+   *  community publisher must not be able to ship. */
   pre_install?: boolean;
+  /** Ships INSIDE the release artifact — the generator embeds this pack's
+   *  manifest and recipes into the server bundle, so a distribution (which
+   *  carries no `community/` tree) can list and install it offline.
+   *
+   *  Orthogonal to {@link pre_install}: `bundled` decides whether the pack
+   *  EXISTS on a deployed server, `pre_install` decides whether the server
+   *  installs it without asking. A `bundled` pack is an ordinary pack in every
+   *  other respect — it appears in Packs, the owner installs it, and an
+   *  uninstall stays uninstalled.
+   *
+   *  First-party-only, mirroring the `pre_install` gate: what ships inside the
+   *  binary is a release decision, not a publisher's. */
+  bundled?: boolean;
   /** D-194 — connection descriptors the pack needs, one per connection. A
    *  first-party-only field (mirroring `pre_install`'s `recued-core` gate): the
    *  install screen reads it to offer an inline "Connect account" that
@@ -296,8 +340,10 @@ export interface BulkPackManifest {
    *  Missing prerequisites surface as `needs_dependency` at install
    *  (runtime concern; the contract validator only gates shape). */
   dependencies?: PackDependency[];
-  /** Pack taxonomy (spec § Base/durability/enhancement/messenger packs).
-   *  Defaults conceptually to `recipe_pack` when omitted. */
+  /** Pack taxonomy — content shape only; see {@link PackKind}. Defaults
+   *  conceptually to `recipe_pack` when omitted. ⚠ It says nothing about
+   *  whether the owner manages the pack — that is `pre_install` — and
+   *  `foundation_pack` is superseded. */
   pack_kind?: PackKind;
   /** V3 pack surface/service kind. This classifies the pack's authored
    *  capability surface (entity platform vs CLI tool vs channel/door, etc.)
@@ -326,7 +372,29 @@ export const SUPPORTED_BULK_PACK_MANIFEST_VERSIONS: readonly BulkPackManifestVer
  *  legitimately compose several ingredients + their groups + recipes. */
 export const BULK_PACK_MAX_CONTENTS = 100;
 
-/** Pack taxonomy (spec § Base/durability/enhancement/messenger packs). */
+/** Pack taxonomy — CONTENT SHAPE, and nothing else.
+ *
+ *  - `app_pack` — the pack brings a catalog: a `composition` / `ingredient`
+ *    content of its own, or one through a pack dependency (the D-209 split
+ *    shape, where recipes ship in one pack and the pinned catalog in another).
+ *  - `recipe_pack` — recipes only, over kernel ops or another pack's catalog.
+ *    The conceptual default when the field is omitted.
+ *  - `foundation_pack` — ⚠ **SUPERSEDED 2026-09-07, do not emit.** "Foundation"
+ *    is no longer a shape: a pack the server installs and the owner cannot
+ *    manage is `pre_install`, and one that merely ships inside the release
+ *    artifact is `bundled`. Two shipped packs carried this value and neither
+ *    meant it — `personal-organizer-foundation` (the one manageable bundled
+ *    pack) and `solo-command-center` (an ordinary marketplace pack that
+ *    DEPENDS on foundations) — so it labelled the same idea a third way and
+ *    tracked neither. The value stays in the union deliberately: the validator
+ *    errors on an unknown `pack_kind`, so removing it would reject a manifest
+ *    already published with it.
+ *
+ *  ⚠ The census that produced this: of 1053 shipped packs, 889 declare
+ *  `app_pack` and bring a catalog directly, 146 bring one through a dependency
+ *  (so the label is earned), and 8 shipped recipes only — those are now
+ *  `recipe_pack`. The generators stamp `app_pack` as a literal, which is right
+ *  for the 146 and was the whole source of the drift for the rest. */
 export type PackKind = 'recipe_pack' | 'app_pack' | 'foundation_pack';
 export const PACK_KINDS: readonly PackKind[] = ['recipe_pack', 'app_pack', 'foundation_pack'];
 export const isPackKind = (v: unknown): v is PackKind =>
@@ -374,10 +442,12 @@ export const isPackServiceKind = (v: unknown): v is PackServiceKind =>
 /** Discriminator over the `PackContentRef` union. */
 export type PackContentKind =
   | 'recipe' | 'ingredient' | 'operation_group' | 'channel_binding' | 'policy'
-  | 'composition';
+  | 'composition'
+  // D-220 Slice B — a pack-shipped `intake_form` template (by value).
+  | 'reception_template';
 export const PACK_CONTENT_KINDS: readonly PackContentKind[] = [
   'recipe', 'ingredient', 'operation_group', 'channel_binding', 'policy',
-  'composition',
+  'composition', 'reception_template',
 ];
 
 /** Role an ingredient content ref plays in the pack (spec § contents). */
@@ -715,13 +785,31 @@ export interface PackCompositionContentRef {
   composition: CompositionIngredient;
 }
 
+/** D-220 Slice B — a pack-shipped `intake_form` template, carried BY VALUE.
+ *  Packs are single-file manifests fetched from the marketplace and a deployed
+ *  server ships no `community/` tree, so the template travels inside the
+ *  manifest rather than as a file the server would scan for. The manifest
+ *  validator runs `validatePackIntakeFormTemplate` over it with the manifest's
+ *  own `publisher` / `slug` as the owner — the ref's `pack:<publisher>/<slug>/`
+ *  half must be THIS pack. The install handler persists it; uninstall removes
+ *  it; `reception.template.list` lists it beside the Foundation templates.
+ *
+ *  ⚠ Compatibility: a server older than this kind refuses the whole manifest
+ *  (`pack_content_type_unknown`) — fail-closed and visible, the same shape
+ *  every earlier content kind shipped with. */
+export interface PackReceptionTemplateContentRef {
+  type: 'reception_template';
+  template: PackIntakeFormTemplate;
+}
+
 export type PackContentRef =
   | PackRecipeContentRef
   | PackIngredientContentRef
   | PackOperationGroupContentRef
   | PackChannelBindingContentRef
   | PackPolicyContentRef
-  | PackCompositionContentRef;
+  | PackCompositionContentRef
+  | PackReceptionTemplateContentRef;
 
 export type PackDependencyKind = 'ingredient' | 'pack';
 export const PACK_DEPENDENCY_KINDS: readonly PackDependencyKind[] = ['ingredient', 'pack'];
@@ -918,9 +1006,15 @@ export interface PackListEntry {
   /** Monotonic pack-manifest version. Bumps on recipe add/drop or SI
    *  rule change. Panel surfaces alongside `installed_version`. */
   version: number;
-  /** True for foundation packs (`manifest.pre_install: true`). Panel
-   *  badges these + suppresses the Install button (auto-installed
-   *  at boot by `foundation-pack-pre-install.ts`). */
+  /** True for core-feature packs (`manifest.pre_install: true`).
+   *
+   *  ⚠ ALWAYS FALSE ON A ROW `packs.list` RETURNS — the roster excludes core
+   *  packs outright (they are not owner-manageable, so there is nothing for a
+   *  row to offer). The field stays on the shape because a client may read a row
+   *  from an OLDER server that still emitted them, and because
+   *  `listInstalledPackManifests` and the install/uninstall refusals project the
+   *  same manifests internally. A client rendering a foundation badge is
+   *  rendering a branch a current server cannot reach. */
   pre_install: boolean;
   /** True when the pack's installed content satisfies this manifest: every
    * recipe is owned at its pinned version and, when inventory exists, the
@@ -1307,9 +1401,12 @@ const validatePackRecipeRef = (
 };
 
 /** Validate one `PackContentRef` (v2 `contents[]` entry). Recipe entries
- *  delegate to `validatePackRecipeRef` (sharing `recipeSeen`). */
+ *  delegate to `validatePackRecipeRef` (sharing `recipeSeen`). D-220 Slice B
+ *  `reception_template` entries delegate to `validatePackIntakeFormTemplate`
+ *  with the manifest's own identity as `owner` (sharing `templateRefSeen`). */
 const validatePackContentRef = (
   entry: unknown, path: string, recipeSeen: Set<string>, add: AddPackIssue,
+  owner?: PackIntakeFormTemplateOwner, templateRefSeen: Set<string> = new Set(),
 ): void => {
   if (entry == null || typeof entry !== 'object' || Array.isArray(entry)) {
     add('error', 'pack_content_entry_shape', path, 'content entry must be an object');
@@ -1405,6 +1502,26 @@ const validatePackContentRef = (
       // contract only admits the discriminant so pure authoring validation
       // can unwrap `content.composition`.
       break;
+    case 'reception_template': {
+      // D-220 Slice B — the template is validated IN FULL here, including the
+      // safety-matrix clamp, so a pack that would fail at install fails at
+      // publish / authoring first. Each inner failure surfaces as its own
+      // issue carrying the inner code, so an author reads WHICH rule refused.
+      const failures = validatePackIntakeFormTemplate(c.template, owner);
+      for (const failure of failures) {
+        add('error', 'pack_content_reception_template_invalid', `${path}.template`,
+          `${failure.code}: ${failure.detail}`);
+      }
+      if (failures.length === 0) {
+        const ref = (c.template as { template_ref: string }).template_ref;
+        if (templateRefSeen.has(ref)) {
+          add('error', 'pack_content_reception_template_duplicate', `${path}.template.template_ref`,
+            `reception_template ${ref} is declared more than once`);
+        }
+        templateRefSeen.add(ref);
+      }
+      break;
+    }
   }
 };
 
@@ -1621,8 +1738,16 @@ export const parseBulkPackManifest = (input: unknown): BulkPackParseResult => {
           `contents may contain at most ${BULK_PACK_MAX_CONTENTS} entries; got ${obj.contents.length}`);
       } else {
         const recipeSeen = new Set<string>();
+        const templateRefSeen = new Set<string>();
+        // D-220 Slice B — a template's ref must name THIS manifest. Only a
+        // manifest whose identity fields are strings can be the owner; a
+        // manifest missing them already fails its own field checks above.
+        const owner: PackIntakeFormTemplateOwner | undefined =
+          typeof obj.publisher === 'string' && typeof obj.slug === 'string'
+            ? { publisher: obj.publisher, slug: obj.slug }
+            : undefined;
         obj.contents.forEach((entry: unknown, idx: number) =>
-          validatePackContentRef(entry, `contents[${idx}]`, recipeSeen, add));
+          validatePackContentRef(entry, `contents[${idx}]`, recipeSeen, add, owner, templateRefSeen));
       }
     }
     // At least one installable entry — recipes[] or contents[] non-empty.
@@ -1741,6 +1866,28 @@ export const parseBulkPackManifest = (input: unknown): BulkPackParseResult => {
         'pack_pre_install_publisher',
         'pre_install',
         `pre_install: true is reserved for the 'recued-core' publisher; got ${JSON.stringify(obj.publisher)}`,
+      );
+    }
+  }
+
+  // 2026-09-07 — bundled boolean (optional). Ships the pack inside the release
+  // artifact. First-party-only for the same reason `pre_install` is: what the
+  // binary carries is a release decision. Unlike `pre_install` it grants no
+  // install authority of its own — a bundled pack is installed by the owner.
+  if (obj.bundled !== undefined) {
+    if (typeof obj.bundled !== 'boolean') {
+      add(
+        'error',
+        'pack_bundled_shape',
+        'bundled',
+        'bundled must be a boolean when present',
+      );
+    } else if (obj.bundled === true && !publisherMayDeclare(obj.publisher, 'bundled')) {
+      add(
+        'error',
+        'pack_bundled_publisher',
+        'bundled',
+        `bundled: true is reserved for the 'recued-core' publisher; got ${JSON.stringify(obj.publisher)}`,
       );
     }
   }

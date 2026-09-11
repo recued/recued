@@ -31,7 +31,9 @@
  *  `watch.*` rpc surface stays unregistered. */
 
 import type Database from 'better-sqlite3';
+import type { EventTrigger } from '@recued/contracts';
 import type { WarehouseEventBus } from '@recued/warehouse-events';
+import { createMcpListenOpener } from '@recued/ingredients';
 import { createConnectionMcpHandler, type ResolvedCall } from '@recued/ingredients';
 
 import type { EventBus } from '../../events/bus.js';
@@ -52,6 +54,10 @@ import {
   createMcpResourcePollSource,
   type McpResourceReadOutcome,
 } from '../../watch/mcp-resource-source.js';
+import {
+  createMcpListenSource,
+  type McpListenSourceHandle,
+} from '../../watch/mcp-listen-source.js';
 import type { WatchRpcDeps } from '../../watch/handler.js';
 import {
   createWatchPollManager,
@@ -216,8 +222,8 @@ export const composeWatchManager = (
   // WatchSource generalization — the 3rd poll source: dom content polling
   // (`read_dom` of one selector on a bridge-served tab, hash-diffed). Like
   // mcp-resource it is a POLL source (governed by the manager's
-  // `WatchStatusEntry` rows, NOT the push-source registry — that registry
-  // is webhook / messenger / reception only). Composed only when the bridge
+  // `WatchStatusEntry` rows, NOT the push-source registry — which holds
+  // webhook / messenger / reception / mcp-listen). Composed only when the bridge
   // dispatcher ref is wired (absent in dbless / bridgeless harnesses); the
   // ref is late-bound, so the read reports `'unavailable'` until the WS
   // server publishes the live dispatcher post-compose. The synthetic
@@ -234,9 +240,20 @@ export const composeWatchManager = (
   if (mcpResourceSource) sources.push(mcpResourceSource);
   if (domSource) sources.push(domSource);
 
+  // ⚠ ONE reader, two consumers. The poll manager and the listen feeds must
+  // derive demand from the SAME rows — a listen stream subscribed to a uri no
+  // poll loop is armed for would accelerate a key that no-ops, and the reverse
+  // would leave a watched resource with no feed. Sharing the expression is what
+  // makes them unable to disagree.
+  const listEnabledTriggers = (): EventTrigger[] => (executeDeps.preapprovalDriver
+    ? triggersStore.list().filter(row => executeDeps.preapprovalDriver!.triggerEligible(row.trigger_id, row.enabled))
+    : triggersStore.listEnabled());
+
   const manager = createWatchPollManager({
     store,
-    triggersStore,
+    // Poll demand uses the logical next-execution state while legacy store
+    // readers continue seeing the managed trigger physically disabled.
+    triggersStore: { listEnabled: listEnabledTriggers },
     sources,
     bus: warehouseBus,
     ...(eventBus ? { eventBus } : {}),
@@ -249,10 +266,74 @@ export const composeWatchManager = (
   // kernel-vendor keys the reconciler already covers. The post-listener
   // runtime runs the first recompute right after housekeeping startup.
 
+  // WatchSource generalization — the 4th PUSH source, and the mcp-resource
+  // poll's higher-fidelity twin: one `subscriptions/listen` feed per mcp
+  // connection a recipe watches a resource on.
+  //
+  // 🔑 IT ACCELERATES, IT DOES NOT REPLACE. A listen frame carries no content,
+  // so the feed calls `manager.pollNow` on the canonical key and the poll source
+  // does the read + diff + emit exactly as it does on its timer. The timer stays
+  // armed underneath as the floor — which is why nothing here marks a demand
+  // `deferred_to`, and why a recipe cannot tell whether push was live.
+  //
+  // Composed on the same condition as the poll source (mcp adapter deps + the
+  // connection store), and only for the `sse` transport — `createMcpListenOpener`
+  // reports websocket / stdio as not-pushing rather than as an error.
+  const listenSource: McpListenSourceHandle | undefined =
+    mcpHandlerDeps && connectionStore
+      ? (() => {
+          const openStream = createMcpListenOpener(mcpHandlerDeps);
+          return createMcpListenSource({
+            listTriggers: listEnabledTriggers,
+            listMcpConnections: () =>
+              (connectionStore.list({ kind: 'mcp' }) ?? []).map((row) => row.name),
+            openListen: async ({ connection_name, uris, onResourceUpdated }) => {
+              const row = connectionStore.get('mcp', connection_name);
+              // Un-enrolled between demand derivation and the open — treat as
+              // "does not push" and let the next recompute settle it.
+              if (row === null) return { ok: false, reason: 'listen_error' };
+              const opened = await openStream({ row, uris, onResourceUpdated });
+              return opened.ok
+                ? {
+                    ok: true,
+                    acknowledged: opened.handle.acknowledged,
+                    ended: opened.handle.ended,
+                    close: () => { opened.handle.close(); },
+                  }
+                : { ok: false, reason: opened.reason };
+            },
+            // Late-bound: `manager` exists by the time a frame can arrive (the
+            // first open happens on a recompute, which is post-compose).
+            pollNow: (watch_key) => manager.pollNow(watch_key),
+            ...(input.sourceRegistry
+              ? { markEvent: (key, at) => input.sourceRegistry!.markEvent(key, at) }
+              : {}),
+          });
+        })()
+      : undefined;
+  if (listenSource && input.sourceRegistry) {
+    input.sourceRegistry.register('mcp-listen', listenSource.provider);
+  }
+
+  // ⛔ THE FEEDS RIDE THE MANAGER'S OWN RECOMPUTE, NOT A PARALLEL CALL.
+  // `recompute()` is invoked from six seams (trigger CRUD, recipe mutation,
+  // connection upsert/delete, vault unlock, maintenance exit, post-listener
+  // boot) and `stop()` from the maintenance path. Adding a second call beside
+  // each would be a fix with no completion criterion — the seam added next
+  // month would quietly not drive the feeds. Wrapping once means every existing
+  // seam already covers them, and every future one does too.
+  const managed: PollManagerHandle = listenSource === undefined
+    ? manager
+    : {
+        ...manager,
+        recompute: () => { manager.recompute(); listenSource.recompute(); },
+        stop: async () => { await Promise.all([manager.stop(), listenSource.stop()]); },
+      };
+
   return {
-    manager,
+    manager: managed,
     watchDeps: {
-      getManager: () => manager,
+      getManager: () => managed,
       getSourceRegistry: () => input.sourceRegistry,
     },
   };

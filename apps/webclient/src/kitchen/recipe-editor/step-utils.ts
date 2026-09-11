@@ -98,11 +98,13 @@ export const applyFieldToStep = <T extends { id: string }>(
       }
     } else if (field.startsWith('param:')) {
       const paramName = field.slice('param:'.length);
-      next[paramName] = value;
+      if (value === undefined) delete next[paramName];
+      else next[paramName] = value;
     } else if (field.startsWith('input:')) {
       const inputName = field.slice('input:'.length);
       const prevInput = (next.input as Record<string, unknown> | undefined) ?? {};
       next.input = { ...prevInput, [inputName]: value };
+      if (value === undefined) delete (next.input as Record<string, unknown>)[inputName];
     } else if (field.startsWith('arg:')) {
       const argName = field.slice('arg:'.length);
       const prevArgs = (next.args as Record<string, unknown> | undefined) ?? {};
@@ -296,10 +298,11 @@ export const renameInBareSource = (
   source: string,
   oldId: string,
   newId: string,
+  namespace = 'step',
 ): string => {
   const escaped = escapeRegex(oldId);
-  const regex = new RegExp(`^step\\.${escaped}(?![a-zA-Z0-9_])`);
-  return source.replace(regex, `step.${newId}`);
+  const regex = new RegExp(`^${escapeRegex(namespace)}\\.${escaped}(?![a-zA-Z0-9_])`);
+  return source.replace(regex, `${namespace}.${newId}`);
 };
 
 /** Generic deep walker that applies a string transformer to every
@@ -312,11 +315,7 @@ const deepRewriteStrings = (
   if (typeof value === 'string') return fn(value);
   if (Array.isArray(value)) return value.map((v) => deepRewriteStrings(v, fn));
   if (value && typeof value === 'object') {
-    const next: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      next[k] = deepRewriteStrings(v, fn);
-    }
-    return next;
+    return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, deepRewriteStrings(entry, fn)]));
   }
   return value;
 };
@@ -336,7 +335,7 @@ export const renameStepIdInRecipe = (
   newId: string,
 ): RecipeDefinition => {
   if (oldId === newId) return recipe;
-  const rewrite = (s: string): string => renameInRefString(s, oldId, newId);
+  const rewrite = (s: string): string => renameInRefString(renameInRefString(s, oldId, newId), oldId, newId, 'trigger');
 
   const renameOwnId = <T extends { id: string }>(s: T): T =>
     s.id === oldId ? { ...s, id: newId } : s;
@@ -358,19 +357,23 @@ export const renameStepIdInRecipe = (
     ? recipe.output.render
     : recipe.output?.sidebar ?? [];
   const render: OutputSection[] = authoredOutput.map((sec) => ({
-    ...sec,
+    ...deepRewriteStrings(sec, rewrite) as OutputSection,
     source:
       typeof sec.source === 'string'
-        ? renameInBareSource(sec.source, oldId, newId)
+        ? renameInBareSource(renameInBareSource(sec.source, oldId, newId), oldId, newId, 'trigger')
         : sec.source,
   }));
 
   return {
     ...recipe,
     variables,
+    ...(recipe.trigger_steps ? { trigger_steps: recipe.trigger_steps.map(step =>
+      renameOwnId(deepRewriteStrings(step, rewrite) as RecipeStep)) } : {}),
     prefetch_steps: prefetch,
     steps,
-    output: { render },
+    output: recipe.output.exchange
+      ? deepRewriteStrings(recipe.output, rewrite) as RecipeDefinition['output']
+      : { ...Object.fromEntries(Object.entries(recipe.output).filter(([key]) => key !== 'sidebar')), render },
   };
 };
 

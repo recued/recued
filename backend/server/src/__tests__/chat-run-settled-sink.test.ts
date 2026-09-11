@@ -20,6 +20,14 @@ const settled = (over: Record<string, unknown> = {}) => ({
 } as never);
 
 describe('planRunSettledRow', () => {
+  it.each([
+    { success: false, awaiting_approval: true },
+    { success: false, awaiting_peer: true },
+    { ok: true, run_held: { kind: 'approval' } },
+  ])('does not close a call that pauses again: %j', result => {
+    expect(planRunSettledRow(settled({ result }))).toBeNull();
+  });
+
   it('writes into the session that ASKED, keyed on the run', () => {
     const plan = planRunSettledRow(settled());
     expect(plan).not.toBeNull();

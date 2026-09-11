@@ -87,6 +87,7 @@ import {
   WORK_ENTITY_KINDS,
 } from '@recued/contracts';
 
+import { workEntitySearchableText } from './work-entity-searchable-text.js';
 import { getByDotPath } from './source-mirror/fetch.js';
 import { runGatedCatalogOperation } from './source-mirror/fetch.js';
 import { resolveConfigArgBindings } from './work-entity-config-args.js';
@@ -497,7 +498,12 @@ export interface WorkEntityToolItem {
   monetary_amount?: string;
   monetary_currency?: string;
   counterparty_contact_id?: string;
-  long_text?: WorkEntityLongText & { truncated?: boolean };
+  long_text?: WorkEntityLongText & {
+    truncated?: boolean;
+    /** How many characters the LIST clamp removed. Present only with
+     *  `truncated`. */
+    omitted_chars?: number;
+  };
   /** Present when this row's canonical fields were refreshed by a live
    *  vendor read within THIS call (wild-query escalation). */
   live?: true;
@@ -511,8 +517,76 @@ export interface WorkEntityEscalationError {
 
 /** In LIST results the long text is clamped to keep the tool result
  *  bounded; `truncated: true` + the row's own fidelity marker tell the
- *  agent to `work.read` for the full text. */
-const LIST_LONG_TEXT_CLAMP = 280;
+ *  agent to `work.read` for the full text.
+ *
+ *  ⛔⛔ THE CLAMP IS PER-ENTITY BUT THE COST IS PER-RESULT, so a single
+ *  constant has to be sized for the worst case and is then needlessly punishing
+ *  in the common one. Measured 2026-09-05, one `work.search` result:
+ *
+ *      clamp | 1 hit | 20 hits | 100 hits      (est-tokens)
+ *        280 |   275 |   5,510 |   27,550
+ *      5,000 | 2,635 |  52,710 |  263,550
+ *
+ *  A ONE-HIT search — which is most of them; every per-ring lookup in the
+ *  2026-09-05 drives returned exactly one row — was cut to 280 characters to
+ *  protect a 100-hit case it was never going to be. 280 chars of a 2,584-char
+ *  note is 11% of it, so essentially every record needed a second round-trip
+ *  through `work.read` before anything could be done with it.
+ *
+ *  🔑 SO THE BUDGET IS PER RESULT AND THE CLAMP IS DERIVED FROM IT. The floor
+ *  keeps this NEVER WORSE than the old constant: at ~43 hits and above the
+ *  division lands under 280 and the floor takes over, so every result that used
+ *  to be large is byte-identical. Below that the text grows as the result
+ *  shrinks, which is exactly backwards from a fixed clamp and exactly right. */
+const LIST_LONG_TEXT_RESULT_BUDGET = 12_000;
+/** Per-entity ceiling. One hit must not licence dumping an arbitrarily large
+ *  body into a LIST result — `work.read` is the full-text door, and this is a
+ *  preview generous enough to answer from, not a replacement for it. */
+const LIST_LONG_TEXT_MAX = 4_000;
+/** The old fixed constant, kept as the FLOOR. A result big enough to divide
+ *  below it gets exactly what it got before this change. */
+const LIST_LONG_TEXT_MIN = 280;
+
+/** ⛔ AND EVERY TRUNCATION SAYS HOW MUCH IT TOOK (`omitted_chars`).
+ *  `truncated: true` alone tells the model something is missing but not whether
+ *  it MATTERS, so 100 missing characters and 8,979 look identical and every
+ *  truncation reads as equally worth a `work.read`. Measured 2026-09-05, that
+ *  round-trip is not free: under a context trim the `work.read` result — the
+ *  biggest thing in the packet — is the FIRST thing the elision rung takes, so
+ *  a read made unnecessarily can cost the model the data it already had.
+ *  A size lets it decide instead of guess.
+ *
+ *  Characters of long text each row of an `n`-row result may carry. */
+export const listLongTextClamp = (rows: number): number => {
+  if (rows <= 0) return LIST_LONG_TEXT_MIN;
+  const share = Math.floor(LIST_LONG_TEXT_RESULT_BUDGET / rows);
+  return Math.min(LIST_LONG_TEXT_MAX, Math.max(LIST_LONG_TEXT_MIN, share));
+};
+
+/** Apply a clamp to an ALREADY-PROJECTED item.
+ *
+ *  ⚠ Post-hoc on purpose. The clamp depends on how many rows the result
+ *  carries, and read-through items are projected one at a time while the fetch
+ *  is still running — the count does not exist yet. Projecting them unclamped
+ *  and clamping once, where the page is assembled, is what lets local and live
+ *  rows share ONE rule instead of two that drift. */
+const clampItemLongText = (
+  item: WorkEntityToolItem,
+  clamp: number,
+): WorkEntityToolItem => {
+  const long = item.long_text;
+  if (long === undefined || long.text.length <= clamp) return item;
+  return {
+    ...item,
+    long_text: {
+      field: long.field,
+      text: long.text.slice(0, clamp),
+      fidelity: long.fidelity,
+      truncated: true,
+      omitted_chars: long.text.length - clamp,
+    },
+  };
+};
 
 const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 100;
@@ -559,7 +633,7 @@ const clampLimit = (v: unknown): number => {
 
 const projectItem = (
   entity: WorkEntity,
-  opts: { clampLongText: boolean },
+  opts: { clampLongText: number | false },
 ): WorkEntityToolItem => {
   const item: WorkEntityToolItem = {
     id: entity.id,
@@ -617,15 +691,9 @@ const projectItem = (
   }
   const long = workEntityLongText(entity);
   if (long !== null) {
-    if (opts.clampLongText && long.text.length > LIST_LONG_TEXT_CLAMP) {
-      item.long_text = {
-        field: long.field,
-        text: long.text.slice(0, LIST_LONG_TEXT_CLAMP),
-        fidelity: long.fidelity,
-        truncated: true,
-      };
-    } else {
-      item.long_text = long;
+    item.long_text = long;
+    if (opts.clampLongText !== false) {
+      item.long_text = clampItemLongText(item, opts.clampLongText).long_text ?? long;
     }
   }
   return item;
@@ -839,9 +907,15 @@ const projectedPreviewLongText = (
 
 const clampListLongText = (
   value: WorkEntityLongText | null,
-): (WorkEntityLongText & { truncated?: boolean }) | null => {
-  if (value === null || value.text.length <= LIST_LONG_TEXT_CLAMP) return value;
-  return { ...value, text: value.text.slice(0, LIST_LONG_TEXT_CLAMP), truncated: true };
+  clamp: number | false,
+): (WorkEntityLongText & { truncated?: boolean; omitted_chars?: number }) | null => {
+  if (value === null || clamp === false || value.text.length <= clamp) return value;
+  return {
+    ...value,
+    text: value.text.slice(0, clamp),
+    truncated: true,
+    omitted_chars: value.text.length - clamp,
+  };
 };
 
 /** Project a vendor response directly to the public tool shape. No store write,
@@ -849,7 +923,7 @@ const clampListLongText = (
 const projectReadThroughItem = (
   projected: ProjectedWorkEntityUpsert,
   now: number,
-  opts: { clampLongText: boolean; longOverride?: WorkEntityLongText | null },
+  opts: { clampLongText: number | false; longOverride?: WorkEntityLongText | null },
 ): WorkEntityToolItem => {
   const write = projected.write;
   const item: WorkEntityToolItem = {
@@ -898,7 +972,7 @@ const projectReadThroughItem = (
   const long = opts.longOverride === undefined
     ? projectedPreviewLongText(projected)
     : opts.longOverride ?? projectedPreviewLongText(projected);
-  const bounded = opts.clampLongText ? clampListLongText(long) : long;
+  const bounded = clampListLongText(long, opts.clampLongText);
   if (bounded !== null) item.long_text = bounded;
   return item;
 };
@@ -1107,7 +1181,11 @@ const runReadThroughList = async (
       rowError ??= projected.reason;
       continue;
     }
-    items.push(projectReadThroughItem(projected.upsert, now, { clampLongText: true }));
+    // ⚠ UNCLAMPED HERE ON PURPOSE — the clamp depends on the result's row
+    // count, which does not exist until the page is assembled. Clamping twice,
+    // or clamping this half on a different rule, is how one tool ends up with
+    // two behaviours nobody can see side by side.
+    items.push(projectReadThroughItem(projected.upsert, now, { clampLongText: false }));
   }
   return {
     ok: true,
@@ -1115,6 +1193,78 @@ const runReadThroughList = async (
     truncated,
     ...(rowError !== undefined ? { row_error: rowError } : {}),
   };
+};
+
+/** `work.search` matched nothing, but the collection is NOT empty — the `query`
+ *  is what excluded everything.
+ *
+ *  The GUIDED EMPTY of the fenced paths above, applied to the far more common
+ *  cause of a bare zero. `{ entities: [], total: 0 }` reads as "you have no
+ *  notes" whatever produced it, and the model states that to the user as a fact
+ *  about the world; measured 2026-09-05, a live model met this zero, concluded
+ *  the data lived outside its toolset, and abandoned `work.search` — the tool
+ *  that had answered the same question twice earlier in the session.
+ *
+ *  ⚠ The remedy here INVERTS the fenced hints' "do not retry". A grant refusal
+ *  cannot be fixed by trying again; a substring miss is fixed by exactly that,
+ *  so the hint must license a retry while barring the SAME query — an
+ *  unqualified "try again" is the anti-loop invariant's failure mode.
+ *
+ *  `scanned` is the candidate count the query rejected, so it is a floor when
+ *  the scan hit `DISCOVERY_SCAN_CAP` (the D-190 `truncated` honesty precedent);
+ *  the caller passes `truncated` and the wording softens to "at least". */
+const workEntitySearchQueryMissHint = (
+  kind: string,
+  query: string,
+  scanned: number,
+  truncated: boolean,
+): string =>
+  `no ${kind} matched query "${query}". This is NOT an empty ${kind} collection and NOT `
+  + `"the user has none" — ${truncated ? 'at least ' : ''}${scanned} ${kind}(s) exist and the `
+  + `query matched none of them. \`query\` requires ALL your words to be present (any order, `
+  + `plurals and endings are stemmed), and it matches WHOLE WORDS: a fragment of a word finds `
+  + `nothing. Retry with FEWER words, or one distinctive word, or a prefix like \`Kestr*\`; `
+  + `or omit \`query\` to list the ${kind}s and pick from them. Do NOT re-send this query `
+  + `unchanged, and do not report to the user that they have no ${kind}s.`;
+
+/** Match live read-through items against `query` USING THE SAME MATCHER the
+ *  local half uses — the store's `matchTextsByQuery`, which runs them through a
+ *  temp FTS table on its own connection with the same tokenizer and the same
+ *  `toFtsMatch`.
+ *
+ *  ⛔ WHY NOT JUST FILTER THEM IN JS. Because then one tool would carry two
+ *  matching grammars: the local half stems and tokenizes, this half would do
+ *  something hand-written that approximates it. The same record would be
+ *  findable from one Source and not another, for no reason a user could see,
+ *  and the two would drift apart on the first change to either. Every rule in
+ *  this codebase that grew hand-written exceptions ended up with the exceptions
+ *  AS the bug report. So this CALLS the rule rather than re-implementing it.
+ *
+ *  ⛔ AND IT DOES NOT OPEN ITS OWN DATABASE. The first cut built a throwaway
+ *  `new Database(':memory:')` here, which reddened the D-212 chokepoint ratchet
+ *  (`openDatabase` is the SOLE production SQLite constructor, so an encrypted
+ *  realm has exactly one door). Routing through the store's existing connection
+ *  is both the compliant and the simpler answer — no second driver handle, and
+ *  the scratch table is `temp.`, so nothing lands in the user's database. */
+const matchReadThroughByText = (
+  items: WorkEntityToolItem[],
+  kind: WorkEntityKind,
+  query: string,
+  resolver: WorkEntityResolver,
+): WorkEntityToolItem[] => {
+  if (items.length === 0) return items;
+  const texts = items.map((item) =>
+    workEntitySearchableText(kind, {
+      title: item.title ?? null,
+      ...(item.long_text !== undefined && item.long_text !== null
+        ? { [item.long_text.field]: item.long_text.text }
+        : {}),
+    }),
+  );
+  return resolver
+    .matchTextsByQuery(texts, query)
+    .map((i) => items[i])
+    .filter((item): item is WorkEntityToolItem => item !== undefined);
 };
 
 export const runWorkEntitySearchTool = async (
@@ -1153,6 +1303,11 @@ export const runWorkEntitySearchTool = async (
   const query = typeof args.query === 'string' && args.query.length > 0
     ? args.query.toLowerCase()
     : undefined;
+  // The query AS SENT, for the miss hint to echo. Echoing the lowercased form
+  // would show the model a string it did not write, next to a sentence telling
+  // it the match is case-insensitive — an invitation to retry on casing, which
+  // is the one edit guaranteed not to help.
+  const rawQuery = typeof args.query === 'string' ? args.query : '';
   const source_id = typeof args.source_id === 'string' && args.source_id.length > 0
     ? args.source_id
     : undefined;
@@ -1191,9 +1346,25 @@ export const runWorkEntitySearchTool = async (
 
   let rows: WorkEntity[];
   try {
-    rows = source_id !== undefined
-      ? resolver.listByKindScoped(kind, source_id, { limit: DISCOVERY_SCAN_CAP })
-      : resolver.listByKind(kind, { limit: DISCOVERY_SCAN_CAP });
+    if (query !== undefined) {
+      // 🔑 THE QUERY IS ANSWERED BY THE INDEX, NOT BY FILTERING A WINDOW.
+      // The list below reads `ORDER BY updated_at DESC LIMIT DISCOVERY_SCAN_CAP`,
+      // so filtering it in JS made `work.search` blind to everything past a
+      // user's 1000 most-recently-touched records of a kind — a note from last
+      // year was unfindable however exact the query, and the tool returned an
+      // honest-looking zero. Matching in the index reaches every row.
+      //
+      // `source_id` scoping stays a post-filter: the index is keyed by kind, and
+      // a Source has no bearing on whether the TEXT matches. Validate it first
+      // so a bad `source_id` still errors rather than silently narrowing.
+      if (source_id !== undefined) resolver.listByKindScoped(kind, source_id, { limit: 1 });
+      rows = resolver.searchByText(kind, query, DISCOVERY_SCAN_CAP);
+      if (source_id !== undefined) rows = rows.filter((row) => row.source_id === source_id);
+    } else {
+      rows = source_id !== undefined
+        ? resolver.listByKindScoped(kind, source_id, { limit: DISCOVERY_SCAN_CAP })
+        : resolver.listByKind(kind, { limit: DISCOVERY_SCAN_CAP });
+    }
   } catch (e) {
     if (e instanceof WorkEntityResolverError) return invalidArgs(e.message);
     return executionError(errMessage(e));
@@ -1215,14 +1386,26 @@ export const runWorkEntitySearchTool = async (
   if (done !== undefined) {
     rows = rows.filter((r) => r._kind === 'task' && r.done === done);
   }
-  if (query !== undefined) {
-    rows = rows.filter((r) => {
-      const title = 'title' in r && typeof r.title === 'string' ? r.title : '';
-      if (title.toLowerCase().includes(query)) return true;
-      const long = workEntityLongText(r);
-      return long !== null && long.text.toLowerCase().includes(query);
-    });
-  }
+  // ⚠ NO LOCAL QUERY FILTER HERE ANY MORE — `rows` is already the index's
+  // answer when `query` is set. Re-applying the old substring test would
+  // re-narrow the result to the substring semantics the index exists to
+  // replace, silently dropping every stem and word-order match it just found.
+  //
+  // The candidate pool for the miss hint therefore comes from a COUNT, not from
+  // the length of a list we were about to filter: "how many of this kind exist"
+  // is the question the hint answers, and with the filter gone there is no
+  // pre-filter list to measure.
+  //
+  // ⛔ `done` SUPPRESSES THE HINT, because with it set the pool is unknowable
+  // cheaply. `done` has no SQL filter (`WorkEntityListQuery` carries none — it
+  // is applied in JS), so `countByKind` counts rows the caller's own narrowing
+  // may already have removed. The hint would then assert "N exist and the query
+  // matched none" when the truth might be "the query matched, and `done`
+  // excluded it" — a confident wrong explanation, which is strictly worse than
+  // the bare zero this whole mechanism exists to replace.
+  let queryCandidatePool = query === undefined || done !== undefined
+    ? 0
+    : resolver.countByKind(kind, source_id);
 
   // Read-through Sources join the same polymorphic result, but their rows are
   // fetched and projected transiently. The declaration cap applies before any
@@ -1276,11 +1459,12 @@ export const runWorkEntitySearchTool = async (
   if (done !== undefined) {
     readThroughItems = readThroughItems.filter((item) => item.done === done);
   }
+  // Read-through items are the other half of `total`, so they are the other half
+  // of the pool — counting only local rows would call a live-Source-only miss an
+  // empty collection, which is the exact confusion the hint exists to prevent.
+  queryCandidatePool += readThroughItems.length;
   if (query !== undefined) {
-    readThroughItems = readThroughItems.filter((item) =>
-      item.title?.toLowerCase().includes(query) === true
-      || item.long_text?.text.toLowerCase().includes(query) === true
-    );
+    readThroughItems = matchReadThroughByText(readThroughItems, kind, query, resolver);
   }
 
   const candidates: Array<
@@ -1301,10 +1485,13 @@ export const runWorkEntitySearchTool = async (
     .filter((candidate): candidate is Extract<(typeof candidates)[number], { kind: 'local' }> =>
       candidate.kind === 'local')
     .map((candidate) => candidate.row);
+  // ONE clamp for the whole result, derived from how many rows it carries, and
+  // applied identically to local rows and live read-through items.
+  const longTextClamp = listLongTextClamp(pageCandidates.length);
   let items = pageCandidates.map((candidate) =>
     candidate.kind === 'local'
-      ? projectItem(candidate.row, { clampLongText: true })
-      : candidate.item
+      ? projectItem(candidate.row, { clampLongText: longTextClamp })
+      : clampItemLongText(candidate.item, longTextClamp)
   );
 
   // Freshness verdicts for the query's scope — same filter composition
@@ -1427,6 +1614,29 @@ export const runWorkEntitySearchTool = async (
         return row === undefined ? item : qualifyItem(row, item);
       }),
       total,
+      // The guided empty for a query miss. Gated on a NON-EMPTY pool: when the
+      // pool is 0 the bare zero is already true ("you have no notes"), and a
+      // hint there would talk the model out of a correct answer.
+      //
+      // ⚠ `query !== undefined` is REDUNDANT TODAY and is kept as a local
+      // statement of the precondition, not as a live gate — mutation-tested
+      // 2026-09-05, it is the one clause here no test can kill. With no query
+      // neither filter above runs, so `total === queryCandidatePool` and the
+      // pool clause already excludes this branch. What it guards is the
+      // NON-LOCAL coupling: that identity is an accident of where the pool is
+      // captured (two sites, ~60 lines apart), and a refactor moving either one
+      // could let this fire with `rawQuery` empty — rendering `query ""` at the
+      // user. Cheap insurance against a break that would otherwise be silent.
+      ...(total === 0 && query !== undefined && queryCandidatePool > 0
+        ? {
+            hint: workEntitySearchQueryMissHint(
+              kind,
+              rawQuery,
+              queryCandidatePool,
+              scan_truncated,
+            ),
+          }
+        : {}),
       ...(scan_truncated ? { scan_truncated } : {}),
       ...(freshness !== null ? { source_freshness: freshness } : {}),
       ...(limitations.length > 0 ? { limitations } : {}),

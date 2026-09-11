@@ -19,6 +19,7 @@
  *  gets its own SQLite table.
  */
 
+import { assertPreapprovalOrdinaryRun, currentPreapprovalIo } from '../../preapproval-io-context.js';
 import { createHash } from 'node:crypto';
 import { MAIL_RFC_MESSAGE_ID_HOT_FIELD } from './mail-twin-resolver.js';
 import type Database from 'better-sqlite3';
@@ -1060,6 +1061,8 @@ export const createMailCollection = (
   // Emission errors are swallowed via best-effort try/catch so a
   // back-pressured audit log can't break a recipe send.
   const send = async (args: MailSendInput): Promise<MailSendResult> => {
+    const reviewed = currentPreapprovalIo();
+    reviewed?.validateMail(slug, args);
     const totalRecipients = args.to.length
       + (args.cc?.length ?? 0)
       + (args.bcc?.length ?? 0);
@@ -1210,7 +1213,16 @@ export const createMailCollection = (
       // engage — the send still fails closed on an unresolvable ref.
       const fileCollection = readDeps.registry.get('file', DATA_FILE_RECEIVED_SLUG);
       const kept: ResolvedAttachment[] = [];
-      for (const ref of args.attachments) {
+      for (const [attachmentIndex, ref] of args.attachments.entries()) {
+        if (reviewed) {
+          const file = await reviewed.readMailAttachment(ref, attachmentIndex, readDeps);
+          if (file.size_bytes > MAIL_SEND_ATTACHMENT_MAX_BYTES) {
+            throw new IngredientError('preapproval_stale', 'A reviewed attachment exceeds the mail attachment limit.', { slug });
+          }
+          kept.push({ filename: file.filename, mime_type: file.mime_type, bytes_b64: file.bytes_b64,
+            size_bytes: file.size_bytes, blob_hash: file.blob_hash });
+          continue;
+        }
         // F3 — preflight the size from record METADATA before reading bytes.
         // `hot_fields.size` is the canonical byte length set at ingest;
         // `size_bytes` on the CollectionRecord mirrors it. An over-cap ref is
@@ -1377,6 +1389,8 @@ export const createMailCollection = (
     }
 
     let meta;
+    await reviewed?.beforeMailProvider(slug, args);
+    assertPreapprovalOrdinaryRun();
     try {
       meta = await provider.send({
         to: args.to,
@@ -1409,6 +1423,8 @@ export const createMailCollection = (
       const code = err instanceof IngredientError ? err.code : 'UNKNOWN';
       const message = err instanceof Error ? err.message : String(err);
       await emitAudit(buildDetail(false, '', { error: { code, message } }));
+      if (reviewed) throw new IngredientError('ACTION_DELIVERY_UNCERTAIN',
+        'The reviewed mail provider did not confirm delivery. Check this attempt before sending again.', { slug });
       throw err;
     }
     // The provider acknowledged. Still not PROOF — an ack can be lost in transit —

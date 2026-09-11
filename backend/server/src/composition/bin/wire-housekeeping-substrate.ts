@@ -222,7 +222,9 @@ export interface ComposeHousekeepingRpcDepsArgs {
   /** D-174 R28 Slice C — per-use LIVE config resolver (from the LLM
    *  substrate). The EMBEDDINGS probe calls this so a saved embeddings slot
    *  is reflected in the Run-Now dialog without a restart; the chat probe
-   *  keeps the boot `llmConfig` (matches the still-boot chat executor). */
+   *  ⚠ Was "keeps the boot `llmConfig` (matches the still-boot chat executor)"
+   *  until 2026-09-07 — the chat executor now resolves live too, so this is the
+   *  single source both it and the idle-cycle AI gate read. */
   resolveLlmConfig: () => LLMConfig | undefined;
   llmQuota: QuotaTracker;
   /** Caller-owned producer registry — same map the scheduler composer
@@ -1027,6 +1029,20 @@ export const composeHousekeepingScheduler = async (
                 args,
                 contactEngagementsResolveDeps.resolverDeps(args),
               ),
+            // D-139 slice 3 — the RECORD-rooted sibling, for the deal /
+            // account aggregate tasks. Same store, same coverage builder;
+            // the selector differs, not the evidence surface.
+            resolveRecordEngagements: (args) =>
+              contactEngagementsResolveDeps.engagementStore.resolveEngagementsForRecord(
+                args,
+                contactEngagementsResolveDeps.recordResolverDeps(args),
+              ),
+            // D-139 § A.9.2b — the deal's counterparty contacts, for the
+            // out-of-band visibility-gap producer. Same store, same F1 join
+            // the commitment capture uses.
+            listDealContacts: (deal_full_target_id, limit) =>
+              contactEngagementsResolveDeps.engagementStore
+                .listDealCounterpartyContactEmails(deal_full_target_id, limit),
           }
         : {}),
       // D-192 E3 — the extraction→proposal funnel closure. Present whenever the
@@ -1089,6 +1105,12 @@ export const composeHousekeepingScheduler = async (
     state: stateStore,
     busy,
     ...(trustStore !== undefined ? { trustStore } : {}),
+    // D-262 follow-on — the idle-cycle AI gate. ⚠ `resolveLlmConfig`, the SAME
+    // resolver the housekeeping chat executor now uses: a gate reading live
+    // config while its executor read a boot snapshot would disagree with
+    // itself. The Run-Now dialog's pre-confirm calls this same probe, so the
+    // status surface and the gate answer the same question.
+    probeAiPath: deps.llmCallables.probeAiPath,
     registry: () => listHousekeepingTasks(),
     // D-138 P3 — open the contact-merge cycle observer's buffer window
     // so A.10 plausibility can correlate link removes + adds inside

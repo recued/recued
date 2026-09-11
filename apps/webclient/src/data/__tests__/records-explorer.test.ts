@@ -408,6 +408,45 @@ const fakeDocument = (): Document => {
 };
 
 describe('D-221 Records route control-plane seam', () => {
+  it.each(['pack', 'kind'] as const)('keeps a changed saved-view %s pinned through repeated unavailability', async (missing) => {
+    const root = fakeElement();
+    const first = namespace('publisher-a');
+    const second = { ...namespace('publisher-b'), schema: { ...schema, entities: {
+      ...schema.entities, invoice: { ...schema.entities.job!, kind: 'invoice' },
+    } } };
+    let namespaces = [first, second];
+    const search = vi.fn(async () => ({ records: [record] }));
+    const route = bootstrapDataRoute({
+      root: root as unknown as HTMLElement, document: fakeDocument(), initialTab: 'records',
+      savedView: { id: 'view_00000000-0000-4000-8000-000000000001', name: 'Original', revision: 1, created_at: 1, updated_at: 1,
+        definition: { tab: 'records', owner: first.owner, entity: 'job' } },
+      recordsNamespaceListCaller: async () => ({ namespaces, global_quota: globalQuota }),
+      recordsKindListCaller: async () => ({ kinds: [{ kind: 'job', rows: 1, payload_bytes: 42 }, { kind: 'invoice', rows: 0, payload_bytes: 0 }] }),
+      recordsSearchCaller: search,
+    });
+    const click = (action: string, attrs: Record<string, string>): void => {
+      const control = { getAttribute: (key: string) => key === 'data-recued-data-action' ? action : attrs[key] ?? null };
+      const target = { closest: (selector: string) => selector === '[data-recued-data-action]' ? control : null };
+      for (const listener of root.children[0]!.listeners.get('click') ?? []) listener({ target } as unknown as Event);
+    };
+    await route.whenLoaded();
+    click('records-select-namespace', { 'data-records-namespace': 'publisher-b/same-board' });
+    await vi.waitFor(() => expect(route.getRecoveryContextFreshness()).toBe('current'));
+    const entity = missing === 'kind' ? 'invoice' : 'job';
+    click('records-select-kind', { 'data-records-kind': entity });
+    await vi.waitFor(() => expect(route.getRecoveryContextFreshness()).toBe('current'));
+    expect(route.currentView()).toEqual({ tab: 'records', owner: second.owner, entity });
+    namespaces = missing === 'pack' ? [first] : [first, { ...second, schema }];
+    search.mockClear();
+    for (let i = 0; i < 2; i++) {
+      route.refresh(); await route.whenLoaded();
+      expect(search).not.toHaveBeenCalled();
+      expect(route.currentView()).toEqual({ tab: 'records', owner: second.owner, entity });
+      expect(route.getRecoveryContextFreshness()).toBe('unavailable');
+    }
+    route.dispose();
+  });
+
   it('loads the Records tab only through records.* callers', async () => {
     const root = fakeElement();
     const listNamespaces = vi.fn(async () => ({

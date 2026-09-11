@@ -224,6 +224,25 @@ describe('D-167 P5 S4 — wrapExecuteAiCallForPii (ENACT)', () => {
     expect(wrapExecuteAiCallForPii(real, makePlan({ active: false }))).toBe(real);
   });
 
+  // ⛔⛔ TYPESCRIPT CANNOT CHECK THIS ONE. A 2-arg function is assignable to a
+  //   3-arg type, so any wrapper in the chain that drops the per-call options
+  //   compiles clean and the option silently never reaches the executor. The
+  //   brief's timeout (`BRIEF_CALL_TIMEOUT_MS`) rides this seam, and a dropped
+  //   one means no timer — the exact failure it exists to prevent, reported as
+  //   nothing at all. Three wrappers dropped it when the option was introduced.
+  it('⛔ forwards per-call opts to the real executor', async () => {
+    let seenOpts: unknown = 'never called';
+    const real: ExecuteChatAiCall = async (_m, _input, opts) => {
+      seenOpts = opts;
+      return { body: { response: 'ok', events: [], tool_calls: [] } satisfies AIOutput };
+    };
+    const wrapped = wrapExecuteAiCallForPii(real, makePlan());
+    await wrapped(MANIFEST, { 'llm.prompt': '{}', 'llm.system_prompt': 'sys' }, {
+      timeout_ms: 120_000,
+    });
+    expect(seenOpts).toEqual({ timeout_ms: 120_000 });
+  });
+
   it('round-trips the prompt unchanged with the noop resolver (behavior-preserving)', async () => {
     const plan = makePlan(); // noop resolver
     const original = JSON.stringify({
@@ -1435,6 +1454,16 @@ describe('D-167 P5 S4 — end-to-end through the orchestrator', () => {
       let call = 0;
       const executeAiCall = vi.fn<ExecuteChatAiCall>(async (_m, input) => {
         const packet = JSON.parse(String(input['llm.prompt'])) as Record<string, unknown>;
+        // ⛔ FOLD CALLS ARE NOT MAIN-TURN CALLS, AND THIS COUNTER MEANS "did a
+        //   REINVOKE happen". The rolling brief now defaults ON, so a turn also
+        //   spends a closing fold; counting it made `call` 3 and read as a
+        //   missing reinvoke. Discriminate on the fold packet's own fields
+        //   rather than on a number — the subject here is the tool loop's
+        //   arg-restore/aliasing, and the brief is a confound.
+        if (packet.carried_forward !== undefined
+          || packet.tool_results_since !== undefined) {
+          return { body: { response: '{}', events: [], tool_calls: [] } satisfies AIOutput };
+        }
         captured.push(packet);
         call += 1;
         if (call === 1) {

@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
   "source": {
-    "commit": "1df38b3ae0cd336d28b6ae6d75e903c3542417d6",
-    "tree": "f777d944f42902372a61cf2d10418d1a8a92cb4b",
-    "committed_at": "2026-09-05T00:26:46-07:00"
+    "commit": "a60fbe3db0fe197cd02ce27e0476d71f80753fa7",
+    "tree": "688caa51db9dd845230dc84c5611f450f4746409",
+    "committed_at": "2026-09-10T17:55:06-07:00"
   },
-  "export_manifest_sha256": "38210f1150c5eeff8012d5b9fe2a9432f9302b0eef1da5d3c548173040d347c1",
-  "version": "26.9.5",
+  "export_manifest_sha256": "a91bf476b3f76675cbe4d197f379959add7c654f580796b51cb2e30eac124509",
+  "version": "26.9.10",
   "license": "AGPL-3.0-only",
   "entrypoints": [
     "backend/server",
@@ -51,6 +51,7 @@
       "apps/webclient/src/__tests__/pack-app-model.test.ts",
       "apps/webclient/src/__tests__/recipes-required-file-slugs.test.ts",
       "backend/server/src/__tests__/audit-exempt-records-read.test.ts",
+      "backend/server/src/__tests__/build-externals-declared.test.ts",
       "backend/server/src/__tests__/bundled-foundation-embed.test.ts",
       "backend/server/src/__tests__/calendar-e2e.test.ts",
       "backend/server/src/__tests__/d-145-pa10-pack-list-rpc.test.ts",
@@ -132,12 +133,15 @@
       "backend/server/src/__tests__/d-212-blob-key-required.test.ts",
       "backend/server/src/__tests__/d-212-open-database-chokepoint.test.ts",
       "backend/server/src/__tests__/d-212-production-source.ts",
+      "backend/server/src/__tests__/d-220-slice-b-pack-reception-templates.test.ts",
       "backend/server/src/__tests__/d-222-reception-manage-config-declared.test.ts",
       "backend/server/src/__tests__/d-223-corpus-connection-hints.test.ts",
       "backend/server/src/__tests__/d-234-peer-ask-delivery.test.ts",
       "backend/server/src/__tests__/d-252-first-run-flow.test.ts",
       "backend/server/src/__tests__/d-259-installed-manifest-boot-check.test.ts",
       "backend/server/src/__tests__/d-259-pack-reconciliation.test.ts",
+      "backend/server/src/__tests__/d-261-service.test.ts",
+      "backend/server/src/__tests__/dependency-manifest.test.ts",
       "backend/server/src/__tests__/dispatch-canonical-resolve.test.ts",
       "backend/server/src/__tests__/door-standing-closure-e2e.test.ts",
       "backend/server/src/__tests__/drives/fleet-money-dispatch-smtp-drive.ts",
@@ -152,6 +156,7 @@
       "backend/server/src/__tests__/fleet-money-owner-override-drive.test.ts",
       "backend/server/src/__tests__/fleet-money-reactive-channel-drive.test.ts",
       "backend/server/src/__tests__/foundation-pack-op-step-pre-install.test.ts",
+      "backend/server/src/__tests__/foundation-pack-visibility.test.ts",
       "backend/server/src/__tests__/helpers/records-pack-harness.ts",
       "backend/server/src/__tests__/horizon-plan-classifier.test.ts",
       "backend/server/src/__tests__/install-sh-local-feed.test.ts",
@@ -161,6 +166,9 @@
       "backend/server/src/__tests__/ledger-book-business-workflow.test.ts",
       "backend/server/src/__tests__/local-cli-pack-live-drive.test.ts",
       "backend/server/src/__tests__/m-reach-full-chain-acceptance-e2e.test.ts",
+      "backend/server/src/__tests__/mcp-listen-source.test.ts",
+      "backend/server/src/__tests__/mcp-push-capability-probe.test.ts",
+      "backend/server/src/__tests__/mcp-subscriptions-probe.test.ts",
       "backend/server/src/__tests__/mcp-token-standing-closure-e2e.test.ts",
       "backend/server/src/__tests__/officecli-template-live-drive.test.ts",
       "backend/server/src/__tests__/pack-cross-pack-tier-p-install.test.ts",
@@ -186,6 +194,7 @@
       "backend/server/src/__tests__/rental-book-business-workflow.test.ts",
       "backend/server/src/__tests__/revived-enrichment-producer-writes.test.ts",
       "backend/server/src/__tests__/saga-write-seal.test.ts",
+      "backend/server/src/__tests__/sea-entry-is-cjs.test.ts",
       "backend/server/src/__tests__/split-pack-op-provenance.test.ts",
       "backend/server/src/__tests__/statement-import-business-workflow.test.ts",
       "backend/server/src/__tests__/stranger-first-walk-e2e.test.ts",
@@ -213,6 +222,7 @@
       "packages/contracts/src/__tests__/d-151-reception-config-template.test.ts",
       "packages/contracts/src/__tests__/d-194-connection-requirements.test.ts",
       "packages/contracts/src/__tests__/d-200-transactional-offer-retirement.ratchet.test.ts",
+      "packages/contracts/src/__tests__/d-220-slice-b-pack-intake-template.test.ts",
       "packages/contracts/src/__tests__/value-hint-authored-set.test.ts",
       "packages/engine/src/__tests__/authored-pii-content-roundtrip.test.ts",
       "packages/engine/src/__tests__/connection-agnostic-contact-account-pack.test.ts",
@@ -563,26 +573,27 @@
       "packages/recipes/src/__tests__/zendesk-ticket-count-truth-pack-audit.test.ts",
       "packages/recipes/src/__tests__/zendesk-ticket-reply-closure-loop.test.ts"
     ],
-    "sha256": "98d7a541cb6143b2110395abd9ce34e64ac6d4a854297b3f60d1da7710d89740",
+    "sha256": "fdd3bcf512f51bab5226037be2d1a2ae9ce66f4b7cba5f1f0544a1228fd7dcaf",
     "roots": [
       "apps/auth-worker",
       "backend/api",
       "backend/server/src/dev",
       "community",
+      "scripts",
       "distribution",
       "test/community-pack-catalog"
     ]
   },
   "internal_reference_scrub": {
-    "files_changed": 1037,
+    "files_changed": 1053,
     "rules": [
       {
         "id": "internal-spec-reference",
-        "comments_rewritten": 997
+        "comments_rewritten": 1008
       },
       {
         "id": "internal-design-document",
-        "comments_rewritten": 90
+        "comments_rewritten": 96
       },
       {
         "id": "internal-handover-note",
@@ -594,7 +605,7 @@
       },
       {
         "id": "internal-benchmark",
-        "comments_rewritten": 43
+        "comments_rewritten": 48
       },
       {
         "id": "internal-repository-root",
@@ -671,7 +682,7 @@
     "packages/warehouse-events"
   ],
   "payload": {
-    "file_count": 5677,
-    "sha256": "1f92b211562d53e71c3578b2a73a48a0c76b5dc71fab827b7a159261b1a7f84f"
+    "file_count": 5860,
+    "sha256": "faec9aecb2c3ec273d913c828019fd0a11b76f413c91660f503c1a8a3b921f4c"
   }
 }

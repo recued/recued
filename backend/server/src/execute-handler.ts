@@ -8,6 +8,8 @@
  *  ingredients will fail with INGREDIENT_ADAPTER_ALL_FAILED.
  */
 
+import { currentPreapprovalIo } from './preapproval-io-context.js';
+import { bindChatToolCallRun, observeResumedChatToolCall } from './chat-tool-call-context.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { connectionBaseUrlFromConfig } from './connection-base-url.js';
 import { createRecordsReadStepClassifier } from './audit-exempt-records-read.js';
@@ -46,7 +48,6 @@ import {
   PreflightDeniedError,
   deriveChannelSessionId,
   createCorrelationTracker,
-  evaluatePreflightAdmission,
   raiseOnAsk,
   raisePreflightAsk,
   raisePreflightNotify,
@@ -105,7 +106,6 @@ import {
   CONNECTION_DIRECT_SLUG,
   CONTRACTED_DEFAULT_TRUST_CEILING,
   operationPathTemplate,
-  deriveDispatchScope,
   computeOpenProjection,
   installContextCaller,
   deriveHeavyOpErrorCategory,
@@ -253,6 +253,7 @@ import { createBoundExecutor, createGatewayAuditEmitter, createNamespaceStores, 
 import { createCliInvocationExecutor } from './cli-invocation-executor.js';
 import type { ConnectionOperationProfileStore } from './connection-operation-profile.js';
 import { resolveCanonicalRecipeForDispatch } from './dispatch-canonical-resolve.js';
+import { mergeRecipeConfigLayers } from './recipe-effective-config.js';
 import { assertRunTargets } from './targeting-guard.js';
 import { buildPickAskInputForSlot, derivePickCandidates } from './pick-candidates.js';
 import {
@@ -266,7 +267,7 @@ import {
   type CreatePlanNotifier,
 } from './work-entity-create-plan.js';
 import { buildPackOpResolution, missingPackDependencies } from './pack-inventory.js';
-import { deriveRecipeCapability } from './derive-recipe-capability.js';
+import { deriveGrantedRecipeCoverage } from './recipe-grant-coverage.js';
 import { recipeGrantKeyFor } from './recipe-grant-identity.js';
 import type { ConnectionStoreSqlite } from './storage/connection-store.js';
 import {
@@ -294,7 +295,7 @@ import type { EnrichmentStore } from './storage/enrichment-store.js';
 import { createEnrichmentReader } from './storage/enrichment-resolver.js';
 import { createStoredRowOriginResolver } from './stored-root-origin.js';
 import type { WsClient } from './ws-server.js';
-import { remoteFileConnectionNamesIn } from './collections/file/remote-file-byte-resolver.js';
+import { createSingleOperationAdmission } from './single-operation-admission.js';
 
 /** D-153 P2.C — closed set of system-actor channels whose dispatch
  *  path runs through the Engine-boundary policy gate. The first slice
@@ -967,6 +968,11 @@ type CommitSubstrateFields = {
 };
 
 export interface ExecuteHandlerDeps {
+  preapprovalRuntime?: ReturnType<typeof import('./preapproval-execution.js').createPreapprovalExecutionRuntime>;
+  preapprovalDriver?: import('./preapproval-driver.js').PreapprovalDriver;
+  mailDraft?: import('@recued/ingredients').KernelDispatchers['mailDraft'];
+  preapprovalRequest?: (request: import('@recued/contracts').PreparePreapproval,
+    meta: import('@recued/contracts').StepMeta | undefined) => Promise<import('@recued/contracts').PreapprovalResult>;
   recipeStore: RecipeStore;
   /** Durable continuation state for MCP calls paused at an out-of-band
    * approval gate. The execution engine never reads this store; the MCP wire
@@ -1260,6 +1266,16 @@ export interface ExecuteHandlerDeps {
    *  (which also defers the server-side notification-block
    *  construction to a downstream slice). */
   preflightNotifier?: PreflightNotifier;
+  /** D-157 A.1 step 1, runtime half — the same block, threaded as the
+   *  in-doubt notifier and handed to the commit Gateway.
+   *
+   *  Until this was wired, `raiseInDoubtForSweptCommits` at boot was the only
+   *  producer of in-doubt asks, and it reads `sweepPendingToInDoubt()` — which
+   *  returns NON-TERMINAL rows only. A dispatch that settled terminal
+   *  `in_doubt` at runtime was never asked about, while the torn-saga ask told
+   *  the owner they would be. Absent ⇒ that older behaviour: the commit is
+   *  durably `in_doubt` and visible in the log, with no ask. */
+  inDoubtNotifier?: import('@recued/gateway').InDoubtNotifier;
   /** D-234 § 234.1 — where an answered admission ask is recorded and claimed.
    *
    *  ⛔ ABSENT DENIES, not admits. Without the store an `ask` ceiling has nowhere
@@ -2269,7 +2285,52 @@ const awaitExecutionOrOwnerAbort = async (
  *  request-shape problems (missing recipe, recipe_id not found).
  *  Runtime execution errors are carried inside the response's
  *  `success: false` + `errors: [...]` fields, not thrown. */
-export const handleExecute = async (
+export const handleExecute = (
+  deps: ExecuteHandlerDeps, request: ExecuteRequest, internal: InternalExecuteOverrides = {},
+): Promise<ExecuteResponse> => {
+  if (internal.preapproval_candidate !== undefined) {
+    if (internal.preapproval_run !== undefined || !deps.preapprovalRuntime) {
+      throw new RpcError('preapproval_stale', 'The automatic qualification runtime is unavailable or already claimed.', 409);
+    }
+    return deps.preapprovalRuntime.executeCandidate(internal.preapproval_candidate,
+      () => handleExecuteInner(deps, request, internal));
+  }
+  if (internal.preapproval_run !== undefined) {
+    if (!deps.preapprovalRuntime) throw new RpcError('preapproval_unsupported', 'The reviewed execution runtime is unavailable.', 503);
+    return deps.preapprovalRuntime.execute(internal.preapproval_run, () => handleExecuteInner(deps, request, internal),
+      (parent, checkpoint) => resumeReviewedParent(deps, parent, checkpoint));
+  }
+  return handleExecuteInner(deps, request, internal);
+};
+
+/** A child has already completed. Only the private ready-checkpoint claim may
+ * construct this continuation; no new approval marker is issued to the parent. */
+export const resumeReviewedParent = async (deps: ExecuteHandlerDeps,
+  parent: Awaited<ReturnType<NonNullable<ExecuteHandlerDeps['preapprovalRuntime']>['claim']>>,
+  checkpoint: Checkpoint): Promise<ExecuteResponse> => {
+  const anchor = await deps.auditLog?.get(parent.run_id);
+  if (!anchor || anchor.checkpoint_id !== checkpoint.checkpoint_id || anchor.commit_status !== 'awaiting_approval') {
+    throw new RpcError('preapproval_stale', 'The parent continuation has no matching audit anchor.', 409);
+  }
+  const authority = deps.preapprovalRuntime!.resolveOrigin(parent.handle);
+  return handleExecute(deps, { recipe_id: parent.snapshot.recipe_id, config: parent.config,
+    execution_source: parent.plan.origin.source, contract_snapshot: authority.contract_snapshot,
+    ...(anchor.context_snapshot ? { context: { ...anchor.context_snapshot } } : {}),
+    ...(anchor.trigger_source ? { trigger_source: anchor.trigger_source } : {}),
+    dispatch_depth: parent.snapshot.invocation_path.filter(segment => segment.kind === 'recipe').length - 1,
+  }, { preapproval_run: parent.handle, run_id: parent.run_id,
+    ...(checkpoint.entry_tool_name ? { entry_tool_name: checkpoint.entry_tool_name } : {}),
+    held_recipes: new Set(parent.snapshot.invocation_path.filter(segment => segment.kind === 'recipe').map(segment => segment.recipe_id)),
+    resume_from: { gated_step_id: checkpoint.gated_step_id!, step_state: checkpoint.step_state,
+      ...(checkpoint.execution_phase ? { execution_phase: checkpoint.execution_phase } : {}),
+      ...(checkpoint.trigger_state ? { trigger_state: checkpoint.trigger_state } : {}),
+      ...(checkpoint.prefetch_completed ? { prefetch_completed: checkpoint.prefetch_completed } : {}),
+      ...(checkpoint.foreach_progress ? { foreach_progress: checkpoint.foreach_progress } : {}),
+      ...(checkpoint.pii_ledgers ? { pii_ledgers: checkpoint.pii_ledgers } : {}) },
+  });
+};
+
+const handleExecuteInner = async (
   deps: ExecuteHandlerDeps,
   request: ExecuteRequest,
   /** D-157 server-wiring — internal-only overrides. Only
@@ -2528,7 +2589,8 @@ export const handleExecute = async (
           if (Object.keys(groupOverlay).length > 0 || Object.keys(dish.config_overlay).length > 0) {
             request = {
               ...request,
-              config: { ...(request.config ?? {}), ...groupOverlay, ...dish.config_overlay },
+              config: mergeRecipeConfigLayers({ requested: request.config,
+                bound_dish: { config_overlay: dish.config_overlay, group_overlay: groupOverlay } }),
             };
           }
         }
@@ -2547,7 +2609,7 @@ export const handleExecute = async (
     if (installDish && Object.keys(installDish.config_overlay).length > 0) {
       request = {
         ...request,
-        config: { ...installDish.config_overlay, ...(request.config ?? {}) },
+        config: mergeRecipeConfigLayers({ requested: request.config, install: installDish.config_overlay }),
       };
     }
   }
@@ -3028,7 +3090,7 @@ export const handleExecute = async (
   // ingredient so the resolvers can stay sync. Manifest version folds
   // into step sourceHashes so v1 → v2 upgrades retire stale entries.
   let stepCache: Parameters<typeof executeRecipe>[0]['stepCache'];
-  if (deps.executorConfig.cacheStore) {
+  if (deps.executorConfig.cacheStore && internal.preapproval_run === undefined && internal.preapproval_candidate === undefined) {
     const policyBySlug = new Map<string, { cacheable: boolean; ttl_seconds: number; category?: string }>();
     const versionBySlug = new Map<string, string | number>();
     const seqIngredientSlugs = new Set<string>();
@@ -3311,6 +3373,26 @@ export const handleExecute = async (
   // rpc execute / API caller) surfaces the deny like any other recipe
   // error.
   const executionSource = request.execution_source;
+  if (deps.preapprovalRuntime) await deps.preapprovalRuntime.assertEntry(run_id, internal.preapproval_run, internal.preapproval_candidate);
+  const bindReviewed = (handle: object) => {
+    if (!deps.preapprovalRuntime || !executionSource || !deps.commitStore) {
+      throw new RpcError('preapproval_unsupported', 'The reviewed execution gateway is unavailable.', 503);
+    }
+    return deps.preapprovalRuntime.forExecution(handle, { run_id, recipe, source: executionSource, stores,
+      ...(deps.contractOverlay ? { contractOverlay: deps.contractOverlay } : {}),
+      // Lazy: the ordinary committed executor is assembled below before any
+      // recipe operation runs. Required reads traverse that same admission,
+      // metering and adapter path, with their own claimed receipt.
+      dispatchRequiredChild: (...args) => engineExecutor(...args),
+    });
+  };
+  let reviewed = internal.preapproval_run === undefined ? undefined : bindReviewed(internal.preapproval_run);
+  if (internal.preapproval_candidate !== undefined) {
+    if (!deps.preapprovalRuntime || !executionSource || !deps.commitStore) {
+      throw new RpcError('preapproval_unsupported', 'The automatic qualification gateway is unavailable.', 503);
+    }
+    deps.preapprovalRuntime.assertCandidateEntry(internal.preapproval_candidate, { run_id, recipe, source: executionSource, stores });
+  }
 
   // D-145 engine-wiring (D-153 P1 + slice 2) — commit-substrate
   // identity. Derive the run's three-tier session IDs from the typed
@@ -3412,38 +3494,8 @@ export const handleExecute = async (
   let coverageMemo: { readonly v: RecipeCoverage | undefined } | undefined;
   const resolveRecipeCoverage = (): RecipeCoverage | undefined => {
     if (coverageMemo !== undefined) return coverageMemo.v;
-    const derived = deriveRecipeCapability(recipe, {
-      // `request.config` is the EFFECTIVE config by this point (folded back at the
-      // resolve step), so `{{config.*}}` connection refs resolve exactly as they do
-      // on the door path rather than refusing.
-      ...(request.config !== undefined ? { config: request.config } : {}),
-      // ⛔⛔ THIS RESOLVER IS THE GATE'S OWN LINE, ON PURPOSE. The gate below
-      // computes `manifest.operations[key].operation_id ?? key` for a catalog
-      // dispatch; supplying the SAME expression here is what makes the two sides
-      // speak one op-id vocabulary. A resolver sourced from the pack inventory
-      // instead would be a second derivation that can disagree — and a coverage
-      // that disagrees with the gate under-covers silently, which is the half-run
-      // this decision exists to remove.
-      //
-      // ⚠ `recipe` is the LOWERED dispatch form here (reassigned from
-      // `dispatchResolve.recipe`), so op steps are already concrete ingredient
-      // steps — the same shape the engine will dispatch and the gate will see.
-      resolveOp: (slug, operation) => [
-        deps.executorConfig.manifests.get(slug)?.operations?.[operation]?.operation_id
-          ?? operation,
-      ],
-    });
-    const v: RecipeCoverage | undefined = derived.ok
-      ? {
-          recipe_id: recipe.recipe_id,
-          operation_ids: new Set<string>([
-            ...derived.capability.operation_ids,
-            ...derived.capability.ingredient_ids
-              .map((slug) => kernelOpForBackingSlug(slug))
-              .filter((opId): opId is string => opId !== undefined),
-          ]),
-        }
-      : undefined;
+    const v = deriveGrantedRecipeCoverage(recipe, request.config,
+      slug => deps.executorConfig.manifests.get(slug));
     coverageMemo = { v };
     return v;
   };
@@ -3866,232 +3918,26 @@ export const handleExecute = async (
             // `data-file-read` ingredient dispatch would be. Returns null when
             // the slug is unknown (the gateway treats null as admit — the
             // dispatch hits the executor's own missing-manifest surface).
-            const admitOne = (
-              slug: string,
-              input: Record<string, unknown>,
-              // Grant-foundation slice 2a — the dispatch's short `operations`-map
-              // key (the Gateway forwards `surface_operation_key` for catalog
-              // surface dispatches). Resolved to the DECLARED `operation_id` below
-              // (the format a standing contract's `scope.operation_ids` is authored
-              // with — codex slice-2a fold) and threaded into the overlay resolve so
-              // a standing contract scoped to specific ops admits only those.
-              // Absent (a simple-form dispatch, or the secondary `data-file-read`
-              // probe below) ⇒ the body derives the op id from the kernel backing
-              // slug (slice 2b, `kernelOpForBackingSlug`); only a NON-kernel
-              // simple-form slug stays op-unprovable (an op-scoped contract fails
-              // closed there).
-              operationId?: string,
-            ): AdmissionDecision | null => {
-              const manifest = deps.executorConfig.manifests.get(slug);
-              if (!manifest) return null;
-              // D-161 N.4 — a source carrying a contract_id (a `contracted_user`
-              // OR a self-restricted `user_self`) forwards its snapshot; the gate
-              // throws when contract-bearing + absent. Channel-agnostic, matching
-              // the static walk above.
-              const hasContract = executionSourceHasContract(executionSource);
-              // D-166 contract_definition — resolve the active, in-scope
-              // `.<contract_id>` overlay for THIS dispatch (the per-call boundary).
-              // `cell` tightens the decision. The use-counter decrement is NOT here
-              // anymore: it moved to the gateway's actual-proceed point
-              // (`recordDispatchUse`, built below) so an approval-resumed dispatch is
-              // counted — the probe can't see that path (see the note after the
-              // `evaluatePreflightAdmission` call).
-              // Resolve the dispatched op's id for the op-admission gate
-              // (`isOpGranted`, below — the overlay no longer takes it; the op axis
-              // retired from `resolve` when `contract_grant` became the sole op
-              // authority, home #2):
-              //  - catalog / surface dispatch (operationId set) → the short
-              //    surface op key → its DECLARED `operation_id`
-              //    (`manifest.operations[key].operation_id ?? key`, the canonical
-              //    pattern — raw-op-dispatch.ts:595, saga-reconciliation.ts:257);
-              //  - simple-form dispatch (no surface key) → grant-foundation slice
-              //    2b: derive the `core.*` op id from the kernel backing slug
-              //    (`mail-send` → `core.mail.send`) so an op-scoped standing
-              //    contract can match kernel ops. A non-kernel simple-form slug
-              //    stays undefined → the op gate is a no-op (returns granted), so
-              //    the policy decision stands unchanged.
-              // Catalog vs core.* are mutually exclusive (catalog sets the surface
-              // key, core.* leaves it undefined), so the branches never race.
-              const overlayOpId =
-                operationId !== undefined
-                  ? manifest.operations?.[operationId]?.operation_id ?? operationId
-                  : kernelOpForBackingSlug(slug);
-              // M-ENFORCE-2 — derive the `data.*` / `connection.*` scope path this
-              // dispatch targets from the manifest kind + the RESOLVED `input`
-              // (`input.connection_kind` for a connection call — the same value the
-              // adapter dispatches on). `null` (every non-storage/-connection kind)
-              // means "scope axis N/A"; `evaluatePreflightAdmission` then gates it
-              // against the snapshot's `scope_restrictions` (slice 5: the per-door
-              // collection fence, now derived from `data.<collection>` grant rows).
-              const scopePath = deriveDispatchScope(
-                { kind: manifest.kind, slug },
-                input,
-              );
-              const ownerOverride = !isCatalogForm(manifest)
-                ? readOwnerOperationOverride({
-                    scan: deps.contractScan,
-                    ingredient_id: slug,
-                    operation_id: slug,
-                  })
-                : undefined;
-              const preflightDecision = evaluatePreflightAdmission({
-                source: executionSource,
-                tool: {
-                  slug,
-                  kind: manifest.kind,
-                  risk_tier: manifest.risk_tier,
-                },
-                ...(hasContract && request.contract_snapshot !== undefined
-                  ? { contract_snapshot: request.contract_snapshot }
-                  : {}),
-                // § 20.19 — ACCESS ONLY. The op-risk half of this decision still
-                // runs, so a granted recipe's `write` still meets the `ask` floor.
-                ...(grantedRecipeSteps ? { granted_recipe_steps: true } : {}),
-                // M-ENFORCE-2 — the derived `data.*` / `connection.*` scope path,
-                // gated against the snapshot's `scope_restrictions` (the per-door
-                // collection fence). Rate-limit throttling was the deferred SIBLING
-                // axis and is now retired: the policy-matrix retirement removed the
-                // cell-level rpm/daily ceiling + the `evaluateRateLimit` primitive.
-                // Dispatch volume stays AUDITED (every dispatch writes a commit row),
-                // reconstructable from the commit log after the fact.
-                ...(scopePath !== null ? { scope_path: scopePath } : {}),
-                // D-211 §7.2 — simple-form ingredients are one operation keyed
-                // by their slug. Catalog-form dispatch is ruled later by the
-                // catalog gateway against the resolved operation id, so never
-                // apply an ingredient-level approximation here.
-                ...(ownerOverride !== undefined
-                  ? { owner_override: ownerOverride }
-                  : {}),
-              });
-              // D-187 AMENDMENT 3b — op-admission grant gate. Layer the unified grant
-              // store's `op` entry ON TOP of the policy decision: if the dispatch's
-              // governing contract (the owner for `(chat | messenger, user_self)`, a door
-              // for a `contracted_user`, none for the contract-free HID / system channels)
-              // holds an explicit REVOKE for this op, DENY (`op_not_granted`) — even when
-              // the cell + snapshot would admit. The gate can only TIGHTEN: a `deny` stays
-              // a deny, and an undefined `overlayOpId` / contract-free source is a no-op
-              // (the gate returns granted). The owner is permissive by default + the boot
-              // reconcile seeds it complete, so this denies only an explicit owner revoke
-              // (or a future door revoke) — behavior-preserving at zero installs.
-              // D-188 — the master pause is a COARSER gate than the per-op
-              // grant: when the server is paused, every GOVERNED dispatch
-              // (owner-AI + doors) is frozen regardless of its grant rows.
-              // Checked first so a paused server reads as `server_paused`
-              // (its honest reason), never `op_not_granted`. Contract-free
-              // sources bypass (see `isFrozenByPause`).
-              if (
-                preflightDecision.verdict !== 'deny'
-                && deps.opAdmissionGate?.isFrozenByPause(executionSource)
-              ) {
-                return Object.freeze({
-                  verdict: 'deny',
-                  code: 'server_paused',
-                  detail:
-                    'server is paused — contracted and AI operations are halted until the owner resumes',
-                });
-              }
-              // ── D-247 D5 — THE SECOND CONSUMER OF THE ONE COVERAGE PREDICATE ──
-              //
-              // Before D-247 this gate was the layer coverage did NOT reach: the
-              // static walk consulted `grantedRecipeCoversSteps` and this one did
-              // not, so a granted recipe whose middle op was revoked ran step 1
-              // (side effects and all) and died at step 2 with a message naming
-              // neither the recipe nor a remedy. `policy-gate.ts` states the rule
-              // the two now share: the enforcement layers "must answer this
-              // identically or a step admitted by one is refused by the next".
-              //
-              // ⛔ IMPORTED, NEVER RE-DERIVED. A second copy of this predicate is
-              // the drift the shared export exists to prevent.
-              //
-              // ⚠ ACCESS ONLY (D4). `admitByOpRisk` has already run in
-              // `preflightDecision`; a covered `write` still meets the `ask` floor
-              // and a covered `destructive` still gates. Coverage moves the ACCESS
-              // answer and nothing else — the contract gates the entrance, not the
-              // internals.
-              const coveredByRecipeGrant =
-                grantedRecipeSteps
-                && (coverageIsInherited
-                  || recipeCoversOp(recipe.recipe_id, overlayOpId, resolveRecipeCoverage()));
-              // ── D-247 D13 — THE COVERAGE LEDGER ──────────────────────────
-              //
-              // Written HERE, at the admission point, because this is the one
-              // place both step kinds pass through AND the only place the BASIS
-              // is known by construction. The `connection_gateway` row is
-              // downstream of a branch that only canonical op steps take, and
-              // threading the basis to two emitters means forgetting the one
-              // with no row today.
-              //
-              // ⚠ Only when coverage is what admitted it — an op holding its own
-              // grant writes nothing. And only when the op's own grant said NO:
-              // `coveredByRecipeGrant` is computed above regardless, so the
-              // `isOpGranted` re-ask is what makes this "ONLY because".
-              if (
-                coveredByRecipeGrant
-                && deps.auditLog !== undefined
-                && deps.opAdmissionGate !== undefined
-                && !deps.opAdmissionGate.isOpGranted(executionSource, overlayOpId)
-              ) {
-                void deps.auditLog
-                  .logActivity({
-                    activity_id: `rca_${String(overlayOpId)}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-                    timestamp: Date.now(),
-                    action: 'recipe_coverage_admission',
-                    target: String(overlayOpId),
-                    detail: JSON.stringify({
-                      granting_recipe: grantedByRecipe,
-                      recipe_id: recipe.recipe_id,
-                      run_id: lifecycle_run_id,
-                    }),
-                  })
-                  // Audit back-pressure never breaks a dispatch — the same rule
-                  // the gateway emitter states.
-                  .catch(() => {});
-              }
-              if (
-                preflightDecision.verdict !== 'deny'
-                && deps.opAdmissionGate
-                && !deps.opAdmissionGate.isOpGranted(executionSource, overlayOpId)
-                && !coveredByRecipeGrant
-              ) {
-                return Object.freeze({
-                  verdict: 'deny',
-                  code: 'op_not_granted',
-                  detail: `operation '${String(overlayOpId)}' is not granted to this dispatch's governing contract (revoked)`,
-                });
-              }
-              // ⛔⛔ THE CONNECTION FENCE — `scope.connection_names`, which until now was
-              // DERIVED, STORED, RENDERED AND NEVER READ for a standing door. Census
-              // 2026-08-29: two production callers of `contractScopeMatches` — the
-              // session-grant resolver (threads `connection_name`, enforces it) and the
-              // overlay's metering probe (states outright that it does not). Meanwhile
-              // `derive-recipe-capability` goes out of its way to COMPLETE the axis so
-              // "the fence would bite", and nothing bit.
-              //
-              // ⛔ IT CANNOT LIVE IN `scope_restrictions`. `connection.*` is
-              // unconditionally kept by `SCOPE_FENCE_KEEP_PATTERNS`, so the path fence
-              // can never narrow a connection — this axis is the only place the control
-              // exists.
-              //
-              // 🔑 ASKED HERE BECAUSE THIS IS WHERE BOTH FACTS MEET: the gate has the
-              // `ExecutionSource` (so it knows the door) AND the RESOLVED input (so it
-              // knows which connection the dispatch is about to use). The remote-byte
-              // resolver has the second and not the first, which is why the
-              // `core.storage.file.fetch-remote` gate one layer down had to be
-              // server-wide.
-              if (preflightDecision.verdict !== 'deny' && deps.contractOverlay !== undefined) {
-                for (const connectionName of remoteFileConnectionNamesIn(input)) {
-                  if (deps.contractOverlay.admitsConnection(executionSource, connectionName)) {
-                    continue;
-                  }
-                  return Object.freeze({
-                    verdict: 'deny',
-                    code: 'connection_not_in_scope',
-                    detail: `this dispatch reads a file from connection '${connectionName}', which this dispatch's governing contract does not admit`,
-                  });
-                }
-              }
-              return preflightDecision;
-            };
+            const admitOne = createSingleOperationAdmission({
+              source: executionSource,
+              manifest: slug => deps.executorConfig.manifests.get(slug),
+              contract_snapshot: request.contract_snapshot,
+              contractScan: deps.contractScan,
+              opAdmissionGate: deps.opAdmissionGate,
+              contractOverlay: deps.contractOverlay,
+              granted_recipe_steps: grantedRecipeSteps,
+              recipeCoversOp: opId => coverageIsInherited
+                || recipeCoversOp(recipe.recipe_id, opId, resolveRecipeCoverage()),
+              onRecipeCoverage: overlayOpId => {
+                if (!deps.auditLog) return;
+                void deps.auditLog.logActivity({
+                  activity_id: `rca_${String(overlayOpId)}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+                  timestamp: Date.now(), action: 'recipe_coverage_admission', target: String(overlayOpId),
+                  detail: JSON.stringify({ granting_recipe: grantedByRecipe,
+                    recipe_id: recipe.recipe_id, run_id: lifecycle_run_id }),
+                }).catch(() => {});
+              },
+            });
             return (
               slug: string,
               input: Record<string, unknown>,
@@ -4201,7 +4047,7 @@ export const handleExecute = async (
                 // pausable mail-send ask is ever created — a read that needs
                 // approval must be granted to `data-file-read` directly, not ridden
                 // on the mail-send approval.
-                if (fileReadDecision.verdict === 'ask') {
+                if (fileReadDecision.verdict === 'ask' && !currentPreapprovalIo()?.coversMailAttachmentAsks(input)) {
                   return {
                     verdict: 'deny',
                     code: 'tool_not_in_contract',
@@ -4217,7 +4063,7 @@ export const handleExecute = async (
                 // there is no conflation risk — and verbatim preserves the SPECIFIC
                 // cause (allowlist `tool_not_in_contract` or scope
                 // `scope_not_in_restrictions` on `data.file`) for the audit/error.
-                if (fileReadDecision.verdict !== 'admit') {
+                if (fileReadDecision.verdict === 'deny') {
                   return fileReadDecision;
                 }
               }
@@ -4280,7 +4126,7 @@ export const handleExecute = async (
                         + `(D-172 review F2.C / P1 cache-bypass fold)`,
                     };
                   }
-                  if (fileRefDecision.verdict === 'ask') {
+                  if (fileRefDecision.verdict === 'ask' && !currentPreapprovalIo()?.coversAiFileAsk(input, extractFileRecordId(resolvedAi.d)!)) {
                     return {
                       verdict: 'deny',
                       code: 'tool_not_in_contract',
@@ -4291,7 +4137,7 @@ export const handleExecute = async (
                         + `(D-172 P1 cache-bypass fold)`,
                     };
                   }
-                  if (fileRefDecision.verdict !== 'admit') {
+                  if (fileRefDecision.verdict === 'deny') {
                     return fileRefDecision;
                   }
                 }
@@ -4457,6 +4303,7 @@ export const handleExecute = async (
       || POLICY_GATED_USER_CHANNELS.has(executionSource.channel)
       || POLICY_GATED_CONTRACT_CHANNELS.has(executionSource.channel))
       ? (slug: string): void => {
+          if (deps.preapprovalRuntime?.recordDispatchUse(executionSource, slug, overlayForUse)) return;
           // Meter the contract's use iff the overlay reports this dispatch meterable.
           // No op id is threaded: the metering op axis RETIRED (home #2 —
           // `contract_grant` owns op admission), so `shouldMeterUse` gates on
@@ -5028,6 +4875,7 @@ export const handleExecute = async (
   const ingredientExecutor = createBoundExecutor(
     {
       ...deps.executorConfig,
+      ...(reviewed || internal.preapproval_candidate ? { cacheStore: undefined } : {}),
       observeConnectionAudit,
       ...(gatedFileRead ? { fileRead: gatedFileRead } : {}),
     },
@@ -5126,6 +4974,12 @@ export const handleExecute = async (
     commitGatewayActive
       ? wrapWithCommitGateway(cacheAwareGatewayInner(ingredientExecutor), {
           commitStore: deps.commitStore!,
+          ...(deps.inDoubtNotifier ? { inDoubtNotifier: deps.inDoubtNotifier } : {}),
+          // Names the operation in the in-doubt ask instead of the catalog slug.
+          getManifest: (slug) => deps.executorConfig.manifests.get(slug) ?? undefined,
+          ...(reviewed || internal.preapproval_candidate ? { reviewedDispatch: {
+            resolve: async (call) => reviewed?.reviewedDispatch.resolve(call) ?? null,
+          } } : {}),
           identity: runIdentity,
           runAbortSignal: killController.signal,
           getIngredientCategory: (slug) =>
@@ -5336,6 +5190,7 @@ export const handleExecute = async (
   // `finally` then skips the temp sweep on a resumable pause and lets the
   // terminal invocation reclaim the scratch root.
   let resumablePause = false;
+  let resumedChatCall: ReturnType<typeof observeResumedChatToolCall>;
   try {
   if (registerLiveRun && runningActionKey !== undefined) {
     const claim = deps.inFlightRegistry!.claimRunningTwin(runningActionKey, run_id);
@@ -5346,6 +5201,15 @@ export const handleExecute = async (
   if (registerLiveRun) {
     const sessionId = deriveChannelSessionId(executionSource);
     const declaration = liveRunDeclaration(recipe, deps.executorConfig.manifests);
+    const originalProgress = bindChatToolCallRun(run_id, recipe.recipe_id);
+    if (internal.resume_from !== undefined) {
+      resumedChatCall = observeResumedChatToolCall(deps.db, executionSource, run_id);
+    }
+    const onProgress = resumedChatCall ? (at: number, stalled: boolean) => {
+      const changed = resumedChatCall!.progress(at, stalled);
+      if (changed) emitExecution(deps.eventBus, { recipe_id: recipe.recipe_id, run_id, op: 'progress' });
+      return originalProgress?.(at, stalled) || changed;
+    } : originalProgress;
     deps.inFlightRegistry!.registerRun({
       run_id,
       recipe_id: recipe.recipe_id,
@@ -5356,6 +5220,7 @@ export const handleExecute = async (
       ...(sessionId ? { session_id: sessionId } : {}),
       started_at: Date.now(),
       abort: () => killController.abort(),
+      ...(onProgress ? { onProgress } : {}),
     });
     liveRunRegistered = true;
   }
@@ -5404,7 +5269,24 @@ export const handleExecute = async (
   }
     const executionStartedAt = Date.now();
     const execution = executeRecipe({
+      ...(internal.entry_tool_name !== undefined ? { entry_tool_name: internal.entry_tool_name } : {}),
+      ...(grantedByRecipe !== undefined ? { governing_recipe_grant: grantedByRecipe } : {}),
       recipe,
+      ...(reviewed ? { reviewedExecution: reviewed.reviewedExecution, preapprovalAddressing: reviewed.preapprovalAddressing } : {}),
+      ...(internal.preapproval_candidate || internal.after_auto_run_qualification ? {
+        afterTriggerQualification: async () => {
+          if (internal.preapproval_candidate !== undefined) {
+            const claimed = await deps.preapprovalRuntime!.qualifyAutoRun(internal.preapproval_candidate,
+              { run_id, recipe, source: executionSource!, stores });
+            // Checkpoint writers and the Commit gateway now share this exact
+            // run; no earlier ordinary poll call is retrospectively approved.
+            internal.preapproval_run = claimed.handle;
+            reviewed = bindReviewed(claimed.handle);
+            return { reviewedExecution: reviewed.reviewedExecution, preapprovalAddressing: reviewed.preapprovalAddressing };
+          }
+          internal.after_auto_run_qualification?.();
+        },
+      } : {}),
       outputRecipeHash: authoredRecipeHash,
       stores,
       ...(contextRecipeSnapshot !== null ? { contextRecipeSnapshot } : {}),
@@ -5589,6 +5471,9 @@ export const handleExecute = async (
       // adding one hop, and the run would look identical from the outside.
       // That is why the drive test asserts on the contract B's audit row
       // carries, not on B having run.
+      // D-261 continuations re-resolve this same C and bearer for the child's
+      // independently pinned recipe grant. The root-only narrowed snapshot
+      // cannot represent that grant; neither C nor the execution source changes.
       //
       // NOT inherited, deliberately: `config` is the op's args (the callee
       // declares its own variables), `context` is dropped (page / client state
@@ -5597,17 +5482,18 @@ export const handleExecute = async (
       // audit anchor, checkpoint and provenance rather than overwriting the
       // caller's.
       localRecipeInvoker: async (call) => {
+        const reviewedChild = internal.preapproval_run === undefined ? undefined
+          : await deps.preapprovalRuntime!.nested(internal.preapproval_run, call);
         const nested = await handleExecute(
           deps,
           {
             recipe_id: call.recipe_id,
-            config: call.args,
+            config: reviewedChild?.config ?? call.args,
             ...(request.execution_source !== undefined
               ? { execution_source: request.execution_source }
               : {}),
-            ...(request.contract_snapshot !== undefined
-              ? { contract_snapshot: request.contract_snapshot }
-              : {}),
+            ...(reviewedChild ? deps.preapprovalRuntime!.resolveOrigin(reviewedChild.handle)
+              : request.contract_snapshot !== undefined ? { contract_snapshot: request.contract_snapshot } : {}),
             ...(typeof request.trigger_source === 'string'
               ? { trigger_source: request.trigger_source }
               : {}),
@@ -5616,8 +5502,12 @@ export const handleExecute = async (
             // ceiling never sees the tree it exists to bound.
             dispatch_depth: (request.dispatch_depth ?? 0) + 1,
           },
-          { held_recipes: call.held_recipes },
+          { held_recipes: call.held_recipes,
+            ...(reviewedChild ? { preapproval_run: reviewedChild.handle, run_id: reviewedChild.run_id } : {}),
+            ...(internal.entry_tool_name !== undefined ? { entry_tool_name: internal.entry_tool_name } : {}),
+          },
         );
+        if (reviewedChild) deps.preapprovalRuntime!.nestedReturned(internal.preapproval_run!, reviewedChild.handle, nested);
         // ⛔ A NESTED RUN THAT FAILED MUST FAIL THE CALLING STEP. The gateway
         // refuses the two shapes that read as results without being ones — a
         // pause, and `success:false` with no errors — but an ordinary failure
@@ -5943,6 +5833,9 @@ export const handleExecute = async (
         ? {
             resumeFrom: {
               gated_step_id: internal.resume_from.gated_step_id,
+              ...(internal.resume_from.execution_phase ? { execution_phase: internal.resume_from.execution_phase } : {}),
+              ...(internal.resume_from.trigger_state ? { trigger_state: internal.resume_from.trigger_state } : {}),
+              ...(internal.resume_from.prefetch_completed ? { prefetch_completed: internal.resume_from.prefetch_completed } : {}),
               ...(internal.resume_from.foreach_progress !== undefined
                 ? { foreach_progress: internal.resume_from.foreach_progress }
                 : {}),
@@ -6508,9 +6401,11 @@ export const handleExecute = async (
           const checkpoint: Checkpoint = {
             checkpoint_id: randomUUID(),
             run_id,
+            ...(internal.entry_tool_name !== undefined ? { entry_tool_name: internal.entry_tool_name } : {}),
             recipe_id: recipe.recipe_id,
             recipe_source_hash: authoredRecipeHash,
             gated_step_id,
+            ...(awaitingApproval.preapproval_nested_wait ? { preapproval_nested_wait: awaitingApproval.preapproval_nested_wait } : {}),
             // D-165 follow-on (op-identity binding) — capture the resolved
             // identity the user is approving so resume re-verifies the call
             // before honoring it. The catalog gate surfaces the full triple;
@@ -6532,6 +6427,11 @@ export const handleExecute = async (
               ? { preflight_context: preflightContext }
               : {}),
             step_state: awaitingApproval.step_state,
+            ...(awaitingApproval.execution_phase === 'trigger' && internal.auto_run_qualification
+              ? { auto_run_qualification: internal.auto_run_qualification } : {}),
+            ...(awaitingApproval.execution_phase ? { execution_phase: awaitingApproval.execution_phase } : {}),
+            ...(awaitingApproval.trigger_state ? { trigger_state: awaitingApproval.trigger_state } : {}),
+            ...(awaitingApproval.prefetch_completed ? { prefetch_completed: awaitingApproval.prefetch_completed } : {}),
             ...(awaitingApproval.foreach_progress !== undefined
               ? { foreach_progress: awaitingApproval.foreach_progress }
               : {}),
@@ -6578,12 +6478,14 @@ export const handleExecute = async (
               : {}),
             created_at: Date.now(),
           };
-          await deps.checkpointStore.write(checkpoint);
+          if (internal.preapproval_run !== undefined) await deps.preapprovalRuntime!.writeCheckpoint(internal.preapproval_run, checkpoint);
+          else if (internal.preapproval_candidate !== undefined) await deps.preapprovalRuntime!.writeCandidateCheckpoint(internal.preapproval_candidate, checkpoint);
+          else await deps.checkpointStore.write(checkpoint);
           checkpointId = checkpoint.checkpoint_id;
           // D-185 Slice 2 — the run is durably paused and WILL resume under this
           // same `run_id`; keep its temp scratch alive across the pause.
           resumablePause = true;
-          if (deps.preflightNotifier) {
+          if (deps.preflightNotifier && !awaitingApproval.preapproval_nested_wait) {
             const preflightNotifier = deps.preflightNotifier;
             // Do not create an actionable ask until the awaiting audit anchor
             // exists. Approval without that anchor is a destructive no-op: the
@@ -6962,10 +6864,21 @@ export const handleExecute = async (
           const peerCheckpoint = {
             checkpoint_id: randomUUID(),
             run_id,
+            ...(internal.entry_tool_name !== undefined ? { entry_tool_name: internal.entry_tool_name } : {}),
             recipe_id: recipe.recipe_id,
             recipe_source_hash: authoredRecipeHash,
             gated_step_id: awaitingPeer.gated_step_id,
             step_state: awaitingPeer.step_state,
+            // This question already passed this owner's exact gated attempt.
+            // Its peer answer resumes that same operation to read the durable
+            // reply; losing the target would ask the owner to send it again.
+            ...(resumedPeerActionPending && internal.resume_from?.approved_target !== undefined
+              ? { approved_target: structuredClone(internal.resume_from.approved_target) } : {}),
+            ...(awaitingPeer.execution_phase === 'trigger' && internal.auto_run_qualification
+              ? { auto_run_qualification: internal.auto_run_qualification } : {}),
+            ...(awaitingPeer.execution_phase ? { execution_phase: awaitingPeer.execution_phase } : {}),
+            ...(awaitingPeer.trigger_state ? { trigger_state: awaitingPeer.trigger_state } : {}),
+            ...(awaitingPeer.prefetch_completed ? { prefetch_completed: awaitingPeer.prefetch_completed } : {}),
             ...(awaitingPeer.foreach_progress !== undefined
               ? { foreach_progress: awaitingPeer.foreach_progress }
               : {}),
@@ -6979,7 +6892,9 @@ export const handleExecute = async (
               : {}),
             created_at: Date.now(),
           };
-          await deps.checkpointStore.write(peerCheckpoint as never);
+          if (internal.preapproval_run !== undefined) await deps.preapprovalRuntime!.writeCheckpoint(internal.preapproval_run, peerCheckpoint);
+          else if (internal.preapproval_candidate !== undefined) await deps.preapprovalRuntime!.writeCandidateCheckpoint(internal.preapproval_candidate, peerCheckpoint);
+          else await deps.checkpointStore.write(peerCheckpoint as never);
           checkpointId = peerCheckpoint.checkpoint_id;
 
           // ── DELIVERY, DEFERRED ────────────────────────────────────────
@@ -7076,6 +6991,7 @@ export const handleExecute = async (
                 + `'${persisted.connection}' via ${persisted.delivery!.spec.via}`,
               );
               const recovered = await recoverPeerAskDelivery(persisted, {
+                canPublishReviewedCheckpoint: checkpoint => deps.preapprovalRuntime?.canPublishCheckpoint(checkpoint.checkpoint_id) ?? false,
                 outbox,
                 auditLog: deps.auditLog!,
                 checkpoints: deps.checkpointStore!,
@@ -7437,6 +7353,7 @@ export const handleExecute = async (
           entry.commit_status === 'awaiting_approval'
           && checkpointId !== undefined
           && result.awaiting_approval !== undefined
+          && result.awaiting_approval.preapproval_nested_wait === undefined
           && deps.gatedActionStore !== undefined
         ) {
           try {
@@ -7532,14 +7449,15 @@ export const handleExecute = async (
         // same reason: the question may only leave once the hold that will catch
         // its answer is durable.
         if (entry.commit_status === 'awaiting_peer') {
-          const delivery = await deliverPeerAskAfterAnchor?.() ?? {
-            kind: 'in_doubt' as const,
-            status_message: 'The approved question is held, but no peer-delivery attempt was available.',
-            result: {
-              exchange_ref: result.awaiting_peer?.exchange_ref ?? '',
-              status: 'in_doubt',
-              reason: 'peer_delivery_not_available',
-            },
+          const publish = async () => {
+            const delivery = await deliverPeerAskAfterAnchor?.() ?? {
+              kind: 'in_doubt' as const,
+              status_message: 'The approved question is held, but no peer-delivery attempt was available.',
+              result: {
+                exchange_ref: result.awaiting_peer?.exchange_ref ?? '',
+                status: 'in_doubt',
+                reason: 'peer_delivery_not_available',
+              },
           };
           if (stagedPeerAsk !== undefined) {
             // The journal worker owns receipt settlement. In particular an
@@ -7547,7 +7465,7 @@ export const handleExecute = async (
             // being frozen `in_doubt` while the exact send plan still exists.
             resumedPeerActionPending = false;
             if (delivery.kind === 'failed') {
-              const terminal = await deps.auditLog.get(entry.run_id);
+              const terminal = await deps.auditLog!.get(entry.run_id);
               if (terminal?.commit_status !== 'failed') {
                 throw new Error('peer refusal did not retain its terminal run anchor');
               }
@@ -7581,41 +7499,50 @@ export const handleExecute = async (
             );
             resumedPeerActionPending = false;
           }
+          };
+          if (internal.preapproval_run && checkpointId) await deps.preapprovalRuntime!.publishCheckpoint(internal.preapproval_run, checkpointId, publish);
+          else await publish();
         }
         if (entry.commit_status === 'awaiting_approval') {
           heldActionDurable = true;
-          // The durable anchor is the authorization boundary. Only now may an
-          // actionable ask (or batch membership) be created. Persist the ask
-          // pointer as a follow-up best-effort rewrite; if that rewrite fails,
-          // the already-durable checkpoint + anchor remain safely resumable and
-          // the boot sweep can reconcile the missing pointer.
-          await raisePreflightAskAfterAnchor?.();
-          if (heldActionReceiptRef !== undefined && askId !== undefined) {
-            await updateGatedActionReceipt(
-              deps.gatedActionStore,
-              heldActionReceiptRef,
-              (actions, ref) => actions.linkApproval(
-                ref,
-                heldApprovalRef ?? ref,
-                askId,
-              ),
-            );
-          }
-          if (askId !== undefined) {
-            const entryWithAsk = { ...entry, ask_id: askId };
-            try {
-              await deps.auditLog.append(entryWithAsk);
-              entry = entryWithAsk;
-            } catch (askPointerError) {
-              const degraded = markResultDegraded('audit_unwritten');
-              logRunObservabilityWriteFailure({
-                run_id,
-                failed_write: 'audit_append',
-                degraded: 'audit_unwritten',
-                all_degraded: degraded,
-                error: askPointerError,
-              });
+          const publish = async () => {
+            // The durable anchor is the authorization boundary. Only now may an
+            // actionable ask (or batch membership) be created. Persist the ask
+            // pointer as a follow-up best-effort rewrite; if that rewrite fails,
+            // the already-durable checkpoint + anchor remain safely resumable and
+            // the boot sweep can reconcile the missing pointer.
+            await raisePreflightAskAfterAnchor?.();
+            if (heldActionReceiptRef !== undefined && askId !== undefined) {
+              await updateGatedActionReceipt(
+                deps.gatedActionStore,
+                heldActionReceiptRef,
+                (actions, ref) => actions.linkApproval(
+                  ref,
+                  heldApprovalRef ?? ref,
+                  askId,
+                ),
+              );
             }
+            if (askId !== undefined) {
+              const entryWithAsk = { ...entry, ask_id: askId };
+              try {
+                await deps.auditLog!.append(entryWithAsk);
+                entry = entryWithAsk;
+              } catch (askPointerError) {
+                const degraded = markResultDegraded('audit_unwritten');
+                logRunObservabilityWriteFailure({
+                  run_id,
+                  failed_write: 'audit_append',
+                  degraded: 'audit_unwritten',
+                  all_degraded: degraded,
+                  error: askPointerError,
+                });
+              }
+            }
+          };
+          if (!result.awaiting_approval?.preapproval_nested_wait) {
+            if (internal.preapproval_run && checkpointId) await deps.preapprovalRuntime!.publishCheckpoint(internal.preapproval_run, checkpointId, publish);
+            else await publish();
           }
         }
         // D-121 Phase 6 — memory event for the audit row.
@@ -7822,6 +7749,7 @@ export const handleExecute = async (
             ? { awaiting_peer: true }
             : undefined;
     const isDurablyPaused = durablePauseMarker !== undefined;
+    if (isDurablyPaused) resumedChatCall?.hold();
     if (!result.trigger_skipped && !isDurablyPaused) {
       const terminalSuccess = result.success && !pauseFailureError;
       emitExecution(deps.eventBus, {
@@ -8036,6 +7964,9 @@ export const handleExecute = async (
       500,
     );
   } finally {
+    // The late-result sink closes terminal calls. Until its result is saved,
+    // an abandoned resume must remain visible as unconfirmed, never "held".
+    resumedChatCall?.interrupt();
     if (runningTwinLeader && !runningTwinSettled) {
       deps.inFlightRegistry!.settleRunningTwin(run_id, {
         status: 'failed',

@@ -76,9 +76,20 @@ describe('D-139 P3 — engagement_velocity_signal topic registration', () => {
     expect(def.default_trust_state).toBe('auto');
     expect(def.default_pool_policy).toBe('free_only');
   });
-  it('producer_kind = reactive + policy = aggregate', () => {
+  it('producer_kind = housekeeping + policy = aggregate', () => {
+    // ⛔ WAS `'reactive'` until slice 3 (2026-09-09). `producer_kind` is not
+    // a taxonomy of when a signal "feels" live — it decides which execution
+    // mode owns the topic, and Settings → Housekeeping renders a reactive
+    // entry as "live, N events processed" with NO Run-Now affordance. This
+    // topic is now produced by a REGISTERED housekeeping task
+    // (`engagementVelocitySignalTask`), so `'reactive'` had become a claim
+    // about the substrate that the substrate contradicted — the owner would
+    // have been shown a row they could not run.
+    //
+    // Trust is unaffected either way: `resolveEnrichmentTrustDefault` gives
+    // a deterministic topic `'auto'` under both kinds.
     const def = ENRICHMENT_REGISTRY.engagement_velocity_signal;
-    expect(def.producer_kind).toBe('reactive');
+    expect(def.producer_kind).toBe('housekeeping');
     expect(def.policy).toBe('aggregate');
   });
   it('aggregate window is 90d (full fold) + axis event_time per § A.9.1 + Codex P2 #2 fold', () => {

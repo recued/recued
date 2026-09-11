@@ -713,6 +713,8 @@ export type ActivityAction =
   // carries `{layer}` so the audit feed can render "set chat model to BYOK".
   // Non-reserve: settings-style breadcrumb.
   | 'chat_default_model_pref_set'
+  | 'chat_rolling_brief_set'
+  | 'chat_session_brief_cleared'
   // D-137 W2.3 § A.1.1 + § A.10 — Mary saved a per-connection MCP tool
   // annotation. `target` = `<connection_name>`; `detail` carries
   // `{topic_tag_count, override_count, classified_count, cached_tool_-

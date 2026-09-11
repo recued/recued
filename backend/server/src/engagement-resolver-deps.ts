@@ -25,7 +25,12 @@ import {
   type CoverageDegradedEntry,
   type CoverageMetadata,
   type CoverageStaleEntry,
+  type EngagementEdgeTargetKind,
+  type EngagementEdgeType,
+  type EngagementsForRecordArgs,
   type EngagementsResolverArgs,
+  type EngagementsResolverFilters,
+  getVendorEntityForScope,
   type SourceDegradationReason,
 } from '@recued/contracts';
 import type { ContactStore } from './storage/contact-store.js';
@@ -136,6 +141,74 @@ export type EngagementsResolverDepsBuilder = (
   args: EngagementsResolverArgs,
 ) => ResolvedEngagementsDeps;
 
+/** The bundle `resolveEngagementsForRecord` consumes — the record root has
+ *  one id, so no identity callbacks. */
+export interface ResolvedRecordEngagementsDeps {
+  now: () => number;
+  coverage: CoverageMetadata;
+  resolveMailTwins?: MailTwinResolver;
+  resolveVendorRegistry?: () => ReadonlyArray<ConnectionVendorEntity>;
+}
+
+export type RecordEngagementsDepsBuilder = (
+  args: EngagementsForRecordArgs,
+) => ResolvedRecordEngagementsDeps;
+
+/** Record-root deps builder. Coverage is composed over the SAME edge
+ *  selector the resolver will use — `crm_alias` from the scope, exactly as
+ *  `resolveEngagementsForRecord` derives it — so the row counts describe
+ *  the query they accompany rather than some neighbouring set.
+ *
+ *  ⚠ An unresolvable scope yields a `null` selector: coverage degrades to
+ *  enrollment-only rather than guessing, and the resolver then THROWS on
+ *  the same scope, which is where the caller learns about it. */
+export const buildRecordEngagementsDeps = (
+  input: EngagementsResolverDepsInput,
+): RecordEngagementsDepsBuilder => {
+  const resolveMailTwins = input.resolveMailTwins;
+  return (args) => {
+    const registry = input.resolveVendorRegistry?.() ?? CONNECTION_VENDOR_ENTITIES;
+    const entry = getVendorEntityForScope(args.scope, registry);
+    const selector: CoverageEdgeSelector | null =
+      entry !== null && entry.crm_alias !== undefined
+        ? {
+            edge_type: entry.crm_alias,
+            target_kind: 'connection.api',
+            target_ids: [args.target_id],
+          }
+        : null;
+    const deps: ResolvedRecordEngagementsDeps = {
+      now: input.now,
+      coverage: buildEngagementCoverage(input, args, selector),
+    };
+    if (resolveMailTwins !== undefined) deps.resolveMailTwins = resolveMailTwins;
+    if (input.resolveVendorRegistry !== undefined) {
+      deps.resolveVendorRegistry = input.resolveVendorRegistry;
+    }
+    return deps;
+  };
+};
+
+/** The contact root's coverage selector: survivor chain + D-138 member
+ *  expansion, the same walk the resolver runs. `null` on an invalid
+ *  redirect chain — the resolver throws on that walk and surfaces the
+ *  error, so coverage degrades to enrollment-only rather than guessing. */
+export const contactCoverageSelector = (
+  email: string,
+  resolveContactRedirect: ContactRedirectLookup,
+  expandContactIdentity: ContactIdentityExpansion,
+): CoverageEdgeSelector | null => {
+  let survivor: string;
+  try {
+    survivor = resolveContactIdentity(email, resolveContactRedirect).canonical_email;
+  } catch {
+    return null;
+  }
+  const members = new Set<string>(expandContactIdentity(survivor));
+  members.add(survivor);
+  return { edge_type: 'contact', target_ids: [...members] };
+};
+
 export const buildEngagementsResolverDeps = (
   input: EngagementsResolverDepsInput,
 ): EngagementsResolverDepsBuilder => {
@@ -171,8 +244,7 @@ export const buildEngagementsResolverDeps = (
       coverage: buildEngagementCoverage(
         input,
         args,
-        resolveContactRedirect,
-        expandContactIdentity,
+        contactCoverageSelector(args.email, resolveContactRedirect, expandContactIdentity),
       ),
     };
     if (resolveMailTwins !== undefined) deps.resolveMailTwins = resolveMailTwins;
@@ -202,14 +274,27 @@ export const buildEngagementsResolverDeps = (
  *    from the rate-control store (the same substrate behind the D-139 P2
  *    health rpc) per connected `(connection, vendor[, entity])`. Empty when
  *    no `rateControlStore` is wired (preserves v1 behavior). */
+/** Which engagements the row-count / staleness half of coverage should
+ *  aggregate over. Mirrors the resolver's own edge selector
+ *  (`engagement-store.ts`) so coverage counts EXACTLY the rows the
+ *  resolver would return — a coverage built over a different predicate
+ *  than the query it describes is worse than no coverage.
+ *
+ *  `null` means the caller could not resolve a selector (an invalid
+ *  contact redirect chain); coverage degrades to enrollment-only. */
+export interface CoverageEdgeSelector {
+  edge_type: EngagementEdgeType;
+  target_kind?: EngagementEdgeTargetKind;
+  target_ids: ReadonlyArray<string>;
+}
+
 export const buildEngagementCoverage = (
   input: Pick<
     EngagementsResolverDepsInput,
     'db' | 'connectionStore' | 'rateControlStore' | 'resolveVendorRegistry' | 'now'
   >,
-  args: EngagementsResolverArgs,
-  resolveContactRedirect: ContactRedirectLookup,
-  expandContactIdentity: ContactIdentityExpansion,
+  args: EngagementsResolverFilters,
+  selector: CoverageEdgeSelector | null,
 ): CoverageMetadata => {
   // Single clock read — the budget-tier `since` (bucket_started_at) and the
   // per-entity backoff `next_attempt_at > now` comparison share it.
@@ -308,36 +393,30 @@ export const buildEngagementCoverage = (
   const sources_stale: CoverageStaleEntry[] = [];
   let last_source_event_at = 0;
 
-  let survivor: string;
-  try {
-    survivor = resolveContactIdentity(
-      args.email,
-      resolveContactRedirect,
-    ).canonical_email;
-  } catch {
-    // Invalid redirect chain — the resolver itself throws on the same walk
-    // and surfaces the error; coverage degrades to enrollment-only.
-    return {
-      sources_connected,
-      sources_unavailable: [],
-      sources_stale,
-      sources_degraded,
-      row_counts,
-      last_source_event_at,
-    };
-  }
-
-  const members = new Set<string>(expandContactIdentity(survivor));
-  members.add(survivor);
-  if (members.size > 0) {
-    const memberPlaceholders = Array.from(members)
-      .map(() => '?')
-      .join(', ');
+  if (selector !== null && selector.target_ids.length > 0) {
+    // Assemble the edge predicate and its params in ONE pass, exactly as
+    // `resolveEngagementsCore` does, so text and bindings cannot drift out
+    // of positional order.
+    const edgeConditions: string[] = [
+      `e.connection_id = ${ENGAGEMENTS_TABLE}.connection_id`,
+      `e.engagement_target_id = ${ENGAGEMENTS_TABLE}.target_id`,
+      'e.edge_type = ?',
+      'e.deleted_at IS NULL',
+    ];
+    const edgeParams: unknown[] = [selector.edge_type];
+    if (selector.target_kind !== undefined) {
+      edgeConditions.push('e.target_kind = ?');
+      edgeParams.push(selector.target_kind);
+    }
+    edgeConditions.push(
+      `e.target_id IN (${selector.target_ids.map(() => '?').join(', ')})`,
+    );
+    edgeParams.push(...selector.target_ids);
     const conditions: string[] = [
       'deleted_at IS NULL',
-      `EXISTS (SELECT 1 FROM ${ENGAGEMENT_EDGES_TABLE} e WHERE e.connection_id = ${ENGAGEMENTS_TABLE}.connection_id AND e.engagement_target_id = ${ENGAGEMENTS_TABLE}.target_id AND e.edge_type = 'contact' AND e.deleted_at IS NULL AND e.target_id IN (${memberPlaceholders}))`,
+      `EXISTS (SELECT 1 FROM ${ENGAGEMENT_EDGES_TABLE} e WHERE ${edgeConditions.join(' AND ')})`,
     ];
-    const params: unknown[] = [...members];
+    const params: unknown[] = [...edgeParams];
     if (args.vendor !== undefined) {
       conditions.push('vendor = ?');
       params.push(args.vendor);

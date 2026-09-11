@@ -33,6 +33,7 @@ import {
   mcpNameHeaderSource,
   modernMcpHttpHeaders,
   readMcpRequestProtocolVersion,
+  type McpAcknowledgedNotifications,
 } from '@recued/ingredients/mcp-protocol.js';
 
 export const MCP_RATE_LIMIT_PER_MIN = 60;
@@ -70,6 +71,23 @@ export const MCP_MAX_IN_FLIGHT_GLOBAL = 64;
 export const MCP_MAX_IN_FLIGHT_PER_TOKEN = 16;
 export const MCP_MAX_LEGACY_SSE_SESSIONS = 64;
 export const MCP_MAX_LEGACY_SSE_SESSIONS_PER_TOKEN = 4;
+/** `subscriptions/listen` feeds. Counted SEPARATELY from the legacy SSE
+ *  sessions above: they are different resources on different eras, and sharing
+ *  a budget would let a deprecated-transport client starve the modern one. */
+export const MCP_MAX_LISTEN_STREAMS = 64;
+export const MCP_MAX_LISTEN_STREAMS_PER_TOKEN = 4;
+/** Queued-but-unflushed bytes a listen stream may accumulate before the server
+ *  gives up on it.
+ *
+ *  ⛔ THE STREAM-COUNT CAPS DO NOT BOUND MEMORY. A client that stays CONNECTED
+ *  but stops reading makes every `res.write()` queue instead of flush, so a
+ *  bearer whose catalog keeps moving grows the response buffer without limit
+ *  while sitting comfortably inside its four-stream allowance. Notifications
+ *  are tiny, so crossing this at all means the peer is not draining — and since
+ *  every frame we send is a "your catalog moved, re-list" hint, ending the
+ *  response is the correct recovery: the client reconnects and re-lists, which
+ *  is what the notification was asking for anyway. */
+export const MCP_LISTEN_STREAM_MAX_BUFFERED_BYTES = 256 * 1024;
 
 /** Resolve the client IP for the pre-auth throttle. `X-Forwarded-For` is
  *  trusted ONLY when the operator opts in (`trust_forwarded_for`) — behind
@@ -118,6 +136,25 @@ export type McpDispatch = (envelope: unknown, token?: string) => Promise<unknown
  *  the per-token visibility set; the handler is a pure carrier. */
 export type McpCatalogDispatch = (token: string) => Promise<unknown>;
 
+/** The serving half of `subscriptions/listen`, injected so the door stays a
+ *  transport: it owns the socket, the caps and the SSE framing; the port owns
+ *  what may be acknowledged and when to push. */
+export interface McpSubscriptionsPort {
+  open(input: {
+    token: string;
+    filter: unknown;
+    subscription_id: string | number | null;
+    send: (frame: { jsonrpc: '2.0'; method: string; params: Record<string, unknown> }) => void;
+  }): Promise<{
+    /** The subset actually honoured. The door does not read it — it has
+     *  already been sent to the client as the first frame — but it is the
+     *  session's defining property, and a port type that hides it forces
+     *  every other caller to cast back to the concrete implementation. */
+    readonly acknowledged: McpAcknowledgedNotifications;
+    close(): void;
+  }>;
+}
+
 export interface McpPortHandlerOptions {
   verifier: McpBearerVerifier;
   /** Per-token rate limiter (60 rpc/min by default). */
@@ -130,6 +167,12 @@ export interface McpPortHandlerOptions {
    *  unwired, GET /mcp/catalog returns 404 (vendor-agnostic
    *  closed-list response). */
   catalog?: McpCatalogDispatch;
+  /** MCP 2026-07-28 `subscriptions/listen`. When wired, a POST carrying that
+   *  method gets a standing SSE response instead of a JSON one. When UNWIRED
+   *  the method falls through to the dispatcher, which answers `-32601` →
+   *  mapped to 404 for a modern client — the honest "this server does not
+   *  push" answer, and the one served today. */
+  subscriptions?: McpSubscriptionsPort;
   /** Body cap. JSON-RPC envelopes are typically tiny; the default
    *  256 KB is generous. */
   max_body_bytes?: number;
@@ -189,7 +232,7 @@ const readBody = async (req: IncomingMessage, cap: number): Promise<Buffer | nul
 export const createMcpPortHandler = (
   options: McpPortHandlerOptions,
 ): ((req: IncomingMessage, res: ServerResponse) => Promise<void>) => {
-  const { verifier, limiter, dispatch, catalog } = options;
+  const { verifier, limiter, dispatch, catalog, subscriptions } = options;
   const cap = options.max_body_bytes ?? DEFAULT_MAX_BODY_BYTES;
   const trustForwardedFor = options.trust_forwarded_for ?? false;
   // Pre-auth per-IP throttle (default: bounded internal limiter). Bounds
@@ -226,6 +269,8 @@ export const createMcpPortHandler = (
     tokenKey: string;
     response: ServerResponse;
   }>();
+  /** Open `subscriptions/listen` feeds, for the caps. */
+  const listenStreams = new Set<{ tokenKey: string; response: ServerResponse }>();
 
   const originAllowed = (req: IncomingMessage): boolean => {
     const rawOrigin = req.headers.origin;
@@ -578,6 +623,101 @@ export const createMcpPortHandler = (
           });
           return;
         }
+      }
+
+      // ── `subscriptions/listen` — the one POST whose response stays open ──
+      //
+      // Placed AFTER every protocol validation above and BEFORE the dispatch:
+      // a listen request must satisfy the same era, header and `_meta` rules as
+      // any other modern request, and only then take a different response path.
+      //
+      // ⚠ THE IN-FLIGHT SLOT IS RELEASED WHEN THIS HANDLER RETURNS, NOT WHEN
+      // THE STREAM CLOSES — the `finally` below runs on the `return` here while
+      // the response lives on. Holding it for the life of the feed would let
+      // four streams eat a quarter of `MCP_MAX_IN_FLIGHT_PER_TOKEN` forever.
+      // The streams have their OWN cap for that reason.
+      const envelopeMethod = envelope !== null
+        && typeof envelope === 'object'
+        && !Array.isArray(envelope)
+        ? (envelope as { method?: unknown }).method
+        : undefined;
+      if (subscriptions !== undefined && envelopeMethod === 'subscriptions/listen') {
+        const tokenKey = limiterTokenKey(token);
+        let tokenStreams = 0;
+        for (const open of listenStreams) {
+          if (open.tokenKey === tokenKey) tokenStreams += 1;
+        }
+        if (
+          listenStreams.size >= MCP_MAX_LISTEN_STREAMS
+          || tokenStreams >= MCP_MAX_LISTEN_STREAMS_PER_TOKEN
+        ) {
+          writeOverloaded(res, 'Too many MCP subscription streams are already open.');
+          return;
+        }
+        const params = envelope !== null
+          && typeof envelope === 'object'
+          && !Array.isArray(envelope)
+          ? (envelope as { params?: unknown }).params
+          : undefined;
+        const rawId = envelope !== null
+          && typeof envelope === 'object'
+          && !Array.isArray(envelope)
+          ? (envelope as { id?: unknown }).id
+          : undefined;
+        const subscriptionId = typeof rawId === 'string' || typeof rawId === 'number'
+          ? rawId
+          : null;
+        const entry = { tokenKey, response: res };
+        listenStreams.add(entry);
+        res.statusCode = 200;
+        res.setHeader('content-type', 'text/event-stream');
+        res.setHeader('cache-control', 'no-cache, no-transform');
+        res.setHeader('connection', 'keep-alive');
+        res.setHeader('x-accel-buffering', 'no');
+        res.flushHeaders?.();
+        const send = (frame: {
+          jsonrpc: '2.0';
+          method: string;
+          params: Record<string, unknown>;
+        }): void => {
+          if (res.writableEnded || res.destroyed) return;
+          // Backpressure: a peer that is not draining gets ended rather than
+          // buffered. See MCP_LISTEN_STREAM_MAX_BUFFERED_BYTES.
+          if (res.writableLength > MCP_LISTEN_STREAM_MAX_BUFFERED_BYTES) {
+            res.destroy();
+            return;
+          }
+          res.write(`data: ${JSON.stringify(frame)}\n\n`);
+        };
+        let session: { close(): void } | undefined;
+        // ⛔ REGISTERED BEFORE THE AWAIT. A client that disconnects while
+        // `open()` is still resolving would otherwise leave a watcher with no
+        // reader — the close handler fires, finds no session, and the session
+        // arrives afterwards unreferenced. The `closed` flag closes whichever
+        // order they happen in.
+        let closed = false;
+        const forget = (): void => {
+          if (closed) return;
+          closed = true;
+          listenStreams.delete(entry);
+          session?.close();
+        };
+        res.once('close', forget);
+        try {
+          session = await subscriptions.open({
+            token,
+            filter: params !== null && typeof params === 'object' && !Array.isArray(params)
+              ? (params as { notifications?: unknown }).notifications
+              : undefined,
+            subscription_id: subscriptionId,
+            send,
+          });
+          if (closed) session.close();
+        } catch {
+          forget();
+          if (!res.writableEnded) res.end();
+        }
+        return;
       }
 
       const response = await dispatch(envelope, token);

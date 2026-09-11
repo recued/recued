@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { HARNESS_SERVER_PUBLIC_KEY } from './harness/server-identity.js';
 
 /**
  * Path B — the WHOLE webclient app booted in a real Chromium off the
@@ -804,6 +805,8 @@ test('the Attention popover closes when keyboard focus leaves it', async ({ page
   await page.keyboard.press('Tab');
 
   await expect(dialog).toHaveCount(0);
+  await expect(page.locator(`[${GLOBAL_RUN_PALETTE_TRIGGER}]`)).toBeFocused();
+  await page.keyboard.press('Tab');
   await expect(page.locator(`[${ACCOUNT_MENU_TRIGGER}]`)).toBeFocused();
 });
 
@@ -2778,7 +2781,9 @@ test('a deliberate server switch converges clean and dirty sibling tabs without 
       'Prepare a source-server result before I switch',
     );
     await working.locator(`[${CHAT_SEND}]`).click();
-    await expect(working.locator(`[${CHAT_SEND}]`)).toHaveText('Sending...');
+    // The send acknowledgement settles before the accepted turn completes.
+    await expect(working.locator(`[${CHAT_ANSWER_WAITING}]`)).toBeVisible();
+    await expect(working.locator(`[${CHAT_SEND}]`)).toBeDisabled();
 
     const account = page.locator(`[${ACCOUNT_MENU_TRIGGER}]`);
     await account.click();
@@ -4050,7 +4055,7 @@ test('credential loss in one tab converges every sibling through one guided re-p
       key: MULTI_TAB_PAIR_STORAGE_KEY,
       pair: {
         server_url: 'wss://alice.recued.cloud:8443/ws',
-        server_public_key: 'spki-base64',
+        server_public_key: HARNESS_SERVER_PUBLIC_KEY,
         webclient_token: {
           token_id: 'tok-multi-tab-original',
           ciphertext_b64: 'ciphertext-original',
@@ -4073,7 +4078,9 @@ test('credential loss in one tab converges every sibling through one guided re-p
   const sourceUrl =
     `${HARNESS_URL}?journey=multi-tab-credentials&pause_pair=1&chat=session&keep=source%20tab#connections`;
   const siblingUrl =
-    `${HARNESS_URL}?journey=multi-tab-credentials&pause_pair=1&chat=session&keep=sibling%20tab&keep=sibling+two#chat/session/chat_1`;
+    `${HARNESS_URL}?journey=multi-tab-credentials&pause_pair=1&chat=session`
+    + '&settle_reads=1&hold_rpc=recipe.list'
+    + '&keep=sibling%20tab&keep=sibling+two#chat/session/chat_1';
 
   try {
     await Promise.all([page.goto(sourceUrl), sibling.goto(siblingUrl)]);
@@ -4230,6 +4237,22 @@ test('credential loss in one tab converges every sibling through one guided re-p
       .toBe(1);
     expect(await sibling.evaluate(() => window.__app.pairSubmitCount?.()))
       .toBe(0);
+    // Recovery must complete while an optional activation read is still held.
+    // Its later reply cannot replace edits made after the draft was restored.
+    const restoredInput = sibling.locator(`[${CHAT_INPUT}]`);
+    const editedDraft = `${draft} Edited after reconnect.`;
+    await restoredInput.fill(editedDraft);
+    await restoredInput.evaluate((input: HTMLTextAreaElement) => {
+      input.setSelectionRange(5, 5);
+    });
+    expect(await sibling.evaluate(
+      () => window.__app.releaseRpcResponses?.('recipe.list'),
+    )).toBeGreaterThan(0);
+    await expect(restoredInput).toHaveValue(editedDraft);
+    await expect(restoredInput).toBeFocused();
+    expect(await restoredInput.evaluate(
+      (input: HTMLTextAreaElement) => [input.selectionStart, input.selectionEnd],
+    )).toEqual([5, 5]);
     expect(siblingErrors).toHaveLength(0);
   } finally {
     await sibling.close();
@@ -4260,7 +4283,7 @@ test('a stalled sibling reconnect becomes one safe exact-work takeover', async (
       releaseKey: MULTI_TAB_TRANSITION_RELEASE_KEY,
       pair: {
         server_url: 'wss://alice.recued.cloud:8443/ws',
-        server_public_key: 'spki-base64',
+        server_public_key: HARNESS_SERVER_PUBLIC_KEY,
         webclient_token: {
           token_id: 'tok-stalled-original',
           ciphertext_b64: 'ciphertext-original',
@@ -4490,7 +4513,7 @@ test('simultaneous safe takeovers choose one visible winner and converge every t
       releaseKey: MULTI_TAB_TRANSITION_RELEASE_KEY,
       pair: {
         server_url: 'wss://alice.recued.cloud:8443/ws',
-        server_public_key: 'spki-base64',
+        server_public_key: HARNESS_SERVER_PUBLIC_KEY,
         webclient_token: {
           token_id: 'tok-simultaneous-original',
           ciphertext_b64: 'ciphertext-original',
@@ -4722,7 +4745,7 @@ test('a failed takeover owner yields its exact retry to the queued successor', a
       requestKey: MULTI_TAB_TAKEOVER_REQUEST_COUNT_KEY,
       pair: {
         server_url: 'wss://alice.recued.cloud:8443/ws',
-        server_public_key: 'spki-base64',
+        server_public_key: HARNESS_SERVER_PUBLIC_KEY,
         webclient_token: {
           token_id: 'tok-succession-original',
           ciphertext_b64: 'ciphertext-original',
@@ -4962,7 +4985,7 @@ test('a lost recovery owner hands one survivor the exact retry', async ({
       requestKey: MULTI_TAB_TAKEOVER_REQUEST_COUNT_KEY,
       pair: {
         server_url: 'wss://alice.recued.cloud:8443/ws',
-        server_public_key: 'spki-base64',
+        server_public_key: HARNESS_SERVER_PUBLIC_KEY,
         webclient_token: {
           token_id: 'tok-recovery-owner-original',
           ciphertext_b64: 'ciphertext-original',
@@ -5266,7 +5289,7 @@ test('the last recovery document re-enters one clean reconnect on its exact rout
       pairKey: MULTI_TAB_PAIR_STORAGE_KEY,
       pair: {
         server_url: 'wss://alice.recued.cloud:8443/ws',
-        server_public_key: 'spki-base64',
+        server_public_key: HARNESS_SERVER_PUBLIC_KEY,
         webclient_token: {
           token_id: 'tok-last-tab-original',
           ciphertext_b64: 'ciphertext-original',
@@ -5474,7 +5497,7 @@ test('a third tab arriving and reloading mid-pair waits for one clean exact-rout
       releaseKey: MULTI_TAB_TRANSITION_RELEASE_KEY,
       pair: {
         server_url: 'wss://alice.recued.cloud:8443/ws',
-        server_public_key: 'spki-base64',
+        server_public_key: HARNESS_SERVER_PUBLIC_KEY,
         webclient_token: {
           token_id: 'tok-transition-original',
           ciphertext_b64: 'ciphertext-original',
@@ -5662,7 +5685,7 @@ test('an interrupted pair save keeps sibling context through triage and credenti
       key: MULTI_TAB_PAIR_STORAGE_KEY,
       pair: {
         server_url: 'wss://alice.recued.cloud:8443/ws',
-        server_public_key: 'spki-base64',
+        server_public_key: HARNESS_SERVER_PUBLIC_KEY,
         webclient_token: {
           token_id: 'tok-interruption-original',
           ciphertext_b64: 'ciphertext-original',
@@ -6626,7 +6649,7 @@ test('an admin-confirmed server replacement reloads safely and completes one ver
       pairKey: MULTI_TAB_PAIR_STORAGE_KEY,
       pair: {
         server_url: 'wss://alice.recued.cloud:8443/ws',
-        server_public_key: 'spki-base64',
+        server_public_key: HARNESS_SERVER_PUBLIC_KEY,
         webclient_token: {
           token_id: 'tok-safe-stop-original',
           ciphertext_b64: 'ciphertext-safe-stop-original',
@@ -7623,6 +7646,8 @@ test('an intentional startup reload returns to the exact page with one recovery 
 });
 
 test('the first-run Chat landing offers outcomes and seeds a prompt without sending', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?settle_reads=1`);
+  await page.waitForFunction(() => window.__app?.ready === true);
   const activation = page.locator(`[${CHAT_ACTIVATION}]`);
   await expect(activation).toBeVisible();
   await expect(activation.locator(`[${CHAT_ACTIVATION_CARD}]`)).toHaveCount(3);
@@ -8246,26 +8271,27 @@ test('Chat preserves an open history action through a live session refresh', asy
 test('Chat keeps a slow history open focused and single-flight', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(
-    `${HARNESS_URL}?chat=session&chat_session_open_response=slow#chat`,
+    `${HARNESS_URL}?chat=session&hold_rpc=chat.session.get#chat`,
   );
   await page.waitForFunction(() => window.__app?.ready === true);
 
   const row = page.locator(`[${CHAT_SESSION_ROW}="chat_1"]`);
   await row.focus();
   await page.keyboard.press('Enter');
-  await expect(row).toHaveAttribute('aria-disabled', 'true');
+  await expect(row).not.toHaveAttribute('aria-disabled');
   await expect(row).toHaveAttribute('aria-busy', 'true');
   await expect(row).not.toHaveAttribute('disabled');
   await expect(row).toContainText('Opening…');
   await expect(row).toBeFocused();
-  await row.evaluate((button) => {
+  await row.evaluate((button: HTMLElement) => {
     button.click();
     button.click();
   });
   expect(await page.evaluate(
     () => window.__app.rpcCallCount('chat.session.get'),
   )).toBe(1);
-
+  expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('chat.session.get')))
+    .toBe(1);
   await expect(page).toHaveURL(/#chat\/session\/chat_1$/);
   await expect(page.locator(`[${CHAT_INPUT}]`)).toBeFocused();
 });
@@ -8295,10 +8321,10 @@ test('Chat returns a rejected history open to the exact row', async ({ page }) =
   )).toBe(1);
 });
 
-test('Chat keeps slow Continue focused and blocks competing new-chat intent', async ({ page }) => {
+test('Chat lets a new draft supersede slow Continue without a late focus steal', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(
-    `${HARNESS_URL}?chat=session&chat_session_open_response=slow#chat`,
+    `${HARNESS_URL}?chat=session&hold_rpc=chat.session.get#chat`,
   );
   await page.waitForFunction(() => window.__app?.ready === true);
 
@@ -8306,23 +8332,27 @@ test('Chat keeps slow Continue focused and blocks competing new-chat intent', as
   await continueChat.focus();
   await page.keyboard.press('Enter');
   await expect(continueChat).toHaveText('Opening chat…');
-  await expect(continueChat).toHaveAttribute('aria-disabled', 'true');
+  await expect(continueChat).not.toHaveAttribute('aria-disabled');
   await expect(continueChat).toHaveAttribute('aria-busy', 'true');
   await expect(continueChat).not.toHaveAttribute('disabled');
   await expect(continueChat).toBeFocused();
   const sidebarNew = page.locator(`[${CHAT_NEW_SESSION}]`);
   const startNew = page.getByRole('button', { name: 'Start a new chat' });
-  await expect(sidebarNew).toHaveAttribute('aria-disabled', 'true');
-  await expect(startNew).toHaveAttribute('aria-disabled', 'true');
-  await continueChat.evaluate((button) => button.click());
-  await sidebarNew.evaluate((button) => button.click());
-  await startNew.evaluate((button) => button.click());
+  await expect(sidebarNew).not.toHaveAttribute('aria-disabled');
+  await expect(startNew).not.toHaveAttribute('aria-disabled');
+  await continueChat.evaluate((button: HTMLElement) => button.click());
+  await startNew.focus();
+  await page.keyboard.press('Enter');
   expect(await page.evaluate(
     () => window.__app.rpcCallCount('chat.session.get'),
   )).toBe(1);
-  await expect(page).toHaveURL(/#chat$/);
-
-  await expect(page).toHaveURL(/#chat\/session\/chat_1$/);
+  await expect(page).toHaveURL(/#chat\/new$/);
+  await expect(page.locator(`[${CHAT_INPUT}]`)).toBeFocused();
+  await page.keyboard.type('Keep this newer draft');
+  expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('chat.session.get')))
+    .toBe(1);
+  await expect(page).toHaveURL(/#chat\/new$/);
+  await expect(page.locator(`[${CHAT_INPUT}]`)).toHaveValue('Keep this newer draft');
   await expect(page.locator(`[${CHAT_INPUT}]`)).toBeFocused();
 });
 
@@ -8722,7 +8752,7 @@ test('Chat exposes Send only when the composer has a message', async ({ page }) 
 
 test('Chat sends from the keyboard without stealing multiline entry', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto(`${HARNESS_URL}?chat=session#chat/session/chat_1`);
+  await page.goto(`${HARNESS_URL}?chat=session&hold_rpc=chat.send#chat/session/chat_1`);
   await page.waitForFunction(() => window.__app?.ready === true);
 
   const conversation = page.getByRole('region', {
@@ -8745,23 +8775,41 @@ test('Chat sends from the keyboard without stealing multiline entry', async ({ p
   await expect.poll(async () => page.evaluate(() =>
     window.__app.rpcCallCount('chat.send'))).toBe(1);
   await expect(send).toHaveText('Sending...');
+  await expect(input).toHaveValue('First line\nSecond line');
+  await expect(input).toBeFocused();
+  await expect(input).toBeEnabled();
+  await expect(send).toBeDisabled();
+
+  // Duplicate dispatch is blocked only until the server acknowledges it.
+  await page.keyboard.press('Control+Enter');
+  expect(await page.evaluate(() =>
+    window.__app.rpcCallCount('chat.send'))).toBe(1);
+  expect(await page.evaluate(() =>
+    window.__app.releaseRpcResponses?.('chat.send'))).toBe(1);
+  await expect(send).toHaveText('Send');
+  await expect(input).toHaveValue('');
+  await expect(input).toBeFocused();
   await expect(conversation.getByRole('heading', {
     name: 'Planning chat',
     level: 2,
   })).toBeVisible();
-  await expect(input).toHaveValue('');
-  await expect(input).toBeFocused();
 
+  // Acknowledgement permits another instruction while the first turn runs.
   await input.fill('Queued next thought');
-  await page.keyboard.press('Control+Enter');
+  await expect(send).toBeEnabled();
+  await page.keyboard.press('Meta+Enter');
+  await expect.poll(async () => page.evaluate(() =>
+    window.__app.rpcCallCount('chat.send'))).toBe(2);
+  await expect(send).toHaveText('Sending...');
+  await page.keyboard.press('Meta+Enter');
   expect(await page.evaluate(() =>
-    window.__app.rpcCallCount('chat.send'))).toBe(1);
+    window.__app.rpcCallCount('chat.send'))).toBe(2);
   await expect(input).toHaveValue('Queued next thought');
 });
 
 test('Chat send keeps the editable composer through ack and completion', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto(`${HARNESS_URL}?chat=session#chat/session/chat_1`);
+  await page.goto(`${HARNESS_URL}?chat=session&hold_rpc=chat.send#chat/session/chat_1`);
   await page.waitForFunction(() => window.__app?.ready === true);
 
   const input = page.locator(`[${CHAT_INPUT}]`);
@@ -8772,21 +8820,39 @@ test('Chat send keeps the editable composer through ack and completion', async (
   await expect.poll(async () => page.evaluate(() =>
     window.__app.rpcCallCount('chat.send'))).toBe(1);
   await expect(send).toHaveText('Sending...');
-  await expect(input).toHaveValue('');
+  await expect(input).toHaveValue('Follow up on this plan');
   await expect(input).toBeFocused();
+  await expect(input).toBeEnabled();
 
+  // Edits made before acknowledgement belong to the next message.
   await input.fill('Keep this next thought');
+  await input.evaluate((element: HTMLTextAreaElement) => {
+    element.setSelectionRange(5, 5);
+  });
+  expect(await page.evaluate(() =>
+    window.__app.releaseRpcResponses?.('chat.send'))).toBe(1);
+  await expect(send).toHaveText('Send');
+  await expect(send).toBeEnabled();
+  await expect(input).toHaveValue('Keep this next thought');
+  await expect(input).toBeFocused();
+  expect(await input.evaluate((element: HTMLTextAreaElement) =>
+    [element.selectionStart, element.selectionEnd])).toEqual([5, 5]);
+
   const newChat = page.locator(`[${CHAT_NEW_SESSION}]`);
   const activeHistory = page.locator(`[${CHAT_SESSION_ROW}="chat_1"]`);
-  await expect(newChat).toHaveAttribute('aria-disabled', 'true');
+  await expect(activeHistory).toContainText('Working…');
+  await expect(newChat).not.toHaveAttribute('aria-disabled');
   await expect(newChat).not.toHaveAttribute('disabled');
-  await expect(activeHistory).toHaveAttribute('aria-disabled', 'true');
+  await expect(activeHistory).not.toHaveAttribute('aria-disabled');
   await expect(activeHistory).not.toHaveAttribute('disabled');
-  await newChat.dispatchEvent('click');
-  await activeHistory.dispatchEvent('click');
-  await expect(page.locator(`[${CHAT_HISTORY_DRAFT_GUARD}]`)).toHaveCount(0);
+  // The unsent draft owns the navigation guard while accepted work continues.
+  await newChat.click();
+  const guard = page.locator(`[${CHAT_HISTORY_DRAFT_GUARD}]`);
+  await expect(guard).toBeFocused();
   await expect(page).toHaveURL(/#chat\/session\/chat_1$/);
   await expect(input).toHaveValue('Keep this next thought');
+  await guard.getByRole('button', { name: 'Keep writing' }).click();
+  await expect(guard).toHaveCount(0);
   await expect(input).toBeFocused();
   await page.evaluate(() => window.__app.fireMessage({
     type: 'server_event',
@@ -8822,6 +8888,7 @@ test('Chat send keeps the editable composer through ack and completion', async (
   await expect(send).toHaveText('Send');
   await expect(input).toHaveValue('Keep this next thought');
   await expect(input).toBeFocused();
+  await expect(activeHistory).not.toContainText('Working…');
   await expect(newChat).not.toHaveAttribute('aria-disabled');
   await expect(activeHistory).not.toHaveAttribute('aria-disabled');
   await newChat.click();
@@ -9433,8 +9500,9 @@ test('Data collection tabs form one arrow-key keyboard stop', async ({ page }) =
   const contacts = page.locator(`[${DATA_TAB}="contact"]`);
   const tasks = page.locator(`[${DATA_TAB}="task"]`);
   const records = page.locator(`[${DATA_TAB}="records"]`);
+  const search = page.locator(`[${DATA_TAB}="search"]`);
   await expect(tablist).toBeVisible();
-  await expect(tabs).toHaveCount(16);
+  await expect(tabs).toHaveCount(18);
   await expect(tablist.locator('[tabindex="0"]')).toHaveCount(1);
   await expect(contacts).toHaveAttribute('aria-selected', 'true');
   await expect(contacts).toHaveAccessibleDescription('Owned');
@@ -9449,14 +9517,19 @@ test('Data collection tabs form one arrow-key keyboard stop', async ({ page }) =
   await expect(tablist.locator('[tabindex="0"]')).toHaveCount(1);
 
   await page.keyboard.press('End');
+  await expect(page).toHaveURL(/#data\/search$/);
+  await expect(search).toHaveAttribute('aria-selected', 'true');
+  await expect(search).toBeFocused();
+
+  await page.keyboard.press('ArrowLeft');
   await expect(page).toHaveURL(/#data\/records$/);
   await expect(records).toHaveAttribute('aria-selected', 'true');
   await expect(records).toBeFocused();
 
   await page.keyboard.press('Home');
-  await expect(page).toHaveURL(/#data\/contact$/);
-  await expect(contacts).toHaveAttribute('aria-selected', 'true');
-  await expect(contacts).toBeFocused();
+  await expect(page).toHaveURL(/#data\/today$/);
+  await expect(page.locator(`[${DATA_TAB}="today"]`)).toHaveAttribute('aria-selected', 'true');
+  await expect(page.locator(`[${DATA_TAB}="today"]`)).toBeFocused();
   await expect(tablist.locator('[tabindex="0"]')).toHaveCount(1);
 });
 
@@ -9475,7 +9548,7 @@ test('Data exposes full mobile targets for its persistent navigation', async ({ 
   const collectionTabs = page.getByRole('tablist', {
     name: 'Data collections',
   }).getByRole('tab');
-  await expect(collectionTabs).toHaveCount(16);
+  await expect(collectionTabs).toHaveCount(18);
   const tabHeights = await collectionTabs.evaluateAll((tabs) =>
     tabs.map((tab) => tab.getBoundingClientRect().height)
   );
@@ -9701,7 +9774,7 @@ test('Data task search accepts continuous keyboard input', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.evaluate(() => window.__app.setHash('#data/task'));
 
-  const dataRoute = page.locator('[data-recued-data-route]');
+  const dataRoute = page.locator('[data-saved-data-route]');
   await expect(dataRoute.getByRole('heading', { level: 1 })).toHaveCount(1);
   await expect(dataRoute.getByRole('heading', { name: 'Tasks', level: 2 }))
     .toBeVisible();
@@ -10177,7 +10250,7 @@ test('Data restores the New contact trigger after a successful save', async ({ p
 test('Data keeps Contact save focused and single-flight', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(
-    `${HARNESS_URL}?data=contacts&compose_commit_response=slow`,
+    `${HARNESS_URL}?data=contacts&hold_rpc=contact.upsert`,
   );
   await page.waitForFunction(() => window.__app?.ready === true);
   await page.evaluate(() => window.__app.setHash('#data/contact'));
@@ -10220,6 +10293,9 @@ test('Data keeps Contact save focused and single-flight', async ({ page }) => {
 
   await expect.poll(() => page.evaluate(() =>
     window.__app.rpcCallCount('contact.upsert'))).toBe(1);
+  expect(await page.evaluate(
+    () => window.__app.releaseRpcResponses?.('contact.upsert'),
+  )).toBe(1);
   await expect(dialog).toHaveCount(0);
   await expect(trigger).toBeFocused();
 });
@@ -10227,7 +10303,7 @@ test('Data keeps Contact save focused and single-flight', async ({ page }) => {
 test('Data retains a Contact save across tab and route leave', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(
-    `${HARNESS_URL}?data=contacts&compose_commit_response=slow`,
+    `${HARNESS_URL}?data=contacts&hold_rpc=contact.upsert`,
   );
   await page.waitForFunction(() => window.__app?.ready === true);
   await page.evaluate(() => window.__app.setHash('#data/contact'));
@@ -10270,6 +10346,9 @@ test('Data retains a Contact save across tab and route leave', async ({ page }) 
   await expect(dialog).toBeVisible();
   await expect(save).toBeFocused();
 
+  expect(await page.evaluate(
+    () => window.__app.releaseRpcResponses?.('contact.upsert'),
+  )).toBe(1);
   await expect(dialog).toHaveCount(0);
   await expect(trigger).toBeFocused();
   expect(await page.evaluate(() => {
@@ -10731,7 +10810,7 @@ test('Data carries task-row focus through edit loading and back from the dialog'
   await expect(row).not.toHaveAttribute('disabled');
   await expect(row).toContainText('Opening…');
   await expect(row).toBeFocused();
-  await row.evaluate((button) => {
+  await row.evaluate((button: HTMLElement) => {
     button.click();
     button.click();
   });
@@ -10907,7 +10986,7 @@ test('Data keeps task save visible, single-flight, and returns focus to the upda
   await page.locator('.work-entity-dialog-backdrop').dispatchEvent('click');
   await expect(dialog).toBeVisible();
   await expect(save).toBeFocused();
-  await save.evaluate((button) => {
+  await save.evaluate((button: HTMLElement) => {
     button.click();
     button.click();
   });
@@ -11259,7 +11338,7 @@ test('Data advances owned focus into form-response automation discovery', async 
   await expect(discover).toHaveAttribute('aria-busy', 'true');
   await expect(discover).not.toHaveAttribute('disabled');
   await expect(discover).toBeFocused();
-  await discover.evaluate((button) => {
+  await discover.evaluate((button: HTMLElement) => {
     button.click();
     button.click();
   });
@@ -11320,11 +11399,11 @@ test('Data distinguishes form-response run actions and retains modal ownership',
   await expect(run).toHaveAttribute('aria-busy', 'true');
   await expect(run).not.toHaveAttribute('disabled');
   await expect(run).toBeFocused();
-  await run.evaluate((button) => {
+  await run.evaluate((button: HTMLElement) => {
     button.click();
     button.click();
   });
-  await dialog.getByRole('button', { name: 'Close' }).evaluate((button) => {
+  await dialog.getByRole('button', { name: 'Close' }).evaluate((button: HTMLElement) => {
     button.click();
   });
   await expect(dialog).toBeVisible();
@@ -14197,7 +14276,7 @@ test('Automation keeps its create modal owned until the command settles', async 
   await expect(close).not.toHaveAttribute('disabled');
   await page.keyboard.press('Escape');
   await expect(dialog).toBeVisible();
-  await close.evaluate((button) => {
+  await close.evaluate((button: HTMLElement) => {
     button.click();
     button.click();
   });
@@ -14650,6 +14729,9 @@ test('Packs Add preserves a slug while its IME composition is active', async ({ 
 });
 
 test('Packs keeps the Installed only source toggle keyboard-owned', async ({ page }) => {
+  let releaseCatalogSearch!: () => void;
+  const catalogSearch = new Promise<void>((resolve) => { releaseCatalogSearch = resolve; });
+  let catalogSearchCalls = 0;
   await page.route('https://recued.com/catalog/**', async (route) => {
     const url = new URL(route.request().url());
     if (url.pathname.endsWith('/catalog/versions')) {
@@ -14661,7 +14743,8 @@ test('Packs keeps the Installed only source toggle keyboard-owned', async ({ pag
       return;
     }
     if (url.pathname.endsWith('/catalog/search')) {
-      await new Promise((resolve) => setTimeout(resolve, 250));
+      catalogSearchCalls += 1;
+      await catalogSearch;
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -14711,7 +14794,10 @@ test('Packs keeps the Installed only source toggle keyboard-owned', async ({ pag
   await page.evaluate(() => window.__app.setHash('#packs'));
 
   const toggle = page.locator(`[${PACKS_INSTALLED_ONLY}]`);
-  await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+  await expect(page.getByText('Installed Mail', { exact: true })).toBeVisible();
+  await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByText('Available CRM', { exact: true })).toHaveCount(0);
+  expect(catalogSearchCalls).toBe(0);
   const restingStyle = await toggle.evaluate((button) => {
     const style = getComputedStyle(button);
     return {
@@ -14723,24 +14809,31 @@ test('Packs keeps the Installed only source toggle keyboard-owned', async ({ pag
   expect(restingStyle.height).toBeGreaterThanOrEqual(35.5);
   expect(restingStyle.radius).toBeGreaterThanOrEqual(17);
   expect(restingStyle.cursor).toBe('pointer');
-  await toggle.click();
-  await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+  await toggle.focus();
+  await page.keyboard.press('Enter');
+  await expect(toggle).toHaveAttribute('aria-pressed', 'false');
   await expect(toggle).toHaveAttribute('aria-disabled', 'true');
   await expect(toggle).toHaveAttribute('aria-busy', 'true');
   await expect(toggle).toBeFocused();
   await expect(toggle).toHaveCSS('cursor', 'progress');
-  await expect(page.getByText('Installed Mail', { exact: true })).toBeVisible();
+  await page.keyboard.press('Enter');
+  await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+  await expect.poll(() => catalogSearchCalls).toBe(1);
+
+  releaseCatalogSearch();
+  await expect(page.getByText('Available CRM', { exact: true })).toBeVisible();
   await expect(toggle).not.toHaveAttribute('aria-disabled');
   await expect(toggle).not.toHaveAttribute('aria-busy');
   await expect(toggle).toBeFocused();
 
-  await toggle.click();
-  await expect(toggle).toHaveAttribute('aria-pressed', 'false');
-  await expect(toggle).toHaveAttribute('aria-disabled', 'true');
-  await expect(toggle).toBeFocused();
-  await expect(page.getByText('Available CRM', { exact: true })).toBeVisible();
+  await page.keyboard.press('Enter');
+  await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByText('Installed Mail', { exact: true })).toBeVisible();
+  await expect(page.getByText('Available CRM', { exact: true })).toHaveCount(0);
   await expect(toggle).not.toHaveAttribute('aria-disabled');
+  await expect(toggle).not.toHaveAttribute('aria-busy');
   await expect(toggle).toBeFocused();
+  expect(catalogSearchCalls).toBe(1);
 });
 
 test('Packs previews a row in place and restores it before full detail', async ({ page }) => {
@@ -14803,10 +14896,9 @@ test('Packs keeps a failed detail Retry focused and single-flight', async ({ pag
 test('Packs recovers its Use roster without retrying or losing focus on its own', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(
-    `${HARNESS_URL}?packs=installed&packs_recipe_response=fail-once-slow-retry`,
+    `${HARNESS_URL}?packs=installed&packs_recipe_response=fail-once-slow-retry#packs/installed-mail`,
   );
   await page.waitForFunction(() => window.__app?.ready === true);
-  await page.evaluate(() => window.__app.setHash('#packs/installed-mail'));
 
   const status = page.locator('[data-recued-packs-detail-recipes-status]');
   await expect(status).toHaveText('Loading what this pack can do…');
@@ -15453,7 +15545,7 @@ test('AI-analysis run results stay structured and contained across Packs and Rec
     const value = row?.querySelector<HTMLElement>('.ai-label + span');
     const valueRect = value?.getBoundingClientRect();
     const reasoning = analysis.querySelector<HTMLElement>('.ai-reasoning');
-    const raw = host?.querySelector<HTMLElement>('.ai-json');
+    const raw = host?.querySelector<HTMLElement>('.ai-json') ?? null;
     return {
       hostRight: hostRect?.right ?? Number.POSITIVE_INFINITY,
       rowStacked: label !== undefined && valueRect !== undefined
@@ -15498,7 +15590,7 @@ test('AI-analysis run results stay structured and contained across Packs and Rec
     const value = row?.querySelector<HTMLElement>('.ai-label + span');
     const valueRect = value?.getBoundingClientRect();
     const reasoning = analysis.querySelector<HTMLElement>('.ai-reasoning');
-    const raw = host?.querySelector<HTMLElement>('.ai-json');
+    const raw = host?.querySelector<HTMLElement>('.ai-json') ?? null;
     return {
       display: getComputedStyle(analysis).display,
       hostRight: hostRect?.right ?? Number.POSITIVE_INFINITY,
@@ -16827,7 +16919,9 @@ test('Recipes preserves direct default Run focus through execution', async ({ pa
   await page.waitForFunction(() => window.__app?.ready === true);
   await page.evaluate(() => window.__app.setHash('#recipes'));
 
-  await page.locator('[data-recued-recipes-card]').first().click();
+  await page.locator('[data-recued-recipes-card="autorun-live-1"]')
+    .getByRole('button', { name: 'Open Watch pipeline details', exact: true })
+    .click();
   const detail = page.locator('[data-recued-recipes-detail="autorun-live-1"]');
   await expect(detail).toBeVisible();
 
@@ -16853,7 +16947,7 @@ test('Recipes preserves direct default Run focus through execution', async ({ pa
   }));
   await expect(defaultRun).toHaveText('Running…');
   await expect(defaultRun).toBeFocused();
-  await defaultRun.evaluate((button) => {
+  await defaultRun.evaluate((button: HTMLElement) => {
     button.click();
     button.click();
   });
@@ -16929,7 +17023,9 @@ test('Recipes protects editable result work through its save', async ({ page }) 
   await page.waitForFunction(() => window.__app?.ready === true);
   await page.evaluate(() => window.__app.setHash('#recipes'));
 
-  await page.locator('[data-recued-recipes-card="autorun-live-1"]').click();
+  await page.locator('[data-recued-recipes-card="autorun-live-1"]')
+    .getByRole('button', { name: 'Open Watch pipeline details', exact: true })
+    .click();
   const detail = page.locator('[data-recued-recipes-detail="autorun-live-1"]');
   await detail.locator('[data-recued-recipes-action="open-run"]')
     .filter({ hasText: /^Run$/ })
@@ -17035,7 +17131,9 @@ test('Recipes owns result search and paging through every repaint', async ({ pag
   await page.waitForFunction(() => window.__app?.ready === true);
   await page.evaluate(() => window.__app.setHash('#recipes'));
 
-  await page.locator('[data-recued-recipes-card="autorun-live-1"]').click();
+  await page.locator('[data-recued-recipes-card="autorun-live-1"]')
+    .getByRole('button', { name: 'Open Watch pipeline details', exact: true })
+    .click();
   const detail = page.locator('[data-recued-recipes-detail="autorun-live-1"]');
   await detail.locator('[data-recued-recipes-action="open-run"]')
     .filter({ hasText: /^Run$/ })
@@ -17252,7 +17350,9 @@ test('Recipes restores the replaced detail Run opener after execution', async ({
   await page.waitForFunction(() => window.__app?.ready === true);
   await page.evaluate(() => window.__app.setHash('#recipes'));
 
-  await page.locator('[data-recued-recipes-card]').first().click();
+  await page.locator('[data-recued-recipes-card="autorun-live-1"]')
+    .getByRole('button', { name: 'Open Watch pipeline details', exact: true })
+    .click();
   const detail = page.locator('[data-recued-recipes-detail="autorun-live-1"]');
   const opener = detail.locator('[data-recued-recipes-action="open-run"]')
     .filter({ hasText: /^Run$/ });
@@ -17274,12 +17374,14 @@ test('Recipes restores the replaced detail Run opener after execution', async ({
 
 test('Recipes keeps Config owned while loading its editor', async ({ page }) => {
   await page.goto(
-    `${HARNESS_URL}?recipes=installed&recipe_default_run=1&recipe_config_response=slow`,
+    `${HARNESS_URL}?recipes=installed&recipe_default_run=1&hold_rpc=recipe_config.get`,
   );
   await page.waitForFunction(() => window.__app?.ready === true);
   await page.evaluate(() => window.__app.setHash('#recipes'));
 
-  await page.locator('[data-recued-recipes-card]').first().click();
+  await page.locator('[data-recued-recipes-card="autorun-live-1"]')
+    .getByRole('button', { name: 'Open Watch pipeline details', exact: true })
+    .click();
   const detail = page.locator('[data-recued-recipes-detail="autorun-live-1"]');
   const config = detail.locator(
     '[data-recued-recipes-action="open-recipe-config"][data-recipe-id="autorun-live-1"]',
@@ -17296,14 +17398,15 @@ test('Recipes keeps Config owned while loading its editor', async ({ page }) => 
   await expect(config).toHaveAttribute('aria-busy', 'true');
   await expect(config).not.toHaveAttribute('disabled');
   await expect(config).toBeFocused();
-  await config.evaluate((button) => {
+  await config.evaluate((button: HTMLElement) => {
     button.click();
     button.click();
   });
   await expect.poll(
     () => page.evaluate(() => window.__app.rpcCallCount('recipe_config.get')),
   ).toBe(readsBefore + 1);
-
+  expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('recipe_config.get')))
+    .toBe(1);
   const editor = page.getByRole('dialog', { name: 'Edit config' });
   await expect(editor).toBeFocused();
   await editor.getByRole('button', { name: 'Close', exact: true }).click();
@@ -17318,7 +17421,9 @@ test('the shared config editor keeps usable mobile targets', async ({ page }) =>
   await page.waitForFunction(() => window.__app?.ready === true);
   await page.evaluate(() => window.__app.setHash('#recipes'));
 
-  await page.locator('[data-recued-recipes-card]').first().click();
+  await page.locator('[data-recued-recipes-card="autorun-live-1"]')
+    .getByRole('button', { name: 'Open Watch pipeline details', exact: true })
+    .click();
   const detail = page.locator('[data-recued-recipes-detail="autorun-live-1"]');
   await detail.locator(
     '[data-recued-recipes-action="open-recipe-config"]'
@@ -17369,7 +17474,9 @@ test('Recipes returns a failed Config read to its action with a retryable error'
   await page.waitForFunction(() => window.__app?.ready === true);
   await page.evaluate(() => window.__app.setHash('#recipes'));
 
-  await page.locator('[data-recued-recipes-card]').first().click();
+  await page.locator('[data-recued-recipes-card="autorun-live-1"]')
+    .getByRole('button', { name: 'Open Watch pipeline details', exact: true })
+    .click();
   const detail = page.locator('[data-recued-recipes-detail="autorun-live-1"]');
   const config = detail.locator(
     '[data-recued-recipes-action="open-recipe-config"][data-recipe-id="autorun-live-1"]',
@@ -17400,7 +17507,9 @@ test('Recipes keeps Config save owned through failure and retry', async ({ page 
   await page.waitForFunction(() => window.__app?.ready === true);
   await page.evaluate(() => window.__app.setHash('#recipes'));
 
-  await page.locator('[data-recued-recipes-card]').first().click();
+  await page.locator('[data-recued-recipes-card="autorun-live-1"]')
+    .getByRole('button', { name: 'Open Watch pipeline details', exact: true })
+    .click();
   const detail = page.locator('[data-recued-recipes-detail="autorun-live-1"]');
   const config = detail.locator(
     '[data-recued-recipes-action="open-recipe-config"]'
@@ -17688,7 +17797,9 @@ test('Recipes keeps workflow-pack recovery focused and single-flight', async ({ 
   await page.goto(`${HARNESS_URL}?recipes=related-autorun`);
   await page.waitForFunction(() => window.__app?.ready === true);
   await page.evaluate(() => window.__app.setHash('#recipes'));
-  await page.locator('[data-recued-recipes-card="autorun-live-1"]').click();
+  await page.locator('[data-recued-recipes-card="autorun-live-1"]')
+    .getByRole('button', { name: 'Open Watch pipeline details', exact: true })
+    .click();
 
   const status = page.locator(
     '[data-recued-recipes-bundle-status="pipeline-response"]',
@@ -19106,6 +19217,57 @@ test('Logs guards pagination and focuses the first appended run', async ({ page 
   })).toHaveCount(1);
 });
 
+test('Tool progress refreshes live control without polling the chat session list', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?live=interrupted&chat=session#chat/session/chat_1`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await expect.poll(() => page.evaluate(() => window.__app.rpcCallCount('chat.session.get'))).toBeGreaterThan(0);
+  const lists = await page.evaluate(() => window.__app.rpcCallCount('chat.sessions.list'));
+  const active = await page.evaluate(() => window.__app.rpcCallCount('execution.active'));
+  await page.evaluate(() => window.__app.fireMessage({
+    type: 'server_event', event: { kind: 'chat.session_changed', session_id: 'chat_1',
+      field: 'tool_call', cursor: 100,
+      value: { message_id: 'call-streaming', session_id: 'chat_1', turn_id: 'turn-streaming',
+        tool_name: 'recipe.run', run_id: 'run-streaming', state: 'running',
+        started_at: 1_000, updated_at: 2_000, last_signal_at: 2_000 },
+    },
+  }));
+  await expect.poll(() => page.evaluate(() => window.__app.rpcCallCount('execution.active'))).toBeGreaterThan(active);
+  expect(await page.evaluate(() => window.__app.rpcCallCount('chat.sessions.list'))).toBe(lists);
+});
+
+test('Live bubble restores interrupted calls on load and reconnect without restarting work', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 700 });
+  await page.goto(`${HARNESS_URL}?live=interrupted&chat=session`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  const toggle = page.locator(`[${LIVE_CONTROL_TOGGLE}]`);
+  await expect(toggle).toHaveText('◉ 1');
+  await toggle.click();
+  const row = page.locator('[data-recued-live-control-tool-row="tool-recovered"]');
+  await expect(row).toContainText('Interrupted — outcome unconfirmed');
+  await expect(row).toContainText('last progress');
+  await expect(row.locator(`[${LIVE_CONTROL_RUN_CONTROL}]`)).toHaveCount(0);
+  await expect(row.getByRole('link', { name: 'Open chat' })).toHaveAttribute('href', '#chat/session/chat_1');
+  const reviewBounds = await row.getByRole('button', { name: /Mark reviewed/ }).boundingBox();
+  expect(reviewBounds).not.toBeNull();
+  expect(reviewBounds!.x).toBeGreaterThanOrEqual(0);
+  expect(reviewBounds!.x + reviewBounds!.width).toBeLessThanOrEqual(320);
+  await row.getByRole('link', { name: 'Open chat' }).focus();
+  const before = await page.evaluate(() => window.__app.rpcCallCount('execution.active'));
+  await page.evaluate(() => { window.__app.fireState('reconnecting'); window.__app.fireState('connected'); });
+  await expect.poll(() => page.evaluate(() => window.__app.rpcCallCount('execution.active'))).toBeGreaterThan(before);
+  await expect(row).toContainText('Interrupted — outcome unconfirmed');
+  await expect(row.getByRole('link', { name: 'Open chat' })).toBeFocused();
+  await page.reload();
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await expect(toggle).toHaveText('◉ 1');
+  await toggle.click();
+  await row.getByRole('button', { name: /Mark reviewed/ }).click();
+  await expect(toggle).toHaveCount(0);
+  expect(await page.evaluate(() => window.__app.rpcCallCount('execution.tool_call.dismiss'))).toBe(1);
+  expect(await page.evaluate(() => window.__app.rpcCallCount('execution.kill'))).toBe(0);
+  expect(await page.evaluate(() => window.__app.rpcCallCount('chat.send'))).toBe(0);
+});
+
 test('Logs gives repeated live controls exact accessible owners', async ({ page }) => {
   await page.goto(`${HARNESS_URL}?live=running&logs_passes=active`);
   await page.waitForFunction(() => window.__app?.ready === true);
@@ -20101,6 +20263,7 @@ test('Reception recovers destination inventory without losing query ownership', 
   await page.goto(
     `${HARNESS_URL}?reception=pending`
     + '&reception_destination_response=fail-once-slow-retry'
+    + '&hold_rpc=work_entity.source.list'
     + '#reception',
   );
   await page.waitForFunction(() => window.__app?.ready === true);
@@ -20112,6 +20275,9 @@ test('Reception recovers destination inventory without losing query ownership', 
     (input as HTMLInputElement).setSelectionRange(2, 2);
   });
   await expect(page.getByText('No destinations match.')).toHaveCount(0);
+  expect(await page.evaluate(
+    () => window.__app.releaseRpcResponses?.('work_entity.source.list'),
+  )).toBe(1);
 
   const failure = page.locator(
     `[${RECEPTION_INBOX_DESTINATION_ERROR}="source_id"]`,
@@ -20136,6 +20302,9 @@ test('Reception recovers destination inventory without losing query ownership', 
   expect(await page.evaluate(
     () => window.__app.rpcCallCount('work_entity.source.list'),
   )).toBe(callsBeforeRetry + 1);
+  expect(await page.evaluate(
+    () => window.__app.releaseRpcResponses?.('work_entity.source.list'),
+  )).toBe(1);
 
   await expect(picker).toBeVisible();
   await expect(picker).toHaveValue('Tas');
@@ -21079,7 +21248,7 @@ test('Settings Transparency retains its pending preference on route leave', asyn
   await expect(toggle).toHaveAttribute('aria-busy', 'true');
   await expect(toggle).not.toHaveAttribute('disabled');
   await expect(toggle).toBeFocused();
-  await toggle.evaluate((checkbox) => {
+  await toggle.evaluate((checkbox: HTMLElement) => {
     checkbox.click();
     checkbox.click();
   });
@@ -21124,7 +21293,7 @@ test('Settings Learning keeps its pending preference truthful, focused, and sing
   await expect(toggle).not.toHaveAttribute('disabled');
   await expect(toggle).toBeFocused();
 
-  await toggle.evaluate((checkbox) => {
+  await toggle.evaluate((checkbox: HTMLElement) => {
     checkbox.click();
     checkbox.click();
   });
@@ -21213,7 +21382,7 @@ test('Settings Learning owns a keyboard Forget through confirmation and removal'
   );
   await expect(competingDraft).toHaveAttribute('aria-disabled', 'true');
   await expect(competingDraft).not.toHaveAttribute('disabled');
-  await competingDraft.evaluate((button) => {
+  await competingDraft.evaluate((button: HTMLElement) => {
     button.click();
     button.click();
   });
@@ -21222,7 +21391,7 @@ test('Settings Learning owns a keyboard Forget through confirmation and removal'
       () => window.__app.rpcCallCount('chat.execution.draft_recipe'),
     ),
   ).toBe(0);
-  await forget.evaluate((button) => {
+  await forget.evaluate((button: HTMLElement) => {
     button.click();
     button.click();
   });
@@ -21311,7 +21480,7 @@ test('Settings Learning retains a keyboard-owned recipe draft through failure', 
   );
   await expect(competingForget).toHaveAttribute('aria-disabled', 'true');
   await expect(competingForget).not.toHaveAttribute('disabled');
-  await competingForget.evaluate((button) => {
+  await competingForget.evaluate((button: HTMLElement) => {
     button.click();
     button.click();
   });
@@ -21320,7 +21489,7 @@ test('Settings Learning retains a keyboard-owned recipe draft through failure', 
       () => window.__app.rpcCallCount('chat.execution.forget'),
     ),
   ).toBe(0);
-  await draft.evaluate((button) => {
+  await draft.evaluate((button: HTMLElement) => {
     button.click();
     button.click();
   });
@@ -21661,45 +21830,34 @@ test('Settings Housekeeping Reset dialog owns keyboard focus', async ({ page }) 
     window.__app.rpcCallCount('housekeeping.topic.reset'))).toBe(3);
 });
 
-test('Settings Work Entities identifies repeated source controls', async ({ page }) => {
+test('Settings omits retired Work Entities controls and recovers their old link', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto(`${HARNESS_URL}?work_entities=multiple-sources`);
+  await page.goto(
+    `${HARNESS_URL}?work_entities=multiple-sources&settle_reads=1#settings/work-entities`,
+  );
   await page.waitForFunction(() => window.__app?.ready === true);
-  await page.evaluate(() => window.__app.setHash('#settings/work-entities'));
 
-  await expect(page.getByRole('heading', {
-    name: 'Work Entities',
-    level: 2,
-  })).toBeVisible();
+  // D-187 retired source defaults and muting. Old links use the Settings fallback.
+  await expect(page.getByRole('heading', { name: 'Account', level: 2 }))
+    .toBeVisible();
+  await expect(page.locator(`[${SETTINGS_NAV_ITEM}="account"]`))
+    .toHaveAttribute('aria-current', 'page');
+  await expect(page.locator(`[${SETTINGS_NAV_ITEM}="work-entities"]`))
+    .toHaveCount(0);
+  await expect(page.getByRole('heading', { name: 'Work Entities' }))
+    .toHaveCount(0);
+  await expect(page.locator(
+    '[data-action="set-source-enabled"], '
+      + '[data-action="set-source-mcp-exposed"], '
+      + '[data-action="set-default-source"]',
+  )).toHaveCount(0);
+  expect(await page.evaluate(() => window.__app.rpcCallCount('work_entity.source.list')))
+    .toBe(0);
 
-  const enabled = (sourceId: string) => page.locator(
-    `[data-action="set-source-enabled"][data-source-id="${sourceId}"]`,
-  );
-  const exposed = (sourceId: string) => page.locator(
-    `[data-action="set-source-mcp-exposed"][data-source-id="${sourceId}"]`,
-  );
-  await expect(enabled('recued.task')).toHaveAccessibleName(
-    'Enabled for Recued built-in (recued.task)',
-  );
-  await expect(enabled('recued.note')).toHaveAccessibleName(
-    'Enabled for Recued built-in (recued.note)',
-  );
-  await expect(exposed('connection.hubspot.conn-42.task'))
-    .toHaveAccessibleName(
-      'MCP exposed for HubSpot Tasks (connection.hubspot.conn-42.task)',
-    );
-  await expect(page.locator(
-    '[data-action="set-default-source"][data-kind="task"]',
-  )).toHaveAccessibleName('Default Source for Tasks');
-  await expect(page.locator(
-    '[data-action="set-default-source"][data-kind="note"]',
-  )).toHaveAccessibleName('Default Source for Notes');
-  const sourceToggles = page.locator('.rx-source-row-toggle');
-  await expect(sourceToggles).toHaveCount(6);
-  for (let index = 0; index < await sourceToggles.count(); index += 1) {
-    const box = await sourceToggles.nth(index).boundingBox();
-    expect(box?.height).toBeGreaterThanOrEqual(36);
-  }
+  await page.locator(`[${SETTINGS_NAV_ITEM}="privacy"]`).click();
+  await expect(page.getByRole('heading', { name: 'Privacy', level: 2 }))
+    .toBeVisible();
+  await expect(page).toHaveURL(/#settings\/privacy$/);
   await expect(page.locator('html')).toHaveJSProperty(
     'scrollWidth',
     await page.locator('html').evaluate((element) => element.clientWidth),
@@ -21918,7 +22076,7 @@ test('Settings Seller customer lifecycle distinguishes repeated fields', async (
   })).toBeVisible();
   await page.locator(
     '[data-recued-seller-collection-detail="customer-1"] details',
-  ).evaluateAll((details) => {
+  ).evaluateAll((details: HTMLDetailsElement[]) => {
     for (const detail of details) detail.open = true;
   });
 
@@ -22271,7 +22429,7 @@ test('Settings Account Connect owns its pending command and refreshed binding', 
     'An account setting is still updating. Leave Settings anyway?',
   );
   await expect(page).toHaveURL(/#settings\/account$/);
-  await connect.evaluate((button) => {
+  await connect.evaluate((button: HTMLElement) => {
     button.click();
     button.click();
   });
@@ -22363,7 +22521,7 @@ test('Settings Account Confirm rebind owns its pending command and refreshed bin
   await expect(confirm).toBeFocused();
   await expect(cancel).toHaveAttribute('aria-disabled', 'true');
   await expect(cancel).not.toHaveAttribute('disabled');
-  await confirm.evaluate((button) => {
+  await confirm.evaluate((button: HTMLElement) => {
     button.click();
     button.click();
   });
@@ -22469,7 +22627,7 @@ test('Settings Account Confirm Disconnect owns its pending command and next acti
   await expect(confirm).toBeFocused();
   await expect(cancel).toHaveAttribute('aria-disabled', 'true');
   await expect(cancel).not.toHaveAttribute('disabled');
-  await confirm.evaluate((button) => {
+  await confirm.evaluate((button: HTMLElement) => {
     button.click();
     button.click();
   });
@@ -22536,7 +22694,7 @@ test('Settings Account Sign out owns its pending command and next action', async
   await expect(signOut).toHaveAttribute('aria-busy', 'true');
   await expect(signOut).not.toHaveAttribute('disabled');
   await expect(signOut).toBeFocused();
-  await signOut.evaluate((button) => {
+  await signOut.evaluate((button: HTMLElement) => {
     button.click();
     button.click();
   });
@@ -22609,7 +22767,7 @@ test('Settings Account read failures gate mutations and recover in place', async
   await expect(retry).toHaveAttribute('aria-busy', 'true');
   await expect(retry).not.toHaveAttribute('disabled');
   await expect(retry).toBeFocused();
-  await retry.evaluate((button) => {
+  await retry.evaluate((button: HTMLElement) => {
     button.click();
     button.click();
   });
@@ -22755,7 +22913,7 @@ test('Settings device revoke owns its pending command and success receipt', asyn
     'A device revoke is still updating. Leave Settings anyway?',
   );
   await expect(page).toHaveURL(/#settings\/devices$/);
-  await confirm.evaluate((button) => {
+  await confirm.evaluate((button: HTMLElement) => {
     button.click();
     button.click();
   });
@@ -22816,7 +22974,7 @@ test('Settings Devices Retry owns recovery and advances into the roster', async 
   await expect(retry).toHaveAttribute('aria-busy', 'true');
   await expect(retry).not.toHaveAttribute('disabled');
   await expect(retry).toBeFocused();
-  await retry.evaluate((button) => {
+  await retry.evaluate((button: HTMLElement) => {
     button.click();
     button.click();
   });
@@ -22872,7 +23030,7 @@ test('Settings notification switches retain exact mutation ownership', async ({ 
   await expect(toggle).toHaveAttribute('aria-busy', 'true');
   await expect(toggle).not.toHaveAttribute('disabled');
   await expect(toggle).toBeFocused();
-  await toggle.evaluate((button) => {
+  await toggle.evaluate((button: HTMLElement) => {
     button.click();
     button.click();
   });
@@ -22977,7 +23135,7 @@ test('Settings per-browser notification switches retain mutation ownership', asy
   await expect(toggle).toHaveAttribute('aria-busy', 'true');
   await expect(toggle).not.toHaveAttribute('disabled');
   await expect(toggle).toBeFocused();
-  await toggle.evaluate((button) => {
+  await toggle.evaluate((button: HTMLElement) => {
     button.click();
     button.click();
   });
@@ -23049,7 +23207,7 @@ test('Settings notification phrase Save retains mutation ownership', async ({ pa
   await expect(save).toHaveAttribute('aria-busy', 'true');
   await expect(save).not.toHaveAttribute('disabled');
   await expect(save).toBeFocused();
-  await save.evaluate((button) => {
+  await save.evaluate((button: HTMLElement) => {
     button.click();
     button.click();
   });
@@ -23150,7 +23308,7 @@ test('Settings notification Retry owns loading and advances into recovered contr
   await expect(retry).toHaveAttribute('aria-busy', 'true');
   await expect(retry).not.toHaveAttribute('disabled');
   await expect(retry).toBeFocused();
-  await retry.evaluate((button) => {
+  await retry.evaluate((button: HTMLElement) => {
     button.click();
     button.click();
   });
@@ -23390,7 +23548,7 @@ test('Settings AI Models preference keeps the selected source focused', async ({
     'An AI model setting is still updating. Leave Settings anyway?',
   );
   await expect(page).toHaveURL(/#settings\/ai-models$/);
-  await quality.evaluate((button) => {
+  await quality.evaluate((button: HTMLElement) => {
     button.click();
     button.click();
   });
@@ -23515,7 +23673,7 @@ test('Settings AI Models catalog mode failures return to the exact select', asyn
   );
   await slotOne.focus();
   await slotOne.selectOption('full');
-  expect(await slotOne.evaluate((select) => ({
+  expect(await slotOne.evaluate((select: HTMLSelectElement) => ({
     value: select.value,
     ariaDisabled: select.getAttribute('aria-disabled'),
     ariaBusy: select.getAttribute('aria-busy'),
@@ -23616,9 +23774,9 @@ test('Settings AI Models policy actions serialize their shared configuration', a
   await expect(allow).toBeFocused();
   await expect(pause).toHaveAttribute('aria-disabled', 'true');
   await expect(resume).toHaveAttribute('aria-disabled', 'true');
-  await pause.evaluate((button) => button.click());
-  await resume.evaluate((button) => button.click());
-  await allow.evaluate((button) => button.click());
+  await pause.evaluate((button: HTMLElement) => button.click());
+  await resume.evaluate((button: HTMLElement) => button.click());
+  await allow.evaluate((button: HTMLElement) => button.click());
   await expect.poll(
     () => page.evaluate(
       () => window.__app.rpcCallCount('housekeeping.config.write'),
@@ -23637,7 +23795,7 @@ test('Settings AI Models policy actions serialize their shared configuration', a
   await expect(pause).toHaveText('Pausing AI…');
   await expect(pause).toHaveAttribute('aria-busy', 'true');
   await expect(pause).toBeFocused();
-  await resume.evaluate((button) => button.click());
+  await resume.evaluate((button: HTMLElement) => button.click());
   await expect.poll(
     () => page.evaluate(
       () => window.__app.rpcCallCount('housekeeping.config.write'),
@@ -23653,7 +23811,7 @@ test('Settings AI Models policy actions serialize their shared configuration', a
   await expect(resume).toHaveText('Resuming AI…');
   await expect(resume).toHaveAttribute('aria-busy', 'true');
   await expect(resume).toBeFocused();
-  await pause.evaluate((button) => button.click());
+  await pause.evaluate((button: HTMLElement) => button.click());
   await expect.poll(
     () => page.evaluate(
       () => window.__app.rpcCallCount('housekeeping.config.write'),
@@ -23721,7 +23879,7 @@ test('Settings AI Models budget Save owns its pending mutation', async ({ page }
   await expect(save).not.toHaveAttribute('disabled');
   await expect(save).toBeFocused();
   await expect(budget).toHaveAttribute('readonly', '');
-  await save.evaluate((button) => {
+  await save.evaluate((button: HTMLElement) => {
     button.click();
     button.click();
   });
@@ -23785,18 +23943,18 @@ test('Settings AI Models prompt editing preserves focus and caret', async ({ pag
   await expect(prompt).toBeVisible();
   const initial = await prompt.inputValue();
   await prompt.focus();
-  await prompt.evaluate((element) => element.setSelectionRange(3, 3));
+  await prompt.evaluate((element: HTMLTextAreaElement) => element.setSelectionRange(3, 3));
   await page.keyboard.type('XY');
   await expect(prompt).toHaveValue(`${initial.slice(0, 3)}XY${initial.slice(3)}`);
   await expect(prompt).toBeFocused();
-  expect(await prompt.evaluate((element) => element.selectionStart)).toBe(5);
+  expect(await prompt.evaluate((element: HTMLTextAreaElement) => element.selectionStart)).toBe(5);
 
   // The status line is mutated in place on input — it must NOT have cost the
   // caret, which is the whole reason typing does not re-render.
   await expect(page.locator(`[${AI_MODELS_PROMPT_STATUS}="chat"]`))
     .toHaveText('Unsaved changes — Save to put this in force.');
   await expect(prompt).toBeFocused();
-  expect(await prompt.evaluate((element) => element.selectionStart)).toBe(5);
+  expect(await prompt.evaluate((element: HTMLTextAreaElement) => element.selectionStart)).toBe(5);
 
   const save = page.getByRole('button', {
     name: 'Save Chat system prompt',
@@ -23836,13 +23994,13 @@ test('Settings AI Models prompt Save owns its reload round trip', async ({ page 
   await expect(prompt).toHaveAttribute('readonly', '');
   await expect(loadDefault).toHaveAttribute('aria-disabled', 'true');
   await expect(loadDefault).not.toHaveAttribute('disabled');
-  await save.evaluate((button) => {
+  await save.evaluate((button: HTMLElement) => {
     button.click();
     button.click();
   });
   // `Load default` is client-only, so nothing but its own guard stops it
   // repainting the box out from under the in-flight save.
-  await loadDefault.evaluate((button) => button.click());
+  await loadDefault.evaluate((button: HTMLElement) => button.click());
   await expect(prompt).toHaveValue('A durable owner-authored prompt.');
   await expect.poll(
     () => page.evaluate(
@@ -23874,7 +24032,7 @@ test('Settings AI Models prompt Save owns its reload round trip', async ({ page 
     () => window.__app.rpcCallCount('server.setLlmPrompt'),
   )).toBe(1);
 
-  await save.evaluate((button) => button.click());
+  await save.evaluate((button: HTMLElement) => button.click());
   await expect.poll(
     () => page.evaluate(
       () => window.__app.rpcCallCount('server.setLlmPrompt'),
@@ -23957,7 +24115,7 @@ test('Settings AI Models slot actions preserve sibling drafts and action focus',
   await expect(save).toBeFocused();
   await expect(slotOne.getByRole('textbox', { name: 'Model' }))
     .toHaveAttribute('readonly', '');
-  await save.evaluate((button) => {
+  await save.evaluate((button: HTMLElement) => {
     button.click();
     button.click();
   });
@@ -24001,11 +24159,11 @@ test('Settings AI Models slot actions preserve sibling drafts and action focus',
   await expect(confirmClear).toBeFocused();
   await expect(cancelClear).toHaveAttribute('aria-disabled', 'true');
   await expect(cancelClear).not.toHaveAttribute('disabled');
-  await confirmClear.evaluate((button) => {
+  await confirmClear.evaluate((button: HTMLElement) => {
     button.click();
     button.click();
   });
-  await cancelClear.evaluate((button) => button.click());
+  await cancelClear.evaluate((button: HTMLElement) => button.click());
   expect(await page.evaluate(
     () => window.__app.rpcCallCount('server.setLLMSlot'),
   )).toBe(2);
@@ -24074,11 +24232,11 @@ test('Settings AI Models failed Clear slot stays owned and retryable', async ({ 
   await expect(confirm).toHaveText('Clearing slot…');
   await expect(confirm).toHaveAttribute('aria-disabled', 'true');
   await expect(confirm).toBeFocused();
-  await confirm.evaluate((button) => {
+  await confirm.evaluate((button: HTMLElement) => {
     button.click();
     button.click();
   });
-  await cancel.evaluate((button) => button.click());
+  await cancel.evaluate((button: HTMLElement) => button.click());
   expect(await page.evaluate(
     () => window.__app.rpcCallCount('server.setLLMSlot'),
   )).toBe(1);
@@ -24173,11 +24331,11 @@ test('Settings AI Models pool actions preserve drafts and action focus', async (
   await expect(toggle).toBeFocused();
   await expect(remove).toHaveAttribute('aria-disabled', 'true');
   await expect(remove).not.toHaveAttribute('disabled');
-  await toggle.evaluate((button) => {
+  await toggle.evaluate((button: HTMLElement) => {
     button.click();
     button.click();
   });
-  await remove.evaluate((button) => button.click());
+  await remove.evaluate((button: HTMLElement) => button.click());
   expect(await page.evaluate(
     () => window.__app.rpcCallCount('server.setFreePoolEntryEnabled'),
   )).toBe(1);
@@ -24202,7 +24360,7 @@ test('Settings AI Models pool actions preserve drafts and action focus', async (
   await expect(addEntry).toBeFocused();
   await expect(draftId).toHaveAttribute('readonly', '');
   await expect(draftKey).toHaveAttribute('readonly', '');
-  await addEntry.evaluate((button) => {
+  await addEntry.evaluate((button: HTMLElement) => {
     button.click();
     button.click();
   });
@@ -24259,11 +24417,11 @@ test('Settings AI Models pool removal keeps the destructive command owned', asyn
   await expect(confirm).toBeFocused();
   await expect(cancel).toHaveAttribute('aria-disabled', 'true');
   await expect(cancel).not.toHaveAttribute('disabled');
-  await confirm.evaluate((button) => {
+  await confirm.evaluate((button: HTMLElement) => {
     button.click();
     button.click();
   });
-  await cancel.evaluate((button) => button.click());
+  await cancel.evaluate((button: HTMLElement) => button.click());
   await expect.poll(
     () => page.evaluate(
       () => window.__app.rpcCallCount('server.removeFreePoolEntry'),
@@ -24448,11 +24606,11 @@ test('Settings AI Models embeddings draft survives sibling actions and saves', a
   await expect(model).toHaveAttribute('readonly', '');
   await expect(clear).toHaveAttribute('aria-disabled', 'true');
   await expect(clear).not.toHaveAttribute('disabled');
-  await save.evaluate((button) => {
+  await save.evaluate((button: HTMLElement) => {
     button.click();
     button.click();
   });
-  await clear.evaluate((button) => button.click());
+  await clear.evaluate((button: HTMLElement) => button.click());
   expect(await page.evaluate(
     () => window.__app.rpcCallCount('server.setEmbeddingsSlot'),
   )).toBe(1);
@@ -24575,11 +24733,11 @@ test('Settings AI Models embeddings Clear is confirmed and mutation-owned', asyn
   await expect(confirm).toBeFocused();
   await expect(pendingCancel).toHaveAttribute('aria-disabled', 'true');
   await expect(pendingCancel).not.toHaveAttribute('disabled');
-  await confirm.evaluate((button) => {
+  await confirm.evaluate((button: HTMLElement) => {
     button.click();
     button.click();
   });
-  await pendingCancel.evaluate((button) => button.click());
+  await pendingCancel.evaluate((button: HTMLElement) => button.click());
   expect(await page.evaluate(
     () => window.__app.rpcCallCount('server.setEmbeddingsSlot'),
   )).toBe(2);
@@ -25313,9 +25471,15 @@ test('Contracts grants contain long operation labels and keep full mobile target
     'core.contact.engagements.read',
   );
   await expect(longOperation.locator('.cg-source')).toHaveText('default');
+  await expect(page.locator(
+    '[data-recued-contract-grants-cell][data-entry="data.file"]',
+  )).toBeVisible();
   await page.locator(
     `[${CONTRACTS_DETAIL_TAB}][data-tab="entities"]`,
   ).click();
+  await expect(page.locator(
+    '[data-recued-contract-grants-cell][data-entry="enrichment.summary"]',
+  )).toBeVisible();
   await assertGrantTargets();
 
 });
@@ -25331,7 +25495,11 @@ test('Contracts detail tabs form one arrow-key keyboard stop', async ({ page }) 
   const entities = page.locator(
     `[${CONTRACTS_DETAIL_TAB}][data-tab="entities"]`,
   );
+  const recipes = page.locator(
+    `[${CONTRACTS_DETAIL_TAB}][data-tab="recipes"]`,
+  );
   const panel = page.locator(`[${CONTRACTS_DETAIL_TAB_BODY}]`);
+  await expect(tabs).toHaveText(['Ops', 'Entities', 'Recipes']);
   await expect(ops).toHaveAttribute('tabindex', '0');
   await expect(entities).toHaveAttribute('tabindex', '-1');
   expect(await tabs.evaluateAll((nodes) => nodes.filter(
@@ -25350,6 +25518,18 @@ test('Contracts detail tabs form one arrow-key keyboard stop', async ({ page }) 
   );
 
   await page.keyboard.press('ArrowRight');
+  await expect(recipes).toHaveAttribute('aria-selected', 'true');
+  await expect(recipes).toHaveAttribute('tabindex', '0');
+  await expect(recipes).toBeFocused();
+  await expect(panel).toHaveAttribute(
+    'aria-labelledby',
+    'recued-contracts-detail-tab-recipes',
+  );
+  expect(await tabs.evaluateAll((nodes) => nodes.filter(
+    (node) => node.getAttribute('tabindex') === '0',
+  ).length)).toBe(1);
+
+  await page.keyboard.press('ArrowRight');
   await expect(ops).toHaveAttribute('aria-selected', 'true');
   await expect(ops).toBeFocused();
 });
@@ -25357,7 +25537,7 @@ test('Contracts detail tabs form one arrow-key keyboard stop', async ({ page }) 
 test('Contracts keeps an operation grant toggle focused and single-flight', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(
-    `${HARNESS_URL}?contracts=paged#contracts/door_paged_01/ops`,
+    `${HARNESS_URL}?contracts=paged&hold_rpc=contract.grant.write#contracts/door_paged_01/ops`,
   );
   await page.waitForFunction(() => window.__app?.ready === true);
 
@@ -25395,6 +25575,9 @@ test('Contracts keeps an operation grant toggle focused and single-flight', asyn
   await expect.poll(
     () => page.evaluate(() => window.__app.rpcCallCount('contract.grant.write')),
   ).toBe(1);
+  expect(await page.evaluate(
+    () => window.__app.releaseRpcResponses?.('contract.grant.write'),
+  )).toBe(1);
 
   await expect(toggle).not.toHaveAttribute('aria-disabled');
   await expect(toggle).not.toHaveAttribute('aria-busy');
@@ -25668,7 +25851,8 @@ test('the Run palette stays contained with usable mobile targets', async ({ page
   await page.setViewportSize({ width: 280, height: 480 });
   await page.goto(`${HARNESS_URL}?run_palette=autorun`);
   await page.waitForFunction(() => window.__app?.ready === true);
-  await page.locator(`[${CHAT_ACTIVATION_ACTION}="automate"]`).click();
+  // Installed recipes retire Chat's first-run card; the shell launcher stays.
+  await page.locator(`[${GLOBAL_RUN_PALETTE_TRIGGER}]`).click();
 
   const dialog = page.getByRole('dialog', { name: 'Run a recipe' });
   const geometry = await dialog.evaluate((node) => {
@@ -25722,7 +25906,7 @@ test('the Run palette contains a long installed recipe after selection', async (
   await page.setViewportSize({ width: 280, height: 480 });
   await page.goto(`${HARNESS_URL}?run_palette=long`);
   await page.waitForFunction(() => window.__app?.ready === true);
-  await page.locator(`[${CHAT_ACTIVATION_ACTION}="automate"]`).click();
+  await page.locator(`[${GLOBAL_RUN_PALETTE_TRIGGER}]`).click();
 
   const dialog = page.getByRole('dialog', { name: 'Run a recipe' });
   const picker = dialog.getByRole('combobox', { name: 'Recipe' });
@@ -25766,10 +25950,8 @@ test('the Run palette contains a long installed recipe after selection', async (
 test('the Run palette leaves composing Escape to its recipe picker', async ({ page }) => {
   await page.goto(`${HARNESS_URL}?run_palette=autorun`);
   await page.waitForFunction(() => window.__app?.ready === true);
-  const automate = page.locator(
-    `[${CHAT_ACTIVATION_ACTION}="automate"]`,
-  );
-  await automate.click();
+  const trigger = page.locator(`[${GLOBAL_RUN_PALETTE_TRIGGER}]`);
+  await trigger.click();
 
   const overlay = page.locator(`[${RUN_PALETTE}]`);
   const picker = page.getByRole('combobox', { name: 'Recipe' });
@@ -25799,13 +25981,24 @@ test('the Run palette leaves composing Escape to its recipe picker', async ({ pa
   await expect(picker).toHaveAttribute('aria-expanded', 'false');
   await page.keyboard.press('Escape');
   await expect(overlay).toHaveCount(0);
-  await expect(automate).toBeFocused();
+  await expect(trigger).toBeFocused();
 });
 
 test('the Run palette keeps inventory recovery focused and single-flight', async ({ page }) => {
-  await page.goto(`${HARNESS_URL}?run_palette=inventory-retry`);
+  // Chat's activation read would consume the injected inventory failure.
+  await page.goto(
+    `${HARNESS_URL}?run_palette=inventory-retry&hold_rpc=recipe.list#data`,
+  );
   await page.waitForFunction(() => window.__app?.ready === true);
-  await page.locator(`[${CHAT_ACTIVATION_ACTION}="automate"]`).click();
+  expect(await page.evaluate(() => window.__app.rpcCallCount('recipe.list')))
+    .toBe(0);
+  await page.locator(`[${GLOBAL_RUN_PALETTE_TRIGGER}]`).click();
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('recipe.list')),
+  ).toBe(1);
+  expect(await page.evaluate(
+    () => window.__app.releaseRpcResponses?.('recipe.list'),
+  )).toBe(1);
 
   const dialog = page.getByRole('dialog', { name: 'Run a recipe' });
   await expect(dialog.getByRole('alert')).toHaveText('Couldn’t load recipes.');
@@ -25828,6 +26021,9 @@ test('the Run palette keeps inventory recovery focused and single-flight', async
   await expect.poll(
     () => page.evaluate(() => window.__app.rpcCallCount('recipe.list')),
   ).toBe(before + 1);
+  expect(await page.evaluate(
+    () => window.__app.releaseRpcResponses?.('recipe.list'),
+  )).toBe(1);
 
   const picker = dialog.getByRole('combobox', { name: 'Recipe' });
   await expect(picker).toBeVisible();
@@ -25836,9 +26032,9 @@ test('the Run palette keeps inventory recovery focused and single-flight', async
 });
 
 test('the Run palette guards an in-flight auto-run toggle and route leave', async ({ page }) => {
-  await page.goto(`${HARNESS_URL}?run_palette=autorun`);
+  await page.goto(`${HARNESS_URL}?run_palette=autorun&hold_rpc=auto_run.update`);
   await page.waitForFunction(() => window.__app?.ready === true);
-  await page.locator(`[${CHAT_ACTIVATION_ACTION}="automate"]`).click();
+  await page.locator(`[${GLOBAL_RUN_PALETTE_TRIGGER}]`).click();
 
   const recipe = page.getByRole('combobox', { name: 'Recipe' });
   await expect(recipe).toBeVisible();
@@ -25899,6 +26095,9 @@ test('the Run palette guards an in-flight auto-run toggle and route leave', asyn
       () => window.__app.rpcCallCount('auto_run.update'),
     ),
   ).toBe(before + 1);
+  expect(await page.evaluate(
+    () => window.__app.releaseRpcResponses?.('auto_run.update'),
+  )).toBe(1);
   await expect(page.locator(`[${RUN_PALETTE_ACTION}]`, { hasText: 'Arm' }))
     .toBeFocused();
   await expect(close).not.toHaveAttribute('aria-disabled');
@@ -25915,10 +26114,10 @@ test('the Run palette guards an in-flight auto-run toggle and route leave', asyn
 
 test('the Run palette retains a pending toggle through its Automation handoff', async ({ page }) => {
   await page.goto(
-    `${HARNESS_URL}?run_palette=autorun&auto_run_update_delay_ms=1500`,
+    `${HARNESS_URL}?run_palette=autorun&hold_rpc=auto_run.update`,
   );
   await page.waitForFunction(() => window.__app?.ready === true);
-  await page.locator(`[${CHAT_ACTIVATION_ACTION}="automate"]`).click();
+  await page.locator(`[${GLOBAL_RUN_PALETTE_TRIGGER}]`).click();
 
   const recipe = page.getByRole('combobox', { name: 'Recipe' });
   await expect(recipe).toBeVisible();
@@ -25954,6 +26153,9 @@ test('the Run palette retains a pending toggle through its Automation handoff', 
   await expect.poll(
     () => page.evaluate(() => window.__app.rpcCallCount('auto_run.update')),
   ).toBe(1);
+  expect(await page.evaluate(
+    () => window.__app.releaseRpcResponses?.('auto_run.update'),
+  )).toBe(1);
   await expect(page.locator(`[${RUN_PALETTE_CLOSE}]`))
     .not.toHaveAttribute('aria-disabled');
   await manage.click();
@@ -25965,7 +26167,7 @@ test('the Run palette retains a pending toggle through its Automation handoff', 
 test('the Run palette restores auto-run action focus after its state changes', async ({ page }) => {
   await page.goto(`${HARNESS_URL}?run_palette=autorun`);
   await page.waitForFunction(() => window.__app?.ready === true);
-  await page.locator(`[${CHAT_ACTIVATION_ACTION}="automate"]`).click();
+  await page.locator(`[${GLOBAL_RUN_PALETTE_TRIGGER}]`).click();
 
   const recipe = page.getByRole('combobox', { name: 'Recipe' });
   await recipe.fill('Watch pipeline');
@@ -25985,7 +26187,7 @@ test('the Run palette restores auto-run action focus after its state changes', a
 test('the Run palette reports a failed auto-run update in place', async ({ page }) => {
   await page.goto(`${HARNESS_URL}?run_palette=autorun-fail`);
   await page.waitForFunction(() => window.__app?.ready === true);
-  await page.locator(`[${CHAT_ACTIVATION_ACTION}="automate"]`).click();
+  await page.locator(`[${GLOBAL_RUN_PALETTE_TRIGGER}]`).click();
 
   const recipe = page.getByRole('combobox', { name: 'Recipe' });
   await recipe.fill('Watch pipeline');
@@ -26457,7 +26659,7 @@ test('Connections account lifecycle writes keep their exact action focused and s
   );
 });
 
-test('Connections keeps operation grant ownership through writes', async ({ page }) => {
+test('Connections keeps enrolled actions without retired operation grants', async ({ page }) => {
   await page.setViewportSize({ width: 320, height: 700 });
   await page.goto(`${HARNESS_URL}?connection=grants`);
   await page.waitForFunction(() => window.__app?.ready === true);
@@ -26493,83 +26695,25 @@ test('Connections keeps operation grant ownership through writes', async ({ page
     .toBeLessThanOrEqual(actionBounds.rowRight + 0.5);
   expect(Math.max(...actionBounds.controls.map(({ bottom }) => bottom)))
     .toBeLessThanOrEqual(actionBounds.rowBottom + 0.5);
-  const deals = grants.locator(
-    `[${CONNECTIONS_GRANT_TOGGLE}][data-group-id="recued-core/hubspot.deals.write"]`,
-  );
-  const contacts = grants.locator(
-    `[${CONNECTIONS_GRANT_TOGGLE}][data-group-id="recued-core/hubspot.contacts.write"]`,
-  );
-  await expect(deals).toHaveText('Grant');
-  await expect(deals).toHaveAccessibleName(
-    'Grant hubspot.deals.write for HubSpot work (hubspot-work)',
-  );
-  await expect(contacts).toHaveAccessibleName(
-    'Grant hubspot.contacts.write for HubSpot work (hubspot-work)',
-  );
-  expect((await deals.boundingBox())?.height).toBeGreaterThanOrEqual(36);
-  expect((await contacts.boundingBox())?.height).toBeGreaterThanOrEqual(36);
-
-  await page.evaluate(() => {
-    document.documentElement.setAttribute('data-audit-confirm-count', '0');
-    window.confirm = (message?: string): boolean => {
-      const root = document.documentElement;
-      const count = Number(root.getAttribute('data-audit-confirm-count') ?? '0');
-      root.setAttribute('data-audit-confirm-count', String(count + 1));
-      root.setAttribute('data-audit-confirm-message', message ?? '');
-      return false;
-    };
-  });
-
-  await deals.focus();
-  await page.keyboard.press('Enter');
-  await expect(deals).toHaveText('Granting…');
-  await page.evaluate(() => window.__app.setHash('#data'));
-  const html = page.locator('html');
-  await expect(html).toHaveAttribute(
-    'data-audit-confirm-message',
-    'A connection action is still in progress. Leave Connections anyway?',
-  );
-  await expect(page).toHaveURL(/#connections\/others$/);
-  await expect(deals).toHaveAttribute('aria-disabled', 'true');
-  await expect(deals).toHaveAttribute('aria-busy', 'true');
-  await expect(deals).toHaveAccessibleName(
-    'Granting… hubspot.deals.write for HubSpot work (hubspot-work)',
-  );
-  await expect(deals).toBeFocused();
-  await expect(contacts).toHaveAttribute('aria-disabled', 'true');
-  await expect(contacts).not.toHaveAttribute('aria-busy');
-  await expect(contacts).toHaveAccessibleName(
-    'Grant hubspot.contacts.write for HubSpot work (hubspot-work)',
-  );
-
-  await expect(deals).toHaveText('Revoke');
-  await expect(deals).toHaveAccessibleName(
-    'Revoke hubspot.deals.write for HubSpot work (hubspot-work)',
-  );
-  await expect(deals).toHaveAttribute('aria-pressed', 'true');
-  await expect(deals).toBeFocused();
-  await expect(html).toHaveAttribute('data-audit-confirm-count', '1');
-
-  await page.keyboard.press('Enter');
-  await expect(deals).toHaveText('Revoking…');
-  await expect(deals).toHaveAccessibleName(
-    'Revoking… hubspot.deals.write for HubSpot work (hubspot-work)',
-  );
-  await expect(deals).toHaveAttribute('aria-busy', 'true');
-  await expect(deals).toBeFocused();
-  await expect(deals).toHaveText('Grant');
-  await expect(deals).toHaveAttribute('aria-pressed', 'false');
-  await expect(deals).toBeFocused();
-
-  await page.evaluate(() => window.__app.setHash('#data'));
-  await expect(page).toHaveURL(/#data$/);
-  await expect(html).toHaveAttribute('data-audit-confirm-count', '1');
+  // D-233 moved authority to contracts and per-run approval; this layer is retired.
+  await expect(grants).toHaveCount(0);
+  await expect(page.locator(`[${CONNECTIONS_GRANT_TOGGLE}]`)).toHaveCount(0);
+  expect(await page.evaluate(() => ({
+    reads: window.__app.rpcCallCount('collection.connection.listOperationGroups'),
+    grants: window.__app.rpcCallCount('collection.connection.grantOperationGroup'),
+    revokes: window.__app.rpcCallCount('collection.connection.revokeOperationGroup'),
+  }))).toEqual({ reads: 0, grants: 0, revokes: 0 });
+  for (const name of ['Edit', 'Probe', 'Delete']) {
+    const action = enrolledRow.getByRole('button', { name, exact: true });
+    await action.focus();
+    await expect(action).toBeFocused();
+    expect((await action.boundingBox())?.height).toBeGreaterThanOrEqual(36);
+  }
 });
 
-test('Connections contains long operation-grant identities on a narrow phone', async ({ page }) => {
+test('Connections keeps long enrolled identities contained without operation grants', async ({ page }) => {
   const longName = `service-${'identity'.repeat(5)}`;
   const longDisplayName = `Connection${'Identity'.repeat(24)}`;
-  const longOperation = `hubspot.${'deal'.repeat(12)}.write`;
   await page.setViewportSize({ width: 280, height: 844 });
   await page.goto(
     `${HARNESS_URL}?connection=grants&connection_text=long#connections/others`,
@@ -26577,59 +26721,33 @@ test('Connections contains long operation-grant identities on a narrow phone', a
   await page.waitForFunction(() => window.__app?.ready === true);
 
   const route = page.locator(`[${CONNECTIONS_ROUTE}]`);
-  const grants = route.locator(`[${CONNECTIONS_GRANTS}]`);
-  const card = grants.locator('[data-recued-conn-grant-card]').first();
-  await expect(card.locator('.conn-grant-display')).toHaveText(longDisplayName);
-  await expect(card.locator('.conn-grant-name')).toHaveText(longName);
-  const group = card.locator('.conn-grant-group').first();
-  await expect(group.locator('.conn-grant-group-id')).toHaveText(longOperation);
-  await expect(group.locator('.conn-grant-group-ops')).toHaveText(
-    `Unlocks: ${longOperation}`,
-  );
-  const toggle = group.locator(`[${CONNECTIONS_GRANT_TOGGLE}]`);
-  await expect(toggle).toHaveAccessibleName(
-    `Grant ${longOperation} for ${longDisplayName} (${longName})`,
-  );
+  const row = route.locator('.connections-row').first();
+  await expect(row.locator('.connections-row-display')).toHaveText(longDisplayName);
+  await expect(row.locator('.connections-row-name')).toHaveText(longName);
+  await expect(route.locator(`[${CONNECTIONS_GRANTS}]`)).toHaveCount(0);
+  await expect(route.locator(`[${CONNECTIONS_GRANT_TOGGLE}]`)).toHaveCount(0);
+  expect(await page.evaluate(
+    () => window.__app.rpcCallCount('collection.connection.listOperationGroups'),
+  )).toBe(0);
 
-  const geometry = await grants.evaluate((surface) => {
-    const routeHost = surface.closest<HTMLElement>('[data-recued-connections-route]');
-    const selectors = [
-      '[data-recued-connections-grant-panel]',
-      '[data-recued-conn-grant-card]',
-      '.conn-grant-header',
-      '.conn-grant-display',
-      '.conn-grant-name',
-      '.conn-grant-group',
-      '.conn-grant-group-info',
-      '.conn-grant-group-id',
-      '.conn-grant-group-ops',
-      '.conn-grant-toggle',
-    ];
-    const elements = [
-      surface,
-      ...selectors.map((selector) => surface.querySelector<HTMLElement>(selector)),
-    ].filter((element): element is HTMLElement => element !== null);
-    return {
-      routeScrollWidth: routeHost?.scrollWidth ?? 0,
-      routeClientWidth: routeHost?.clientWidth ?? 0,
-      elements: elements.map((element) => ({
-        left: element.getBoundingClientRect().left,
-        right: element.getBoundingClientRect().right,
-        scrollWidth: element.scrollWidth,
-        clientWidth: element.clientWidth,
-      })),
-    };
-  });
-  expect(geometry.routeScrollWidth).toBeLessThanOrEqual(geometry.routeClientWidth);
-  for (const bounds of geometry.elements) {
-    expect(bounds.left).toBeGreaterThanOrEqual(-0.5);
-    expect(bounds.right).toBeLessThanOrEqual(280.5);
-    expect(bounds.scrollWidth).toBeLessThanOrEqual(bounds.clientWidth);
+  const bounds = await row.evaluate((element) => [
+    element,
+    ...element.querySelectorAll<HTMLElement>(
+      '.connections-row-name, .connections-row-display, .connections-row-actions, button',
+    ),
+  ].map((node) => ({
+    left: node.getBoundingClientRect().left,
+    right: node.getBoundingClientRect().right,
+    scroll: node.scrollWidth,
+    client: node.clientWidth,
+  })));
+  for (const bound of bounds) {
+    expect(bound.left).toBeGreaterThanOrEqual(-0.5);
+    expect(bound.right).toBeLessThanOrEqual(280.5);
+    expect(bound.scroll).toBeLessThanOrEqual(bound.client);
   }
-
-  await toggle.click();
-  await expect(toggle).toHaveText('Revoke');
-  await expect(toggle).toBeFocused();
+  expect(await route.evaluate((node) => node.scrollWidth <= node.clientWidth))
+    .toBe(true);
 });
 
 test('Connections contains long enrolled identities through removal review', async ({ page }) => {
@@ -27048,12 +27166,12 @@ test('a rejected mailbox enrollment keeps the busy and retry actions focused', a
   // The first corrective input clears the stale alert by repainting the form.
   // Keep both field ownership and the post-input caret across that repaint.
   await password.focus();
-  await password.evaluate((element) => element.setSelectionRange(3, 3));
+  await password.evaluate((element: HTMLInputElement) => element.setSelectionRange(3, 3));
   await page.keyboard.type('Z');
   await expect(route.getByRole('alert')).toHaveCount(0);
   await expect(password).toHaveValue('appZ-password');
   await expect(password).toBeFocused();
-  expect(await password.evaluate((element) => element.selectionStart)).toBe(4);
+  expect(await password.evaluate((element: HTMLInputElement) => element.selectionStart)).toBe(4);
 });
 
 test('a successful IMAP enrollment confirms the connected account in focus', async ({ page }) => {
@@ -27621,6 +27739,14 @@ test('a connected-source answer stays source-aware through its first follow-up',
   const firstAnswerReferences = sourceAnswers.nth(0).locator(
     `[${CHAT_SOURCE_REFERENCES}]`,
   );
+  // Older receipts must keep their intrinsic height inside the thread scroller.
+  // A compressed card can look visible while its reference button is clipped.
+  const answerHeights = await sourceAnswers.evaluateAll((cards) => cards.map(
+    (card) => ({ client: card.clientHeight, scroll: card.scrollHeight }),
+  ));
+  for (const height of answerHeights) {
+    expect(height.scroll).toBeLessThanOrEqual(height.client);
+  }
   await firstAnswerReferences.locator(
     `[${CHAT_SOURCE_REFERENCES_TOGGLE}]`,
   ).click();

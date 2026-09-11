@@ -93,6 +93,12 @@ export interface LLMMatchResolved {
   pin_slot?: PinnedSlot;
 }
 
+export interface LLMProviderInvocation {
+  match: Match;
+  messages: LLMMessage[];
+  options: LLMCompletionOptions;
+}
+
 /** Dependencies the caller must supply. Kept narrow so tests can inject fakes. */
 export interface LLMExecutorDeps {
   /** User's LLM configuration (slot_1 + optional slot_2 + optional free_pool). */
@@ -128,6 +134,9 @@ export interface LLMExecutorDeps {
   onTokenUsage?: (usage: TokenUsage) => void;
   /** Provider-normalized stop reason for each successful completion. */
   onFinishReason?: (reason: LLMFinishReason | undefined) => void;
+  /** Host-only check immediately before EACH actual provider attempt, including
+   * protocol fallbacks. A refusal propagates without provider-error wrapping. */
+  beforeComplete?: (request: LLMProviderInvocation) => Promise<void>;
   /** Optional observer for the match resolution. Fires once per successful
    *  call (and once per retry-walk attempt). */
   onMatchResolved?: (evt: LLMMatchResolved) => void;
@@ -167,9 +176,7 @@ const completeWithJsonFallback = async (
   // round-trip on EVERY call, forever — and since every contracted ai-*
   // function asks for JSON, that is nearly every call the server makes. The
   // rejection is free in tokens but not in latency.
-  const effective = options.json && jsonModeUnsupported(slot)
-    ? { ...options, json: false }
-    : options;
+  const effective = describeInitialLLMProviderRequest(slot, messages, options).options;
   try {
     return await adapter.complete(slot, messages, effective);
   } catch (e) {
@@ -240,16 +247,10 @@ const completeWithFallbacksInner = async (
   messages: LLMMessage[],
   options: LLMCompletionOptions,
 ): Promise<LLMCompletionResult> => {
+  const initial = describeInitialLLMProviderRequest(slot, messages, options);
+  if (initial.messages !== messages) return completeWithJsonFallback(adapter, slot, initial.messages, initial.options);
   if (!hasSystemMessage(messages)) {
     return completeWithJsonFallback(adapter, slot, messages, options);
-  }
-  if (systemRoleUnsupported(slot)) {
-    return completeWithJsonFallback(
-      adapter,
-      slot,
-      demoteSystemMessages(messages),
-      options,
-    );
   }
   try {
     return await completeWithJsonFallback(adapter, slot, messages, options);
@@ -265,11 +266,16 @@ const completeWithFallbacksInner = async (
   }
 };
 
-export const executeLLM = async (
-  manifest: IngredientManifest,
-  input: Record<string, unknown>,
-  deps: LLMExecutorDeps,
-): Promise<unknown> => {
+/** The first provider attempt after applying already learned protocol support.
+ * Shared with review; new fallback behavior still needs a new exact match. */
+export const describeInitialLLMProviderRequest = (slot: LLMSlot, messages: LLMMessage[], options: LLMCompletionOptions) => ({
+  messages: hasSystemMessage(messages) && systemRoleUnsupported(slot) ? demoteSystemMessages(messages) : messages,
+  options: options.json && jsonModeUnsupported(slot) ? { ...options, json: false } : options,
+});
+
+/** The actual input normalization and privacy pass. Preparation calls this
+ * without resolving bytes or invoking a provider. */
+export const prepareLLMInput = (manifest: IngredientManifest, input: Record<string, unknown>) => {
   // D-162 — a batch-capable ai-* call is in batch mode when `llm.data` is
   // an array and `llm.id_field` is a non-empty string. `ai-compare` is
   // excluded (I-6 — no single `llm.data`); an `ai-compare` batch opt-in is
@@ -327,7 +333,8 @@ export const executeLLM = async (
   // to `[]` ahead of per-element media extraction, match resolution, and prompt
   // construction (zero model calls).
   if (batchMode && (input['llm.data'] as unknown[]).length === 0) {
-    return [];
+    return { input, batchMode, contentParts, batchElementMedia: [], requireModalities: undefined,
+      empty: true, finishPii: <T>(result: T): T => result };
   }
 
   // D-172 follow-on — per-element batch media. Each `llm.data[i]` MAY carry its
@@ -407,6 +414,58 @@ export const executeLLM = async (
    *  stance. */
   const finishPii = <T>(result: T): T => (piiLedger ? restoreArgs(piiLedger, result) : result);
 
+  return { input, batchMode, contentParts, batchElementMedia, requireModalities, empty: false, finishPii };
+};
+
+/** Shared prompt and options builder used by both execution and review. */
+export const buildLLMCompletionRequest = (manifest: IngredientManifest,
+  prepared: ReturnType<typeof prepareLLMInput>, match: Match, timeout_ms?: number,
+): { contracted: boolean; messages: LLMMessage[]; options: LLMCompletionOptions } => {
+  const { input, contentParts, batchMode, batchElementMedia } = prepared;
+  const contracted = isContractedSlug(manifest.slug);
+  const messages: LLMMessage[] = contracted
+    ? buildContractedPrompt(manifest.slug, input)
+    : buildUncontractedPrompt(input);
+
+  // D-172 P5 — fold the single-mode multimodal parts onto the user turn
+  // (the prompt builder produced the instruction text; the media rides
+  // alongside it). No-op in batch mode (top-level parts are rejected above).
+  attachContentParts(messages, contentParts);
+  // D-172 follow-on — fold per-element batch media onto the user turn, each
+  // block labeled by its record id so the model returns per-element results
+  // keyed to `llm.id_field`. Reads ids from the aliased + media-stripped
+  // `llm.data` so a PII-tagged id_field's marker matches the prompt's
+  // records (and restores with the result).
+  if (batchMode && batchElementMedia.length > 0) {
+    attachBatchElementMedia(
+      messages,
+      input['llm.data'] as readonly unknown[],
+      input['llm.id_field'] as string,
+      batchElementMedia,
+    );
+  }
+
+  // Native JSON mode — every contracted ai-* function returns JSON, and an
+  // uncontracted call opts in via `llm.output_format:'json'`. Only sent when
+  // the resolved slot DECLARES `supports_json` (so it never reaches a
+  // text-only slot); a slot whose endpoint rejects the param
+  // despite the declaration degrades via completeWithJsonFallback below.
+  const wantsJson =
+    contracted || input['llm.output_format'] === 'json';
+  const options: LLMCompletionOptions = {
+    model: match.slot.model,
+    max_tokens: computeMaxTokens(match.resolved_hint, match.slot),
+    thinking: shouldEnableThinking(match.resolved_hint, match.slot),
+    search: wantsWebSearch(manifest, input) && match.slot.supports_search === true,
+    timeout_ms: resolveLLMTimeoutMs(timeout_ms),
+    json: wantsJson && match.slot.supports_json === true,
+  };
+
+  return { contracted, messages, options };
+};
+
+export const describeLLMMatch = (manifest: IngredientManifest, input: Record<string, unknown>,
+  deps: Pick<LLMExecutorDeps, 'config' | 'matchContext' | 'strategy'>) => {
   const requires = deriveRequires(manifest, input);
   const ctx = deps.matchContext?.(manifest, input) ?? null;
   const stepForceLayer = input['llm.force_layer'] as ForceLayer | undefined;
@@ -423,6 +482,21 @@ export const executeLLM = async (
   const strategy: CoordinationStrategy = deps.strategy
     ?? deps.config.free_pool_strategy
     ?? 'round_robin';
+
+  return { requires, forceLayer, pinSlot, allowUpgrade, strategy };
+};
+
+export const executeLLM = async (
+  manifest: IngredientManifest,
+  input: Record<string, unknown>,
+  deps: LLMExecutorDeps,
+): Promise<unknown> => {
+  const prepared = prepareLLMInput(manifest, input);
+  if (prepared.empty) return [];
+  input = prepared.input;
+  const { batchMode, requireModalities, finishPii } = prepared;
+
+  const { requires, forceLayer, pinSlot, allowUpgrade, strategy } = describeLLMMatch(manifest, input, deps);
 
   const availability = deps.preBuiltAvailability ?? await buildAvailability({
     config: deps.config,
@@ -505,48 +579,17 @@ export const executeLLM = async (
 
     try {
       const adapter = deps.adapters(match.adapterKey);
-      const contracted = isContractedSlug(manifest.slug);
-      const messages: LLMMessage[] = contracted
-        ? buildContractedPrompt(manifest.slug, input)
-        : buildUncontractedPrompt(input);
-
-      // D-172 P5 — fold the single-mode multimodal parts onto the user turn
-      // (the prompt builder produced the instruction text; the media rides
-      // alongside it). No-op in batch mode (top-level parts are rejected above).
-      attachContentParts(messages, contentParts);
-      // D-172 follow-on — fold per-element batch media onto the user turn, each
-      // block labeled by its record id so the model returns per-element results
-      // keyed to `llm.id_field`. Reads ids from the aliased + media-stripped
-      // `llm.data` so a PII-tagged id_field's marker matches the prompt's
-      // records (and restores with the result).
-      if (batchMode && batchElementMedia.length > 0) {
-        attachBatchElementMedia(
-          messages,
-          input['llm.data'] as readonly unknown[],
-          input['llm.id_field'] as string,
-          batchElementMedia,
-        );
-      }
-
-      // Native JSON mode — every contracted ai-* function returns JSON, and an
-      // uncontracted call opts in via `llm.output_format:'json'`. Only sent when
-      // the resolved slot DECLARES `supports_json` (so it never reaches a
-      // text-only slot); a slot whose endpoint rejects the param
-      // despite the declaration degrades via completeWithJsonFallback below.
-      const wantsJson =
-        contracted || input['llm.output_format'] === 'json';
-      const options: LLMCompletionOptions = {
-        model: match.slot.model,
-        max_tokens: computeMaxTokens(match.resolved_hint, match.slot),
-        thinking: shouldEnableThinking(match.resolved_hint, match.slot),
-        search: wantsWebSearch(manifest, input) && match.slot.supports_search === true,
-        timeout_ms: resolveLLMTimeoutMs(deps.timeout_ms),
-        json: wantsJson && match.slot.supports_json === true,
-      };
+      const { contracted, messages, options } = buildLLMCompletionRequest(manifest, prepared, match, deps.timeout_ms);
 
       deps.quota.registerRequest(matchSourceId(match));
 
-      const result = await completeWithFallbacks(adapter, match.slot, messages, options);
+      const guarded: LLMAdapter = deps.beforeComplete ? { ...adapter,
+        complete: async (slot, requestMessages, requestOptions) => {
+          await deps.beforeComplete!({ match: { ...match, slot }, messages: requestMessages, options: requestOptions });
+          return adapter.complete(slot, requestMessages, requestOptions);
+        },
+      } : adapter;
+      const result = await completeWithFallbacks(guarded, match.slot, messages, options);
       const raw = result.text;
       deps.onFinishReason?.(result.finish_reason);
 

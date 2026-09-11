@@ -40,7 +40,9 @@ import { buildRecord } from '../collections/mail/mail-collection.js';
 import { createMailUnionTwinResolver } from '../collections/mail/mail-union-twin-resolver.js';
 import {
   buildEngagementsResolverDeps,
+  buildRecordEngagementsDeps,
   buildEngagementCoverage,
+  contactCoverageSelector,
   ENGAGEMENT_SOURCE_STALENESS_MS,
   type EngagementsResolverDepsInput,
 } from '../engagement-resolver-deps.js';
@@ -187,17 +189,27 @@ const makeBundle = (opts: {
   conns?: ReadonlyArray<{ name: string; vendor: string }>;
   resolveMailTwins?: MailTwinResolver;
   rateControlStore?: Pick<EngagementRateControlStore, 'readUsage' | 'readBackoff'>;
-}): ContactEngagementsResolveDeps => ({
-  engagementStore: opts.store,
-  resolverDeps: buildEngagementsResolverDeps({
+}): ContactEngagementsResolveDeps => {
+  // ⛔ ONE input object feeds BOTH deps builders, mirroring
+  // `compose-app-context.ts`. The two roots must see the same db, connection
+  // roster and rate-control store — a record-rooted read whose coverage came
+  // from a different enrollment view than the contact-rooted one would report
+  // different sources for the same warehouse, and a harness that let them
+  // drift would be testing a wiring production does not have.
+  const input = {
     db: opts.db,
     contactStore: fakeContactStore(),
     connectionStore: fakeConnectionStore(opts.conns ?? [{ name: 'acme-hubspot', vendor: 'hubspot' }]),
     ...(opts.resolveMailTwins ? { resolveMailTwins: opts.resolveMailTwins } : {}),
     ...(opts.rateControlStore ? { rateControlStore: opts.rateControlStore } : {}),
     now: () => NOW,
-  }),
-});
+  };
+  return {
+    engagementStore: opts.store,
+    resolverDeps: buildEngagementsResolverDeps(input),
+    recordResolverDeps: buildRecordEngagementsDeps(input),
+  };
+};
 
 const fixedTwinResolver =
   (map: Record<string, string>): MailTwinResolver =>
@@ -269,9 +281,8 @@ describe('D-139 P5 — buildEngagementCoverage', () => {
     createEngagementStore(db); // ensure schema, no rows
     const coverage = buildEngagementCoverage(
       { db, connectionStore: fakeConnectionStore([{ name: 'acme-hubspot', vendor: 'hubspot' }]), now: () => NOW },
-      { email: 'bob@acme.com' },
-      () => null,
-      () => [],
+      {},
+      contactCoverageSelector('bob@acme.com', () => null, () => []),
     );
     expect(coverage.sources_connected).toContain('connection.api.hubspot.email');
     expect(coverage.sources_connected).toContain('connection.api.hubspot.meeting');
@@ -288,9 +299,8 @@ describe('D-139 P5 — buildEngagementCoverage', () => {
     ];
     const cov = buildEngagementCoverage(
       { db, connectionStore: fakeConnectionStore(conns), now: () => NOW },
-      { email: 'bob@acme.com', vendor: 'salesforce' },
-      () => null,
-      () => [],
+      { vendor: 'salesforce' },
+      contactCoverageSelector('bob@acme.com', () => null, () => []),
     );
     expect(cov.sources_connected.some((s) => s.startsWith('connection.api.salesforce.'))).toBe(true);
     expect(cov.sources_connected.some((s) => s.startsWith('connection.api.hubspot.'))).toBe(false);
@@ -310,9 +320,8 @@ describe('D-139 P5 — buildEngagementCoverage', () => {
     ];
     const cov = buildEngagementCoverage(
       { db, connectionStore: fakeConnectionStore(conns), now: () => NOW },
-      { email: 'bob@acme.com', connection_id: 'acme-hubspot' },
-      () => null,
-      () => [],
+      { connection_id: 'acme-hubspot' },
+      contactCoverageSelector('bob@acme.com', () => null, () => []),
     );
     expect(cov.sources_connected.every((s) => s.startsWith('connection.api.hubspot.'))).toBe(true);
     expect(cov.sources_connected.some((s) => s.startsWith('connection.api.salesforce.'))).toBe(false);
@@ -325,9 +334,8 @@ describe('D-139 P5 — buildEngagementCoverage', () => {
     seedEmailEngagement(store, emailRow());
     const cov = buildEngagementCoverage(
       { db, connectionStore: fakeConnectionStore([{ name: 'acme-hubspot', vendor: 'hubspot' }]), now: () => NOW },
-      { email: 'bob@acme.com' },
-      () => null,
-      () => [],
+      {},
+      contactCoverageSelector('bob@acme.com', () => null, () => []),
     );
     expect(cov.row_counts['connection.api.hubspot.email']).toBe(1);
     expect(cov.last_source_event_at).toBe(EVENT_AT);
@@ -340,9 +348,8 @@ describe('D-139 P5 — buildEngagementCoverage', () => {
     createEngagementStore(db);
     const cov = buildEngagementCoverage(
       { db, connectionStore: fakeConnectionStore([{ name: 'acme-hubspot', vendor: 'hubspot' }]), now: () => NOW },
-      { email: 'bob@acme.com' },
-      () => null,
-      () => [],
+      {},
+      contactCoverageSelector('bob@acme.com', () => null, () => []),
     );
     expect(cov.sources_degraded).toEqual([]);
   });
@@ -357,9 +364,8 @@ describe('D-139 P5 — buildEngagementCoverage', () => {
         rateControlStore: fakeRateControlStore(),
         now: () => NOW,
       },
-      { email: 'bob@acme.com' },
-      () => null,
-      () => [],
+      {},
+      contactCoverageSelector('bob@acme.com', () => null, () => []),
     );
     expect(cov.sources_degraded).toEqual([]);
   });
@@ -374,9 +380,8 @@ describe('D-139 P5 — buildEngagementCoverage', () => {
         rateControlStore: fakeRateControlStore({ usage: { rate_control_state: 'suspended' } }),
         now: () => NOW,
       },
-      { email: 'bob@acme.com' },
-      () => null,
-      () => [],
+      {},
+      contactCoverageSelector('bob@acme.com', () => null, () => []),
     );
     // HubSpot ships 5 engagement entities → 5 degraded scopes.
     expect(cov.sources_degraded).toHaveLength(5);
@@ -400,9 +405,8 @@ describe('D-139 P5 — buildEngagementCoverage', () => {
         }),
         now: () => NOW,
       },
-      { email: 'bob@acme.com' },
-      () => null,
-      () => [],
+      {},
+      contactCoverageSelector('bob@acme.com', () => null, () => []),
     );
     expect(cov.sources_degraded).toHaveLength(5);
     expect(cov.sources_degraded.every((d) => d.reason === 'rate_limit_active')).toBe(true);
@@ -427,9 +431,8 @@ describe('D-139 P5 — buildEngagementCoverage', () => {
         }),
         now: () => NOW,
       },
-      { email: 'bob@acme.com' },
-      () => null,
-      () => [],
+      {},
+      contactCoverageSelector('bob@acme.com', () => null, () => []),
     );
     expect(cov.sources_degraded).toHaveLength(1);
     const deg = cov.sources_degraded[0]!;
@@ -450,9 +453,8 @@ describe('D-139 P5 — buildEngagementCoverage', () => {
         }),
         now: () => NOW,
       },
-      { email: 'bob@acme.com' },
-      () => null,
-      () => [],
+      {},
+      contactCoverageSelector('bob@acme.com', () => null, () => []),
     );
     expect(cov.sources_degraded).toEqual([]);
   });
@@ -470,9 +472,8 @@ describe('D-139 P5 — buildEngagementCoverage', () => {
         }),
         now: () => NOW,
       },
-      { email: 'bob@acme.com' },
-      () => null,
-      () => [],
+      {},
+      contactCoverageSelector('bob@acme.com', () => null, () => []),
     );
     // 5 scopes, all quota_suspended — the email scope is NOT downgraded to
     // rate_limit_active by its concurrent backoff, and is not duplicated.
@@ -497,9 +498,8 @@ describe('D-139 P5 — buildEngagementCoverage', () => {
         rateControlStore: fakeRateControlStore({ usage: { rate_control_state: 'suspended' } }),
         now: () => NOW,
       },
-      { email: 'bob@acme.com', vendor: 'salesforce' },
-      () => null,
-      () => [],
+      { vendor: 'salesforce' },
+      contactCoverageSelector('bob@acme.com', () => null, () => []),
     );
     expect(cov.sources_degraded.length).toBeGreaterThan(0);
     expect(
@@ -518,9 +518,8 @@ describe('D-139 P5 — buildEngagementCoverage', () => {
     seedEmailEngagement(store, emailRow({ event_at: STALE_EVENT_AT }));
     const cov = buildEngagementCoverage(
       { db, connectionStore: hubspotConn(), now: () => NOW },
-      { email: 'bob@acme.com' },
-      () => null,
-      () => [],
+      {},
+      contactCoverageSelector('bob@acme.com', () => null, () => []),
     );
     expect(cov.sources_stale).toHaveLength(1);
     const s = cov.sources_stale[0]!;
@@ -535,9 +534,8 @@ describe('D-139 P5 — buildEngagementCoverage', () => {
     seedEmailEngagement(store, emailRow({ event_at: NOW - 1000 }));
     const cov = buildEngagementCoverage(
       { db, connectionStore: hubspotConn(), now: () => NOW },
-      { email: 'bob@acme.com' },
-      () => null,
-      () => [],
+      {},
+      contactCoverageSelector('bob@acme.com', () => null, () => []),
     );
     expect(cov.sources_stale).toEqual([]);
   });
@@ -548,9 +546,8 @@ describe('D-139 P5 — buildEngagementCoverage', () => {
     seedEmailEngagement(store, emailRow({ event_at: NOW - ENGAGEMENT_SOURCE_STALENESS_MS }));
     const cov = buildEngagementCoverage(
       { db, connectionStore: hubspotConn(), now: () => NOW },
-      { email: 'bob@acme.com' },
-      () => null,
-      () => [],
+      {},
+      contactCoverageSelector('bob@acme.com', () => null, () => []),
     );
     expect(cov.sources_stale).toEqual([]);
   });
@@ -561,9 +558,8 @@ describe('D-139 P5 — buildEngagementCoverage', () => {
     seedEmailEngagement(store, emailRow({ event_at: null }));
     const cov = buildEngagementCoverage(
       { db, connectionStore: hubspotConn(), now: () => NOW },
-      { email: 'bob@acme.com' },
-      () => null,
-      () => [],
+      {},
+      contactCoverageSelector('bob@acme.com', () => null, () => []),
     );
     expect(cov.sources_stale).toEqual([]);
     // ...but it still counts as a present source with a row.
@@ -580,9 +576,8 @@ describe('D-139 P5 — buildEngagementCoverage', () => {
     );
     const cov = buildEngagementCoverage(
       { db, connectionStore: hubspotConn(), now: () => NOW },
-      { email: 'bob@acme.com' },
-      () => null,
-      () => [],
+      {},
+      contactCoverageSelector('bob@acme.com', () => null, () => []),
     );
     expect(cov.sources_stale.map((s) => s.source)).toEqual([
       'connection.api.hubspot.email',
@@ -594,9 +589,8 @@ describe('D-139 P5 — buildEngagementCoverage', () => {
     createEngagementStore(db); // schema only, no rows
     const cov = buildEngagementCoverage(
       { db, connectionStore: hubspotConn(), now: () => NOW },
-      { email: 'bob@acme.com' },
-      () => null,
-      () => [],
+      {},
+      contactCoverageSelector('bob@acme.com', () => null, () => []),
     );
     expect(cov.sources_stale).toEqual([]);
   });
@@ -615,9 +609,8 @@ describe('D-139 P5 — buildEngagementCoverage', () => {
     seedEmailEngagement(store, emailRow({ event_at: emailStaleAt }));
     const cov = buildEngagementCoverage(
       { db, connectionStore: hubspotConn(), now: () => NOW },
-      { email: 'bob@acme.com' },
-      () => null,
-      () => [],
+      {},
+      contactCoverageSelector('bob@acme.com', () => null, () => []),
     );
     expect(cov.sources_stale.map((s) => s.source)).toEqual([
       'connection.api.hubspot.email',

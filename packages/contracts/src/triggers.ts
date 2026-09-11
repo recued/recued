@@ -56,6 +56,12 @@ export interface EventTrigger {
    *  the auto-disable path when `error_count_24h` crosses
    *  `triggers.auto_disable_after_errors_24h`. */
   enabled: boolean;
+  /** Owner review metadata; legacy stored rows remain physically disabled. */
+  lifecycle_revision?: number;
+  preapproval?: {
+    proposal_id: string; future_execution_ref: string;
+    execution_status: import('./preapproval.js').PreapprovalExecutionStatus;
+  };
   /** Unix-ms of the CREATE. */
   created_at: number;
   /** Unix-ms of the most recent dispatch (successful or not). Null

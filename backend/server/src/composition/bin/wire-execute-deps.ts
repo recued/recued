@@ -966,6 +966,12 @@ export const composeExecuteDeps = (
     // terminal-fails after ≥1 catalog write landed. Absent ⇒ no saga
     // detection runs (the commit log still records the torn state).
     ...(notificationBlock ? { sagaNotifier: notificationBlock } : {}),
+    // D-157 A.1 step 1, runtime half — the same block, threaded to the commit
+    // Gateway so a dispatch that settles `in_doubt` asks the owner NOW. The
+    // boot sweep only ever saw non-terminal rows, so a runtime `in_doubt` was
+    // never surfaced; the torn-saga ask promised otherwise. Absent ⇒ the older
+    // behaviour (durable `in_doubt` commit, no ask).
+    ...(notificationBlock ? { inDoubtNotifier: notificationBlock } : {}),
     // Doc §4 close-out — the same block, threaded as the >1-provider
     // pick notifier. `execute-handler` raises ONE `gateway.pick` ask
     // when an interactive run arrives with an unbound connection slot

@@ -60,6 +60,7 @@ import {
 } from '@recued/storage';
 import type { ExecuteHandlerDeps } from './execute-handler.js';
 import { handleExecute } from './execute-handler.js';
+import { observeResumedChatToolCall } from './chat-tool-call-context.js';
 import { captureQualityDelegationSignal } from './quality-delegation-signal-capture.js';
 import {
   denyRawOp,
@@ -92,6 +93,8 @@ export interface PreflightRunSettled {
   readonly tool_name: string;
   readonly result: unknown;
   readonly ts: number;
+  /** Host-observed uncertainty cannot be rendered as a proven failure. */
+  readonly state?: 'succeeded' | 'failed' | 'interrupted';
 }
 
 export interface CreatePreflightResumerDeps {
@@ -835,6 +838,7 @@ export const createPreflightResumer = (
         ...(checkpoint.predecessor_commit_id !== undefined
           ? { predecessor_commit_id: checkpoint.predecessor_commit_id }
           : {}),
+        ...(checkpoint.entry_tool_name !== undefined ? { entry_tool_name: checkpoint.entry_tool_name } : {}),
         // D-232 § 20.19 — carry the run's grant coverage across the pause. The
         // resumed run re-derives coverage from its OWN recipe name, and for a
         // host-dispatched carrier (`run-ingredient`) that derivation is
@@ -875,6 +879,9 @@ export const createPreflightResumer = (
           : {}),
         resume_from: {
           gated_step_id: checkpoint.gated_step_id!,
+          ...(checkpoint.execution_phase ? { execution_phase: checkpoint.execution_phase } : {}),
+          ...(checkpoint.trigger_state ? { trigger_state: checkpoint.trigger_state } : {}),
+          ...(checkpoint.prefetch_completed ? { prefetch_completed: checkpoint.prefetch_completed } : {}),
           step_state: checkpoint.step_state,
           ...(checkpoint.foreach_progress !== undefined
             ? { foreach_progress: checkpoint.foreach_progress }
@@ -1102,18 +1109,35 @@ export const createPreflightResumer = (
         );
         if (rawGatedAction.kind === 'already_terminal'
           || rawGatedAction.kind === 'already_dispatching') return;
-        const outcome = await resumeRawOp(executeDeps, checkpoint, {
-          ...(context.session_grant !== undefined
-            ? { session_grant: context.session_grant }
-            : {}),
-        });
-        await settleRawMcpAction(actionStoreFor(executeDeps), checkpoint, outcome);
-        await settleRawGatedAction(
-          gatedActionStoreFor(executeDeps),
-          rawGatedAction.kind === 'dispatch' ? rawGatedAction.action : undefined,
-          checkpoint,
-          outcome,
-        );
+        const chatCall = observeResumedChatToolCall(executeDeps.db,
+          checkpoint.raw_op.execution_source, checkpoint.run_id);
+        try {
+          const outcome = await resumeRawOp(executeDeps, checkpoint, {
+            ...(context.session_grant !== undefined
+              ? { session_grant: context.session_grant }
+              : {}),
+          });
+          // The concurrent winner still owns the result. A skipped duplicate
+          // must not close its saved call while the provider is still running.
+          if (outcome.kind === 'skipped' && outcome.reason === 'resume_already_in_flight') return;
+          await settleRawMcpAction(actionStoreFor(executeDeps), checkpoint, outcome);
+          await settleRawGatedAction(
+            gatedActionStoreFor(executeDeps),
+            rawGatedAction.kind === 'dispatch' ? rawGatedAction.action : undefined,
+            checkpoint,
+            outcome,
+          );
+          try {
+            deps.onRunSettled?.({
+              execution_source: checkpoint.raw_op.execution_source,
+              run_id: checkpoint.run_id, tool_name: checkpoint.raw_op.op_id,
+              result: { success: outcome.kind === 'completed', ...outcome },
+              ...(outcome.kind === 'in_doubt' || outcome.kind === 'skipped'
+                ? { state: 'interrupted' } : {}),
+              ts: Date.now(),
+            });
+          } catch { /* The operation is already settled; preserve its outcome. */ }
+        } finally { chatCall?.interrupt(); }
         return;
       }
       const decision = await decide(checkpoint);
@@ -1544,9 +1568,24 @@ export const createPreflightResumer = (
         context.batch_claim,
         requireFreshApproval,
       );
+      if ((checkpoint.preapproval_execution_ref || checkpoint.preapproval_candidate_ref) && !executeDeps.preapprovalRuntime) {
+        throw new Error('The reviewed execution runtime must be ready before resuming this checkpoint.');
+      }
+      const reviewed = await executeDeps.preapprovalRuntime?.resume(checkpoint);
+      if (reviewed) {
+        if (reviewed.kind === 'candidate') internal.preapproval_candidate = reviewed.handle;
+        else internal.preapproval_run = reviewed.handle;
+        request.config = reviewed.config;
+        request.execution_source = reviewed.plan.origin.source;
+        request.contract_snapshot = executeDeps.preapprovalRuntime!.resolveOrigin(reviewed.handle).contract_snapshot;
+      } else if (checkpoint.execution_phase === 'trigger' && request.trigger_source === 'auto_run') {
+        if (checkpoint.auto_run_qualification && !executeDeps.preapprovalDriver) throw new Error('The automatic qualification driver is unavailable.');
+        if (executeDeps.preapprovalDriver) Object.assign(internal, executeDeps.preapprovalDriver.resumeAutoRunQualification(checkpoint));
+      }
       const gatedStore = gatedActionStoreFor(executeDeps);
       const dispatchClaim = await claimRecipeDispatch(gatedStore, checkpoint);
       if (dispatchClaim.kind === 'superseded') {
+        if (reviewed) await executeDeps.preapprovalRuntime!.finish(reviewed.handle, 'failed');
         console.warn(
           `[preflight-resumer] resumeRun skipped: gated action now points at checkpoint `
             + `'${dispatchClaim.action.current_checkpoint_id}', not '${checkpoint.checkpoint_id}' `
@@ -1555,6 +1594,7 @@ export const createPreflightResumer = (
         return;
       }
       if (dispatchClaim.kind === 'already_dispatching') {
+        if (reviewed) await executeDeps.preapprovalRuntime!.finish(reviewed.handle, 'in_doubt');
         await reconcileClaimedRecipeResume(
           gatedStore!,
           dispatchClaim.action,
@@ -1564,6 +1604,7 @@ export const createPreflightResumer = (
         return;
       }
       if (dispatchClaim.kind === 'already_terminal') {
+        if (reviewed) await executeDeps.preapprovalRuntime!.finish(reviewed.handle, 'failed');
         await appendInDoubtAnchorUnlessSuperseded(
           checkpoint,
           `receipt already terminal with status '${dispatchClaim.action.status}'`,
@@ -1693,6 +1734,15 @@ export const createPreflightResumer = (
             result: { denied: true },
           },
         );
+        try {
+          deps.onRunSettled?.({
+            execution_source: checkpoint.raw_op.execution_source,
+            run_id: checkpoint.run_id, tool_name: checkpoint.raw_op.op_id,
+            result: { success: false, denied: true,
+              message: 'The owner denied the pending operation; no provider call was dispatched.' },
+            ts: Date.now(),
+          });
+        } catch { /* The denial is durable even if its chat projection fails. */ }
         return;
       }
       const decision = await decide(checkpoint);
@@ -1701,6 +1751,9 @@ export const createPreflightResumer = (
           ? undefined
           : recordedOwnerDenial(decision.anchor, checkpoint);
         if (priorDenial !== undefined) {
+          const runtime = deps.getExecuteDeps()?.preapprovalRuntime;
+          if ((checkpoint.preapproval_execution_ref || checkpoint.preapproval_candidate_ref) && !runtime) throw new Error('Pre-approval runtime is unavailable.');
+          runtime?.cancelCheckpoint(checkpoint);
           // The audit transition won on a prior attempt but its receipt did
           // not. Repair it before the answer handler consumes the checkpoint.
           await settleDeniedGatedAction(
@@ -1726,6 +1779,9 @@ export const createPreflightResumer = (
         return;
       }
       const anchor = decision.anchor;
+      const runtime = deps.getExecuteDeps()?.preapprovalRuntime;
+      if ((checkpoint.preapproval_execution_ref || checkpoint.preapproval_candidate_ref) && !runtime) throw new Error('Pre-approval runtime is unavailable.');
+      runtime?.cancelCheckpoint(checkpoint);
       // D-202 Slice 1b — record the owner's DENY as a `quality_bad` verdict for
       // the reject-driven learner (only when this was a quality-relevant ask,
       // gated inside the helper). A reject knocks the (recipe, op)'s quality

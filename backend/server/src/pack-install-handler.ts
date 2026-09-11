@@ -28,8 +28,8 @@
  *  Spec: D-145 § PA10 (pack-shipped Standing
  *  Instructions). */
 
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 import {
   BULK_PACK_INSTALL_PERMISSION,
@@ -75,6 +75,7 @@ import type { IngredientManifest } from '@recued/contracts';
 import type { ContractGrantEntryStore } from './storage/contract-grant-entry-store.js';
 
 import { assessRecipePiiPosture } from './auto-pii-apply.js';
+import { isCoreFeaturePack, resolveBundledPackManifest } from './bundled-pack-source.js';
 import { buildPackInstallPreview } from './pack-install-preview.js';
 import { seedPackRecipeGrants } from './recipe-grant-seed.js';
 import {
@@ -92,6 +93,12 @@ import {
   getInstalledPack,
   recordPackInventory,
 } from './pack-inventory.js';
+// D-220 Slice B — pack-shipped intake templates persist on the install
+// success path, for every pack kind, keyed by the authored slug.
+import {
+  isReceptionTemplateContent,
+  recordPackReceptionTemplates,
+} from './pack-reception-templates.js';
 import { reviewOwnerOperationsForPackUpdate } from './owner-operation-update-review.js';
 import { validateRecipeInline } from './recipe-save-handler.js';
 import type { RecipeStore } from './recipe-store.js';
@@ -381,41 +388,6 @@ const filterPlanRecipeRefs = (
   };
 };
 
-/** Default community/packs directory resolution. Mirrors `packs.list` and
- *  `packs.uninstall` so list/install/uninstall agree on the bundled root. */
-export const findCommunityPackDir = (): string => {
-  const projectRoot = resolve(import.meta.dirname ?? __dirname, '..', '..', '..');
-  return join(projectRoot, 'community', 'packs');
-};
-
-const walkJsonFiles = (dir: string): string[] => {
-  if (!existsSync(dir)) return [];
-  const out: string[] = [];
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    const full = join(dir, entry.name);
-    if (entry.isDirectory()) out.push(...walkJsonFiles(full));
-    else if (entry.isFile() && entry.name.endsWith('.json')) out.push(full);
-  }
-  return out;
-};
-
-const resolveBundledPackManifest = (
-  packDir: string,
-  packSlug: string,
-): BulkPackManifest | null => {
-  for (const file of walkJsonFiles(packDir)) {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(readFileSync(file, 'utf-8'));
-    } catch {
-      continue;
-    }
-    const result = parseBulkPackManifest(parsed);
-    if (result.ok && result.manifest.slug === packSlug) return result.manifest;
-  }
-  return null;
-};
-
 /** Resolve the release layout's exact `<root>/<slug>.json` artifact. Unlike the
  * recursive install resolver above, this is unambiguous and O(1): the closed
  * boot-reconciliation ledger must never select a duplicate from elsewhere in a
@@ -497,7 +469,7 @@ const dependencyAlreadySatisfied = (
 
 const collectTransitivePackRequirements = (
   manifest: BulkPackManifest,
-  packDir: string,
+  packDir: string | undefined,
   required: Set<string>,
   visiting: Set<string>,
   visited: Set<string>,
@@ -567,7 +539,7 @@ const preflightTransitivePermissions = (
   const manifestsBySlug = new Map<string, BulkPackManifest>();
   const failure = collectTransitivePackRequirements(
     manifest,
-    deps.packDir ?? findCommunityPackDir(),
+    deps.packDir,
     required,
     new Set(),
     new Set(),
@@ -1444,6 +1416,40 @@ const installSinglePack = async (
     }
   }
 
+  // D-220 Slice B — persist the pack's shipped intake templates, replace-clean
+  // per pack (a re-install drops what the new manifest no longer ships). Runs on
+  // the success path for EVERY pack kind — including a Records pack, whose
+  // `installed_pack` row the coordinator owns under its catalog id — because
+  // the template row is keyed by the AUTHORED slug: the identity the ref
+  // carries and the uninstall rpc receives. Best-effort like the inventory
+  // write above: the recipes are committed, so a bookkeeping failure logs
+  // rather than flipping the install to a failure. `templatesPersisted` drives
+  // the `deferred_contents` filter at the return — a persisted template is not
+  // a deferred capability, and an echo of it would read as a silent drop.
+  const templateContents = plan.contents.filter(isReceptionTemplateContent);
+  // A Records pack's templates were written INSIDE the coordinator's atomic
+  // transaction (`installRecordsPackAtomic`); a refused write fails that install
+  // as a whole, so `recordsAtomic && result.ok` already means "persisted".
+  let templatesPersisted = recordsAtomic && result.ok;
+  if (result.ok && deps.contractStore && !recordsAtomic) {
+    const templates = templateContents.map((c) => c.template);
+    try {
+      recordPackReceptionTemplates(deps.contractStore, {
+        pack_slug: manifest.slug,
+        publisher: manifest.publisher,
+        pack_name: manifest.name,
+        pack_version: manifest.version,
+        templates,
+        installed_at: now,
+      });
+      templatesPersisted = true;
+    } catch (e) {
+      console.warn(
+        `[d-220.b] failed to persist reception templates for pack ${JSON.stringify(manifest.slug)}: ${(e as Error).message ?? String(e)}`,
+      );
+    }
+  }
+
   // D-196 R6 — recipe tools are grantable even when the pack carries no
   // composition. Apply the same install checklist to their authoritative
   // `<publisher>/<recipe_id>` names. A successfully provisioned composition
@@ -1571,8 +1577,26 @@ const installSinglePack = async (
   // appended here: D-165 P3 now WRITES them as pack-owned `contract.grant` rows in
   // `provisionPackCompositionForBulkInstall`, so they are provisioned, not deferred.
   // When nothing remains the field is omitted (matching the engine's non-empty rule).
-  if (compositionProvisioned && result.ok) {
-    const remaining = (result.deferred_contents ?? []).filter((c) => c.type !== 'composition');
+  // D-220 Slice B — a persisted `reception_template` is provisioned content too,
+  // dropped from the echo on the same rule as the composition.
+  const provisionedKinds = new Set<string>([
+    ...(compositionProvisioned ? ['composition'] : []),
+    ...(templatesPersisted ? ['reception_template'] : []),
+  ]);
+  // D-220 Slice B (audit) — a template the store did NOT take (the write threw,
+  // or there is no store) is DISCLOSED, not just logged. The ordinary path's
+  // engine echo already lists it; the Records path never initialises
+  // `deferred_contents`, so a failed write there would otherwise vanish from
+  // the result while the install reports success. Added once, by ref.
+  const undisclosedTemplates = result.ok && !templatesPersisted
+    ? templateContents.filter((t) => !(result.deferred_contents ?? []).some((c) =>
+        c.type === 'reception_template' && c.template.template_ref === t.template.template_ref))
+    : [];
+  if (result.ok && (provisionedKinds.size > 0 || undisclosedTemplates.length > 0)) {
+    const remaining = [
+      ...(result.deferred_contents ?? []).filter((c) => !provisionedKinds.has(c.type)),
+      ...undisclosedTemplates,
+    ];
     return {
       result: {
         ok: result.ok,
@@ -1616,7 +1640,7 @@ const handlePacksInstallInternal = async (
   }
 
   context.visiting.add(manifest.slug);
-  const packDir = deps.packDir ?? findCommunityPackDir();
+  const packDir = deps.packDir;
   const dependencyResults: BulkPackInstallResultLike[] = [];
   const dependencyRecipeKeys = new Set<string>();
 
@@ -1745,6 +1769,17 @@ export const handlePacksInstall = async (
   },
 ): Promise<{ result: BulkPackInstallResultLike }> => {
   const { manifest } = parsePacksInstallArgs(args);
+  // Owner ruling 2026-09-07 — a core feature is installed by the server, never
+  // by the owner. Checked on the SUBMITTED manifest because this rpc takes the
+  // manifest by value: refusing only what the roster offers would leave the
+  // by-value door open. The boot wire does not come through here (it calls
+  // `installBulkPackOnServer` directly), so this cannot starve a core pack.
+  if (isCoreFeaturePack(manifest)) {
+    throw new RpcError(
+      'forbidden',
+      `packs.install: ${JSON.stringify(manifest.slug)} is a core feature the server installs itself`,
+    );
+  }
   const plan = normalizeBulkPackInstallPlan(manifest);
   const isRecords = plan.contents.some((content) =>
     content.type === 'composition' && isRecordsComposition(content.composition));
@@ -1752,10 +1787,7 @@ export const handlePacksInstall = async (
   if (isRecords && effectiveVerifiedPublisher === undefined) {
     // The by-value UI route is authoritative only when the submitted body is
     // byte-semantically the exact bundled artifact reloaded by the server.
-    const bundled = resolveBundledPackManifest(
-      deps.packDir ?? findCommunityPackDir(),
-      manifest.slug,
-    );
+    const bundled = resolveBundledPackManifest(deps.packDir, manifest.slug);
     if (bundled !== null
       && recordsManifestReviewHash(bundled) === recordsManifestReviewHash(manifest)) {
       effectiveVerifiedPublisher = bundled.publisher;
@@ -2286,10 +2318,18 @@ export const resolvePackBySlug = async (
   // that is bundled AND published resolves to the bundled bytes — which is the
   // copy `packs.install` would validate against anyway (see the records
   // review-hash comparison below).
-  const bundled = resolveBundledPackManifest(
-    deps.packDir ?? findCommunityPackDir(),
-    args.slug,
-  );
+  const bundled = resolveBundledPackManifest(deps.packDir, args.slug);
+  // Owner ruling 2026-09-07 — the third door. Add-a-pack takes a typed slug, so
+  // a core feature could be reached by name even though no roster offers it, and
+  // its detail would render an Install the install rpc then refuses. Refusing
+  // here keeps "never shows up in Packs" true for the one surface that does not
+  // read the roster.
+  if (bundled !== null && isCoreFeaturePack(bundled)) {
+    throw new RpcError(
+      'forbidden',
+      `packs.resolveBySlug: ${JSON.stringify(args.slug)} is a core feature the server installs itself`,
+    );
+  }
   const fetchFn = deps.marketplaceFetch ?? defaultMarketplaceFetch;
   let manifest: BulkPackManifest | null;
   if (bundled !== null) {

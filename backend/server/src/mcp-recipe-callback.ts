@@ -26,6 +26,7 @@ import {
   type McpInboundTokenRecord,
 } from '@recued/contracts';
 import type { ChatInboundTokenStore } from './storage/chat-inbound-token-store.js';
+import { createOutboxDelivery, type OutboxFamily } from './durable-outbox.js';
 import {
   SharedCompareAndSetConflictError,
   type SharedRecord,
@@ -759,113 +760,55 @@ export interface McpRecipeCallbackWatcher {
   setReady(): void;
 }
 
+/** This family's row rules, expressed for the shared delivery loop.
+ *
+ *  ⛔ EVERY MEMBER IS AN ACCESSOR OVER THE EXISTING SHAPE. The stored value is
+ *  byte-identical to what it was before the loop was lifted out — the port is
+ *  provable precisely because nothing about the rows moved, and this file's own
+ *  tests are the proof. See `durable-outbox.ts` for the five rules the loop
+ *  owns and why they are not restated here. */
+const recipeCallbackFamily: OutboxFamily<
+  McpRecipeCallbackPointer,
+  McpRecipeCallbackNotificationParams
+> = {
+  author_id: MCP_RECIPE_CALLBACK_AUTHOR_ID,
+  prefix: (principal) => callbackPrefix(principal),
+  parse: (record) => parseMcpRecipeCallbackPointer(record),
+  isRetired: (record) => parseRetiredMcpRecipeCallbackPointer(record) !== null,
+  principalOf: (pointer) => pointer.target_token_id,
+  dedupeRefOf: (pointer) => pointer.callback_ref,
+  deliveredRefOf: (pointer) => pointer.delivered_callback_ref,
+  expiresAtOf: (pointer) => pointer.expires_at,
+  retiredValue: (revision, retired_at) => ({
+    schema_version: MCP_RECIPE_CALLBACK_SCHEMA_VERSION,
+    revision,
+    retired: true,
+    retired_at,
+  } satisfies RetiredMcpRecipeCallbackPointer),
+  deliveredValue: (pointer, revision, delivered_at) => ({
+    ...pointer,
+    revision,
+    delivered_callback_ref: pointer.callback_ref,
+    delivered_at,
+  }),
+  project: (pointer) => projectMcpRecipeCallbackNotification(pointer),
+};
+
 /** Build the transport-side watcher separately from stdin/stdout so its
  * coalescing, readiness, and re-authorization behavior can be driven directly
- * in unit tests. */
+ * in unit tests.
+ *
+ * The delivery loop itself now lives in `durable-outbox.ts`: this mailbox was
+ * its first family, and an MCP `subscriptions/listen` projection or a peer
+ * answer is the same loop with a different `project` and a different `send`.
+ * The signature is unchanged, so every caller and every test below is untouched
+ * by that move. */
 export const createMcpRecipeCallbackWatcher = (
   deps: McpRecipeCallbackWatcherDeps,
-): McpRecipeCallbackWatcher => {
-  const prefix = `${MCP_RECIPE_CALLBACK_KEY_PREFIX}.${deps.token_id}`;
-  const locallyDelivered = new Map<string, string>();
-  let ready = false;
-  let pollInFlight = false;
-
-  const markDelivered = async (
-    key: string,
-    record: SharedRecord,
-    pointer: McpRecipeCallbackPointer,
-    delivered_at: number,
-  ): Promise<void> => {
-    if (record.cas_revision === null) return;
-    try {
-      await deps.store.compareAndSet(
-        key,
-        record.cas_revision,
-        {
-          ...pointer,
-          revision: record.cas_revision + 1,
-          delivered_callback_ref: pointer.callback_ref,
-          delivered_at,
-        },
-        { author_id: MCP_RECIPE_CALLBACK_AUTHOR_ID },
-      );
-    } catch {
-      // A concurrent enqueue advancing the row is not a delivery failure.  The
-      // next poll observes the fresh callback_ref; never overwrite it with the
-      // old delivery marker.
-    }
-  };
-
-  const retire = async (
-    key: string,
-    record: SharedRecord,
-    retired_at: number,
-  ): Promise<void> => {
-    if (
-      record.author_id !== MCP_RECIPE_CALLBACK_AUTHOR_ID
-      || record.cas_revision === null
-      || parseRetiredMcpRecipeCallbackPointer(record) !== null
-    ) return;
-    try {
-      await deps.store.compareAndSet(
-        key,
-        record.cas_revision,
-        {
-          schema_version: MCP_RECIPE_CALLBACK_SCHEMA_VERSION,
-          revision: record.cas_revision + 1,
-          retired: true,
-          retired_at,
-        } satisfies RetiredMcpRecipeCallbackPointer,
-        { author_id: MCP_RECIPE_CALLBACK_AUTHOR_ID },
-      );
-    } catch {
-      // A concurrent enqueue or retention pass advanced the route. The next
-      // poll evaluates the fresh revision; never overwrite it.
-    }
-  };
-
-  const poll = async (): Promise<void> => {
-    if (pollInFlight) return;
-    pollInFlight = true;
-    try {
-      const rows = await deps.store.list(prefix);
-      for (const row of rows) {
-        const record = await deps.store.read(row.key);
-        if (record === null) continue;
-        const pointer = parseMcpRecipeCallbackPointer(record);
-        const now = deps.now?.() ?? Date.now();
-        if (
-          pointer === null
-          || record.cas_revision === null
-          || pointer.target_token_id !== deps.token_id
-        ) {
-          await retire(row.key, record, now);
-          continue;
-        }
-        if (pointer.expires_at <= now) {
-          await retire(row.key, record, now);
-          continue;
-        }
-        if (pointer.delivered_callback_ref === pointer.callback_ref) continue;
-        if (locallyDelivered.get(row.key) === pointer.callback_ref) continue;
-        if (!ready || !deps.authorize(pointer)) continue;
-
-        // Delivery is acknowledged only after an async transport confirms its
-        // write. A thrown/rejected write leaves both local and durable markers
-        // untouched so the next poll retries the same callback_ref.
-        await deps.send(projectMcpRecipeCallbackNotification(pointer));
-        locallyDelivered.set(row.key, pointer.callback_ref);
-        await markDelivered(row.key, record, pointer, now);
-      }
-    } finally {
-      pollInFlight = false;
-    }
-  };
-
-  return {
-    poll,
-    setReady() {
-      ready = true;
-    },
-  };
-};
+): McpRecipeCallbackWatcher => createOutboxDelivery(recipeCallbackFamily, {
+  store: deps.store,
+  principal: deps.token_id,
+  authorize: deps.authorize,
+  send: deps.send,
+  ...(deps.now !== undefined ? { now: deps.now } : {}),
+});

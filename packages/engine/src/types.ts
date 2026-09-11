@@ -309,6 +309,8 @@ export interface LocalRecipeInvokeCall {
   /** This call's ancestors PLUS `recipe_id`. The host threads it into the
    *  nested run so the guard composes down the tree. */
   readonly held_recipes: ReadonlySet<string>;
+  /** Engine-generated structural address of this exact local invocation. */
+  readonly invocation_path?: import('@recued/contracts').PreapprovalInvocationPath;
 }
 
 export type LocalRecipeInvoker = (
@@ -321,6 +323,34 @@ import type {
 } from './fire-exchange-output.js';
 
 export interface ExecutionContext {
+  entry_tool_name?: string;
+  governing_recipe_grant?: string;
+  /** D-261 host-only addressing for the selected execution. Never copied from
+   * a recipe's context namespace or a public execution request. */
+  preapprovalAddressing?: {
+    recipe_path: import('@recued/contracts').PreapprovalInvocationPath;
+    phase: 'trigger' | 'prefetch' | 'sequential';
+    iteration_indices: number[];
+  };
+  /** Host-private durable invocation control. These functions are never read
+   * from recipe JSON, execution context data, tool args or resume markers. */
+  reviewedExecution?: {
+    invoke(call: { slug: string; input: Record<string, unknown>; output: Record<string, string> | undefined;
+      catalog: boolean; connection_name: string; stepMeta: StepMeta | undefined },
+      dispatch: () => Promise<unknown>): Promise<unknown>;
+    catalogApproved(call: { slug: string; operation_id: string; connection_name: string; stepMeta: StepMeta | undefined }): Promise<boolean>;
+    delegate(call: { slug: string; input: Record<string, unknown>; stepMeta: StepMeta | undefined },
+      dispatch: () => Promise<unknown>): Promise<unknown>;
+  };
+  /** Claims a next-auto-run candidate after qualification and before prefetch.
+   * Ordinary runs and already-claimed scheduled runs do not install this hook. */
+  afterTriggerQualification?: () => Promise<void | {
+    reviewedExecution: NonNullable<ExecutionContext['reviewedExecution']>;
+    preapprovalAddressing: NonNullable<ExecutionContext['preapprovalAddressing']>;
+  }>;
+  /** Engine-owned phase state; keeps a resumed approval on its exact phase. */
+  executionPhase?: 'trigger' | 'prefetch' | 'sequential';
+  prefetchCompleted?: string[];
   /** The recipe being run. D-182 §6/§10 step 7 — OPTIONAL: a raw op the LLM
    *  calls without a recipe (§8) forms an `ExecutionContext` with no recipe.
    *  The Gateway audits at the op level regardless; nothing synthesizes a fake
@@ -795,9 +825,9 @@ export interface ExecutionContext {
       ctx: { step_id: string; key?: string; age_ms?: number; reason?: string },
     ) => void;
   };
-  /** D-157 P1 slice 3 — resume mode. When set, the engine re-instantiates
-   *  a previously preflight-gated run: trigger_steps + prefetch + every
-   *  sequential step before `gated_step_id` are skipped, and execution
+  /** D-157 / D-261 resume mode. The checkpoint's phase selects where the
+   *  engine continues. For a legacy sequential hold, trigger_steps + prefetch
+   *  and every sequential step before `gated_step_id` are skipped, and execution
    *  starts AT `gated_step_id` (its boundary-crossing call now dispatches
    *  exactly once — the call that drew the original `ask` verdict, now
    *  approved). `ctx.stores.step` must be pre-seeded by the host from the
@@ -814,9 +844,12 @@ export interface ExecutionContext {
    *
    *  Spec: D-157 § A.2 + I-6 / I-7. */
   resumeFrom?: {
-    /** Id of the step the checkpoint was minted at — the engine starts
-     *  the sequential loop here. Must resolve to a step id in
-     *  `recipe.steps`; an unknown id surfaces as a fatal
+    /** Exact paused phase. Legacy checkpoints resume sequential steps. */
+    execution_phase?: 'trigger' | 'prefetch' | 'sequential';
+    trigger_state?: Record<string, unknown>;
+    prefetch_completed?: string[];
+    /** Id of the step the checkpoint was minted at — within its recorded
+     *  phase (sequential when absent). An unknown id surfaces as a fatal
      *  `CHECKPOINT_STEP_NOT_FOUND` error (the recipe drifted out from
      *  under the checkpoint between pause and resume). */
     gated_step_id: string;
@@ -1048,6 +1081,10 @@ export interface ExecutionResult {
    *  straight through to `CheckpointStore.write` without further
    *  defensive copying. */
   awaiting_approval?: {
+    preapproval_nested_wait?: { child_run_id: string };
+    execution_phase?: 'trigger' | 'prefetch' | 'sequential';
+    trigger_state?: Record<string, unknown>;
+    prefetch_completed?: string[];
     /** Id of the step whose call drew the `ask` verdict — the
      *  `Checkpoint.gated_step_id`. Resume starts AT this step
      *  (`ExecutionContext.resumeFrom.gated_step_id`). */
@@ -1148,6 +1185,9 @@ export interface ExecutionResult {
    *  the engine needs no answer-injection path and the checkpoint carries no
    *  answer slot. */
   awaiting_peer?: {
+    execution_phase?: 'trigger' | 'prefetch' | 'sequential';
+    trigger_state?: Record<string, unknown>;
+    prefetch_completed?: string[];
     /** Id of the peer-ask step — the `Checkpoint.gated_step_id`. */
     gated_step_id: string;
     /** Cloned snapshot of `ctx.stores.step` at the pause. */

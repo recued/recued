@@ -16,6 +16,7 @@ import {
   CHAT_MAIN_TURN_SYSTEM_PROMPT,
   DEFAULT_CHAT_ROLE_INSTRUCTIONS,
   FEATURE_TEXT_APPROVALS,
+  composeChatMainTurnSystemPrompt,
   RECUED_CORE_TEXT,
 } from '../chat-turn-executor.js';
 import {
@@ -447,5 +448,72 @@ describe('the chat turn SENDS what the owner authored', () => {
     const aiInput = await drive({});
     expect(aiInput['llm.system_prompt']).toBe(CHAT_MAIN_TURN_SYSTEM_PROMPT);
     expect(aiInput['llm.system_role']).toBe('system');
+  });
+});
+
+describe('value grounding lives in the CORE text', () => {
+  // ⛔ MEASURED over every stored bench run — 433 ring-cost claims in model
+  //   prose, ground truth read from the seed:
+  //     true value AVAILABLE in the packet → 314 correct, 2 wrong  (99.4%)
+  //     true value ABSENT                  →  85 correct, 32 wrong (72.6%)
+  //   94% of wrong claims had no source. The model reads notes correctly when it
+  //   fetches them, then supplies a number when a search comes back empty.
+  it('tells the model not to state a value it cannot point to', () => {
+    expect(RECUED_CORE_TEXT).toMatch(/Never state a specific value/);
+    // The actionable half: an empty search means FETCH, not answer.
+    expect(RECUED_CORE_TEXT).toMatch(/FETCH it with a tool/);
+    expect(RECUED_CORE_TEXT).toMatch(/not permission to supply the value/);
+  });
+
+  it('⛔ is NOT in the user-replaceable persona', () => {
+    // `DEFAULT_CHAT_ROLE_INSTRUCTIONS` is a persona any surface may replace. A
+    // correctness rule there disappears the moment someone customises it.
+    expect(DEFAULT_CHAT_ROLE_INSTRUCTIONS).not.toMatch(/Never state a specific value/);
+  });
+
+  it('survives every catalog mode, since fabrication is mode-independent', () => {
+    for (const mode of [undefined, 'full', 'index', 'lean-core'] as const) {
+      expect(composeChatMainTurnSystemPrompt(mode))
+        .toMatch(/Never state a specific value/);
+    }
+  });
+});
+
+
+describe('nothing_outstanding — an arc-closure signal the main turn can emit', () => {
+  /** ⛔⛔ EMITTED AND OBSERVED, NOT WIRED TO ANY DECISION. The only closure
+   *  signal today is the brief's `pending`, and `pending` is produced ONLY BY A
+   *  FOLD — so between folds there is nothing to read, which is exactly the
+   *  window in which you would want to stop folding.
+   *
+   *  🔑 MEASURED: `pending: []` appears in 7% of briefs (27/402) and is NEVER
+   *  observed on a tool-free turn, because folds do not run there — the data
+   *  structurally cannot contain the signal. The free proxy is too weak to act
+   *  on: a tool-free turn clusters at session end (83% in the last 20%) but 98
+   *  of 179 were NOT final, a 55% false-positive rate.
+   *
+   *  ⛔ SO IT IS NOT ACTED ON YET. Retire claims — the closest existing model
+   *  judgement of "this is finished" — measured 72-81% precision across five
+   *  instruction variants, every paired contrast null. Wiring an unmeasured
+   *  boolean to a decision would repeat that. */
+  it('asks for the field, and frames it as NOT a success claim', () => {
+    expect(RECUED_CORE_TEXT).toContain('nothing_outstanding');
+    // The framing is the load-bearing part: a refusal is ALSO
+    // nothing-outstanding, and for deciding whether to keep carrying, a
+    // refusal and a success are the same state.
+    expect(RECUED_CORE_TEXT).toContain('cannot be answered');
+    expect(RECUED_CORE_TEXT).toContain('NOT a claim that you succeeded');
+  });
+
+  it('⛔ tells the model to OMIT it rather than send false — absence must mean "work continues"', () => {
+    // The fail-safe direction: a model that says nothing must never be read as
+    // signalling completion, or a silent model ends every arc immediately.
+    expect(RECUED_CORE_TEXT).toContain('omit the field');
+  });
+
+  it('lives in the CORE text, not the replaceable persona', () => {
+    // Same placement rule as the value-grounding sentence: a correctness signal
+    // in `DEFAULT_CHAT_ROLE_INSTRUCTIONS` vanishes when anyone customises it.
+    expect(DEFAULT_CHAT_ROLE_INSTRUCTIONS).not.toContain('nothing_outstanding');
   });
 });

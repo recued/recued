@@ -66,6 +66,9 @@ export interface RunRegistration {
    *  inference cancel; the draining result is tombstoned by the commit
    *  Gateway). Invoked by `kill` after any subprocess SIGKILL. */
   abort: () => void;
+  /** Optional durable chat projection, captured at registration so progress
+   * observed outside the dispatch's async context keeps its exact call id. */
+  onProgress?: (at: number, stalled: boolean) => boolean | undefined;
 }
 
 /** A running-twin never rejects its shared promise. Keeping failure as data
@@ -397,6 +400,7 @@ export class InFlightRegistry {
     if (!this.runs.has(run_id)) return;
     this.progressByRun.set(run_id, { contract, last_signal_at: at });
     this.stalledRuns.delete(run_id);
+    this.reportDurableProgress(run_id, at, false);
   }
 
   /** D-181 slice-4 follow-up #2 — the cli stall monitor raised a no-progress
@@ -410,6 +414,7 @@ export class InFlightRegistry {
     if (!reg) return;
     if (this.stalledRuns.has(run_id)) return; // already flagged — emit once
     this.stalledRuns.add(run_id);
+    this.reportDurableProgress(run_id, Date.now(), true);
     this.tryEmit({ recipe_id: reg.recipe_id, run_id, op: 'stalled' });
   }
 
@@ -692,6 +697,11 @@ export class InFlightRegistry {
 
   private findGated(call_id: string): GatedCallEntry | undefined {
     return this.semaphore.gatedEntries().find((g) => g.call_id === call_id);
+  }
+
+  private reportDurableProgress(run_id: string, at: number, stalled: boolean): void {
+    try { this.runs.get(run_id)?.onProgress?.(at, stalled); }
+    catch (error) { console.error('[chat] tool progress persistence failed', error); }
   }
 
   private tryEmit(args: Parameters<ExecutionDeltaEmit>[0]): void {

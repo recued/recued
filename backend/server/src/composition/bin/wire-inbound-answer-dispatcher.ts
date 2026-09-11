@@ -105,6 +105,10 @@ export type MessengerCallbackAck = (
 ) => Promise<void>;
 
 export interface ComposeInboundAnswerDispatcherDeps {
+  /** Host-only D-261 interceptor. This dispatcher receives signature-verified
+   * vendor events; offer protected owner reviews before generic replies and
+   * model routing can drop sender/message identity. */
+  preapprovalReview?: (vendor: string, event: MessengerInboundEvent) => Promise<boolean>;
   /** D-158 notification block — `submitAnswer(reply)` is the funnel
    *  every recognized callback lands at. Absent ⇒ both dispatchers
    *  degrade to log + drop. */
@@ -337,6 +341,16 @@ export const composeInboundAnswerDispatcher = (
     // Per-vendor id field name preserved in logs (Slack `event_id`, Telegram
     // `update_id`); omitted when the payload carried none.
     const idLog: Record<string, string> = id_value !== null ? { [id_field]: id_value } : {};
+
+    if (await deps.preapprovalReview?.(vendor, event)) {
+      if (ack) {
+        try { await ack(payload, connection_name); }
+        catch (error) { log?.('warn', `messenger inbound (${vendor}) — review callback ack failed`, {
+          connection_name, error: error instanceof Error ? error.message : String(error),
+        }); }
+      }
+      return;
+    }
 
     // D-181 slice 6b — a live-control button press (our correlation id) routes to
     // the registry BEFORE the ask-reply path, so it is never mis-classified as a

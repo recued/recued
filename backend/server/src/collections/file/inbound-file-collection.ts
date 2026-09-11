@@ -1,4 +1,7 @@
+import { initializePreapprovalLifecycle, synchronizePreapprovalIdentity } from '../../storage/preapproval-lifecycle.js';
+import { filePreapprovalMaterial } from './file-snapshot.js';
 import { createHash } from 'node:crypto';
+import { quoteSqliteIdent } from '../../storage/collection-blob-refs.js';
 import type Database from 'better-sqlite3';
 import type { StorageGate } from '@recued/storage-gate';
 import type { AuditLogStore } from '@recued/storage';
@@ -332,9 +335,19 @@ export const createInboundFileCollection = (
     };
   };
 
+  initializePreapprovalLifecycle(db);
+  // Cover table-level retention/eviction too. A subsequent identical ingest
+  // must mint a new incarnation even if no review occurred during deletion.
+  db.exec(`CREATE TRIGGER IF NOT EXISTS ${quoteSqliteIdent(`${table.tableName}_preapproval_delete`)}
+    AFTER DELETE ON ${quoteSqliteIdent(table.tableName)} BEGIN
+      UPDATE preapproval_resource_identity SET present=0, content_hash='', revision=revision+1
+      WHERE kind='file_source' AND key='${slug.replaceAll("'", "''")}:' || OLD.record_id AND present=1;
+    END`);
   const upsertWithRef = (record: CollectionRecord, storage_ref: FileStorageRef): CollectionRecord | null => {
     const stored = normalizeRecordForStorage(record, storage_ref);
     const tx = db.transaction(() => {
+      synchronizePreapprovalIdentity(db, 'file_source', `${slug}:${record.record_id}`,
+        filePreapprovalMaterial({ ...stored, storage_ref }));
       const prev = table.upsert(stored);
       refUpsert.run(slug, record.record_id, JSON.stringify(storage_ref));
       return prev;
@@ -533,6 +546,7 @@ export const createInboundFileCollection = (
     },
     delete(record_id) {
       const tx = db.transaction(() => {
+        synchronizePreapprovalIdentity(db, 'file_source', `${slug}:${record_id}`, null);
         const prev = table.delete(record_id);
         refDelete.run(slug, record_id);
         return prev;

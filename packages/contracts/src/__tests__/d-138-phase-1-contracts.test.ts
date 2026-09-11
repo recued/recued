@@ -614,6 +614,8 @@ describe('D-138 P1 — MCP catalog ratchet (Reviewer #12)', () => {
       // clients; external agents reach engagement evidence only through the
       // body-stripped `recued_contactEngagementsList` tool.
       'data.contact.engagements.',
+      // Saved Data views are owner navigation settings, outside agent capabilities.
+      'data_views.',
       // R27 delta-B — user-initiated DDNS pause/resume (`ddns.setEnabled` /
       // `ddns.status`) is owner-only local-UI; an external agent must never take
       // a user's DDNS publication offline nor read the pause posture.
@@ -635,6 +637,13 @@ describe('D-138 P1 — MCP catalog ratchet (Reviewer #12)', () => {
       // rotations, `key.health` leaks the key inventory + compromise
       // posture).
       'key.',
+      // D-261 — the owner's pre-approval control plane. A model may REQUEST a
+      // reviewed future execution through the governed `core.preapproval.request`
+      // kernel op and manage its own saved drafts through the `core.mail.draft.*`
+      // ops; it may never reach the RPCs that select, decide, revoke or inspect
+      // a proposal, nor enumerate drafts across contracts. The request and the
+      // decision are deliberately on opposite sides of this fence.
+      'mail.drafts.',
       // LAN-URL kickstart — `network.local_urls` is a local-UI reachability
       // read (the server's own bind addresses); an MCP agent has no need to
       // enumerate them.
@@ -644,6 +653,8 @@ describe('D-138 P1 — MCP catalog ratchet (Reviewer #12)', () => {
       'pair.',
       'passport.',
       'pii.',
+      // D-261 — see the `mail.drafts.` note above; same decision, owner half.
+      'preapproval.',
       'pro.',
       'pro_acme.',
       // D-175 P8 — Pro convenience status (operator / local-UI only).

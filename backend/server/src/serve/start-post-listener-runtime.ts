@@ -722,6 +722,7 @@ export const startPostListenerRuntime = async (
           },
         },
         recoverDelivery: () => recoverPeerAskDeliveries({
+          canPublishReviewedCheckpoint: checkpoint => executeDeps.preapprovalRuntime?.canPublishCheckpoint(checkpoint.checkpoint_id) ?? false,
           outbox,
           auditLog: auditLogForTimeout,
           checkpoints,

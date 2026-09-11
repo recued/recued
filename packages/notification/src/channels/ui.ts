@@ -38,7 +38,7 @@ import type { AskOption, NotificationMessage } from '../types.js';
  *   - `notification.ask_closed`  — resolves a card once the ask is
  *                                  answered or closed on another channel. */
 export type UiNotificationEvent =
-  | { kind: 'notification.notify'; message: NotificationMessage }
+  | { kind: 'notification.notify'; message: NotificationMessage; persisted_activity_id?: string }
   | {
       kind: 'notification.ask';
       ask_id: string;
@@ -81,8 +81,11 @@ export const createUiChannel = (opts: UiChannelOptions): Channel => {
     // so Recued owns the LLM↔user boundary here.
     owns_llm_egress: true,
 
-    async deliverNotify(message) {
-      opts.busSink({ kind: 'notification.notify', message });
+    async deliverNotify(message, extras) {
+      opts.busSink({ kind: 'notification.notify',
+        message: extras?.ui_link_url ? { ...message, link_url: extras.ui_link_url } : message,
+        ...(extras ? { persisted_activity_id: extras.persisted_activity_id } : {}),
+      });
     },
 
     async deliverAsk(ask_id, message, options, extras) {

@@ -20,6 +20,7 @@
  *  layer on top of. */
 
 import type Database from 'better-sqlite3';
+import { initializePreapprovalConnections, mutatePreapprovalConnection } from './preapproval-connections.js';
 import {
   type ConnectionAuthType,
   type ConnectionCredentialRejectionResolution,
@@ -348,6 +349,10 @@ export interface ConnectionStoreSqlite {
    *  LWW semantics live one layer up at the sync wire (P2.2); this
    *  store always honors the caller's `updated_at`. */
   upsert(input: ConnectionUpsert): ConnectionRow;
+  /** Host-only automatic credential renewal. CAS against the credential and
+   * material config read before refresh; no stale row replacement. */
+  persistRefreshedAuth?(previous: ConnectionRow, auth_ciphertext: string, updated_at: number,
+    configPatch?: { base_url: string }): boolean;
   /** Fetch by composite key or null when absent. */
   get(kind: ConnectionKind, name: string): ConnectionRow | null;
   /** List every row, optionally filtered by kind. Newest `updated_at`
@@ -480,6 +485,7 @@ export const createConnectionStore = (
   db: Database.Database,
 ): ConnectionStoreSqlite => {
   ensureConnectionSchema(db);
+  initializePreapprovalConnections(db);
 
   // A live handler claims before provider I/O and closes the row in the same
   // process. Therefore a persisted pending row observed while constructing the
@@ -829,7 +835,9 @@ export const createConnectionStore = (
     if (completed.changes !== 1) {
       throw new Error('credential rotation attempt is no longer pending');
     }
-    upsertStmt.run(upsertParams(input.connection));
+    mutatePreapprovalConnection(db, input.connection.kind, input.connection.name,
+      () => readConnection(input.connection.kind, input.connection.name),
+      () => upsertStmt.run(upsertParams(input.connection)));
     return dbRowToConnectionRow(
       getStmt.get(input.connection.kind, input.connection.name) as ConnectionDbRow,
     );
@@ -933,9 +941,14 @@ export const createConnectionStore = (
     } };
   });
 
+  const readConnection = (kind: ConnectionKind, name: string): ConnectionRow | null => {
+    const row = getStmt.get(kind, name) as ConnectionDbRow | undefined;
+    return row ? dbRowToConnectionRow(row) : null;
+  };
   return {
     upsert(input) {
-      upsertStmt.run(upsertParams(input));
+      mutatePreapprovalConnection(db, input.kind, input.name,
+        () => readConnection(input.kind, input.name), () => upsertStmt.run(upsertParams(input)));
       const row = dbRowToConnectionRow(
         getStmt.get(input.kind, input.name) as ConnectionDbRow,
       );
@@ -943,6 +956,28 @@ export const createConnectionStore = (
         try { handler(row); } catch { /* best-effort */ }
       }
       return row;
+    },
+
+    persistRefreshedAuth(previous, auth_ciphertext, updated_at, configPatch) {
+      return db.transaction(() => {
+        const current = readConnection(previous.kind, previous.name);
+        if (!current || current.auth_ciphertext !== previous.auth_ciphertext
+          || current.config_json !== previous.config_json || current.enrolled_at !== previous.enrolled_at) return false;
+        let config_json = current.config_json;
+        if (configPatch !== undefined) {
+          const config: unknown = JSON.parse(config_json);
+          if (!config || typeof config !== 'object' || Array.isArray(config)) throw new Error('The connection config is malformed.');
+          config_json = JSON.stringify({ ...config, base_url: configPatch.base_url });
+        }
+        mutatePreapprovalConnection(db, current.kind, current.name, () => readConnection(current.kind, current.name),
+          () => db.prepare('UPDATE connections SET auth_json = ?, config_json = ?, updated_at = ? WHERE kind = ? AND name = ?')
+            .run(auth_ciphertext, config_json, updated_at, current.kind, current.name), previous.auth_ciphertext);
+        const row = readConnection(current.kind, current.name)!;
+        for (const handler of onUpsertHandlers) {
+          try { handler(row); } catch { /* best-effort */ }
+        }
+        return true;
+      }).immediate();
     },
 
     get(kind, name) {
@@ -965,7 +1000,8 @@ export const createConnectionStore = (
     },
 
     delete(kind, name) {
-      const removed = deleteWithCriticalHooks(kind, name);
+      const removed = mutatePreapprovalConnection(db, kind, name,
+        () => readConnection(kind, name), () => deleteWithCriticalHooks(kind, name));
       if (removed) {
         for (const handler of onDeleteHandlers) {
           try { handler(kind, name); } catch { /* best-effort */ }
@@ -977,9 +1013,13 @@ export const createConnectionStore = (
       // Single-column UPDATE; `updated_at` is deliberately NOT bumped — health is
       // an observation ABOUT the row, not a change TO it, and bumping it would
       // push every dispatch into the sync delta scan (`listSince`).
-      const res = db
+      const update = () => db
         .prepare(`UPDATE connections SET health_json = ? WHERE kind = ? AND name = ?`)
         .run(health_json, kind, name);
+      // MCP tool/schema observations are material dispatch definitions. Seal
+      // a pending review on change, even if a later probe restores the old schema.
+      const res = kind === 'mcp' ? mutatePreapprovalConnection(db, kind, name,
+        () => readConnection(kind, name), update) : update();
       return res.changes > 0;
     },
 

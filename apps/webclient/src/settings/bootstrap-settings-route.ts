@@ -594,6 +594,11 @@ export interface BootstrapSettingsRouteOptions {
    *  call) so concurrent edits don't clobber the whole config blob. */
   aiModelsSetLLMSlotCaller?: AiModelsLlmSlotSetCaller;
   aiModelsSetEmbeddingsSlotCaller?: AiModelsEmbeddingsSlotSetCaller;
+  /** D-262 § B1 — same caller shape; a different rpc on the far side. */
+  aiModelsSetTranscriptionSlotCaller?: AiModelsEmbeddingsSlotSetCaller;
+  aiModelsSetTranscriptionLanguageCaller?: (args: { language: string | null }) => Promise<unknown>;
+  aiModelsSetTranscriptionDailyRequestsCaller?: (args: { limit: number | null }) => Promise<unknown>;
+  aiModelsGetLLMUsageCaller?: () => Promise<never>;
   aiModelsUpsertFreePoolEntryCaller?: AiModelsFreePoolEntryUpsertCaller;
   aiModelsRemoveFreePoolEntryCaller?: AiModelsFreePoolEntryRemoveCaller;
   aiModelsSetFreePoolEntryEnabledCaller?: AiModelsFreePoolEntryEnabledCaller;
@@ -1573,6 +1578,7 @@ export const bootstrapSettingsRoute = (
     || opts.aiModelsGetLLMConfigCaller !== undefined
     || opts.aiModelsSetLLMSlotCaller !== undefined
     || opts.aiModelsSetEmbeddingsSlotCaller !== undefined
+    || opts.aiModelsSetTranscriptionSlotCaller !== undefined
     || opts.aiModelsUpsertFreePoolEntryCaller !== undefined
     || opts.aiModelsRemoveFreePoolEntryCaller !== undefined
     || opts.aiModelsSetFreePoolEntryEnabledCaller !== undefined
@@ -1623,6 +1629,18 @@ export const bootstrapSettingsRoute = (
         : {}),
       ...(opts.aiModelsSetEmbeddingsSlotCaller !== undefined
         ? { runSetEmbeddingsSlot: opts.aiModelsSetEmbeddingsSlotCaller }
+        : {}),
+      ...(opts.aiModelsSetTranscriptionSlotCaller !== undefined
+        ? { runSetTranscriptionSlot: opts.aiModelsSetTranscriptionSlotCaller }
+        : {}),
+      ...(opts.aiModelsSetTranscriptionLanguageCaller !== undefined
+        ? { runSetTranscriptionLanguage: opts.aiModelsSetTranscriptionLanguageCaller }
+        : {}),
+      ...(opts.aiModelsSetTranscriptionDailyRequestsCaller !== undefined
+        ? { runSetTranscriptionDailyRequests: opts.aiModelsSetTranscriptionDailyRequestsCaller }
+        : {}),
+      ...(opts.aiModelsGetLLMUsageCaller !== undefined
+        ? { runGetLLMUsage: opts.aiModelsGetLLMUsageCaller }
         : {}),
       ...(opts.aiModelsUpsertFreePoolEntryCaller !== undefined
         ? { runUpsertFreePoolEntry: opts.aiModelsUpsertFreePoolEntryCaller }

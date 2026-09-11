@@ -517,8 +517,8 @@ describe('D-174 work_entity.list / get', () => {
     expect(page.entities[0]?._kind).toBe('booking');
   });
 
-  it('rejects booking-only filters on every other kind at the RPC boundary', async () => {
-    await expect(handleWorkEntityList(deps, { kind: 'task', search: 'x' }))
+  it('rejects search on unsupported kinds and booking lifecycle on other kinds', async () => {
+    await expect(handleWorkEntityList(deps, { kind: 'note', search: 'x' }))
       .rejects.toMatchObject({ code: 'bad_request' });
     await expect(handleWorkEntityList(deps, {
       kind: 'note',

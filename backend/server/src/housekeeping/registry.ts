@@ -12,6 +12,7 @@ import type Database from 'better-sqlite3';
 
 import type {
   ConnectionVendorEntity,
+  EngagementsForRecordArgs,
   EngagementsResolverArgs,
   EngagementsResolverResult,
   EnrichmentScope,
@@ -351,6 +352,25 @@ export interface HousekeepingContext {
   resolveContactEngagements?: (
     args: EngagementsResolverArgs,
   ) => EngagementsResolverResult;
+  /** D-139 slice 3 — the RECORD-rooted sibling of
+   *  `resolveContactEngagements`, for the deal / account aggregates. Closes
+   *  over the same engagement store + per-call deps builder, so a producer
+   *  gets the same evidence surface and the same honest coverage the
+   *  WS-rpc / MCP read channels get. Optional — absent (dbless / test /
+   *  pre-wire) ⇒ every record-aggregate task no-ops rather than writing a
+   *  value computed over an absent engagement substrate. Production wires
+   *  it in `wire-housekeeping-substrate.ts`. */
+  resolveRecordEngagements?: (
+    args: EngagementsForRecordArgs,
+  ) => EngagementsResolverResult;
+  /** D-139 § A.9.2b — the deal's counterparty contact emails, for
+   *  `out_of_band_engagement`. Wraps the engagement store's
+   *  `listDealCounterpartyContactEmails` (D-192 F1): the DISTINCT
+   *  canonical-email contacts reachable through the deal's engagements.
+   *  Optional — absent (dbless / test / pre-wire) ⇒ the task no-ops rather
+   *  than computing a visibility gap over an empty contact set, which would
+   *  read as "no gap" and be indistinguishable from good news. */
+  listDealContacts?: (deal_full_target_id: string, limit: number) => string[];
   /** D-192 email flagship (E3) — the extraction→proposal funnel. After the
    *  `commitment_tracker` task upserts a contact's row, it hands the produced
    *  commitments here; the funnel dedups on `commitment_id`, composes the

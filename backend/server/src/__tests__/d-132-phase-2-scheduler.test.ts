@@ -245,6 +245,75 @@ describe('isEligibleForIdleCycle', () => {
     expect(isEligibleForIdleCycle(t, { ctx: baseCtx(), trustStore, now })).toBe(false);
   });
 
+  // ── D-262 follow-on — the AI-path gate ───────────────────────────
+  //
+  // ⛔ WHY THIS GATE EXISTS: `AI_LLM_UNAVAILABLE` at an unforced layer is a
+  // RECOVERABLE PER-ROW failure by D-136 P6 — right for a transient miss, wrong
+  // as the way to DISCOVER the owner has no key. The attempt count climbs and
+  // at five the row is `permanently_failed` with no auto-retry, so fixing the
+  // key never revives it. One probe answers for the whole cycle.
+  //
+  // ⚠ The obvious case is NOT reachable and that is worth recording: an AI topic
+  // can never be idle-eligible out of the box, because this gate demands
+  // `trust_state: 'auto'` and `assertEnrichmentTrustDefaults` THROWS at boot if
+  // an AI-surface topic declares that default (0 of 12 do). This guards the
+  // owner who promoted a topic to auto and whose key was later revoked.
+  it('⛔ AI surface + trust auto + NO AI path → ineligible (no rows are walked)', () => {
+    trustStore.write('purpose' as EnrichmentTopic, { trust_state: 'auto' }, now);
+    expect(
+      isEligibleForIdleCycle(enrichmentTask('purpose', true), {
+        ctx: baseCtx(), trustStore, now,
+        aiPath: { available: false, reason: 'no_byok_no_freepool' },
+      }),
+    ).toBe(false);
+  });
+
+  it('⛔ quota_exhausted ALSO skips — both reasons stop the cycle', () => {
+    // Not collapsed into a boolean at the call site: the two mean different
+    // things to the owner (one clears itself at the daily boundary, one needs
+    // them), and the status surface renders that difference.
+    trustStore.write('purpose' as EnrichmentTopic, { trust_state: 'auto' }, now);
+    expect(
+      isEligibleForIdleCycle(enrichmentTask('purpose', true), {
+        ctx: baseCtx(), trustStore, now,
+        aiPath: { available: false, reason: 'quota_exhausted' },
+      }),
+    ).toBe(false);
+  });
+
+  it('an AVAILABLE path leaves an AI producer eligible', () => {
+    trustStore.write('purpose' as EnrichmentTopic, { trust_state: 'auto' }, now);
+    expect(
+      isEligibleForIdleCycle(enrichmentTask('purpose', true), {
+        ctx: baseCtx(), trustStore, now, aiPath: { available: true },
+      }),
+    ).toBe(true);
+  });
+
+  it('⛔ FAILS OPEN — an absent probe result permits, it does not refuse', () => {
+    // A probe that throws, or a scheduler wired without one, must not silently
+    // disable every AI producer. That would be a safety default the owner
+    // cannot see, reach or explain — a worse failure than the per-row one this
+    // prevents.
+    trustStore.write('purpose' as EnrichmentTopic, { trust_state: 'auto' }, now);
+    expect(
+      isEligibleForIdleCycle(enrichmentTask('purpose', true), {
+        ctx: baseCtx(), trustStore, now,
+      }),
+    ).toBe(true);
+  });
+
+  it('⚠ a DETERMINISTIC producer is untouched by an unavailable AI path', () => {
+    // The gate is scoped to AI surfaces. A deterministic task must keep running
+    // through an AI outage — it never needed a model.
+    expect(
+      isEligibleForIdleCycle(enrichmentTask('thread_signals', false), {
+        ctx: baseCtx(), trustStore, now,
+        aiPath: { available: false, reason: 'no_byok_no_freepool' },
+      }),
+    ).toBe(true);
+  });
+
   it('trust state "off" → ineligible', () => {
     trustStore.write('purpose' as EnrichmentTopic, { trust_state: 'off' }, now);
     expect(
@@ -399,6 +468,67 @@ describe('scheduler runCycleInner — trust filter', () => {
     });
     await sched.runOnce();
     expect(stepSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('⛔ an idle cycle SKIPS the AI task when no path is usable', async () => {
+    trustStore.write('purpose' as EnrichmentTopic, { trust_state: 'auto' }, now);
+    const stepSpy = vi.fn(async () => ({
+      status: 'complete' as const, cursor: { kind: 'complete' as const },
+    }));
+    const sched = createHousekeepingScheduler({
+      ctx: baseCtx(), config: configStore, state: stateStore,
+      busy: createEngineBusySignal({ instances: { list: () => [] } as never }),
+      trustStore,
+      probeAiPath: async () => ({ available: false, reason: 'no_byok_no_freepool' as const }),
+      registry: () => [{ ...aiTaskRecord, step: stepSpy }],
+    });
+    await sched.runOnce();
+    // ⛔ Not "ran and failed per row" — never entered. That is the whole point:
+    // the rows keep their attempt budget for a real failure.
+    expect(stepSpy).not.toHaveBeenCalled();
+  });
+
+  it('⚠ Run-Now BYPASSES the gate and never even probes — the owner confirmed the spend', async () => {
+    trustStore.write('purpose' as EnrichmentTopic, { trust_state: 'auto' }, now);
+    const stepSpy = vi.fn(async () => ({
+      status: 'complete' as const, cursor: { kind: 'complete' as const },
+    }));
+    const probe = vi.fn(async () => ({ available: false, reason: 'no_byok_no_freepool' as const }));
+    const sched = createHousekeepingScheduler({
+      ctx: baseCtx(), config: configStore, state: stateStore,
+      busy: createEngineBusySignal({ instances: { list: () => [] } as never }),
+      trustStore, probeAiPath: probe,
+      registry: () => [{ ...aiTaskRecord, step: stepSpy }],
+    });
+    await sched.runOnce({ task_id: aiTaskRecord.meta.id });
+    expect(stepSpy).toHaveBeenCalledTimes(1);
+    // ⚠ And the probe is not merely ignored — it is not CALLED. Run-Now already
+    // has its own pre-confirm probe in the dialog; spending a second one here
+    // would be a real request against the owner's credential for an answer the
+    // path is going to disregard.
+    expect(probe).not.toHaveBeenCalled();
+  });
+
+  it('⚠ a cycle with NO AI-surface task does not probe at all', async () => {
+    const probe = vi.fn(async () => ({ available: true as const }));
+    const stepSpy = vi.fn(async () => ({
+      status: 'complete' as const, cursor: { kind: 'complete' as const },
+    }));
+    const sched = createHousekeepingScheduler({
+      ctx: baseCtx(), config: configStore, state: stateStore,
+      busy: createEngineBusySignal({ instances: { list: () => [] } as never }),
+      trustStore, probeAiPath: probe,
+      // `thread_signals` is deterministic — no `is_ai_surface`, so the cycle
+      // has nothing that could need a model.
+      registry: () => [{
+        meta: { id: 'enrichment.thread_signals', description: '', interruptible: true, kind: 'enrichment' as const },
+        topic: 'thread_signals' as EnrichmentTopic,
+        step: stepSpy,
+      }],
+    });
+    await sched.runOnce();
+    expect(stepSpy).toHaveBeenCalledTimes(1);
+    expect(probe).not.toHaveBeenCalled();
   });
 
   it('pause-AI hides AI tasks but core deterministic tasks still fire', async () => {

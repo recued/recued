@@ -119,10 +119,47 @@ describe('QuotaTracker — daily reset clears embeddings counter in lockstep', (
     const day2 = Date.UTC(2026, 0, 2, 12, 0, 0); // next day
     const q = createQuotaTracker();
     q.recordEmbeddingsUsage('embeddings_slot', 100, day1);
-    expect(q.embeddingsTokensToday('embeddings_slot')).toBe(100);
+    expect(q.embeddingsTokensToday('embeddings_slot', day1)).toBe(100);
     // recordUsage on day 2 triggers maybeReset internally.
     q.recordUsage('other', 1, day2);
-    expect(q.embeddingsTokensToday('embeddings_slot')).toBe(0);
+    expect(q.embeddingsTokensToday('embeddings_slot', day2)).toBe(0);
     expect(q.snapshot().tokens_today['embeddings_slot']).toBeUndefined();
+  });
+
+  it('⛔⛔ AND THE READ ITSELF IS DAY-AWARE — a write is not required to clear it', () => {
+    // ⛔ THIS TEST EXISTS BECAUSE THE ONE ABOVE ENCODED THE BUG AS THE DESIGN.
+    // Its comment — "recordUsage on day 2 triggers maybeReset internally" —
+    // proved the WRITE rolls the day and never asked whether the READ does.
+    // It does not, and three of these reads are BUDGET GATES that run BEFORE
+    // their write. ⇒ a cap reached on day 1 stayed reached forever, cleared
+    // only by the call it was refusing.
+    const day1 = Date.UTC(2026, 0, 1, 12, 0, 0);
+    const day2 = Date.UTC(2026, 0, 2, 12, 0, 0);
+    const q = createQuotaTracker();
+    q.recordEmbeddingsUsage('embeddings_slot', 100, day1);
+    q.recordUsage('slot_1', 100, day1);
+
+    // No write in between — the reads alone must see the new day.
+    expect(q.embeddingsTokensToday('embeddings_slot', day2)).toBe(0);
+    expect(q.tokensToday('slot_1', day2)).toBe(0);
+
+    // ⚠ And the inverse, so the fix cannot be "always return 0": still the
+    // same UTC day, eleven hours later, still counted.
+    const day1Late = Date.UTC(2026, 0, 1, 23, 0, 0);
+    expect(q.embeddingsTokensToday('embeddings_slot', day1Late)).toBe(100);
+    expect(q.tokensToday('slot_1', day1Late)).toBe(100);
+
+    // 🔑 PURE — reporting 0 must not have DESTROYED the bucket. Only the next
+    // write's `maybeReset` clears, and until then the snapshot still holds
+    // day 1's numbers for persistence.
+    expect(q.snapshot().tokens_today['slot_1']).toBe(100);
+
+    // ⚠ AND THE TWO DAY QUESTIONS ARE DIFFERENT. `daily_reset_at` answers
+    // "when were the buckets last written" and is still day 1; `currentDay()`
+    // answers "what day are the reads reporting for". A surface that labels
+    // the (correctly empty) counters with the snapshot's key would date
+    // today's numbers as yesterday.
+    expect(q.snapshot().daily_reset_at).toBe('2026-01-01');
+    expect(q.currentDay(day2)).toBe('2026-01-02');
   });
 });

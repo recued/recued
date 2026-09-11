@@ -2,7 +2,9 @@
  *  feedback placement, and orchestrator recovery paths.
  */
 
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, beforeAll, afterAll } from 'vitest';
+
+
 import Database from 'better-sqlite3';
 import {
   partitionPriorToolCalls,
@@ -85,7 +87,11 @@ let broadcast: ChatBroadcastEmitter;
 beforeEach(() => {
   db = new Database(':memory:');
   ensureChatSchema(db);
+  // ⛔ Pin the brief OFF via the SETTER production uses — env is boot-critical only
+  // (owner rule). This file's subject is not the brief; the fold would add a
+  // call to the very dispatch/egress counts asserted here.
   store = createChatStore(db);
+  store.setRollingBriefEnabled(false);
   captured = [];
   broadcast = { emit: (event) => captured.push(event) };
 });

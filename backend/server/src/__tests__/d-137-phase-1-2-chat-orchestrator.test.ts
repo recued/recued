@@ -271,10 +271,13 @@ describe('D-137 P1.2 — channel-isolation invariant in dispatch', () => {
       picker_target: 'self',
     });
     expect(result.ok).toBe(true);
-    // Started + completed broadcast events.
-    expect(captured.length).toBe(2);
-    expect(captured[0].kind).toBe('chat.tool_call_started');
-    expect(captured[1].kind).toBe('chat.tool_call_completed');
+    // Lifecycle invalidation is additive to the started/completed protocol.
+    expect(captured.filter(event => event.kind !== 'chat.session_changed').map(event => event.kind))
+      .toEqual(['chat.tool_call_started', 'chat.tool_call_completed']);
+    expect(captured).toContainEqual(expect.objectContaining({
+      kind: 'chat.session_changed', field: 'tool_call',
+      value: expect.objectContaining({ state: 'succeeded' }),
+    }));
     // Codex P2 fold — tier derived from registry, not caller-supplied.
     if (captured[0].kind === 'chat.tool_call_started') {
       expect(captured[0].tier).toBe(1);

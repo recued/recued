@@ -23,7 +23,13 @@
  *  The third failure — the `send-composed-mail` recipe not being installed —
  *  cannot be detected here without guessing, so it is not pre-empted: it
  *  surfaces as the dispatch error on the dialog's own banner, which is where
- *  the user is when it happens. */
+ *  the user is when it happens.
+ *
+ *  ✅ 2026-09-07 — that third failure is now unreachable on a running server.
+ *  `mail-compose-foundation` is classified a CORE FEATURE (owner ruling, see
+ *  internal design notes): the boot wire installs it on every start and
+ *  `packs.uninstall` refuses to remove it. The branch stays, because a dispatch
+ *  error is still the honest place for any other run failure to land. */
 
 import { MAIL_COMPOSE_STYLES, FORM_RENDERER_STYLES } from '@recued/ui-shared';
 
@@ -40,6 +46,8 @@ import {
   type MailComposeMount,
 } from './mail-compose-host.js';
 import { serializeShellRoute } from '../shell/route.js';
+import { humanizeRpcError } from '../shell/rpc-error-copy.js';
+import type { MailDraftSummary } from '@recued/contracts';
 
 export const MAIL_ROUTE_HOST_ATTR = 'data-recued-mail-route';
 export const MAIL_ROUTE_COMPOSE_ATTR = 'data-recued-mail-compose';
@@ -119,6 +127,7 @@ export const bootstrapMailRoute = (options: MailRouteOptions): MailRoute => {
         <button type="button" ${MAIL_ROUTE_COMPOSE_ATTR} class="mail-route-compose">New mail</button>
       </header>
       <div class="mail-route-roster"></div>
+      <div data-mail-saved-drafts></div>
       <div ${MAIL_ROUTE_DIALOG_ATTR}></div>
     </section>
   `;
@@ -126,6 +135,12 @@ export const bootstrapMailRoute = (options: MailRouteOptions): MailRoute => {
   const roster = root.querySelector<HTMLElement>('.mail-route-roster')!;
   const dialogHost = root.querySelector<HTMLElement>(`[${MAIL_ROUTE_DIALOG_ATTR}]`)!;
   const composeButton = root.querySelector<HTMLButtonElement>(`[${MAIL_ROUTE_COMPOSE_ATTR}]`)!;
+  const draftsHost = root.querySelector<HTMLElement>('[data-mail-saved-drafts]')!;
+  let disposed = false;
+  let draftGeneration = 0;
+  let draftRows: MailDraftSummary[] = [];
+  let draftCursor: string | null = null;
+  let draftBusy = false;
 
   // The file half is wired ONLY when a search caller exists, so a host without
   // one leaves the Attach control inert instead of opening an empty chooser.
@@ -144,7 +159,44 @@ export const bootstrapMailRoute = (options: MailRouteOptions): MailRoute => {
   const compose = mountMailCompose(dialogHost, {
     ...options,
     ...fileDeps,
+    ...(options.drafts ? { drafts: { ...options.drafts, changed: () => { options.drafts?.changed?.(); void refreshDrafts(); } } } : {}),
   });
+  const paintDrafts = (error?: string): void => {
+    if (disposed || !options.drafts) return;
+    draftsHost.replaceChildren();
+    const title = doc.createElement('h2'); title.textContent = 'Saved drafts'; draftsHost.append(title);
+    const button = (label: string, run: () => Promise<unknown>): HTMLButtonElement => {
+      const el = doc.createElement('button'); el.type = 'button'; el.textContent = label; el.disabled = draftBusy;
+      el.onclick = () => { if (draftBusy) return; void run().catch(caught => paintDrafts(humanizeRpcError(caught))); }; return el;
+    };
+    draftsHost.append(button('Refresh drafts', () => refreshDrafts()));
+    if (error) { const message = doc.createElement('p'); message.setAttribute('role', 'alert'); message.textContent = error; draftsHost.append(message); }
+    for (const row of draftRows) {
+      const item = doc.createElement('div'); item.dataset.mailDraftId = row.draft_id;
+      item.append(button(row.subject || 'Untitled draft', async () => {
+        if (!await compose.openSaved(row.draft_id)) throw new Error('Close the current message before opening another draft.');
+      }), button('Delete draft', async () => {
+        draftBusy = true; paintDrafts();
+        try { await options.drafts!.delete({ draft_id: row.draft_id, expected_revision: row.revision }); await refreshDrafts(); }
+        finally { draftBusy = false; paintDrafts(); }
+      }));
+      const sender = doc.createElement('span'); sender.textContent = ` ${row.sender_mail_instance}`; item.append(sender); draftsHost.append(item);
+    }
+    if (!draftRows.length && !error) { const empty = doc.createElement('p'); empty.textContent = draftBusy ? 'Loading drafts…' : 'No saved drafts.'; draftsHost.append(empty); }
+    if (draftCursor) draftsHost.append(button('More drafts', () => refreshDrafts(true)));
+  };
+  const refreshDrafts = async (more = false): Promise<void> => {
+    if (!options.drafts || disposed) return;
+    const generation = ++draftGeneration; draftBusy = true; paintDrafts();
+    try {
+      const result = await options.drafts.list({ ...(more && draftCursor ? { cursor: draftCursor } : {}), limit: 25 });
+      if (disposed || generation !== draftGeneration) return;
+      draftRows = more ? [...draftRows, ...result.drafts] : result.drafts; draftCursor = result.next_cursor;
+      draftBusy = false; paintDrafts();
+    } catch (error) {
+      if (!disposed && generation === draftGeneration) { draftBusy = false; paintDrafts(humanizeRpcError(error)); }
+    }
+  };
 
   const renderRoster = (): void => {
     const readiness = compose.readiness();
@@ -202,8 +254,10 @@ export const bootstrapMailRoute = (options: MailRouteOptions): MailRoute => {
 
   const refresh = async (): Promise<void> => {
     const pending = compose.refresh();
+    const drafts = refreshDrafts();
     renderRoster();
     await pending;
+    await drafts;
     renderRoster();
   };
 
@@ -226,7 +280,7 @@ export const bootstrapMailRoute = (options: MailRouteOptions): MailRoute => {
     hasUnsavedChanges,
     unsavedChangesPrompt: () =>
       hasUnsavedChanges()
-        ? 'This message has not been sent. Leaving Mail discards it.'
+        ? 'This message has unsaved changes. Leaving Mail discards those changes.'
         : null,
     hasInFlightWork: () => compose.hasInFlightWork(),
     inFlightWorkPrompt: () =>
@@ -235,6 +289,7 @@ export const bootstrapMailRoute = (options: MailRouteOptions): MailRoute => {
         : null,
     whenLoaded: () => loaded,
     dispose() {
+      disposed = true; draftGeneration++;
       root.removeEventListener('click', onClick);
       compose.destroy();
       root.innerHTML = '';

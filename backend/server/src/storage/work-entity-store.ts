@@ -15,8 +15,24 @@
  *
  *  Spec: D-145 § A.1 + § A.1.6 + § A.2.1. */
 
+import {
+  FTS_REINDEX_PAGE,
+  createFtsTable,
+  deleteRecord as ftsDeleteRecord,
+  indexRecord as ftsIndexRecord,
+  search as ftsSearch,
+  toFtsMatch,
+} from '@recued/fts';
 import type Database from 'better-sqlite3';
 import { randomUUID } from 'node:crypto';
+
+import {
+  WORK_ENTITY_LONG_TEXT_FIELD,
+  WORK_ENTITY_TITLE_FIELD,
+  workEntityFtsKey,
+  workEntityFtsScope,
+  workEntitySearchableText,
+} from '../work-entity-searchable-text.js';
 import {
   CONFLICT_POLICIES,
   COMMITMENT_AMOUNT_REGEX,
@@ -45,6 +61,8 @@ import {
   TASK_PRIORITY_SET,
   TASK_TITLE_MAX,
   TASK_STATE_MAX,
+  parseTaskListFilter,
+  type TaskListFilter,
   WORK_ENTITY_KINDS,
   WORK_ENTITY_KIND_SET,
   BOOKING_DEFAULT_LIFECYCLE_STATE,
@@ -93,6 +111,47 @@ export const PROJECT_TABLE = 'data_project';
 export const BOOKING_TABLE = 'data_booking';
 export const NOTE_ACCESS_LEDGER_TABLE = 'note_access_ledger';
 export const NOTE_FTS_TABLE = 'data_note_fts';
+/** D-145 — the searchable index behind `work.search`, across ALL FIVE kinds.
+ *
+ *  ⛔ NOT `NOTE_FTS_TABLE`, which this does not replace and does not use.
+ *  That one indexes `data_note(body)` under FTS5's DEFAULT tokenizer and has
+ *  never had a reader: it was materialized to satisfy the note canonical
+ *  schema's `fts5:body` declaration (`2be3fe709`, a Codex schema-conformance
+ *  finding), not to answer a query. Wiring it would have fixed nothing —
+ *  measured 2026-09-05, `unicode61` returns 0 for `Kestrel rings` against a
+ *  note titled `Kestrel ring 04`, because it does not stem and the plural is
+ *  a different term. It also covers `body` only, so it cannot find a record
+ *  by its own title, and it exists for one kind of five. */
+export const WORK_ENTITY_FTS_TABLE = 'work_entity_fts';
+/** The house tokenizer, matching `USER_MEMORY_FTS_TOKENIZER`. `porter` is the
+ *  load-bearing word: it stems, so `rings` finds `ring`. `user-memory-store.ts`
+ *  records the argument that this is a strict improvement — stemming MERGES
+ *  terms, so `stem(t) === stem(q)` holds wherever `t === q` did, and no query
+ *  that matched before can stop matching.
+ *
+ *  ⛔ CHANGING THIS STRING RE-INDEXES EVERY WORK ENTITY ON EVERY SERVER at the
+ *  next boot. `createFtsTable` compares it against the recorded declaration and
+ *  drops a mismatched index; the reindex below then walks all five tables. */
+export const WORK_ENTITY_FTS_TOKENIZER = 'porter unicode61 remove_diacritics 2';
+/** Per-connection scratch index for `matchTextsByQuery`.
+ *
+ *  ⚠ TWO NAMES ON PURPOSE. The CREATE is qualified `temp.` so the table lands
+ *  in the temp schema and never in the user's database file; every reference
+ *  after that is BARE, because SQLite resolves an unqualified name against temp
+ *  first, and `@recued/fts` rejects a dotted name outright (`escapeIdent`) — its
+ *  identifier guard is right, and the qualifier belongs only in the DDL. */
+const SCRATCH_FTS_TABLE = 'work_entity_fts_scratch';
+
+/** The five (kind, table) pairs the index spans. A `Map` over `WorkEntityKind`
+ *  rather than a literal list so a NEW KIND is a type error here, not a kind
+ *  that silently indexes nothing. */
+const WORK_ENTITY_FTS_SOURCES: ReadonlyArray<readonly [WorkEntityKind, string]> = [
+  ['task', TASK_TABLE],
+  ['note', NOTE_TABLE],
+  ['commitment', COMMITMENT_TABLE],
+  ['project', PROJECT_TABLE],
+  ['booking', BOOKING_TABLE],
+];
 /** D-145 PA2 — per-kind default-Source memory. Server-global (per
  *  the single-user-warehouse invariant); one row per kind. The
  *  `prefs.<kind>.last_used_source_id` shape in § A.2.2 is the
@@ -292,7 +351,7 @@ export const ensureWorkEntitySchema = (db: Database.Database): void => {
     -- every call. Same quadratic shape as the mail thread lookup, one table
     -- over.
     -- THE LIST ORDERING INDEX. list<Kind>s pages with
-    --   ORDER BY updated_at DESC LIMIT ? OFFSET ?, and every existing index
+    --   ORDER BY updated_at DESC, id ASC LIMIT ? OFFSET ?, and every existing index
     --   here leads with a FILTER column, which cannot serve that order.
     --   Measured at 100k rows: 43.0ms -> 0.2ms, and the sort disappears.
     --
@@ -308,12 +367,24 @@ export const ensureWorkEntitySchema = (db: Database.Database): void => {
     --   is 0.2ms today -- it is the control proving the difference is the index
     --   and not the harness.
     CREATE INDEX IF NOT EXISTS idx_task_updated_at
-      ON ${TASK_TABLE} (updated_at DESC);
+      ON ${TASK_TABLE} (updated_at DESC, id ASC);
     CREATE INDEX IF NOT EXISTS idx_task_linked_thread
       ON ${TASK_TABLE} (linked_mail_thread_id)
       WHERE linked_mail_thread_id IS NOT NULL;
     ${sourceRowIdentityIndexes('task', TASK_TABLE)}
   `);
+
+  // CREATE IF NOT EXISTS leaves older timestamp-only indexes unchanged. Upgrade
+  // under one writer lock, including the shape check, so another schema opener
+  // cannot observe a missing index or rebuild one that was already upgraded.
+  db.transaction(() => {
+    const keys = (db.prepare('PRAGMA index_xinfo(idx_task_updated_at)').all() as
+      Array<{ name: string | null; desc: number; key: number }>).filter((column) => column.key === 1);
+    if (keys.length === 2 && keys[0]?.name === 'updated_at' && keys[0].desc === 1
+      && keys[1]?.name === 'id' && keys[1].desc === 0) return;
+    db.exec(`DROP INDEX IF EXISTS idx_task_updated_at;
+      CREATE INDEX idx_task_updated_at ON ${TASK_TABLE} (updated_at DESC, id ASC)`);
+  }).immediate();
 
   // D-179 fork (a) — `state` + `progress` on a table that pre-dates
   // them. Same swallow-duplicate-column idiom as the PA11 ALTER above.
@@ -651,6 +722,108 @@ export const ensureWorkEntitySchema = (db: Database.Database): void => {
         INSERT INTO ${NOTE_FTS_TABLE}(${NOTE_FTS_TABLE}, rowid, body) VALUES('delete', old.rowid, old.body);
       END;
   `);
+
+
+  // The work.search index — all five kinds, title + long text, porter-stemmed.
+  //
+  // ⚠ MIGRATION IS `createFtsTable`'s, NOT HAND-ROLLED. It compares the recorded
+  // tokenizer against ours and rebuilds on a mismatch, and its comments record a
+  // measured incident where a naive drop-then-refill left `search()` returning 0
+  // where it had returned 3, with nothing red — the drop opened a window in which
+  // the index is EMPTY and a throw inside the refill lands in it. Re-indexing in
+  // place has no such window. Inherit that, do not re-derive it.
+  const { migrated } = createFtsTable(db, WORK_ENTITY_FTS_TABLE, {
+    tokenizer: WORK_ENTITY_FTS_TOKENIZER,
+    reindex: () => reindexWorkEntityFts(db),
+  });
+  // ⛔⛔ THE UPGRADE PATH, AND IT IS NOT COVERED BY `createFtsTable`'s OWN
+  // MIGRATION. That helper reindexes on a CHANGED tokenizer or a stale content
+  // format; a table that did not exist at all takes its `declared === null`
+  // branch, commented *"Fresh table: nothing to migrate"*. That is exactly right
+  // for `shared-store` and `user-memory-store`, which create their index in the
+  // same breath as the data it covers — and exactly WRONG here, because this
+  // index was added to five tables that already hold a user's whole history.
+  //
+  // Without this, every server that upgrades into the index build creates it
+  // EMPTY and never fills it: `work.search` with a `query` returns nothing for
+  // every pre-existing note, task, project, commitment and booking, while
+  // `work.read` and every list serve them normally. Measured — the first drive
+  // after shipping returned `[]` where it had returned the row.
+  //
+  // The condition is "index empty AND the store is not", which is idempotent and
+  // also repairs a backfill that died half-way. In the ordinary case it costs one
+  // `LIMIT 1`.
+  //
+  // ⚠ THE EMPTINESS CHECK IS THE WHOLE GUARD, and it is deliberately the ONLY
+  // one. A `storeHasRows()` companion was written and removed: with the index
+  // empty and the store empty too, the walk is five `LIMIT 500` queries that
+  // return nothing, and the guard would cost up to five `LIMIT 1` queries to
+  // avoid them. It bought nothing measurable and was unfalsifiable by any test —
+  // mutation-tested, deleting it changed no observable behaviour.
+  if (!migrated && workEntityFtsIsEmpty(db)) {
+    reindexWorkEntityFts(db);
+  }
+};
+
+/** One row, or none — never a COUNT over an index that may hold millions.
+ *
+ *  ⛔ DROPPING THIS MAKES EVERY BOOT WALK THE WHOLE STORE, and the walk is
+ *  invisible: search keeps working, so nothing goes red. `work-entity-fts-write-paths.test.ts`
+ *  detects it by deleting one row from the index ONLY and asserting a re-boot
+ *  does NOT bring it back — the one observable difference between "skipped" and
+ *  "re-ran". */
+const workEntityFtsIsEmpty = (db: Database.Database): boolean =>
+  db.prepare(`SELECT 1 FROM ${WORK_ENTITY_FTS_TABLE} LIMIT 1`).get() === undefined;
+
+/** Repopulate the whole work-entity index, one page at a time.
+ *
+ *  Reads the columns DIRECTLY rather than materializing entities: a rebuild runs
+ *  at boot on a cold cache and the row parsers do JSON work per row that the
+ *  index does not need. `deleted_at IS NULL` is deliberately NOT applied —
+ *  tombstoned rows are cheap to carry and the read path re-filters anyway (see
+ *  `searchIdsByText`), so an index entry for a row the query would drop costs a
+ *  join, while a MISSING entry for a row the query would keep is unfindable. */
+const reindexWorkEntityFts = (db: Database.Database): void => {
+  for (const [kind, table] of WORK_ENTITY_FTS_SOURCES) {
+    const long = WORK_ENTITY_LONG_TEXT_FIELD[kind];
+    // ⚠ BOTH FIELDS ARE PER-KIND AND EITHER CAN BE ABSENT. `commitment` has no
+    // `title` column and `booking` no long text; naming a column that does not
+    // exist is a hard `SqliteError` at boot, on the migration path, where it is
+    // most expensive to discover.
+    const title = WORK_ENTITY_TITLE_FIELD[kind];
+    const cols = [
+      'id',
+      title === null ? "'' AS title" : title,
+      ...(long === null ? [] : [`${long} AS long_text`]),
+      'source_extension_blob',
+    ].join(', ');
+    let offset = 0;
+    for (;;) {
+      const rows = db
+        .prepare(`SELECT ${cols} FROM ${table} ORDER BY id LIMIT ? OFFSET ?`)
+        .all(FTS_REINDEX_PAGE, offset) as Array<{
+          id: string;
+          title: string | null;
+          long_text?: string | null;
+          source_extension_blob?: string | null;
+        }>;
+      if (rows.length === 0) break;
+      for (const row of rows) {
+        ftsIndexRecord(
+          db,
+          WORK_ENTITY_FTS_TABLE,
+          workEntityFtsKey(kind, row.id),
+          workEntitySearchableText(kind, {
+            title: row.title,
+            source_extension_blob: row.source_extension_blob ?? null,
+            ...(long !== null ? { [long]: row.long_text ?? null } : {}),
+          }),
+        );
+      }
+      if (rows.length < FTS_REINDEX_PAGE) break;
+      offset += FTS_REINDEX_PAGE;
+    }
+  }
 };
 
 // ────────────────────────────────────────────────────────────────
@@ -903,8 +1076,11 @@ export interface WorkEntityListQuery {
   parent_project_id?: string;
   limit?: number;
   offset?: number;
-  /** Booking-only search. Applied by SQL before pagination. */
+  /** Task/booking search. Applied by SQL before pagination. */
   search?: string;
+  task_filter?: TaskListFilter;
+  /** Internal read policy exclusions, applied before pagination and count. */
+  excluded_source_ids?: readonly string[];
   /** Booking-only business lifecycle filter. */
   booking_lifecycle_states?: readonly BookingLifecycleState[];
 }
@@ -924,7 +1100,10 @@ export interface WorkEntityContactRelationshipSummary {
 const DEFAULT_LIST_LIMIT = 100;
 const MAX_LIST_LIMIT = 1000;
 
-const normalizeListQuery = (q?: WorkEntityListQuery): Required<WorkEntityListQuery> => {
+type NormalizedListQuery = Omit<Required<WorkEntityListQuery>, 'task_filter'> & {
+  task_filter: TaskListFilter | null;
+};
+const normalizeListQuery = (q?: WorkEntityListQuery, searchLimit = 200): NormalizedListQuery => {
   const sync_states =
     q?.sync_states && q.sync_states.length > 0
       ? q.sync_states
@@ -940,8 +1119,12 @@ const normalizeListQuery = (q?: WorkEntityListQuery): Required<WorkEntityListQue
     throw new WorkEntityValidationError('search must be a string', 'search');
   }
   const search = q?.search?.trim() ?? '';
-  if (search.length > 200) {
-    throw new WorkEntityValidationError('search is limited to 200 characters', 'search');
+  if (search.length > searchLimit) {
+    throw new WorkEntityValidationError(`search is limited to ${searchLimit} characters`, 'search');
+  }
+  const task_filter = q?.task_filter === undefined ? null : parseTaskListFilter(q.task_filter);
+  if (q?.task_filter !== undefined && task_filter === null) {
+    throw new WorkEntityValidationError('invalid task filter', 'task_filter');
   }
   const booking_lifecycle_states = [
     ...new Set(q?.booking_lifecycle_states ?? []),
@@ -963,15 +1146,18 @@ const normalizeListQuery = (q?: WorkEntityListQuery): Required<WorkEntityListQue
     offset,
     search,
     booking_lifecycle_states,
+    task_filter,
+    excluded_source_ids: q?.excluded_source_ids ?? [],
   };
 };
 
 const escapeLike = (value: string): string => value.replace(/[\\%_]/g, '\\$&');
 
 const buildListWhere = (
-  q: Required<WorkEntityListQuery>,
+  q: NormalizedListQuery,
   bookingFilters = false,
   parentProjectFilter = false,
+  taskFilters = false,
 ): { sql: string; params: unknown[] } => {
   const clauses: string[] = [];
   const params: unknown[] = [];
@@ -981,6 +1167,10 @@ const buildListWhere = (
   if (q.source_id) {
     clauses.push('source_id = ?');
     params.push(q.source_id);
+  }
+  if (q.excluded_source_ids.length > 0) {
+    clauses.push(`source_id NOT IN (${q.excluded_source_ids.map(() => '?').join(', ')})`);
+    params.push(...q.excluded_source_ids);
   }
   // ⛔ READ IS ALWAYS FAN-OUT (D-187 Sources half). The `enabled = 0` exclusion
   // that stood here is gone with the toggle that set it: every registered
@@ -1021,11 +1211,31 @@ const buildListWhere = (
       );
       params.push(...q.booking_lifecycle_states);
     }
-  } else if (q.search.length > 0 || q.booking_lifecycle_states.length > 0) {
+  } else if ((!taskFilters && q.search.length > 0) || q.booking_lifecycle_states.length > 0) {
     throw new WorkEntityValidationError(
-      'search and booking_lifecycle_states are booking-only filters',
+      'search requires tasks or bookings; booking_lifecycle_states requires bookings',
       q.search.length > 0 ? 'search' : 'booking_lifecycle_states',
     );
+  }
+  if (taskFilters && q.search.length > 0) {
+    const pattern = `%${escapeLike(q.search.toLowerCase())}%`;
+    clauses.push(`(js_lower(title) LIKE ? ESCAPE '\\' OR js_lower(COALESCE(body, '')) LIKE ? ESCAPE '\\')`);
+    params.push(pattern, pattern);
+  }
+  if (q.task_filter !== null) {
+    if (!taskFilters) throw new WorkEntityValidationError('task_filter requires tasks', 'task_filter');
+    const { completion, due } = q.task_filter;
+    if (completion !== 'all') {
+      clauses.push('done = ?');
+      params.push(completion === 'completed' ? 1 : 0);
+    }
+    if (due.kind === 'overdue') {
+      clauses.push('done = 0 AND due_at < ?');
+      params.push(due.before);
+    } else if (due.kind === 'range') {
+      clauses.push('due_at >= ? AND due_at < ?');
+      params.push(due.from, due.before);
+    }
   }
   return { sql: `WHERE ${clauses.join(' AND ')}`, params };
 };
@@ -1919,6 +2129,34 @@ export interface WorkEntityStore {
    *  preserves. One transaction; returns total rows deleted; idempotent
    *  (a re-run deletes 0). Does NOT touch derived data — the orchestrator
    *  cascades annotations / links / enrichments separately. */
+  /** Ids of one kind whose title or long text matches `query`, newest-updated
+   *  first, via the porter-stemmed FTS index.
+   *
+   *  🔑 THIS IS WHY THE INDEX EXISTS, and it is not (only) about match quality.
+   *  The read tool previously scanned `listByKind(kind, { limit: 1000 })` —
+   *  which is `ORDER BY updated_at DESC LIMIT 1000` — and filtered in JS, so
+   *  `work.search` was BLIND to anything past a user's 1000 most recently
+   *  touched records of a kind. A note written last year was unfindable by
+   *  query, and the tool reported an honest-looking zero. Matching in the index
+   *  reaches every row.
+   *
+   *  Returns ids only; the caller re-reads and applies every other filter
+   *  (source, done, tombstones, orphans), so a stale index entry costs a
+   *  dropped join row and never a wrong result. */
+  searchIdsByText(kind: WorkEntityKind, query: string, limit: number): string[];
+  /** Match arbitrary TEXTS against `query` under the same tokenizer and match
+   *  rule the durable index uses, returning the indices that matched.
+   *
+   *  ⛔ THIS EXISTS SO THERE IS ONE MATCHER, NOT TWO. `work.search` also has to
+   *  judge READ-THROUGH items — live vendor records that by declaration never
+   *  touch local storage, so they can never be in the durable index. Filtering
+   *  those with a hand-written approximation would give one tool two grammars:
+   *  the same record findable from one Source and not another, drifting apart
+   *  on the first change to either. So they run through a TEMP FTS table on
+   *  this same connection, with the same tokenizer constant and the same
+   *  `toFtsMatch`. `work-entity-fts-write-paths.test.ts` asserts the two paths
+   *  agree query-for-query. */
+  matchTextsByQuery(texts: readonly string[], query: string): number[];
   deleteRecordsForSource(source_id: string): number;
   /** D-192 — count the canonical rows a Source teardown would purge
    *  (all sync_states), for the removal-dialog "[N] records" preview.
@@ -2182,6 +2420,24 @@ export const createWorkEntityStore = (
 
 
   // ── tasks ───────────────────────────────────────────────────────
+  /** Index one record for `work.search`, from the entity the write just
+   *  materialized — so the text indexed is exactly the text a reader sees.
+   *
+   *  ⛔ CALLED FROM EVERY `write*`, at the single shared `return written` anchor.
+   *  A write path that skips it leaves the record UNFINDABLE while every other
+   *  read of it succeeds, and nothing goes red: the row is there, `work.read`
+   *  serves it, only `query` cannot reach it. `work-entity-fts-write-paths.test.ts`
+   *  drives all five writers and asserts each is reachable by query, so a sixth
+   *  kind added without a hook fails there rather than in the field. */
+  const indexWorkEntity = (kind: WorkEntityKind, entity: { id: string }): void => {
+    ftsIndexRecord(
+      db,
+      WORK_ENTITY_FTS_TABLE,
+      workEntityFtsKey(kind, entity.id),
+      workEntitySearchableText(kind, entity as Record<string, unknown>),
+    );
+  };
+
   const writeTask: WorkEntityStore['writeTask'] = (input, now = Date.now()) => {
     validateTaskInput(input);
     const id = input.id ?? newId();
@@ -2263,6 +2519,7 @@ export const createWorkEntityStore = (
     });
     const written = readTask(id);
     if (!written) throw new Error(`writeTask: row ${id} missing post-insert`);
+    indexWorkEntity('task', written);
     return written;
   };
 
@@ -2289,12 +2546,19 @@ export const createWorkEntityStore = (
   };
 
   const listTasks: WorkEntityStore['listTasks'] = (q) => {
-    const norm = normalizeListQuery(q);
-    const where = buildListWhere(norm, false, true);
+    const norm = normalizeListQuery(q, 2000);
+    const where = buildListWhere(norm, false, true, true);
+    // UI task views order the complete set before paging. Native callers that
+    // omit task_filter retain their existing updated-first list contract.
+    const order = norm.task_filter === null ? 'updated_at DESC, id ASC'
+      : norm.task_filter.sort === 'due_asc' ? 'due_at IS NULL ASC, due_at ASC, id ASC'
+      : 'done ASC, CASE WHEN done = 0 THEN due_at IS NULL ELSE 0 END ASC, '
+        + 'CASE WHEN done = 0 THEN due_at END ASC, '
+        + 'CASE WHEN done = 1 THEN completed_at END DESC, updated_at DESC, id ASC';
     const rows = db
       .prepare(
         `SELECT * FROM ${TASK_TABLE} ${where.sql}
-         ORDER BY updated_at DESC LIMIT ? OFFSET ?`,
+         ORDER BY ${order} LIMIT ? OFFSET ?`,
       )
       .all(...where.params, norm.limit, norm.offset) as TaskRow[];
     return rows.map(rowToTask);
@@ -2305,6 +2569,52 @@ export const createWorkEntityStore = (
       if (predicate(t)) return t;
     }
     return null;
+  };
+
+  const searchIdsByText: WorkEntityStore['searchIdsByText'] = (kind, query, limit) => {
+    // `toFtsMatch` is rung 1 of `toFtsMatchLadder` — AND over every token the
+    // caller typed.
+    //
+    // ⛔ THE LADDER'S RELAXATION RUNGS ARE DELIBERATELY NOT USED. They exist for
+    // natural-language RETRIEVAL, where returning the best of a bad set beats
+    // returning nothing; `work.search`'s `query` is a FILTER on a list the user
+    // is browsing, and the `loose` rung ORs the terms — `kestrel budget` would
+    // return every Kestrel record, which reads as the tool ignoring half the
+    // query. If recall proves too tight, add `relaxed` (drops function words
+    // only, still a conjunction) and surface the rung on the result so the
+    // model can tell an exact hit from a widened one — never `loose` silently.
+    const match = toFtsMatch(query);
+    if (match === null) return [];
+    return ftsSearch(db, WORK_ENTITY_FTS_TABLE, {
+      scope: workEntityFtsScope(kind),
+      query: match,
+      limit,
+    }).map((row) => row.key.slice(kind.length + 1));
+  };
+
+  const matchTextsByQuery: WorkEntityStore['matchTextsByQuery'] = (texts, query) => {
+    if (texts.length === 0) return [];
+    const match = toFtsMatch(query);
+    if (match === null) return [];
+    // TEMP, so it is per-connection and vanishes with it — no table added to the
+    // user's database, and no second SQLite driver handle (the D-212 chokepoint
+    // ratchet allows exactly one production constructor, and it is not this).
+    // The DDL mirrors `createFtsTable`'s one statement; the tokenizer comes from
+    // the shared constant so the two cannot drift apart silently.
+    db.exec(
+      `CREATE VIRTUAL TABLE IF NOT EXISTS temp.${SCRATCH_FTS_TABLE} `
+      + `USING fts5(key UNINDEXED, blob_text, tokenize='${WORK_ENTITY_FTS_TOKENIZER}')`,
+    );
+    db.prepare(`DELETE FROM ${SCRATCH_FTS_TABLE}`).run();
+    texts.forEach((text, i) => {
+      ftsIndexRecord(db, SCRATCH_FTS_TABLE, `i.${i}`, text);
+    });
+    const hits = ftsSearch(db, SCRATCH_FTS_TABLE, {
+      query: match,
+      limit: texts.length,
+    }).map((row) => Number.parseInt(row.key.slice(2), 10));
+    db.prepare(`DELETE FROM ${SCRATCH_FTS_TABLE}`).run();
+    return hits.filter((i) => Number.isInteger(i) && i >= 0 && i < texts.length);
   };
 
   const deleteTask: WorkEntityStore['deleteTask'] = (id, opts) => {
@@ -2320,12 +2630,16 @@ export const createWorkEntityStore = (
       return result.changes > 0;
     }
     const result = db.prepare(`DELETE FROM ${TASK_TABLE} WHERE id = ?`).run(id);
+    // Hard delete only. A TOMBSTONE keeps the row and its text, and the read
+    // path re-filters tombstones off the join — so dropping the index entry
+    // there would buy nothing and cost a rebuild if the row is ever restored.
+    ftsDeleteRecord(db, WORK_ENTITY_FTS_TABLE, workEntityFtsKey('task', id));
     return result.changes > 0;
   };
 
   const countTasks: WorkEntityStore['countTasks'] = (q) => {
-    const norm = normalizeListQuery(q);
-    const where = buildListWhere(norm, false, true);
+    const norm = normalizeListQuery(q, 2000);
+    const where = buildListWhere(norm, false, true, true);
     const row = db
       .prepare(`SELECT COUNT(*) AS n FROM ${TASK_TABLE} ${where.sql}`)
       .get(...where.params) as { n: number };
@@ -2572,6 +2886,7 @@ export const createWorkEntityStore = (
     });
     const written = readNote(id);
     if (!written) throw new Error(`writeNote: row ${id} missing post-insert`);
+    indexWorkEntity('note', written);
     return written;
   };
 
@@ -2616,6 +2931,10 @@ export const createWorkEntityStore = (
     // Hard delete cascades by clearing the ledger first to satisfy FK.
     db.prepare(`DELETE FROM ${NOTE_ACCESS_LEDGER_TABLE} WHERE note_id = ?`).run(id);
     const result = db.prepare(`DELETE FROM ${NOTE_TABLE} WHERE id = ?`).run(id);
+    // Hard delete only. A TOMBSTONE keeps the row and its text, and the read
+    // path re-filters tombstones off the join — so dropping the index entry
+    // there would buy nothing and cost a rebuild if the row is ever restored.
+    ftsDeleteRecord(db, WORK_ENTITY_FTS_TABLE, workEntityFtsKey('note', id));
     return result.changes > 0;
   };
 
@@ -2822,6 +3141,7 @@ export const createWorkEntityStore = (
     });
     const written = readCommitment(id);
     if (!written) throw new Error(`writeCommitment: row ${id} missing post-insert`);
+    indexWorkEntity('commitment', written);
     return written;
   };
 
@@ -2864,6 +3184,10 @@ export const createWorkEntityStore = (
       return result.changes > 0;
     }
     const result = db.prepare(`DELETE FROM ${COMMITMENT_TABLE} WHERE id = ?`).run(id);
+    // Hard delete only. A TOMBSTONE keeps the row and its text, and the read
+    // path re-filters tombstones off the join — so dropping the index entry
+    // there would buy nothing and cost a rebuild if the row is ever restored.
+    ftsDeleteRecord(db, WORK_ENTITY_FTS_TABLE, workEntityFtsKey('commitment', id));
     return result.changes > 0;
   };
 
@@ -2975,6 +3299,7 @@ export const createWorkEntityStore = (
     });
     const written = readBooking(id);
     if (!written) throw new Error(`writeBooking: row ${id} missing post-insert`);
+    indexWorkEntity('booking', written);
     return written;
   };
 
@@ -3021,6 +3346,10 @@ export const createWorkEntityStore = (
       return result.changes > 0;
     }
     const result = db.prepare(`DELETE FROM ${BOOKING_TABLE} WHERE id = ?`).run(id);
+    // Hard delete only. A TOMBSTONE keeps the row and its text, and the read
+    // path re-filters tombstones off the join — so dropping the index entry
+    // there would buy nothing and cost a rebuild if the row is ever restored.
+    ftsDeleteRecord(db, WORK_ENTITY_FTS_TABLE, workEntityFtsKey('booking', id));
     return result.changes > 0;
   };
 
@@ -3169,6 +3498,7 @@ export const createWorkEntityStore = (
     });
     const written = readProject(id);
     if (!written) throw new Error(`writeProject: row ${id} missing post-insert`);
+    indexWorkEntity('project', written);
     return written;
   };
 
@@ -3211,6 +3541,10 @@ export const createWorkEntityStore = (
       return result.changes > 0;
     }
     const result = db.prepare(`DELETE FROM ${PROJECT_TABLE} WHERE id = ?`).run(id);
+    // Hard delete only. A TOMBSTONE keeps the row and its text, and the read
+    // path re-filters tombstones off the join — so dropping the index entry
+    // there would buy nothing and cost a rebuild if the row is ever restored.
+    ftsDeleteRecord(db, WORK_ENTITY_FTS_TABLE, workEntityFtsKey('project', id));
     return result.changes > 0;
   };
 
@@ -3383,6 +3717,8 @@ export const createWorkEntityStore = (
     countByKind,
     listByKind,
     listRecordIdentitiesForSource,
+    searchIdsByText,
+    matchTextsByQuery,
     deleteRecordsForSource,
     countRecordsForSource,
     stagePendingWrite,

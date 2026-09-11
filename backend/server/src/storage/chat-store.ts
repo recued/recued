@@ -25,6 +25,10 @@
 
 import type Database from 'better-sqlite3';
 import {
+  chatToolCallFromMetadata, createChatToolCallStore, settleChatToolCall,
+  type ChatToolCallStore, type ChatToolCallSettlement, type StoredChatToolCall,
+} from './chat-tool-call-store.js';
+import {
   CHAT_MODEL_ROUTING_LAYER_SET,
   CHAT_TABLES,
   isChatDataDiagnosisIntent,
@@ -175,6 +179,43 @@ export const ensureChatSchema = (db: Database.Database): void => {
     CREATE TABLE IF NOT EXISTS chat_config (
       key   TEXT PRIMARY KEY,
       value TEXT NOT NULL
+    );
+  `);
+
+  /** The rolling brief's durable home.
+   *
+   *  ⛔⛔ IT LIVED IN A MODULE-LEVEL `Map` AND THE FEATURE SHIPPED ON BY DEFAULT
+   *  WHILE IT DID. That store's own note called itself "flag-gated experiment
+   *  scaffolding … not durable … does not survive a restart. A shipped version
+   *  belongs in the chat store beside the turn it describes — the constraint a
+   *  brief protects is exactly the kind of thing that must not evaporate on a
+   *  process bounce." Removing the flag made that precondition binding, and a
+   *  supervisor respawn or an applied update would have dropped every
+   *  `constraints` entry — the one class nothing can re-derive.
+   *
+   *  ⛔ ENCRYPTED, AND AAD-BOUND TO ITS SESSION. A brief is chat CONTENT: it
+   *  holds what the owner said, in their words. It uses the same chat sub-DEK
+   *  and the same `{session_id, message_id}` binding as `chat_messages`, with a
+   *  synthetic message id, so a blob lifted into another session fails to
+   *  decode rather than decrypting under the wrong conversation.
+   *
+   *  🔑 AND WHAT IS STORED IS PRE-ALIAS, WHICH IS WHY DURABILITY IS SAFE AT ALL.
+   *  `chat-pii-slot-ordering.ts` is explicit that live turns were safe because
+   *  "no alias ever crossed a restart boundary in a resolvable position" — after
+   *  a restart the ledger is rebuilt and `pii.Person1` can mean Alice before and
+   *  Danny after. `stripAliasBearing` drops alias-bearing entries BEFORE any
+   *  write, and refuses outright if one survives, so what lands here holds real
+   *  values like every other durable row. ⚠ That strip is now load-bearing for a
+   *  PII invariant, not just for tidiness.
+   *
+   *  ⚠ FK CASCADE: a deleted session takes its brief with it, the same
+   *  retention rule the message rows follow. */
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS chat_briefs (
+      session_id      TEXT PRIMARY KEY,
+      brief_encrypted TEXT NOT NULL,
+      updated_at      INTEGER NOT NULL,
+      FOREIGN KEY (session_id) REFERENCES chat_sessions(session_id) ON DELETE CASCADE
     );
   `);
 
@@ -798,6 +839,31 @@ const CHAT_DEFAULT_MODEL_PREF_TS_KEY =
   'default_model_routing_source_id_updated_at';
 const CHAT_DEFAULT_MODEL_PREF_FALLBACK: ChatModelRoutingLayer = 'byok';
 
+/** Is the rolling brief carrying context across turns on this server?
+ *
+ *  ⛔⛔ SERVER-SCOPED IN `chat_config`, NOT A PER-PAIR `prefs` KNOB, and the
+ *  scope is forced rather than chosen. The brief is keyed on `session_id` and
+ *  `runChatTurn` holds NO peer identity — turns arrive with no paired client at
+ *  all over MCP and the D-148 P9 inbound channels — so a per-pair value has
+ *  nothing well-defined to resolve to on exactly the turns that matter most.
+ *
+ *  🔑 DEFAULT ON, and the case is structural rather than statistical.
+ *  `CHAT_TAIL_LIMIT` is a fixed 3 ROWS, budget-independent: by turn 5 anything
+ *  the user stated that no tool can re-derive is arithmetically absent from the
+ *  packet. The brief is the only thing that carries it. Measured on bench 363
+ *  (a user-stated figure needed after it ages out): 1/11 answered with the
+ *  brief off, 11/13 with it on (one-sided Fisher p = 0.0003) — but the p-value
+ *  is decoration on a determinism, not the argument.
+ *
+ *  ⚠ AND IT IS ~TOKEN-NEUTRAL, which is what makes ON defensible as a DEFAULT
+ *  rather than an opt-in. Folds cost 11-14% of input tokens and recover about
+ *  as much by shrinking every main turn: measured total input +1% (n=7/55) and
+ *  -12% (n=11/13) on the two tasks with usable n. What it does cost is ROUND
+ *  TRIPS: +9% to +24% more calls. ⚠ All of that is `qwen3.7-plus`; the weak-tier
+ *  cell is unmeasured, and it is the one that could argue for a tier-aware
+ *  default rather than a global one. */
+const CHAT_ROLLING_BRIEF_KEY = 'rolling_brief_enabled';
+
 /** D-174 R28 Slice A — resolve a persisted default `source_id` to the
  *  `{layer, model_hint}` shape the per-session inheritance path consumes,
  *  reading a LIVE `LLMConfig` snapshot (point-of-use, never stored — a slot's
@@ -1112,6 +1178,7 @@ const messageFromRow = async (
     }
   }
   const provenance = parseProvenance(row.provenance_blob);
+  const tool_call = chatToolCallFromMetadata(row.metadata_blob);
   const attachments = parseAttachments(row.attachments_blob);
   const data_diagnosis = parseDataDiagnosis(row.metadata_blob);
   const data_diagnosis_resolution =
@@ -1128,6 +1195,7 @@ const messageFromRow = async (
       model_id: row.model_used_model_id,
     },
     ...(tool_calls ? { tool_calls } : {}),
+    ...(tool_call ? { tool_call } : {}),
     ...(provenance ? { provenance } : {}),
     ...(attachments ? { attachments } : {}),
     ...(data_diagnosis ? { data_diagnosis } : {}),
@@ -1162,6 +1230,10 @@ export interface CreateSessionInput {
 /** Input shape for `chatStore.appendMessage`. The caller passes plain
  *  content; the store handles AEAD encryption before insert. */
 export interface AppendMessageInput {
+  /** Host-owned lifecycle metadata; payloads stay in encrypted content. */
+  tool_call?: StoredChatToolCall;
+  /** Atomically close the originating call with this result row. */
+  tool_call_settlements?: readonly ChatToolCallSettlement[];
   /** D-137 — the pair key for a two-event tool call: the dispatch row and the
    *  result row that eventually answers it share one `run_id`.
    *
@@ -1377,6 +1449,9 @@ export interface ChatRecallSourcePage {
 }
 
 export interface ChatStore {
+  /** Present on the production SQLite adapter; optional for older adapters. */
+  toolCalls?: ChatToolCallStore;
+  failToolCallSources?(session_id: string, turn_id: string): void;
   createSession(input: CreateSessionInput): ChatSession;
   getSession(session_id: string): ChatSession | null;
   listSessions(): ChatSessionSummary[];
@@ -1416,6 +1491,20 @@ export interface ChatStore {
     source_id: ChatModelSourceId,
     now?: number,
   ): { source_id: ChatModelSourceId; updated_at: number };
+  /** Is the rolling brief enabled on this server? Server-scoped; see
+   *  `CHAT_ROLLING_BRIEF_KEY`. Absent / malformed stored value reads `false`,
+   *  so an un-migrated or corrupt row degrades to today's behaviour rather
+   *  than silently switching a context-carrying feature on. */
+  getRollingBriefEnabled(): boolean;
+  setRollingBriefEnabled(enabled: boolean): boolean;
+  /** The session's carried brief, decrypted. `null` when none is stored, and
+   *  ALSO when the stored blob cannot be decoded — a brief that cannot be read
+   *  is indistinguishable from no brief for every consumer, and surfacing a
+   *  decode error into the turn would fail a conversation over lost context
+   *  rather than continuing unbriefed. */
+  readSessionBrief(session_id: string): Promise<string | null>;
+  writeSessionBrief(session_id: string, brief_json: string, now?: number): Promise<void>;
+  deleteSessionBrief(session_id: string): void;
   setTitle(session_id: string, title: string, now?: number): boolean;
   setArchived(session_id: string, archived: boolean, now?: number): boolean;
   bumpSessionLastActiveAt(session_id: string, now?: number): boolean;
@@ -1811,6 +1900,7 @@ export const createChatStore = (
      WHERE recall_eligibility = @row_eligibility
        AND recall_contract_id IS @recall_contract_id
        AND role IN ('user', 'assistant', 'tool')
+       AND (role <> 'tool' OR source_lifecycle = 'finalized')
        AND (
          role IN ('user', 'assistant')
          OR (
@@ -1836,6 +1926,7 @@ export const createChatStore = (
      WHERE recall_eligibility = @row_eligibility
        AND recall_contract_id IS @recall_contract_id
        AND role = 'tool'
+       AND source_lifecycle = 'finalized'
        AND session_id = @tool_session_id
        AND ${RECENT_TOOL_TURN_WINDOW_SQL.trim()}
        AND (@exclude_turn_id IS NULL OR turn_id IS NOT @exclude_turn_id)
@@ -1848,6 +1939,7 @@ export const createChatStore = (
      WHERE recall_eligibility = @row_eligibility
        AND recall_contract_id IS @recall_contract_id
        AND role IN ('user', 'assistant', 'tool')
+       AND (role <> 'tool' OR source_lifecycle = 'finalized')
        AND (
          role IN ('user', 'assistant')
          OR session_id = @tool_session_id
@@ -1885,6 +1977,7 @@ export const createChatStore = (
      WHERE recall_eligibility = @row_eligibility
        AND recall_contract_id IS @recall_contract_id
        AND role IN ('user', 'assistant', 'tool')
+       AND (role <> 'tool' OR source_lifecycle = 'finalized')
        AND (
          role IN ('user', 'assistant')
          OR session_id = @tool_session_id
@@ -1904,6 +1997,7 @@ export const createChatStore = (
      WHERE recall_eligibility = @row_eligibility
        AND recall_contract_id IS @recall_contract_id
        AND role IN ('user', 'assistant', 'tool')
+       AND (role <> 'tool' OR source_lifecycle = 'finalized')
        AND session_id = @session_id
        AND ts > @ts
      ORDER BY ts ASC, message_id ASC
@@ -1915,6 +2009,7 @@ export const createChatStore = (
      WHERE recall_eligibility = @row_eligibility
        AND recall_contract_id IS @recall_contract_id
        AND role IN ('user', 'assistant', 'tool')
+       AND (role <> 'tool' OR source_lifecycle = 'finalized')
        AND session_id = @session_id
        AND ts < @ts
      ORDER BY ts DESC, message_id DESC
@@ -2030,6 +2125,74 @@ export const createChatStore = (
       value: String(now),
     });
     return { source_id, updated_at: now };
+  };
+
+  /** Rolling-brief enable read. ⛔ ONLY THE LITERAL `'0'` DISABLES — a missing
+   *  row, a legacy value, or a corrupt blob all read ENABLED.
+   *
+   *  🔑 THE POLARITY INVERTED WHEN THE DEFAULT DID, AND THE SAFE DIRECTION WENT
+   *  WITH IT. While the brief was off by default, an unreadable value had to
+   *  mean OFF: switching a context-carrying feature on for an owner who never
+   *  asked was the harm. Now that ON is the intended state, the harm reverses —
+   *  a corrupt row that silently DISABLED the brief would restore the exact
+   *  failure it exists to prevent (`CHAT_TAIL_LIMIT` is 3 ROWS, so anything the
+   *  user said and no tool can re-read is gone by turn 5) while every surface
+   *  still reported the feature as on.
+   *
+   *  ⚠ Same convention as `RECUED_CHAT_CATALOG_SMART_DEFAULTS`, deliberately:
+   *  one opt-out shape for the two global chat-behaviour defaults, so an owner
+   *  who learns it once knows both. */
+  const getRollingBriefEnabled = (): boolean => {
+    const row = getConfigStmt.get({ key: CHAT_ROLLING_BRIEF_KEY }) as
+      | { value: string }
+      | undefined;
+    return row?.value !== '0';
+  };
+  const setRollingBriefEnabled = (enabled: boolean): boolean => {
+    setConfigStmt.run({ key: CHAT_ROLLING_BRIEF_KEY, value: enabled ? '1' : '0' });
+    return enabled;
+  };
+
+  /** ⚠ The AAD's message id is a CONSTANT, not a real message. It binds the
+   *  ciphertext to `(session_id, 'rolling_brief')`, so a blob copied into
+   *  another session fails to decode instead of decrypting under the wrong
+   *  conversation — the same protection `chat_messages` gets from its own id. */
+  const BRIEF_AAD_ID = 'rolling_brief';
+  const getBriefStmt = db.prepare<{ session_id: string }>(
+    `SELECT brief_encrypted FROM chat_briefs WHERE session_id = @session_id`,
+  );
+  const setBriefStmt = db.prepare(
+    `INSERT OR REPLACE INTO chat_briefs (session_id, brief_encrypted, updated_at)
+     VALUES (@session_id, @brief_encrypted, @updated_at)`,
+  );
+  const delBriefStmt = db.prepare(
+    `DELETE FROM chat_briefs WHERE session_id = @session_id`,
+  );
+  const readSessionBrief = async (session_id: string): Promise<string | null> => {
+    const row = getBriefStmt.get({ session_id }) as { brief_encrypted: string } | undefined;
+    if (row === undefined) return null;
+    try {
+      return await decodeChatContentFromStorage(
+        row.brief_encrypted, { session_id, message_id: BRIEF_AAD_ID }, getKey,
+      );
+    } catch {
+      // ⛔ UNREADABLE READS AS ABSENT. A re-keyed or corrupt blob must degrade to
+      //   "no carry" — the turn then runs unbriefed, which is the documented
+      //   fallback — rather than throwing and failing a live conversation over
+      //   context it was only ever trying to improve.
+      return null;
+    }
+  };
+  const writeSessionBrief = async (
+    session_id: string, brief_json: string, now: number = Date.now(),
+  ): Promise<void> => {
+    const brief_encrypted = await encodeChatContentForStorage(
+      brief_json, { session_id, message_id: BRIEF_AAD_ID }, getKey,
+    );
+    setBriefStmt.run({ session_id, brief_encrypted, updated_at: now });
+  };
+  const deleteSessionBrief = (session_id: string): void => {
+    delBriefStmt.run({ session_id });
   };
 
   const createSession = (input: CreateSessionInput): ChatSession => {
@@ -2244,13 +2407,13 @@ export const createChatStore = (
     if (
       source_lifecycle === 'pending'
       && (
-        input.role !== 'user'
+        (input.role !== 'user' && !(input.role === 'tool' && input.tool_call_settlements?.length))
         || recall_eligibility
           !== CHAT_MESSAGE_RECALL_ELIGIBILITY.OWNER_AUTHENTICATED_CHAT
       )
     ) {
       throw new Error(
-        'chat-store: pending source requires an owner-authenticated user row',
+        'chat-store: pending source requires an owner-authenticated user or tool-result row',
       );
     }
     const candidates = normalizeRetainedAliasCandidates(
@@ -2317,8 +2480,11 @@ export const createChatStore = (
       attachments_blob: input.attachments && input.attachments.length > 0
         ? JSON.stringify(input.attachments)
         : null,
-      metadata_blob: input.data_diagnosis
-        ? JSON.stringify({ data_diagnosis: input.data_diagnosis })
+      metadata_blob: input.data_diagnosis || input.tool_call
+        ? JSON.stringify({
+            ...(input.data_diagnosis ? { data_diagnosis: input.data_diagnosis } : {}),
+            ...(input.tool_call ? { tool_call: input.tool_call } : {}),
+          })
         : null,
       contributor,
       recall_eligibility,
@@ -2328,6 +2494,9 @@ export const createChatStore = (
     };
     db.transaction(() => {
       insertMessageStmt.run(row);
+      for (const settlement of input.tool_call_settlements ?? []) {
+        settleChatToolCall(db, input.session_id, settlement, ts);
+      }
       if (source_lifecycle !== 'pending') {
         bumpContentRevisionStmt.run({ session_id: input.session_id });
       }
@@ -2984,6 +3153,13 @@ export const createChatStore = (
 
   return {
     createSession,
+    toolCalls: createChatToolCallStore(db, appendMessage),
+    failToolCallSources: (session_id, turn_id) => {
+      const pending = db.prepare(`SELECT message_id FROM chat_messages
+        WHERE session_id = ? AND turn_id = ? AND role = 'tool'
+          AND source_lifecycle = 'pending'`).all(session_id, turn_id) as Array<{ message_id: string }>;
+      for (const row of pending) failMessageSource(session_id, row.message_id);
+    },
     getSession,
     listSessions,
     setPicker,
@@ -2992,6 +3168,11 @@ export const createChatStore = (
     getDefaultModelPref,
     getDefaultModelSourceId,
     setDefaultModelSourceId,
+    getRollingBriefEnabled,
+    setRollingBriefEnabled,
+    readSessionBrief,
+    writeSessionBrief,
+    deleteSessionBrief,
     setTitle,
     setArchived,
     bumpSessionLastActiveAt,

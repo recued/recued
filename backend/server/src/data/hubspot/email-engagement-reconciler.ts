@@ -35,6 +35,7 @@
  *  § A.3.6, § A.3.7, § A.3.8, § A.4, § A.5. */
 
 import {
+  engagementSubjectHash,
   HUBSPOT_DEFAULT_RECONCILIATION_CADENCE,
   HUBSPOT_EMAIL_PROPERTIES,
   PLATFORM_REFERENCE_BATCH_SIZE,
@@ -454,6 +455,15 @@ export const projectEmailEngagementRow = (
   const meta: Record<string, unknown> = {};
   if (raw.properties.hs_email_subject)
     meta.subject = raw.properties.hs_email_subject;
+  // D-139 § A.9.2b — the CRM half of the mail ↔ engagement subject join.
+  // `out_of_band_engagement`'s quadruple fallback reads THIS field; without
+  // it that matcher returns false on every real row (it did until now), and
+  // every mail the Message-ID path misses reads as a CRM visibility gap.
+  // ⛔ Must be `engagementSubjectHash` — the mail side computes its key with
+  // the same function, and two normalisations would silently never match.
+  const subjectHash = engagementSubjectHash(raw.properties.hs_email_subject);
+  if (subjectHash !== null) meta.subject_hash = subjectHash;
+
   if (raw.properties.hs_email_direction)
     meta.direction = raw.properties.hs_email_direction;
   const fromEmail = canonicalizeEmail(raw.properties.hs_email_from_email);

@@ -57,6 +57,7 @@ export interface AutoRunRpcDeps {
    *  degrades to null live fields; update still persists + the roster
    *  refresh becomes a no-op the boot's own `refreshRoster` covers. */
   getHandle: () => ServerAutoRunHandle | undefined;
+  preapprovalStatus?: (recipeId: string) => Pick<AutoRunStatusEntry, 'enabled' | 'lifecycle_revision' | 'preapproval'> | null;
   /** D-179 — dish store for the recipe's managed auto-run config dish.
    *  A config change mints a new immutable dish + dissolves the prior;
    *  `executeFired` dispatches as `auto_run_settings.dish_id`. Absent ⇒
@@ -105,16 +106,19 @@ const buildEntry = (
   const configDish = configDishId !== null
     ? deps.dishStore?.get(configDishId) ?? null
     : null;
+  const reviewed = deps.preapprovalStatus?.(recipe_id);
   return {
     recipe_id,
     publisher_id: row.publisher_id,
     recipe_name: row.recipe.metadata?.name ?? null,
     interval_ms: row.recipe.auto_run!.interval_ms,
     dynamic: row.recipe.auto_run!.dynamic ?? false,
-    enabled: deps.settingsStore.isEnabled(
+    enabled: reviewed?.enabled ?? deps.settingsStore.isEnabled(
       recipe_id,
       row.recipe.auto_run!.default_enabled ?? true,
     ),
+    ...(reviewed?.lifecycle_revision !== undefined ? { lifecycle_revision: reviewed.lifecycle_revision } : {}),
+    ...(reviewed?.preapproval ? { preapproval: reviewed.preapproval } : {}),
     config_overlay: configDish?.config_overlay ?? {},
     variables: row.recipe.variables ?? {},
     // Prefer the live entry's circuit view (it includes failures not

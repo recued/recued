@@ -70,6 +70,12 @@ export const isMcpToolName = (name: string): boolean => {
  *  Prefixes are matched against the full rpc method name (e.g.
  *  `'contact.merge.list'.startsWith('contact.merge.')` is true). */
 export const MCP_RESERVED_RPC_PREFIXES = [
+  // Private owner-authored Data navigation, never an agent capability.
+  'data_views.',
+  // D-261 decisions require a trusted owner response; the model only gets
+  // the separately governed core.preapproval.request kernel operation.
+  'preapproval.',
+  'mail.drafts.',
   // D-259 §6.1 — Dishes are the owner's standing-work control plane. An
   // external agent can stop only its own attended run through the narrow
   // recued_stopRecipe capability; it cannot enumerate, mint, or mutate dishes.

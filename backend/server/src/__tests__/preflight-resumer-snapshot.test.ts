@@ -23,6 +23,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ExecuteHandlerDeps } from '../execute-handler.js';
 
 const handleExecuteMock = vi.hoisted(() => vi.fn());
+const resumeRawOpMock = vi.hoisted(() => vi.fn());
+
+vi.mock('../raw-op-dispatch.js', async importOriginal => ({
+  ...await importOriginal<typeof import('../raw-op-dispatch.js')>(),
+  resumeRawOp: resumeRawOpMock,
+  denyRawOp: vi.fn(async () => {}),
+}));
 
 vi.mock('../execute-handler.js', () => ({
   handleExecute: handleExecuteMock,
@@ -173,6 +180,8 @@ const expectResumeRefused = async (
 let warnSpy: ReturnType<typeof vi.spyOn> | undefined;
 
 beforeEach(() => {
+  resumeRawOpMock.mockReset();
+  resumeRawOpMock.mockResolvedValue({ kind: 'completed', result: { sent: true } });
   handleExecuteMock.mockReset();
   handleExecuteMock.mockResolvedValue({
     recipe_id: 'recipe-1',
@@ -192,6 +201,48 @@ afterEach(() => {
 });
 
 describe('PreflightResumer.resumeRun inline recipe_snapshot guards', () => {
+  it.each(['approve', 'deny'] as const)('reports the original chat call outcome on a raw-op %s', async choice => {
+    const onRunSettled = vi.fn();
+    const resumer = createPreflightResumer({
+      auditLog: auditLog(), getExecuteDeps: executeDeps, onRunSettled,
+    });
+    const cp = checkpoint({ raw_op: {
+      op_id: 'mail.send', catalog_slug: 'mail-catalog', operation: 'send',
+      connection_name: 'mail1', op_args: { to: 'recipient' },
+      execution_source: chatSource, risk_tier: 'destructive',
+    } });
+    if (choice === 'approve') await resumer.resumeRun(cp, askContext());
+    else await resumer.denyRun(cp, askContext());
+    expect(onRunSettled).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      execution_source: chatSource, run_id: cp.run_id, tool_name: 'mail.send',
+      result: expect.objectContaining({ success: choice === 'approve' }),
+    }));
+  });
+
+  it.each([
+    { kind: 'in_doubt', code: 'raw_op_dispatch_in_doubt', message: 'The outcome is unknown.' },
+    { kind: 'skipped', reason: 'checkpoint_already_consumed' },
+    { kind: 'skipped', reason: 'resume_already_in_flight' },
+  ])('preserves uncertainty and the winning resume for %j', async outcome => {
+    resumeRawOpMock.mockResolvedValueOnce(outcome);
+    const onRunSettled = vi.fn();
+    const resumer = createPreflightResumer({
+      auditLog: auditLog(), getExecuteDeps: executeDeps, onRunSettled,
+    });
+    await resumer.resumeRun(checkpoint({ raw_op: {
+      op_id: 'mail.send', catalog_slug: 'mail-catalog', operation: 'send',
+      connection_name: 'mail1', op_args: { to: 'recipient' },
+      execution_source: chatSource, risk_tier: 'destructive',
+    } }), askContext());
+    if (outcome.reason === 'resume_already_in_flight') {
+      expect(onRunSettled).not.toHaveBeenCalled();
+    } else {
+      expect(onRunSettled).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+        state: 'interrupted', result: expect.objectContaining(outcome),
+      }));
+    }
+  });
+
   it('refuses a checkpoint whose recipe_snapshot hash mismatches the paused anchor recipe_hash', async () => {
     const snapshot = recipeSnapshot({ recipe_id: 'inline-recipe-1' });
 

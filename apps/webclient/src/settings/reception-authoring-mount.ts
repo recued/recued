@@ -232,6 +232,12 @@ const setConfigValue = (
     }
     return;
   }
+  // D-220 Slice B (follow-up) — owner-only field names are string rows the
+  // owner types; a row left blank is not a field, so it is dropped here rather
+  // than failing validation as an empty name.
+  if (kind === 'intake_form' && key === 'form_definition.user_only_field_names' && Array.isArray(value)) {
+    value = value.filter((row) => typeof row === 'string' && row.trim().length > 0).map((row) => (row as string).trim());
+  }
   setPath(config, resolveConfigPath(kind, key), value);
 };
 
@@ -519,6 +525,18 @@ export const seedWorkingConfig = (
     }
     // `is_new` (boolean) — skipped; it is a model flag, not a config field.
   }
+  // D-220 Slice B (audit) — a template seed carries `template_version`
+  // (provenance the endpoint row records), which the model has no field for.
+  // Rebuilding the config from editable fields alone dropped it before
+  // preview / create — for Foundation templates too. Carry it from the seed;
+  // the kind's validator still bounds it at preview. (Owner-only field names
+  // were carried the same way until the model grew its own repeater.)
+  if (kind === 'intake_form' && initial !== null) {
+    const seed = initial as { template_version?: unknown };
+    if (typeof seed.template_version === 'string' && config.template_version === undefined) {
+      config.template_version = seed.template_version;
+    }
+  }
   return config;
 };
 
@@ -550,6 +568,8 @@ const REPEATER_DEFAULT_ROW: Readonly<Record<string, () => unknown>> = {
     values: [],
   }),
   'anti_spam.known_domain_allowlist': () => '',
+  // D-220 Slice B (follow-up) — owner-only field names are string rows.
+  'form_definition.user_only_field_names': () => '',
   // drop_link § A.5.4
   known_domain_allowlist: () => '',
   // approval_link § A.5.5

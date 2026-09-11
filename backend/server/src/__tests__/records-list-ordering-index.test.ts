@@ -29,7 +29,7 @@
  *  reporting the shape rather than the cost. */
 
 import Database from 'better-sqlite3';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { createWorkEntityStore, ensureWorkEntitySchema } from '../storage/work-entity-store.js';
 import type { WorkEntityStore } from '../storage/work-entity-store.js';
@@ -96,6 +96,37 @@ const CASES = [
 ] as const;
 
 describe('Records list ordering indexes', () => {
+  it('upgrades an existing timestamp-only task index once and keeps tied pages stable', () => {
+    const { db, store, prepared } = world();
+    try {
+      const seeds = [
+        { id: 'task-c', now: 3000 }, { id: 'task-old', now: 1000 },
+        { id: 'task-a', now: 3000 }, { id: 'task-middle', now: 2000 },
+        { id: 'task-b', now: 3000 },
+      ];
+      for (const { id, now } of seeds) store.writeTask({ id, title: id, source_id: 'recued.task' }, now);
+      db.exec('DROP INDEX idx_task_updated_at; CREATE INDEX idx_task_updated_at ON data_task (updated_at DESC)');
+      prepared.length = 0;
+      const before = store.listTasks({}).map((task) => task.id);
+      expect(planOf(db, prepared, CASES[0].shape)).toMatch(/TEMP B-TREE/);
+      expect(before).toEqual(['task-a', 'task-b', 'task-c', 'task-middle', 'task-old']);
+
+      ensureWorkEntitySchema(db);
+      prepared.length = 0;
+      expect(store.listTasks({}).map((task) => task.id)).toEqual(before);
+      expect(planOf(db, prepared, CASES[0].shape)).not.toMatch(/TEMP B-TREE/);
+      expect(store.listTasks({ limit: 2 }).map((task) => task.id)).toEqual(['task-a', 'task-b']);
+      expect(store.listTasks({ limit: 2, offset: 2 }).map((task) => task.id)).toEqual(['task-c', 'task-middle']);
+      expect(store.countTasks({})).toBe(5);
+
+      const ddl = vi.spyOn(db, 'exec');
+      try {
+        ensureWorkEntitySchema(db);
+        expect(ddl.mock.calls.some(([sql]) => /DROP INDEX.*idx_task_updated_at/s.test(sql))).toBe(false);
+      } finally { ddl.mockRestore(); }
+    } finally { db.close(); }
+  });
+
   for (const c of CASES) {
     it(`⛔ list${c.kind}s does not sort — it walks the ordering index`, () => {
       const { db, store, prepared } = world();

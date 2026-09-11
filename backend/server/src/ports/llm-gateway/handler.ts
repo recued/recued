@@ -745,7 +745,10 @@ const poolEntryToSlot = (entry: FreePoolApiEntry): LLMSlot => ({
     ? { context_window_tokens: entry.context_window_tokens }
     : {}),
   ...(entry.modalities !== undefined ? { modalities: entry.modalities } : {}),
-  ...(entry.transcription_model ? { transcription_model: entry.transcription_model } : {}),
+  // ⛔ D-262 § B4 — `transcription_model` was copied here so a pool entry
+  // promoted to a slot kept its transcription model. Transcription reads the
+  // dedicated `transcription_slot` now and never the pool, so the field is
+  // retired and this copy carried nothing.
 });
 
 const availablePoolEntries = (

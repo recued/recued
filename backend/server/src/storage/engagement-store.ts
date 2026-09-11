@@ -58,8 +58,10 @@ import {
   type EngagementInboundEventLedgerRow,
   type EngagementRow,
   type EngagementVendor,
+  type EngagementsForRecordArgs,
   type EngagementsResolverArgs,
   type EngagementsResolverCursor,
+  type EngagementsResolverFilters,
   type EngagementsResolverResult,
   type EngagementsResolverRow,
   ENGAGEMENT_DEDUPE_CANDIDATES_PER_ROW_CAP,
@@ -79,6 +81,9 @@ import {
   isEngagementLifecycleState,
   resolveContactIdentity,
   type EngagementLifecycleState,
+  type ConnectionVendorEntity,
+  CONNECTION_VENDOR_ENTITIES,
+  getVendorEntityForScope,
 } from '@recued/contracts';
 
 // ────────────────────────────────────────────────────────────────
@@ -622,6 +627,42 @@ export interface EngagementStore {
       /** D-184 Decision 2 — optional live mail-twin join. Omit to skip
        *  exact-twin resolution (rows keep their as-ingested body_state). */
       resolveMailTwins?: MailTwinResolver;
+    },
+  ): EngagementsResolverResult;
+
+  // ── Record-rooted resolver (deal / account / contact record) ──
+  /** Sibling of `resolveEngagementsForContact`, rooted on a CRM
+   *  RECORD rather than a person.
+   *
+   *  8 of the 12 D-139 engagement topics are deal-scoped and 2 are
+   *  account-scoped (`valid_scopes` in `ENRICHMENT_REGISTRY`), so their
+   *  producers need the engagement set hanging off a deal or an account.
+   *  The contact resolver cannot serve them: it requires an email and
+   *  runs D-138 identity-expansion, and a deal has neither.
+   *
+   *  Selection walks `engagement_edges` where
+   *  `(edge_type = <scope's crm_alias>, target_kind = 'connection.api',
+   *  target_id = <full platform-reference id>)` — the
+   *  `(target_kind, target_id, edge_type)` index covers it. Everything
+   *  after selection is the SAME code the contact root runs.
+   *
+   *  ⛔ Throws `EngagementInvalidError` on a scope with no `crm_alias`
+   *  or an empty `target_id`, rather than returning an empty page — an
+   *  empty page reads as "this record has no engagements" and a
+   *  producer would write that as fact.
+   *
+   *  No identity-expansion deps: a record has one id. `resolveVendorRegistry`
+   *  is optional and falls back to the shipped built-ins. */
+  resolveEngagementsForRecord(
+    args: EngagementsForRecordArgs,
+    deps: {
+      now: () => number;
+      coverage: CoverageMetadata;
+      resolveMailTwins?: MailTwinResolver;
+      /** Live merged vendor registry (built-ins + installed packs) — the
+       *  SAME source the cascade + `commitmentTrackerTask` read, so a
+       *  pack-registered CRM resolves here too. */
+      resolveVendorRegistry?: () => ReadonlyArray<ConnectionVendorEntity>;
     },
   ): EngagementsResolverResult;
 
@@ -1564,26 +1605,44 @@ export const createEngagementStore = (
 
   // ── Resolver implementation (§ A.5.1) ────────────────────────
 
-  const resolveEngagementsForContact: EngagementStore['resolveEngagementsForContact'] = (
-    args,
-    deps,
-  ) => {
-    // 1. Identity-routing: walk the survivor chain.
-    const { canonical_email: survivor } = resolveContactIdentity(
-      args.email,
-      deps.resolveContactRedirect,
-    );
+  /** How a resolver ROOT selects its engagement set. The only axis on
+   *  which the contact-rooted and record-rooted resolvers differ —
+   *  everything downstream (window, lifecycle mode, filters, ordering,
+   *  cursor, dedupe collapse, mail twins, coverage) is root-agnostic and
+   *  lives once in `resolveEngagementsCore`.
+   *
+   *  ⚠ `target_kind` is OPTIONAL on purpose. The contact root passes
+   *  NONE, preserving shipped behaviour: a contact edge may be written
+   *  with `target_kind: 'data.contact'` (canonical email) OR
+   *  `'connection.api'` (a Salesforce platform-id contact awaiting the
+   *  deferred id→email lookup, per the `upsertEdge` note), and the
+   *  shipped predicate matched on `target_id` alone. Constraining it now
+   *  would silently narrow a live rpc/MCP surface. Record roots DO pass
+   *  it — their ids are platform-reference strings and the precision is
+   *  free. */
+  interface EngagementEdgeSelector {
+    edge_type: EngagementEdgeType;
+    target_kind?: EngagementEdgeTargetKind;
+    target_ids: ReadonlyArray<string>;
+  }
 
-    // 2. Identity-expansion: build the full member set per § A.5.0.
-    const members = new Set<string>(deps.expandContactIdentity(survivor));
-    members.add(survivor);
-    if (members.size === 0) {
-      // Degenerate case — survivor lookup found nothing. Return empty
-      // page; coverage is honest.
-      return {
-        engagements: [],
-        coverage: deps.coverage,
-      };
+  /** Root-agnostic resolver body. Takes an already-resolved edge
+   *  selector; every root is a thin wrapper that computes one. */
+  const resolveEngagementsCore = (
+    edge: EngagementEdgeSelector,
+    args: EngagementsResolverFilters,
+    deps: {
+      now: () => number;
+      coverage: CoverageMetadata;
+      resolveMailTwins?: MailTwinResolver;
+    },
+  ): EngagementsResolverResult => {
+    if (edge.target_ids.length === 0) {
+      // No selector targets — an empty page with honest coverage. Never
+      // an unbounded query: an empty `IN ()` is a syntax error in SQLite
+      // and an unguarded one would otherwise have to be dropped from the
+      // predicate, turning "nothing selected" into "everything".
+      return { engagements: [], coverage: deps.coverage };
     }
 
     // 3. Build the WHERE clause.
@@ -1598,9 +1657,6 @@ export const createEngagementStore = (
     const dedupeAcceptance: DedupeAcceptance =
       args.dedupe_acceptance ?? 'exact_only';
 
-    const memberPlaceholders = Array.from(members)
-      .map(() => '?')
-      .join(', ');
     const lifecyclePlaceholders = lifecycleStates.map(() => '?').join(', ');
 
     // Codex review fold #10 — apply the `event_at IS NOT NULL` gate
@@ -1627,18 +1683,28 @@ export const createEngagementStore = (
       conditions.push('vendor_created_at <= ?');
     }
     conditions.push(`lifecycle_state IN (${lifecyclePlaceholders})`);
-    conditions.push(
-      'EXISTS (SELECT 1 FROM ' +
-        ENGAGEMENT_EDGES_TABLE +
-        ' e WHERE e.connection_id = ' +
-        ENGAGEMENTS_TABLE +
-        '.connection_id AND e.engagement_target_id = ' +
-        ENGAGEMENTS_TABLE +
-        '.target_id AND e.edge_type = \'contact\' AND e.deleted_at IS NULL AND e.target_id IN (' +
-        memberPlaceholders +
-        '))',
+    // Edge predicate — the root's selector, built so the SQL text and the
+    // bound params are assembled in ONE pass and therefore cannot drift
+    // out of positional order.
+    const edgeConditions: string[] = [
+      `e.connection_id = ${ENGAGEMENTS_TABLE}.connection_id`,
+      `e.engagement_target_id = ${ENGAGEMENTS_TABLE}.target_id`,
+      'e.edge_type = ?',
+      'e.deleted_at IS NULL',
+    ];
+    const edgeParams: unknown[] = [edge.edge_type];
+    if (edge.target_kind !== undefined) {
+      edgeConditions.push('e.target_kind = ?');
+      edgeParams.push(edge.target_kind);
+    }
+    edgeConditions.push(
+      `e.target_id IN (${edge.target_ids.map(() => '?').join(', ')})`,
     );
-    const params: unknown[] = [since, until, ...lifecycleStates, ...members];
+    edgeParams.push(...edge.target_ids);
+    conditions.push(
+      `EXISTS (SELECT 1 FROM ${ENGAGEMENT_EDGES_TABLE} e WHERE ${edgeConditions.join(' AND ')})`,
+    );
+    const params: unknown[] = [since, until, ...lifecycleStates, ...edgeParams];
 
     if (args.include_deleted !== true) {
       conditions.push('deleted_at IS NULL');
@@ -1815,6 +1881,68 @@ export const createEngagementStore = (
     };
   };
 
+  // ── Root 1: contact (§ A.5.1) ────────────────────────────────
+  const resolveEngagementsForContact: EngagementStore['resolveEngagementsForContact'] = (
+    args,
+    deps,
+  ) => {
+    // 1. Identity-routing: walk the survivor chain.
+    const { canonical_email: survivor } = resolveContactIdentity(
+      args.email,
+      deps.resolveContactRedirect,
+    );
+
+    // 2. Identity-expansion: build the full member set per § A.5.0.
+    const members = new Set<string>(deps.expandContactIdentity(survivor));
+    members.add(survivor);
+    // A degenerate member set falls through to the core's empty-selector
+    // guard, which returns the same empty page with honest coverage.
+    return resolveEngagementsCore(
+      { edge_type: 'contact', target_ids: [...members] },
+      args,
+      deps,
+    );
+  };
+
+  // ── Root 2: CRM record — deal / account / contact-record ──────
+  const resolveEngagementsForRecord: EngagementStore['resolveEngagementsForRecord'] = (
+    args,
+    deps,
+  ) => {
+    const entry = getVendorEntityForScope(
+      args.scope,
+      deps.resolveVendorRegistry?.() ?? CONNECTION_VENDOR_ENTITIES,
+    );
+    // ⛔ REFUSE rather than return an empty page. A scope with no
+    // `crm_alias` is an authoring error (a producer pointed at a
+    // non-CRM entity), and an empty page is indistinguishable from
+    // "this deal has no engagements" — the caller would write a
+    // confident zero. The same reason the D-139 self-relay producers
+    // were withdrawn.
+    if (entry === null || entry.crm_alias === undefined) {
+      throw new EngagementInvalidError(
+        `resolveEngagementsForRecord: scope '${args.scope}' resolves to no CRM entity with a crm_alias — cannot select engagement edges for it`,
+      );
+    }
+    if (args.target_id.length === 0) {
+      throw new EngagementInvalidError(
+        'resolveEngagementsForRecord: target_id is required',
+      );
+    }
+    // `crm_alias` ('deal' | 'contact' | 'account') is 1:1 with the record
+    // edge types the reconcilers write, so a pack-registered vendor
+    // participates with no code change here.
+    return resolveEngagementsCore(
+      {
+        edge_type: entry.crm_alias,
+        target_kind: 'connection.api',
+        target_ids: [args.target_id],
+      },
+      args,
+      deps,
+    );
+  };
+
   // D-139 P1a.2 § A.6.3 — rescan eligibility enumerator. Walks
   // engagements that match the (connection_id, vendor, entity) tuple
   // AND are inside the time window AND in the eligible lifecycle
@@ -1873,6 +2001,7 @@ export const createEngagementStore = (
     upsertDedupeCandidate,
     listDedupeCandidatesForRow,
     resolveEngagementsForContact,
+    resolveEngagementsForRecord,
     listRescanEligible,
     listDealCounterpartyContactEmails,
   };

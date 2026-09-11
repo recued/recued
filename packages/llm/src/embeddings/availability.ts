@@ -60,5 +60,21 @@ const embeddingsSlotStatus = (
   if (quota.isInCooldown(EMBEDDINGS_SLOT_KEY)) {
     return { available: false, reason: 'quota_exhausted' };
   }
+  // D-262 § B12.3 — ⛔ THE DAILY BUDGET WAS SETTABLE AND ENFORCED NOWHERE.
+  // `daily_budget_tokens` exists on every `LLMSlot`, `recordEmbeddingsUsage`
+  // has been writing embeddings tokens under `EMBEDDINGS_SLOT_KEY` since D-131,
+  // and `slotOverCutoff` compares the two — but only ever for `slot_1` and
+  // `slot_2`. An owner who capped their embeddings slot got a field that did
+  // nothing, which is a policy knob with no enforcement point: a control in
+  // appearance and decoration in fact.
+  //
+  // ⚠ `quota_exhausted` rather than a new reason, because the consumer already
+  // describes that verdict as "configured but in cooldown / over-cap — wait it
+  // out", which is exactly this. Absent / non-positive is unlimited, matching
+  // the chat rule.
+  const budget = slot.daily_budget_tokens;
+  if (budget !== undefined && budget > 0 && quota.tokensToday(EMBEDDINGS_SLOT_KEY) >= budget) {
+    return { available: false, reason: 'quota_exhausted' };
+  }
   return { available: true };
 };

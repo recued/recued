@@ -32,6 +32,7 @@ import {
 } from './endpoint-capabilities.js';
 import { completeWithFallbacks } from './executor.js';
 import type { EmbeddingsAdapterRegistry } from './embeddings/types.js';
+import type { TranscriptionAdapterRegistry } from './adapters/transcription.js';
 import type { LLMAdapter, LLMSlot } from './types.js';
 import { LLMError } from './types.js';
 
@@ -47,7 +48,12 @@ export type LlmProbeDiagnosis =
   | 'model_missing'
   | 'rate_limited'
   | 'provider_error'
-  | 'rejected';
+  | 'rejected'
+  /** D-262 § B7 — a transcription probe ran with no sample clip bundled, so
+   *  nothing was sent. ⛔ NOT a failure of the owner's configuration, and
+   *  deliberately not `ok`: reporting success for a request that never left the
+   *  process is how a "verified" badge starts lying. */
+  | 'no_sample';
 
 export interface LlmProbeResult {
   ok: boolean;
@@ -67,6 +73,17 @@ export interface LlmProbeResult {
    *  quietly serving 768-d where the owner expected 1536-d is a working
    *  connection that produces unusable neighbours. */
   dimensions?: number;
+  /** D-262 § B7 — transcription only, and only on success: what the endpoint
+   *  actually heard. Shown rather than asserted, because it is the one signal
+   *  that reveals a `transcription_language` set to something the owner did not
+   *  mean — which returns fluent nonsense, not an error. */
+  transcript?: string;
+  /** D-262 § B7 — what the bundled clip says, echoed so the surface can show
+   *  it beside `transcript`. A wrong-language transcript is fluent nonsense the
+   *  owner may not read; the pair is what makes the mismatch visible. */
+  expected_transcript?: string;
+  /** D-262 § B7 — the language pin actually sent. Absent ⇒ auto-detect. */
+  probe_language?: string;
   /** Round-trip in ms, including any capability retry. Useful on its own — a
    *  local model answering in 40s is a working configuration that will still
    *  make chat feel broken. */
@@ -241,6 +258,83 @@ export const probeEmbeddingsSource = async (deps: {
       ok: true,
       diagnosis: 'ok',
       dimensions: result.vector.length,
+      elapsed_ms: clock() - started,
+    };
+  } catch (e) {
+    const { diagnosis, detail } = diagnoseProbeFailure(e);
+    return { ok: false, diagnosis, detail, elapsed_ms: clock() - started };
+  }
+};
+
+/** D-262 § B7 — probe the dedicated transcription source.
+ *
+ *  ⛔ A CHAT COMPLETION CANNOT TEST THIS, for exactly the reason the embeddings
+ *  probe above exists: sending one to a Whisper endpoint reports its 404 as a
+ *  missing model — true, and useless. This drives the real transcription
+ *  adapter over a real request.
+ *
+ *  ⚠ THE SAMPLE MUST CONTAIN SPEECH, and the reason is provider-specific
+ *  rather than aesthetic. Silence would still prove auth, URL and model through
+ *  the transport layer for the multipart endpoints — but the Gemini adapter
+ *  raises `AI_RESPONSE_PARSE_FAILED` on an empty transcript, so a silent clip
+ *  reports a working Gemini slot as broken. One provider of three is enough to
+ *  settle it.
+ *
+ *  🔑 The transcript is RETURNED, not asserted. Models, accents and punctuation
+ *  differ, so an exact comparison fails on working slots; and showing it is
+ *  what makes a mis-set `transcription_language` visible — a pinned language
+ *  the owner did not mean produces fluent nonsense that no assertion would
+ *  catch but a person recognises instantly. */
+export const probeTranscriptionSource = async (deps: {
+  adapters: TranscriptionAdapterRegistry;
+  slot: LLMSlot;
+  /** The bundled speech clip. Absent ⇒ `no_sample`, never a synthetic pass.
+   *  `text` is what it says, echoed back on success so the surface can show
+   *  the expected line beside what was heard. */
+  sample?: { bytes: Uint8Array; mime_type: string; filename: string; text?: string };
+  /** The owner's pinned language, so the probe exercises the real path. */
+  language?: string;
+  now?: () => number;
+  timeout_ms?: number;
+}): Promise<LlmProbeResult> => {
+  const clock = deps.now ?? (() => Date.now());
+  const started = clock();
+  if (!deps.sample || deps.sample.bytes.length === 0) {
+    return {
+      ok: false,
+      diagnosis: 'no_sample',
+      detail: 'No sample audio is bundled with this build, so the transcription '
+        + 'source could not be tested. The slot may still be correct.',
+      elapsed_ms: clock() - started,
+    };
+  }
+  try {
+    const adapter = deps.adapters(deps.slot.provider);
+    const result = await adapter.transcribe(
+      deps.slot,
+      {
+        audio: deps.sample.bytes,
+        mime_type: deps.sample.mime_type,
+        filename: deps.sample.filename,
+        ...(deps.language !== undefined && deps.language.length > 0
+          ? { language: deps.language }
+          : {}),
+      },
+      {
+        model: deps.slot.model,
+        timeout_ms: deps.timeout_ms ?? LLM_PROBE_TIMEOUT_MS,
+      },
+    );
+    return {
+      ok: true,
+      diagnosis: 'ok',
+      transcript: result.text,
+      // Echoed so the surface can render the pair. ⛔ Never compared here — an
+      // equality check would fail on working slots over punctuation alone.
+      ...(deps.sample.text !== undefined ? { expected_transcript: deps.sample.text } : {}),
+      ...(deps.language !== undefined && deps.language.length > 0
+        ? { probe_language: deps.language }
+        : {}),
       elapsed_ms: clock() - started,
     };
   } catch (e) {

@@ -21,9 +21,15 @@
  *  namespace the connection-api source never mints, so the manager's
  *  first-claimant collision guard never trips between them.
  *
- *  Unlike connection-api, there is no higher-fidelity twin to defer to
- *  (no mcp webhook / reconciler feed), so every demand is `deferred_to:
- *  null`. And unlike `runCanonicalWatchPoll`'s `<entity>.search` walk,
+ *  Every demand is `deferred_to: null` — but no longer because nothing
+ *  higher-fidelity exists. `mcp-listen-source.ts` (the `subscriptions/
+ *  listen` push source) IS the twin, and it deliberately does not
+ *  displace this loop: a listen frame carries no content, so reading
+ *  the resource still costs a `resources/read`. Push tells us WHEN,
+ *  this poll is still the WHAT — it accelerates the same key via
+ *  `pollNow` and leaves the timer armed underneath as the floor.
+ *  ⛔ Deferring to it would mean a silent feed produces no reads at all.
+ *  And unlike `runCanonicalWatchPoll`'s `<entity>.search` walk,
  *  the fetch reads exactly one resource — a different shape, so it is a
  *  dedicated plug (`readResource`), not a reuse. */
 

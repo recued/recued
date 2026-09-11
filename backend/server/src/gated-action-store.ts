@@ -25,7 +25,7 @@ export const GATED_ACTION_SEQUENCE_TABLE = 'gated_action_change_sequence';
 export const GATED_ACTION_TERMINAL_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
 export const GATED_ACTION_MAX_RESULT_BYTES = 1 * 1_024 * 1_024;
 
-export interface GatedActionRecord {
+interface GatedActionRecordFields {
   schema_version: 1;
   action_ref: string;
   approval_ref: string;
@@ -37,7 +37,6 @@ export interface GatedActionRecord {
   connection_name?: string;
   status: GatedActionStatus;
   status_message: string;
-  current_checkpoint_id: string;
   /** Private chain link between approval segments in the same run/step. The
    * unreferenced leaf is the current subject even if an older receipt receives
    * a later terminal write. */
@@ -63,6 +62,14 @@ export interface GatedActionRecord {
   handoff?: GatedActionHandoff;
 }
 
+/** Legacy checkpoint receipts stay readable. D-261 members have an explicit
+ * origin and never manufacture a checkpoint just to satisfy the old shape. */
+export type GatedActionRecord = GatedActionRecordFields & (
+  | { origin?: 'held_checkpoint'; current_checkpoint_id: string; preapproval?: never }
+  | { origin: 'preapproval_member'; current_checkpoint_id?: never;
+      preapproval: NonNullable<GatedActionReceipt['preapproval']> }
+);
+
 export interface CreateHeldGatedActionInput {
   run_id: string;
   recipe_id?: string;
@@ -86,6 +93,9 @@ export interface FinishGatedActionInput {
   result: unknown;
   observed?: GatedActionObserved;
   handoff?: GatedActionHandoff;
+  /** A lifecycle sweep may cancel only this still-waiting checkpoint. The
+   * predicate is rechecked inside the receipt CAS; a dispatch claim wins. */
+  awaiting_checkpoint?: { run_id: string; checkpoint_id: string };
 }
 
 export interface ConfirmPeerHandoffInput {
@@ -164,6 +174,8 @@ export interface GatedActionChangeClockState {
 
 export interface SqliteGatedActionChangeClock {
   nextChangeSeq: GatedActionNextChangeSequence;
+  /** For a receipt written inside the realm's existing authority transaction. */
+  nextChangeSeqSync(): number;
   snapshot(): GatedActionChangeClockState;
   /** Rotate a staged restore into a fresh lineage before its database is made live. */
   rotateEpoch(): GatedActionChangeClockState;
@@ -235,6 +247,8 @@ export const reconcileInterruptedGatedActionsAtBoot = async (
 ): Promise<number> => {
   let reconciled = 0;
   for (const record of await store.list()) {
+    // D-261 recovery owns its member state, receipt and commit together.
+    if (record.origin === 'preapproval_member') continue;
     if (record.status !== 'dispatching') continue;
     if (await options.preserve?.(record)) continue;
     const settled = await store.finish(record.action_ref, {
@@ -386,7 +400,7 @@ export const createSqliteGatedActionChangeClock = (
     }
     return { epoch: row.epoch, floor: row.floor as number };
   };
-  const nextChangeSeq = async (): Promise<number> => {
+  const nextChangeSeqSync = (): number => {
     const row = advance.get() as { value?: unknown } | undefined;
     if (row === undefined || !Number.isInteger(row.value) || (row.value as number) < 1) {
       throw new Error('gated action change sequence allocation failed');
@@ -409,7 +423,8 @@ export const createSqliteGatedActionChangeClock = (
     return { epoch, floor: barrier };
   });
   return {
-    nextChangeSeq,
+    nextChangeSeq: async () => nextChangeSeqSync(),
+    nextChangeSeqSync,
     snapshot,
     rotateEpoch: () => rotate(),
   };
@@ -457,8 +472,17 @@ export const isGatedActionRecord = (value: unknown): value is GatedActionRecord 
     || !text('run_id')
     || !text('gated_step_id')
     || !text('status_message')
-    || !text('current_checkpoint_id')
   ) return false;
+  if (value.origin === 'preapproval_member') {
+    const origin = value.preapproval;
+    if (value.current_checkpoint_id !== undefined || !isPlainObject(origin)
+      || !['future_execution_ref', 'proposal_id', 'grant_id', 'member_id', 'root_run_id']
+        .every(key => typeof origin[key] === 'string' && (origin[key] as string).length > 0)
+      || !(origin.parent_member_id === null || typeof origin.parent_member_id === 'string')
+      || !text('dispatch_attempt_id') || value.approval_ref !== origin.grant_id
+      || value.status === 'awaiting_approval') return false;
+  } else if ((value.origin !== undefined && value.origin !== 'held_checkpoint')
+    || value.preapproval !== undefined || !text('current_checkpoint_id')) return false;
   if (!validOptionalText(value.recipe_id)
     || !validOptionalText(value.predecessor_action_ref)
     || !validOptionalText(value.ingredient_slug)
@@ -512,6 +536,7 @@ export const projectGatedActionReceipt = (
   ...(record.connection_name !== undefined
     ? { connection_name: record.connection_name }
     : {}),
+  ...(record.origin === 'preapproval_member' ? { preapproval: record.preapproval } : {}),
   status: record.status,
   terminal: isGatedActionTerminal(record.status),
   status_message: record.status_message,
@@ -749,7 +774,7 @@ export const createGatedActionStore = (
     gatedStepId: string,
   ): Promise<GatedActionRecord | null> => {
     const matches = (await allLive()).filter((row) =>
-      row.run_id === runId && row.gated_step_id === gatedStepId);
+      row.origin !== 'preapproval_member' && row.run_id === runId && row.gated_step_id === gatedStepId);
     const referenced = new Set(matches
       .map((row) => row.predecessor_action_ref)
       .filter((ref): ref is string => ref !== undefined));
@@ -763,7 +788,7 @@ export const createGatedActionStore = (
     checkpointId: string,
   ): Promise<GatedActionRecord | null> =>
     (await allLive()).find((row) =>
-      row.current_checkpoint_id === checkpointId) ?? null;
+      row.origin !== 'preapproval_member' && row.current_checkpoint_id === checkpointId) ?? null;
 
   const writeUpdate = async (
     existing: GatedActionRecord,
@@ -771,13 +796,16 @@ export const createGatedActionStore = (
   ): Promise<GatedActionRecord> => {
     let current = existing;
     for (let attempt = 0; attempt < 16; attempt += 1) {
+      // Ordinary checkpoint/notification settlement cannot mutate a D-261
+      // receipt independently of its member/commit transaction.
+      if (current.origin === 'preapproval_member') return current;
       const patch = derivePatch(current);
       if (patch === null) return current;
       const changeSeq = await nextChangeSeq();
       if (!Number.isInteger(changeSeq) || changeSeq <= current.change_seq) {
         throw new Error('gated action change sequence did not advance');
       }
-      const updated: GatedActionRecord = {
+      const updated = {
         ...current,
         ...patch,
         schema_version: 1,
@@ -797,6 +825,7 @@ export const createGatedActionStore = (
         && Object.hasOwn(patch, 'dispatch_attempt_id')) {
         delete updated.dispatch_attempt_id;
       }
+      if (!isGatedActionRecord(updated)) throw new Error('Invalid gated action transition.');
       const won = compareAndSet === undefined
         ? (await backing.set(updated.action_ref, updated), true)
         : await compareAndSet(updated.action_ref, current.revision, updated);
@@ -1136,12 +1165,16 @@ export const createGatedActionStore = (
 
     finish(action_ref, input) {
       return mutate(async () => {
+        const matches = (row: GatedActionRecord) => !input.awaiting_checkpoint
+          || (row.origin !== 'preapproval_member' && row.status === 'awaiting_approval'
+            && row.run_id === input.awaiting_checkpoint.run_id
+            && row.current_checkpoint_id === input.awaiting_checkpoint.checkpoint_id);
         const existing = await live(await backing.get(action_ref));
-        if (existing === null || isGatedActionTerminal(existing.status)) return existing;
+        if (existing === null || isGatedActionTerminal(existing.status) || !matches(existing)) return existing;
         const at = now();
         const retained = retainResult(input.result, maxResultBytes);
         return writeUpdate(existing, (current) =>
-          isGatedActionTerminal(current.status)
+          isGatedActionTerminal(current.status) || !matches(current)
             ? null
             : {
                 status: input.status,

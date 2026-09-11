@@ -58,6 +58,8 @@
       "type": "string",
       "default": ""
     },
+    "reply_to": { "label": "Reply to", "type": "string", "default": "" },
+    "reconciliation_id": { "label": "Delivery reference", "type": "string", "default": null },
     "references": {
       "label": "Thread references",
       "type": "array",
@@ -78,6 +80,8 @@
         "body": "{{config.body}}",
         "body_format": "{{config.body_format}}",
         "in_reply_to": "{{config.in_reply_to}}",
+        "reply_to": "{{config.reply_to}}",
+        "reconciliation_id": "{{config.reconciliation_id}}",
         "references": "{{config.references}}",
         "attachments": "{{config.attachments}}"
       }

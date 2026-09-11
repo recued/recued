@@ -57,7 +57,7 @@
  */
 
 import type { Commit, IngredientManifest } from '@recued/contracts';
-import { RISK_TIER_RANK } from '@recued/contracts';
+import { RISK_TIER_RANK, describeCatalogOperation } from '@recued/contracts';
 import type {
   Answer,
   AskHandlerFn,
@@ -154,8 +154,15 @@ export interface TornSaga {
    *  narrative context for the ask body. */
   failed_writes: TornSagaWrite[];
   /** `in_doubt` commits of this run (any ingredient) — outcome
-   *  unknown; reconciled separately by the `in_doubt` ask. */
-  uncertain: { commit_id: string; ingredient: string }[];
+   *  unknown; reconciled separately by the `in_doubt` ask.
+   *
+   *  ⛔ `write` WAS ALWAYS DERIVABLE AND WAS ALWAYS SKIPPED. The classifier that
+   *  names `landed_writes` and `failed_writes` runs two lines below the
+   *  `in_doubt` branch, on the same commit, with the same manifest getter — the
+   *  branch just `continue`d before reaching it. So the ask could only ever say
+   *  "1 call crashed unconfirmed" while holding everything needed to say which.
+   *  Null for a non-catalog commit, exactly as for any unclassifiable dispatch. */
+  uncertain: { commit_id: string; ingredient: string; write: TornSagaWrite | null }[];
   /** Other landed side-effect commits (`kind: 'action'`, non-catalog)
    *  — mentioned for honesty, never compensable here. */
   other_actions: { commit_id: string; ingredient: string }[];
@@ -270,6 +277,18 @@ const classifyCatalogWrite = (
  *  The caller is responsible for the run-level trigger predicate
  *  (terminal failure, not awaiting approval, not trigger-skipped) —
  *  this function only answers "did writes land before it died?". */
+/** Name one commit's operation for an owner-facing ask, or null when it is not
+ *  a classifiable catalog dispatch. Shared with the in-doubt leaf so both asks
+ *  describe a call the same way. */
+export const describeCommitOperation = (
+  commit: Commit,
+  getManifest: (slug: string) => IngredientManifest | undefined,
+): string | null => {
+  const manifest = getManifest(commit.ingredient);
+  const write = isCatalogManifest(manifest) ? classifyCatalogWrite(commit, manifest) : null;
+  return write === null ? null : describeWrite(write);
+};
+
 export const detectTornSaga = (input: {
   run_id: string;
   recipe_id: string;
@@ -289,17 +308,18 @@ export const detectTornSaga = (input: {
     (a, b) => a.dispatched_at - b.dispatched_at,
   );
   for (const commit of ordered) {
-    if (commit.status === 'in_doubt') {
-      uncertain.push({
-        commit_id: commit.commit_id,
-        ingredient: commit.ingredient,
-      });
-      continue;
-    }
     const manifest = input.getManifest(commit.ingredient);
     const write = isCatalogManifest(manifest)
       ? classifyCatalogWrite(commit, manifest)
       : null;
+    if (commit.status === 'in_doubt') {
+      uncertain.push({
+        commit_id: commit.commit_id,
+        ingredient: commit.ingredient,
+        write,
+      });
+      continue;
+    }
     if (write !== null && commit.status === 'succeeded') {
       landed.push(write);
       continue;
@@ -420,13 +440,25 @@ const plural = (n: number, word: string): string =>
  *  the plans verbatim in the handler payload so the answer dispatches
  *  exactly what was offered (no re-derivation against a drifted
  *  world). */
+/** The owner-facing rendering of one write: the composed phrase when the
+ *  identifier carries a recognisable verb and entity, and the exact
+ *  `operation_id` when it does not — which is what this ask printed for every
+ *  write before. Never both; the id stays the audit record, not the sentence. */
+const describeWrite = (write: TornSagaWrite): string =>
+  describeCatalogOperation({ operation_key: write.operation_key,
+    operation_id: write.operation_id, catalog_slug: write.catalog_slug });
+
 export const buildSagaAsk = (
   saga: TornSaga,
   plans: ReadonlyMap<string, SagaCompensationPlanRef>,
 ): SagaAsk => {
+  // ⚠ ALL THREE LINES USE THE SAME RENDERING. Naming only the uncertain call
+  // would leave one sentence in English beside two in identifiers, which reads
+  // worse than either alone. `describeWrite` falls back to the exact id, so an
+  // uncomposable op still appears exactly as it does today.
   const landedLines = saga.landed_writes.map((w) => {
     const at = new Date(w.dispatched_at).toISOString();
-    return `${w.operation_id} on '${w.connection_name}' at ${at}`;
+    return `${describeWrite(w)} on '${w.connection_name}' at ${at}`;
   });
   const compensable = saga.landed_writes.filter((w) =>
     plans.has(w.commit_id),
@@ -441,13 +473,23 @@ export const buildSagaAsk = (
   if (saga.failed_writes.length > 0) {
     const f = saga.failed_writes[saga.failed_writes.length - 1];
     parts.push(
-      `The failing step was ${f.operation_id} on '${f.connection_name}'.`,
+      `The failing step was ${describeWrite(f)} on '${f.connection_name}'.`,
     );
   }
   if (saga.uncertain.length > 0) {
+    // NAME THEM. A count told the owner something happened and refused to say
+    // what, while the classification sat unused on every row.
+    const named = saga.uncertain
+      .map(u => u.write)
+      .filter((w): w is TornSagaWrite => w !== null)
+      .map(w => `${describeWrite(w)} on '${w.connection_name}'`);
     parts.push(
-      `${plural(saga.uncertain.length, 'call')} crashed unconfirmed — `
-        + `you'll be asked about those separately.`,
+      named.length === saga.uncertain.length
+        ? `${plural(saga.uncertain.length, 'call')} crashed unconfirmed `
+          + `(${named.join('; ')}) — you'll be asked about ${saga.uncertain.length === 1 ? 'it' : 'those'} separately.`
+        : `${plural(saga.uncertain.length, 'call')} crashed unconfirmed`
+          + `${named.length > 0 ? ` (including ${named.join('; ')})` : ''} — `
+          + `you'll be asked about those separately.`,
     );
   }
   if (saga.other_actions.length > 0) {

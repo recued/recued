@@ -101,6 +101,7 @@ import type {
   ConnectionCredentialVerification,
   ConnectionDataPurgeSummary,
   ConnectionHealth,
+  McpPushCapability,
   ConnectionKind,
   ConnectionRow,
   ConnectionVendorEntity,
@@ -154,6 +155,7 @@ import {
   MCP_TOOL_LIST_PROBE_MAX_PAGES,
   parseMcpToolListPage,
   probeMcpLegacySseTools,
+  probeMcpPushSupport,
   probeMcpStreamTools,
   readMcpHttpEnvelope,
   refreshOAuth2,
@@ -2211,9 +2213,14 @@ export const handleConnectionProbe = async (
     tools?: string[],
     tool_hashes?: string[],
     mcp_tool_schemas?: Record<string, unknown>,
+    /** ⚠ NAMED, not a sixth positional. Five was already the limit at which a
+     *  call site stops being readable, and this one is optional on every path
+     *  but the modern MCP success. */
+    extra?: { push?: McpPushCapability },
   ): PersistedProbeHealth => ({
     status,
     last_probed_at: now,
+    ...(extra?.push !== undefined ? { push: extra.push } : {}),
     ...(postSafeStopLineage !== null
       ? {
           post_safe_stop_verification: {
@@ -2801,6 +2808,45 @@ export const handleConnectionProbe = async (
         for (const d of page.descriptors) if (!descriptors.has(d.name)) descriptors.set(d.name, d);
         if (page.nextCursor === undefined) {
           capturedDescriptors = [...descriptors.values()];
+          // Case 1 — the push surface, asked for on the same probe that just
+          // asked for the tools. ⛔ WRAPPED SO IT CANNOT DEMOTE A HEALTHY
+          // CONNECTION: `probeMcpPushSupport` returns a capability answer for
+          // every branch including refusal, and a throw here would turn "this
+          // ordinary server does not push" into `unreachable`.
+          let push: McpPushCapability | undefined;
+          if (modern) {
+            try {
+              // ⛔⛔ THE PROBE'S OWN FETCHER, NOT `globalThis.fetch`. An
+              // earlier cut of this passed `deps.resolveFetch ?? globalThis
+              // .fetch` and every test still passed — because the harness
+              // injects `deps.fetcher`, so the push probe was firing at the
+              // real network while the double sat untouched. In production
+              // that bypasses auth injection, the bounded-origin fetcher and
+              // the probe deadline. `fetchTimed` is what the rest of this
+              // probe uses and is what carries all three.
+              push = await probeMcpPushSupport(
+                (async (input, init) => {
+                  const headers = init?.headers as Record<string, string> | undefined;
+                  const response = await fetchTimed(
+                    typeof input === 'string' ? input : String(input),
+                    {
+                      method: init?.method ?? 'POST',
+                      ...(headers !== undefined ? { headers } : {}),
+                      ...(typeof init?.body === 'string' ? { body: init.body } : {}),
+                    },
+                    remainingProbeMs(),
+                  );
+                  return response as unknown as Response;
+                }) as typeof fetch,
+                url.toString(),
+                requestHeaders,
+                remainingProbeMs(),
+                clientInfo,
+              );
+            } catch {
+              push = { resources: [], reason: 'listen_error' };
+            }
+          }
           return healthOf(
             'ok',
             undefined,
@@ -2810,6 +2856,7 @@ export const handleConnectionProbe = async (
               descriptor.name,
               descriptor.input_schema ?? {},
             ])),
+            ...(push !== undefined ? [{ push }] as const : []),
           );
         }
         if (seenCursors.has(page.nextCursor)) {

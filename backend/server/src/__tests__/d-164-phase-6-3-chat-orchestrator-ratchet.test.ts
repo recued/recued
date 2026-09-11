@@ -5,7 +5,9 @@
  * Stage-1 / Stage-2 substrate was removed from chat-orchestrator.ts.
  */
 
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi, beforeAll, afterAll } from 'vitest';
+
+
 import Database from 'better-sqlite3';
 import {
   CHAT_MAIN_TURN_INGREDIENT_SLUG,
@@ -197,7 +199,11 @@ const finalAssistant = async (sessionId: string) => {
 beforeEach(() => {
   db = new Database(':memory:');
   ensureChatSchema(db);
+  // ⛔ Pin the brief OFF via the SETTER production uses — env is boot-critical only
+  // (owner rule). This file's subject is not the brief; the fold would add a
+  // call to the very dispatch/egress counts asserted here.
   store = createChatStore(db, undefined);
+  store.setRollingBriefEnabled(false);
   captured = [];
   harnessCounter = 0;
 });

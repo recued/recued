@@ -31,6 +31,10 @@ const KEEP_MODULES = new Set([
   'execute',
   'prefetch',
   'preflight',
+  // Fixture-only deterministic execution; the host owns transport/lifecycle.
+  'recipe-simulation',
+  // Shared in-process checkpoint derivation (also carries D-261 phases).
+  'resume-from-approval',
   'run-mode',
   'shared-prefetch',
   'step-runner',
@@ -69,7 +73,9 @@ const EXPECTED_RUNTIME_EXPORTS = [
   'createTransformContext',
   'createDryRunExecutor',
   'generateMockData',
+  'simulateRecipe',
   'preflight',
+  'resumeFromApproval',
   'findMissingVariables',
   'findMissingVaultEntries',
   'findRoleRestrictions',
@@ -100,6 +106,13 @@ const EXPECTED_RUNTIME_EXPORTS = [
   'isPrototypeSensitiveKey',
   // Poll-manager / G6 — see the catalog-gateway keep-list note above.
   'runCatalogOperation',
+  // D-261 preparation and live dispatch share these pure descriptions and
+  // admission rules. They introduce no engine-to-host/middleware dependency.
+  'applyCatalogOverrideTightening',
+  'catalogInvocationTimeoutMs',
+  'describeCatalogAuthority',
+  'describeCatalogDispatch',
+  'normalizeCatalogDispatchInput',
   // D-259 held-action settlement — the host classifies an already-resolved
   // catalog op as `durable_handoff` vs `returned_result`, and this is the
   // classifier. HOST-FACING BY CONSTRUCTION (its own docstring says so): it

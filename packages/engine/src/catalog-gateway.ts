@@ -818,7 +818,7 @@ const buildMcpDispatchInput = (
   return input;
 };
 
-const catalogInvocationTimeoutMs = (
+export const catalogInvocationTimeoutMs = (
   manifest: IngredientManifest,
   operationKey: string,
 ): number | undefined => {
@@ -872,8 +872,8 @@ const OVERRIDE_TIGHTENING_ROLES = [
  *  `override` is `tightening_only` — a commutative+associative strict-family rule
  *  that `composeRows` never emits a conflict for. The dispatch-time merge-card UX
  *  for any future cross-scope same-precedence conflict is out of 4d.4's scope. */
-const applyOverrideTightening = (
-  ctx: ExecutionContext,
+export const applyCatalogOverrideTightening = (
+  ctx: Pick<ExecutionContext, 'contractScan' | 'actor'>,
   resolution: CatalogOperationResolution,
   slug: string,
 ): CatalogOperationResolution => {
@@ -1759,6 +1759,9 @@ interface ProtocolBeforeDispatchArgs {
  *  (a `ProtocolExecutor<RestExecutionBinding>` slots into the union-keyed
  *  `PROTOCOL_EXECUTORS` with no cast). */
 interface ProtocolExecutor<B extends ApiExecutionBinding = ApiExecutionBinding> {
+  /** D-261 identity classification belongs to the same binding resolver that
+   * constructs the live call. It does not grant permission to execute it. */
+  readonly family: 'http' | 'graphql' | 'mcp';
   /** True iff a binding of this kind produces a synchronous HTTP dispatch. Drives
    *  BOTH the dispatch build AND the authorization-kind discriminator
    *  (`apiBindingProducesDispatch`) off ONE source, so the two can never disagree.
@@ -1782,6 +1785,7 @@ interface ProtocolExecutor<B extends ApiExecutionBinding = ApiExecutionBinding> 
 }
 
 const REST_PROTOCOL_EXECUTOR: ProtocolExecutor<RestExecutionBinding> = {
+  family: 'http',
   producesDispatch: () => true,
   buildDispatchInput: (binding, args, connectionName) =>
     buildApiDispatchInput(binding, args, connectionName),
@@ -1872,6 +1876,7 @@ const REST_PROTOCOL_EXECUTOR: ProtocolExecutor<RestExecutionBinding> = {
 };
 
 const GRAPHQL_PROTOCOL_EXECUTOR: ProtocolExecutor<GraphQLExecutionBinding> = {
+  family: 'graphql',
   // graphql `subscription` needs a WS/SSE substrate (not built) — only
   // query/mutation POST-dispatch. A subscription binding produces no dispatch
   // and fails closed `unsupported_binding_kind` at the dispatch site (mirrors the
@@ -1964,6 +1969,7 @@ const GRAPHQL_PROTOCOL_EXECUTOR: ProtocolExecutor<GraphQLExecutionBinding> = {
 };
 
 const MCP_PROTOCOL_EXECUTOR: ProtocolExecutor<McpExecutionBinding> = {
+  family: 'mcp',
   // Every `tools/call` is a synchronous request/response. (MCP's other
   // primitives — resources, prompts, sampling — are NOT reachable from a
   // declared op: the binding's only selector is `tool`. A resource read stays
@@ -2129,6 +2135,63 @@ const protocolExecutorFor = (
 ): ProtocolExecutor | undefined =>
   binding === undefined ? undefined : PROTOCOL_EXECUTORS[binding.kind];
 
+export type CatalogDispatchDescription =
+  | { family: 'http' | 'graphql' | 'mcp'; binding: ApiExecutionBinding; input: Record<string, unknown> }
+  | { family: 'cli'; binding: CliMethodBinding; input: Record<string, unknown> }
+  | { family: 'kernel'; binding: RecordsExecutionBinding; input: Record<string, unknown> };
+
+/** Pure binding construction shared by dispatch and future-execution review.
+ * Resolves the same API-before-CLI precedence; never loads a secret, invokes
+ * a connector, changes admission, or evaluates an authored script. The host
+ * must additionally pin the live connection/account and governed children. */
+const describeCatalogApiDispatch = (
+  manifest: IngredientManifest, operationKey: string,
+  args: Record<string, unknown>, connectionName: string,
+): Extract<CatalogDispatchDescription, { family: 'http' | 'graphql' | 'mcp' }> | null => {
+  const binding = manifest.surfaces?.api?.executes?.[operationKey];
+  const protocol = protocolExecutorFor(binding);
+  if (binding && protocol?.producesDispatch(binding)) return {
+    family: protocol.family, binding,
+    input: protocol.buildDispatchInput(binding, args, connectionName),
+  };
+  return null;
+};
+
+export const describeCatalogDispatch = (
+  manifest: IngredientManifest, operationKey: string,
+  args: Record<string, unknown>, connectionName: string,
+): CatalogDispatchDescription | null => {
+  const api = describeCatalogApiDispatch(manifest, operationKey, args, connectionName);
+  // Local recipe calls precede Records; Records precede transport dispatch in
+  // runCatalogOperation. Preserve that order even for mixed-surface manifests.
+  if (isLocalRecipeInvocation(manifest, operationKey, connectionName)) return api;
+  const records = manifest.surfaces?.records?.executes?.[operationKey];
+  if (isRecordsExecutionBinding(records)) return { family: 'kernel', binding: records, input: args };
+  if (api) return api;
+  const cli = manifest.surfaces?.connector?.executes?.[operationKey];
+  if (cli?.kind === 'cli_invocation') return { family: 'cli', binding: cli, input: args };
+  return null;
+};
+
+/** Mutates only the constructed wire request, using the live protocol's exact
+ * first-page normalization. Preparation supplies the freshly resolved tier. */
+export const normalizeCatalogDispatchInput = (
+  manifest: IngredientManifest, operationKey: string, input: Record<string, unknown>, riskTier: OperationRiskTier,
+): void => {
+  protocolExecutorFor(manifest.surfaces?.api?.executes?.[operationKey])?.beforeDispatch?.(input,
+    { manifest, operationKey, riskTier });
+};
+
+/** Pure authority routing, shared with preparation. Independent flags preserve
+ * the dispatcher's existing precedence for mixed-surface manifests. */
+export const describeCatalogAuthority = (manifest: IngredientManifest, operationKey: string, connectionName: string) => {
+  const records = manifest.surfaces?.records?.executes?.[operationKey];
+  const local = isLocalRecipeInvocation(manifest, operationKey, connectionName);
+  return { local_recipe: local, local_recipe_id: local ? localRecipeIdFor(manifest, operationKey) : null,
+    cli: isCliInvocationOp(manifest, operationKey), records: records !== undefined,
+    records_binding: isRecordsExecutionBinding(records) ? records : undefined };
+};
+
 /** Route a catalog-form ingredient call through the D-165 P0 gateway.
  *  Returns the executed call's result on `admit`; throws on `deny` (step
  *  fails) or `ask` (`PreflightRequiredSignal` → engine pause).
@@ -2139,6 +2202,20 @@ const protocolExecutorFor = (
  *  into the dispatched input so the downstream connection adapter binds
  *  the same record. */
 export const runCatalogOperation = async (
+  ctx: ExecutionContext, manifest: IngredientManifest, slug: string, input: Record<string, unknown>,
+  connectionName: string, output: Record<string, string> | undefined,
+  stepOptions: StepOptions | undefined, stepMeta: StepMeta | undefined,
+): Promise<unknown> => {
+  const hooks = ctx.reviewedExecution;
+  if (!hooks) return runCatalogOperationInner(ctx, manifest, slug, input, connectionName, output, stepOptions, stepMeta);
+  const delegated: ExecutionContext = { ...ctx, ingredientExecutor: (delegateSlug, delegateInput, delegateOutput, options, meta) =>
+    hooks.delegate({ slug: delegateSlug, input: delegateInput, stepMeta: meta },
+      () => ctx.ingredientExecutor(delegateSlug, delegateInput, delegateOutput, options, meta)) };
+  return hooks.invoke({ slug, input, output, catalog: true, connection_name: connectionName, stepMeta },
+    () => runCatalogOperationInner(delegated, manifest, slug, input, connectionName, output, { cache: 'fresh' }, stepMeta));
+};
+
+const runCatalogOperationInner = async (
   ctx: ExecutionContext,
   manifest: IngredientManifest,
   slug: string,
@@ -2190,12 +2267,12 @@ export const runCatalogOperation = async (
   // the third connection-less kind, after `cli` and `records`, and it takes the
   // same shape they do — skip the profile, authorize by a local resolver,
   // dispatch in-process.
-  const isLocalRecipeOp = isLocalRecipeInvocation(manifest, call.operation_id, connectionName);
-  const isCliOp = isCliInvocationOp(manifest, call.operation_id);
+  const authorityTarget = describeCatalogAuthority(manifest, call.operation_id, connectionName);
   const rawRecordsBinding = manifest.surfaces?.records?.executes?.[call.operation_id];
-  const recordsBinding: RecordsExecutionBinding | undefined =
-    isRecordsExecutionBinding(rawRecordsBinding) ? rawRecordsBinding : undefined;
-  const isRecordsOp = rawRecordsBinding !== undefined;
+  const isLocalRecipeOp = authorityTarget.local_recipe;
+  const isCliOp = authorityTarget.cli;
+  const recordsBinding = authorityTarget.records_binding;
+  const isRecordsOp = authorityTarget.records;
 
   // The cli kind never binds a connection — its profile / base-url resolution
   // is skipped (the per-contract reachability allowlist is its authorization
@@ -2338,7 +2415,7 @@ export const runCatalogOperation = async (
   // actor-scoped tightening while the global owner row still resolves.
   const resolveWithOwnerOverride = (
     candidate: OwnerOverridePolicy | undefined,
-  ): CatalogOperationResolution => applyOverrideTightening(
+  ): CatalogOperationResolution => applyCatalogOverrideTightening(
     ctx,
     isCliOp
       ? resolveCliReachabilityPolicy({
@@ -2786,8 +2863,10 @@ export const runCatalogOperation = async (
     );
   };
 
+  const reviewedApproved = ctx.reviewedExecution ? await ctx.reviewedExecution.catalogApproved({ slug, operation_id: resolution.operation_id,
+    connection_name: call.connection_name, stepMeta }) : false;
   const resumeApproved =
-    stepMeta?.preflight_admitted === true
+    !reviewedApproved && stepMeta?.preflight_admitted === true
     && catalogTargetMatches(
       stepMeta.preflight_approved_target,
       slug,
@@ -2814,6 +2893,7 @@ export const runCatalogOperation = async (
   // before.
   const standingAdmit =
     resolution.verdict === 'ask'
+    && !reviewedApproved
     && !resumeApproved
     && standingClosureAdmits(
       ctx.contract_snapshot,
@@ -2823,7 +2903,7 @@ export const runCatalogOperation = async (
       resolution.authorization_provenance.lift_reason,
     );
 
-  if (resolution.verdict === 'ask' && !resumeApproved && !standingAdmit) {
+  if (resolution.verdict === 'ask' && !reviewedApproved && !resumeApproved && !standingAdmit) {
     // Consult a live session grant before raising (N.4, ask-branch only): a
     // match ADMITS the dispatch instead of pausing. Gated on a grantable tier
     // (read / write / admin) and the hashes (a non-canonicalizable payload can't
@@ -2909,10 +2989,7 @@ export const runCatalogOperation = async (
   // `execInput` undefined → fail closed `unsupported_binding_kind` below.
   const protocolEx = protocolExecutorFor(binding);
   let dispatchArgs = effectiveArgs;
-  let execInput =
-    protocolEx !== undefined && binding !== undefined && protocolEx.producesDispatch(binding)
-      ? protocolEx.buildDispatchInput(binding, dispatchArgs, connectionName)
-      : undefined;
+  let execInput = describeCatalogApiDispatch(manifest, call.operation_id, dispatchArgs, connectionName)?.input;
   // D-217 slice 2b-ii-β2 — attach the walk built above (before the gate, so the
   // ask could state its bound). The SAME object the owner's approval was
   // rendered from, applied BEFORE `authorityExecInput` is captured so it is part
@@ -2981,7 +3058,8 @@ export const runCatalogOperation = async (
   // matches. (An undefined `stepMeta` — unit harnesses — needs no flag: their
   // stub executors don't strip.)
   const surfaceMeta: StepMeta | undefined = stepMeta
-    ? { ...stepMeta, surface_dispatch: true, surface_operation_key: call.operation_id }
+    ? { ...stepMeta, surface_dispatch: true, surface_operation_key: call.operation_id,
+      surface_risk_tier: resolution.effective_risk_tier as RiskTier }
     : stepMeta;
   let providerSurfaceMeta = surfaceMeta;
 
@@ -3159,6 +3237,7 @@ export const runCatalogOperation = async (
         recipe_id: target,
         args: effectiveArgs,
         held_recipes: extendHeldRecipes(ctx.heldRecipes, target),
+        ...(stepMeta?.invocation_path ? { invocation_path: stepMeta.invocation_path } : {}),
       });
       throwIfRunKilled(ctx);
       // ⛔⛔ A NESTED RUN THAT PAUSED IS NOT A RESULT. `executeRecipe` RETURNS
@@ -3300,11 +3379,7 @@ export const runCatalogOperation = async (
     }
 
     // D-192 Gate E′ Gap 4a — pre-dispatch protocol hook (rest read-tier page size).
-    protocolEx.beforeDispatch?.(execInput, {
-      manifest,
-      operationKey: call.operation_id,
-      riskTier: resolution.effective_risk_tier,
-    });
+    normalizeCatalogDispatchInput(manifest, call.operation_id, execInput, resolution.effective_risk_tier);
     // A future protocol hook must not rewrite an adapter-owned callback field
     // after the initial catalog lowering check above.
     operationBoundDispatch?.validateDispatchInput(execInput);

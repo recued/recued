@@ -34,8 +34,9 @@ const PROTOTYPE_SENSITIVE_KEYS = new Set(['__proto__', 'constructor', 'prototype
  *  - Out-of-range or non-numeric timeout values are clamped to sane bounds
  *    by `resolveTimeoutMs`; this function never throws on bad timeout input.
  */
-export const executeHTTP = async (resolved: ResolvedCall): Promise<unknown> => {
-  const { input, output, fallback, slug, risk_tier } = resolved;
+/** Pure request construction shared by execution and future-execution review. */
+export const describeHttpRequest = (resolved: Pick<ResolvedCall, 'slug' | 'input'>) => {
+  const { input, slug } = resolved;
   const method = String(input.method ?? 'GET').toUpperCase();
   const rawUrl = input.url as string | undefined;
   if (!rawUrl) {
@@ -69,8 +70,15 @@ export const executeHTTP = async (resolved: ResolvedCall): Promise<unknown> => {
   const headers = extractHeaders(input);
   const body = buildBody(input.body, headers);
   const timeoutMs = resolveTimeoutMs(input.timeout_ms);
+  return { method, url, requestOrigin, headers, body, timeoutMs };
+};
+
+export const executeHTTP = async (resolved: ResolvedCall, beforeRequest?: () => Promise<void>): Promise<unknown> => {
+  const { input, output, fallback, slug, risk_tier } = resolved;
+  const { method, url, requestOrigin, headers, body, timeoutMs } = describeHttpRequest(resolved);
   const isWrite = isWriteRiskTier(risk_tier);
 
+  await beforeRequest?.();
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 

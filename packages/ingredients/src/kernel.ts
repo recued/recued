@@ -36,6 +36,12 @@ import { IngredientError, type ResolvedCall } from './types.js';
 import type { Adapter } from './dispatch.js';
 import type { StepMeta } from '@recued/contracts';
 import {
+  parsePreparePreapproval,
+  parseMailDraftCreate, parseMailDraftGet, parseMailDraftUpdate, parseMailDraftDelete,
+  type MailDraft,
+  normalizeMailSend,
+  type PreparePreapproval,
+  type PreapprovalResult,
   canonicalizeEmail,
   extractCanonicalRef,
   MAIL_SENT_RECONCILIATION_MAX_WINDOW_MS,
@@ -1438,6 +1444,12 @@ export interface KernelDispatchers {
     schedule: unknown;
   }>;
 
+  /** D-261: the source comes from trusted engine metadata, never the payload.
+   * This slot creates an owner proposal, not an approval or activation. */
+  preapprovalRequest?: (input: PreparePreapproval, meta: StepMeta | undefined) => Promise<PreapprovalResult>;
+  mailDraft?: (method: 'create' | 'get' | 'update' | 'delete', input: unknown,
+    meta: StepMeta | undefined) => Promise<MailDraft | { deleted: true }>;
+
   /** Core Seller registry. The server owns its DB/schema/menu/UI; recipes can
    *  compose only through these fixed dispatch slots. */
   sellerOfferEnsure?: (
@@ -1831,6 +1843,24 @@ export const createKernelAdapter = (dispatchers: KernelDispatchers): Adapter => 
     // §5 — a `core-<bare>` kernel alias (e.g. `core-notification-send`) dispatches
     // to the same case as its bare slug; `slug` stays the raw value for error context.
     switch (stripCorePrefix(slug)) {
+      case 'mail-draft-create':
+      case 'mail-draft-read':
+      case 'mail-draft-update':
+      case 'mail-draft-delete': {
+        if (!dispatchers.mailDraft) throw new IngredientError('SERVER_NOT_REACHABLE', 'Saved drafts are unavailable.', { slug });
+        const action = stripCorePrefix(slug).slice('mail-draft-'.length);
+        const method = action === 'read' ? 'get' : action as 'create' | 'update' | 'delete';
+        const parse = { create: parseMailDraftCreate, get: parseMailDraftGet, update: parseMailDraftUpdate, delete: parseMailDraftDelete }[method];
+        return dispatchers.mailDraft(method, parse(call.input), call.stepMeta);
+      }
+      case 'preapproval-request': {
+        if (!dispatchers.preapprovalRequest) {
+          throw new IngredientError('SERVER_NOT_REACHABLE',
+            'Pre-approval is unavailable on this server.', { slug });
+        }
+        const request = parsePreparePreapproval(call.input);
+        return dispatchers.preapprovalRequest(request, call.stepMeta);
+      }
       case 'peer-ask': {
         // D-234 § 234.4 — ⛔⛔ THIS OP IS IDEMPOTENT-WITH-MEMORY, AND THAT IS THE
         // WHOLE RESUME DESIGN. `execute.ts` documents that the gated step RE-RUNS
@@ -2302,7 +2332,8 @@ export const createKernelAdapter = (dispatchers: KernelDispatchers): Adapter => 
         if (typeof input.record_id !== 'string' || input.record_id.length === 0) {
           throw new IngredientError('BAD_INPUT', 'data-file-read: record_id is required', { slug });
         }
-        if (input.metadata_only !== undefined && typeof input.metadata_only !== 'boolean') {
+        // The installed manifest supplies null for this optional selector.
+        if (input.metadata_only !== undefined && input.metadata_only !== null && typeof input.metadata_only !== 'boolean') {
           throw new IngredientError(
             'BAD_INPUT',
             'data-file-read: metadata_only must be boolean when present',
@@ -4738,98 +4769,10 @@ export const createKernelAdapter = (dispatchers: KernelDispatchers): Adapter => 
             { slug },
           );
         }
-        const input = call.input as {
-          sender_mail_instance?: unknown;
-          to?: unknown;
-          cc?: unknown;
-          bcc?: unknown;
-          subject?: unknown;
-          body?: unknown;
-          body_format?: unknown;
-          in_reply_to?: unknown;
-          references?: unknown;
-          reply_to?: unknown;
-          reconciliation_id?: unknown;
-          attachments?: unknown;
-        };
-        if (typeof input.sender_mail_instance !== 'string'
-          || input.sender_mail_instance.length === 0) {
-          throw new IngredientError(
-            'BAD_INPUT',
-            `mail-send: sender_mail_instance is required`,
-            { slug },
-          );
-        }
-        const to = coerceStringArray(input.to, 'mail-send: to');
-        if (to.length === 0) {
-          throw new IngredientError(
-            'BAD_INPUT',
-            `mail-send: to must contain at least one recipient`,
-            { slug },
-          );
-        }
-        if (typeof input.subject !== 'string') {
-          throw new IngredientError(
-            'BAD_INPUT',
-            `mail-send: subject is required`,
-            { slug },
-          );
-        }
-        if (typeof input.body !== 'string') {
-          throw new IngredientError(
-            'BAD_INPUT',
-            `mail-send: body is required`,
-            { slug },
-          );
-        }
-        const bodyFormat = input.body_format === 'html' ? 'html' : 'text';
-        const dispatchInput: Parameters<NonNullable<KernelDispatchers['mailSend']>>[0] = {
-          instance: input.sender_mail_instance,
-          to,
-          subject: input.subject,
-          body_text: bodyFormat === 'html' ? '' : input.body,
-        };
-        if (bodyFormat === 'html') dispatchInput.body_html = input.body;
-        if (input.cc !== undefined && input.cc !== null) {
-          dispatchInput.cc = coerceStringArray(input.cc, 'mail-send: cc');
-        }
-        if (input.bcc !== undefined && input.bcc !== null) {
-          dispatchInput.bcc = coerceStringArray(input.bcc, 'mail-send: bcc');
-        }
-        if (typeof input.in_reply_to === 'string' && input.in_reply_to.length > 0) {
-          dispatchInput.in_reply_to = input.in_reply_to;
-        }
-        if (input.references !== undefined && input.references !== null) {
-          dispatchInput.references = coerceStringArray(
-            input.references,
-            'mail-send: references',
-          );
-        }
-        if (typeof input.reply_to === 'string' && input.reply_to.length > 0) {
-          dispatchInput.reply_to = input.reply_to;
-        }
-        if (input.reconciliation_id !== undefined && input.reconciliation_id !== null) {
-          if (!isMailReconciliationId(input.reconciliation_id)) {
-            throw new IngredientError(
-              'BAD_INPUT',
-              'mail-send: reconciliation_id must be a bounded ASCII header token',
-              { slug },
-            );
-          }
-          dispatchInput.reconciliation_id = input.reconciliation_id;
-        }
-        // D-172 P2 — forward `attachments` refs (data.file record-ids) to
-        // the dispatcher. The kernel just carries the refs as strings;
-        // resolution (ref → bytes via the Gateway-gated file.read) happens
-        // at the backend MailCollection.send layer, which has the file-
-        // read deps. Empty / absent leaves the field off so the legacy
-        // text/html send shape is byte-identical.
-        if (input.attachments !== undefined && input.attachments !== null) {
-          const attachments = coerceStringArray(
-            input.attachments,
-            'mail-send: attachments',
-          );
-          if (attachments.length > 0) dispatchInput.attachments = attachments;
+        let dispatchInput: Parameters<NonNullable<KernelDispatchers['mailSend']>>[0];
+        try { dispatchInput = normalizeMailSend(call.input); }
+        catch (error) {
+          throw new IngredientError('BAD_INPUT', error instanceof Error ? error.message : 'mail-send: invalid compose payload', { slug });
         }
         // D-127 follow-on — thread engine-supplied step identity to the
         // dispatcher so the rpc-layer `mail_send` audit row carries
@@ -4853,8 +4796,8 @@ export const createKernelAdapter = (dispatchers: KernelDispatchers): Adapter => 
           if (isCollectionNotFoundError(err)) {
             throw new IngredientError(
               'MAIL_INSTANCE_NOT_FOUND',
-              `mail-send: '${input.sender_mail_instance}' is not a registered mail account`,
-              { slug, sender_mail_instance: input.sender_mail_instance },
+              `mail-send: '${dispatchInput.instance}' is not a registered mail account`,
+              { slug, sender_mail_instance: dispatchInput.instance },
             );
           }
           // D-145 engine-wiring slice 3b.3 — a send that fails in

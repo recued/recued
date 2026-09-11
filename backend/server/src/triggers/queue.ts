@@ -51,7 +51,7 @@ export interface TriggerDispatchQueue {
   /** Enqueue an event for processing. Starts a fresh drain if the key
    *  is idle. Same-key events serialize; diff-key events run in
    *  parallel. */
-  enqueue(trigger: EventTrigger, event: WarehouseEvent): boolean;
+  enqueue(trigger: EventTrigger, event: WarehouseEvent, candidate?: object): boolean;
   /** Number of retained queue keys (running + waiting; tests + observability). */
   activeKeys(): number;
   /** Number of events refused because a new key arrived at the hard ceiling. */
@@ -65,7 +65,7 @@ export interface TriggerDispatchQueue {
 
 export interface TriggerDispatchQueueDeps {
   /** The actual event handler — typically `dispatcher.onEvent`. */
-  processEvent: (trigger: EventTrigger, event: WarehouseEvent) => Promise<void>;
+  processEvent: (trigger: EventTrigger, event: WarehouseEvent, candidate?: object) => Promise<void>;
   /** Test/embedding overrides. Values are sanitized to positive integers. */
   maxConcurrentKeys?: number;
   maxKeys?: number;
@@ -80,6 +80,7 @@ export interface TriggerDispatchQueueDeps {
 interface QueueEntry {
   trigger: EventTrigger;
   event: WarehouseEvent;
+  candidate?: object;
 }
 
 /** Build the canonical queue key from the trigger row + event. Exported
@@ -114,7 +115,7 @@ export const createTriggerDispatchQueue = (
       }
       const next = queue[0];
       try {
-        await deps.processEvent(next.trigger, next.event);
+        await deps.processEvent(next.trigger, next.event, next.candidate);
       } catch {
         // Defense-in-depth — the dispatcher's `onEvent` already catches
         // recipe errors internally.
@@ -141,7 +142,7 @@ export const createTriggerDispatchQueue = (
     drains.set(key, task);
   };
 
-  const enqueue = (trigger: EventTrigger, event: WarehouseEvent): boolean => {
+  const enqueue = (trigger: EventTrigger, event: WarehouseEvent, candidate?: object): boolean => {
     const key = queueKey(trigger.trigger_id, event.record_id);
     const existing = queues.get(key);
 
@@ -159,14 +160,14 @@ export const createTriggerDispatchQueue = (
         }
         return false;
       }
-      queues.set(key, [{ trigger, event }]);
+      queues.set(key, [{ trigger, event, ...(candidate ? { candidate } : {}) }]);
       if (drains.size < maxConcurrentKeys) startDrain(key);
       else waitingKeys.add(key);
       return true;
     }
 
     if (existing.length < TRIGGER_QUEUE_MAX_DEPTH_PER_KEY) {
-      existing.push({ trigger, event });
+      existing.push({ trigger, event, ...(candidate ? { candidate } : {}) });
       return true;
     }
 
@@ -189,6 +190,7 @@ export const createTriggerDispatchQueue = (
     const { changed_fields: _droppedChangedFields, ...latestEvent } = event;
     existing[tailIndex] = {
       trigger,
+      ...(candidate ? { candidate } : {}),
       event: {
         ...latestEvent,
         ...(coalescedPrev !== undefined ? { prev: coalescedPrev } : {}),

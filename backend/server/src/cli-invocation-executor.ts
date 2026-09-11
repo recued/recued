@@ -44,6 +44,7 @@ import {
   type ProgressSource,
 } from './execution/stall-monitor.js';
 import { allocateRunScratchDir } from './execution/run-scratch.js';
+import { assertPreapprovalOrdinaryRun, currentPreapprovalIo } from './preapproval-io-context.js';
 import type { InFlightRegistry } from './execution/in-flight-registry.js';
 import { isInboundFileRecordId } from './collections/file/inbound-file-collection.js';
 import { parseRemoteFileRecordId } from './file-view-resolver.js';
@@ -299,6 +300,14 @@ const resolveCwd = (call: CliInvocationCall): string | undefined => {
     );
   }
 };
+
+/** The live argv, working scope, stdin and timeout builders, without launching
+ * a program or materializing any caller file. */
+export const describeCliInvocation = (call: CliInvocationCall) => ({
+  argv: resolveArgv(call), cwd: resolveCwd(call) ?? process.cwd(),
+  stdin: stdinPayload(call.binding.stdin_handling, call.args) ?? null,
+  timeout_ms: resolveTimeoutMs(call.timeout_ms),
+});
 
 const isWithinDir = (root: string, path: string): boolean => {
   const rel = relative(root, path);
@@ -569,6 +578,7 @@ const runForeground = async (
     }
     let child: ChildProcess;
     try {
+      assertPreapprovalOrdinaryRun();
       child = spawn(cmd, rest, {
         shell: false,
         // Waiting and ownership are independent: every finite child leads a
@@ -1019,6 +1029,7 @@ const runDetached = async (
       stdio: ['ignore', logFd ?? 'ignore', logFd ?? 'ignore'],
       ...(cwd ? { cwd } : {}),
     };
+    assertPreapprovalOrdinaryRun();
     child = spawn(cmd, rest, options);
   } catch (err) {
     if (logFd !== undefined) closeSync(logFd);
@@ -1388,6 +1399,8 @@ export const createCliInvocationExecutor = (
     }
     const capture = call.binding.output_capture;
     if (!capture) {
+      await currentPreapprovalIo()?.beforeCliProvider(call);
+      assertPreapprovalOrdinaryRun();
       return runForeground(
         call,
         resolveArgv(call),

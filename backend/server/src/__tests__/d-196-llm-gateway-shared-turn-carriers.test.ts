@@ -664,7 +664,21 @@ describe('D-196 llm_gateway shared-turn carriers', () => {
     }
     expect(String(aiInputs[0]?.['llm.prompt']))
       .toContain('[llm_gateway context notice]');
-    expect(String(aiInputs[0]?.['llm.prompt'])).not.toContain('old:');
+    // ⚠ CONTRACT NARROWED DELIBERATELY, not weakened to fit a change. The
+    //   evicted row is `old:` + 12,000 chars, and this asserted that NONE of it
+    //   reappears — a proxy for "the bulk is gone". The eviction notice is now
+    //   a BRIEFING that quotes a bounded anchor (<=96 chars) of what it dropped,
+    //   because a notice naming nothing is what let a live model report
+    //   "I don't have access to any data source" while its own history had been
+    //   evicted. So the property is restated as what it was standing for: no
+    //   BULK survives. The size guarantee itself is asserted independently
+    //   above (<= 8,000 tokens), so nothing rests on this proxy alone.
+    // ⚠ The quote exposes nothing new — that text was in this same packet,
+    //   for this same model, one composition earlier.
+    expect(String(aiInputs[0]?.['llm.prompt']), 'the evicted bulk is gone')
+      .not.toMatch(/x{200,}/u);
+    expect(String(aiInputs[0]?.['llm.prompt']), 'only a bounded anchor survives')
+      .toMatch(/old:x{1,120}…/u);
     expect(String(aiInputs[1]?.['llm.prompt']))
       .toContain('llm_gateway_context_omitted');
   });

@@ -31,6 +31,7 @@ import { reconcileManagedConfigDish } from '../managed-config-dish.js';
 
 export interface TriggersRpcDeps {
   store: EventTriggersStore;
+  preapprovalStatus?: (triggerId: string) => Pick<EventTrigger, 'enabled' | 'lifecycle_revision' | 'preapproval'> | null;
   /** Dispatcher that subscribes to the warehouse bus. Re-subscribed
    *  after every mutation so the live listener set matches the
    *  persisted rows without a server restart. Optional so tests can
@@ -162,9 +163,8 @@ const optionalOverlay = (v: unknown): Record<string, unknown> | null => {
  *  modal can pre-fill the per-row Config editor. Derived at read time —
  *  the dish is the source of truth; nothing extra is persisted. */
 const triggerWithConfig = (deps: TriggersRpcDeps, t: EventTrigger): EventTrigger => {
-  if (t.dish_id === undefined || !deps.dishStore) return t;
-  const overlay = deps.dishStore.get(t.dish_id)?.config_overlay;
-  return overlay !== undefined ? { ...t, config_overlay: overlay } : t;
+  const overlay = t.dish_id !== undefined ? deps.dishStore?.get(t.dish_id)?.config_overlay : undefined;
+  return { ...t, ...deps.preapprovalStatus?.(t.trigger_id), ...(overlay !== undefined ? { config_overlay: overlay } : {}) };
 };
 
 export const handleTriggersList = async (

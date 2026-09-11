@@ -43,7 +43,7 @@ type DecodeAuthFromStorage = (typeof import('./connection-handler.js'))['decodeA
 type EncodeAuthForStorage = (typeof import('./connection-handler.js'))['encodeAuthForStorage'];
 
 export interface FileSourceConnectionResolverDeps {
-  connectionStore: Pick<ConnectionStoreSqlite, 'get' | 'upsert'>;
+  connectionStore: Pick<ConnectionStoreSqlite, 'get' | 'upsert' | 'persistRefreshedAuth'>;
   decodeAuthFromStorage: DecodeAuthFromStorage;
   encodeAuthForStorage: EncodeAuthForStorage;
   /** The connection sub-DEK key provider (absent on a non-vault boot). */
@@ -76,6 +76,12 @@ const buildPersistAuth = (
       { kind: row.kind, name: row.name },
       deps.keyProvider,
     );
+    if (deps.connectionStore.persistRefreshedAuth) {
+      if (!deps.connectionStore.persistRefreshedAuth(row, auth_ciphertext, now())) {
+        throw new Error('The connection changed during credential refresh.');
+      }
+      return;
+    }
     deps.connectionStore.upsert({
       kind: row.kind,
       name: row.name,

@@ -27,6 +27,7 @@ import {
   parseDataEntityRef,
   resolveDeep,
   resolveValue,
+  preapprovalStepPath,
   shouldLink,
   SLOT_CANCELLED_ERROR_CODE,
   stepType,
@@ -416,8 +417,19 @@ const runForeach = async (
   // association between what was asked and what came back.
   let results: ForeachCheckpointResult[] = [];
   let startIndex = 0;
-  const progress = ctx.resumeFrom?.foreach_progress;
-  if (ctx.resumeFrom?.gated_step_id === id && progress === undefined) {
+  // ⛔ THE CHECKPOINT DESCRIBES ONE STEP: THE GATED ONE. `ctx.resumeFrom` stays
+  // set for the rest of a resumed run (only a chunked gate consumes it, below),
+  // so every foreach the run reaches AFTER the gated step also sees it. Reading
+  // the progress here unconditionally made a LATER foreach compare itself
+  // against the gated step's progress and refuse with
+  // `checkpoint_foreach_progress_mismatch` — a resumed run that approved one
+  // fan-out could never reach a second. A foreach that is not the gated step
+  // never ran (the engine resumes AT the gated step), so it starts at zero
+  // like any fresh step; the guards below apply to the gated step alone.
+  const resumingThisStep = (ctx.executionPhase ?? 'sequential') === (ctx.resumeFrom?.execution_phase ?? 'sequential')
+    && ctx.resumeFrom?.gated_step_id === id;
+  const progress = resumingThisStep ? ctx.resumeFrom?.foreach_progress : undefined;
+  if (resumingThisStep && progress === undefined) {
     // Pre-progress checkpoints cannot identify which items already crossed the
     // boundary. Starting again at index zero could repeat external effects;
     // fail closed and require a fresh run instead.
@@ -442,7 +454,6 @@ const runForeach = async (
       sourceHash = undefined;
     }
     let prefixMatches = progress.step_id === id
-      && ctx.resumeFrom?.gated_step_id === id
       && progress.source_length === resolved.length
       && sourceHash !== undefined
       && progress.source_hash === sourceHash
@@ -486,6 +497,9 @@ const runForeach = async (
     for (let index = startIndex; index < resolved.length; index++) {
       const item = resolved[index];
       storesMut.item = item;
+      const previousAddressing = ctx.preapprovalAddressing;
+      if (previousAddressing) ctx.preapprovalAddressing = { ...previousAddressing,
+        iteration_indices: [...previousAddressing.iteration_indices, index] };
       try {
         const log = await runStep(innerStep, ctx);
         if (log.error) {
@@ -520,6 +534,8 @@ const runForeach = async (
           error: e instanceof Error ? e.message : String(e),
           item,
         });
+      } finally {
+        if (previousAddressing) ctx.preapprovalAddressing = previousAddressing;
       }
       // An ordinary foreach gate approves the remaining same-target aggregate,
       // so its resume marker remains available to later iterations. A chunked
@@ -531,7 +547,7 @@ const runForeach = async (
       // same item and must not leak forward either. Engine phase selection was
       // already fixed before this loop, and PII ledgers were hydrated at entry.
       if (
-        ctx.resumeFrom?.gated_step_id === id
+        resumingThisStep && ctx.resumeFrom?.gated_step_id === id
         && ctx.resumeFrom.egress_bound !== undefined
       ) {
         ctx.resumeFrom = undefined;
@@ -687,7 +703,7 @@ const isCatalogOpInputShape = (input: Record<string, unknown>): boolean =>
  *  Prototype-sensitive override keys (`__proto__` / `constructor` /
  *  `prototype`) are dropped at BOTH levels (defense in depth behind the
  *  write-side allowlist + `isCheckpoint` narrowing). */
-const mergeArgOverrides = (
+export const mergeArgOverrides = (
   input: Record<string, unknown>,
   overrides: Record<string, unknown>,
 ): Record<string, unknown> => {
@@ -787,7 +803,8 @@ const runIngredient = async (step: RecipeStep, ctx: ExecutionContext): Promise<u
   // read solely from `resumeFrom.arg_overrides` (checkpoint-sourced),
   // already allowlist-validated, gated-step-only, prototype-safe, and a
   // no-override resume is byte-identical.
-  const resumeFrom = ctx.resumeFrom;
+  const resumeFrom = (ctx.executionPhase ?? 'sequential') === (ctx.resumeFrom?.execution_phase ?? 'sequential')
+    ? ctx.resumeFrom : undefined;
   // D-173 capstone — resume-time prefill re-seed (the gated step's resolved
   // input). The N.18-compiled gated step authors `input.args` as the STRING ref
   // `'{{context.event.payload}}'`. On a FRESH fire that resolves from the
@@ -831,21 +848,27 @@ const runIngredient = async (step: RecipeStep, ctx: ExecutionContext): Promise<u
 
   const output = s.output as Record<string, string> | undefined;
   const piiFields = s.pii_fields as string[] | undefined;
-  const stepOptions = s.cache !== undefined ? { cache: s.cache as 'fresh' | 'acceptable' | 'any' } : undefined;
+  const stepOptions = ctx.preapprovalAddressing ? { cache: 'fresh' as const }
+    : s.cache !== undefined ? { cache: s.cache as 'fresh' | 'acceptable' | 'any' } : undefined;
   const stepMeta = buildStepMeta(
     s,
     requireRecipe(ctx).recipe_id,
     ctx.trigger_source,
-    ctx.resumeFrom?.gated_step_id,
-    ctx.resumeFrom?.approved_target,
+    resumeFrom?.gated_step_id,
+    resumeFrom?.approved_target,
     ctx.actor,
     ctx.contract_id,
-    ctx.resumeFrom?.session_grant,
-    ctx.resumeFrom?.batch_claim,
+    resumeFrom?.session_grant,
+    resumeFrom?.batch_claim,
     ctx.run_id,
     ctx.work_entity_write_preadmitted_step_id,
     ctx.execution_source,
   );
+  if (ctx.governing_recipe_grant !== undefined) stepMeta.governing_recipe_grant = ctx.governing_recipe_grant;
+  if (ctx.entry_tool_name !== undefined) stepMeta.entry_tool_name = ctx.entry_tool_name;
+  if (ctx.preapprovalAddressing) stepMeta.invocation_path = preapprovalStepPath(
+    ctx.preapprovalAddressing.recipe_path, ctx.preapprovalAddressing.phase,
+    stepMeta.step_id, ctx.preapprovalAddressing.iteration_indices);
 
   // D-165 P0 — catalog-form routing. When the resolved manifest carries a
   // non-empty `operations` map, the call dispatches through the D-157

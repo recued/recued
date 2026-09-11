@@ -41,6 +41,7 @@ import { createVendorOAuthCompletePortHandler } from './connection-vendor-oauth-
 import { createAskLandingPortHandler } from './ask-landing-port.js';
 import {
   createMcpPortHandler,
+  type McpSubscriptionsPort,
   MCP_RATE_LIMIT_PER_MIN,
   MCP_RATE_LIMIT_WINDOW_MS,
   type McpBearerVerifier,
@@ -71,6 +72,7 @@ import type { LLMConfigManager } from './llm-config.js';
 import type {
   AdapterRegistry,
   EmbeddingsAdapterRegistry,
+  TranscriptionAdapterRegistry,
   QuotaTracker,
 } from '@recued/llm';
 import type { RuntimeConfigStore } from '@recued/config';
@@ -143,6 +145,8 @@ export interface ServerConfig {
     adapters: AdapterRegistry;
     quota: QuotaTracker;
     embeddingsAdapters?: EmbeddingsAdapterRegistry;
+    /** D-262 § B7 — transcription is `transcribe`, a third provider call. */
+    transcriptionAdapters?: TranscriptionAdapterRegistry;
   };
   /** D-196 S2 — local seller substrate for the Settings -> Seller overview. */
   sellerStore?: SellerStore;
@@ -397,6 +401,8 @@ export interface ServerConfig {
   formResponseDeps?: import('./form-response-handler.js').FormResponseRpcDeps;
   /** D-221 owner-only pack Records explorer and lifecycle rpc deps. */
   recordsRpcDeps?: import('./records-rpc-handler.js').RecordsRpcDeps;
+  savedDataViewStore?: import('./saved-data-view-store.js').SavedDataViewStore;
+  preapprovalDeps?: import('./preapproval-handler.js').PreapprovalHandlerDeps;
   /** D-174 #22 — `data.timeline` read pair-RPC deps (Data route
    *  drill-down). Wraps the shared `handleTimelineRequest`. Absent →
    *  the method returns `not_configured`. */
@@ -690,6 +696,10 @@ export interface ServerConfig {
     resolveConcurrencyLimit?: McpConcurrencyLimitResolver;
     rateLimiter?: RateLimiter;
     catalog?: McpCatalogDispatch;
+    /** MCP 2026-07-28 `subscriptions/listen`. Absent → the method falls
+     *  through to the dispatcher and answers `-32601` (404 to a modern
+     *  client), which is the accurate "this server does not push". */
+    subscriptions?: McpSubscriptionsPort;
   };
   /** D-196 S2c — OpenAI-compatible HTTP chat-completions gateway. Mounted on
    *  the `llm_gateway` path role when inbound token + LLM route deps exist. */
@@ -1081,6 +1091,9 @@ export const createServerHandlerSet = (config: ServerConfig = {}): ServerHandler
             }
           : {}),
         ...(config.mcpHttpDeps.catalog ? { catalog: config.mcpHttpDeps.catalog } : {}),
+        ...(config.mcpHttpDeps.subscriptions
+          ? { subscriptions: config.mcpHttpDeps.subscriptions }
+          : {}),
       })
     : (_req, res) => {
         respond(res, { ok: false, status: 404, error: { code: 'not_found', message: 'mcp http transport reserved' } });
@@ -1476,6 +1489,8 @@ export const createServerHandlerSet = (config: ServerConfig = {}): ServerHandler
     workEntityCrudDeps: config.workEntityCrudDeps,
     formResponseDeps: config.formResponseDeps,
     recordsRpcDeps: config.recordsRpcDeps,
+    savedDataViewStore: config.savedDataViewStore,
+    preapprovalDeps: config.preapprovalDeps,
     timelineRpcDeps: config.timelineRpcDeps,
     memoryRpcDeps: config.memoryRpcDeps,
     fileReadRpcDeps: config.fileReadRpcDeps,

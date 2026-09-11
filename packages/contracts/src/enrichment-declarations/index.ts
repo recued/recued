@@ -26,7 +26,6 @@ import { PREFERRED_CHANNEL_BY_CONTACT_DECLARATION } from './preferred-channel-by
 import { PROJECT_NEXT_ACTION_GAP_DECLARATION } from './project-next-action-gap.js';
 import { TASK_DUPLICATE_CANDIDATE_DECLARATION } from './task-duplicate-candidate.js';
 import { SOURCE_FRESHNESS_DEGRADATION_DECLARATION } from './source-freshness-degradation.js';
-import { CONTEXT_PACKET_QUALITY_DECLARATION } from './context-packet-quality.js';
 
 /** Closed map of every D-145 producer's declaration. Adding a new
  *  topic requires widening `D145_PRODUCER_TOPICS` + adding an entry
@@ -51,7 +50,6 @@ export const D145_PRODUCER_DECLARATIONS: Readonly<
   project_next_action_gap: PROJECT_NEXT_ACTION_GAP_DECLARATION,
   task_duplicate_candidate: TASK_DUPLICATE_CANDIDATE_DECLARATION,
   source_freshness_degradation: SOURCE_FRESHNESS_DEGRADATION_DECLARATION,
-  context_packet_quality: CONTEXT_PACKET_QUALITY_DECLARATION,
 };
 
 export {
@@ -69,7 +67,6 @@ export {
   PROJECT_NEXT_ACTION_GAP_DECLARATION,
   TASK_DUPLICATE_CANDIDATE_DECLARATION,
   SOURCE_FRESHNESS_DEGRADATION_DECLARATION,
-  CONTEXT_PACKET_QUALITY_DECLARATION,
 };
 
 /** Spec § A.7.5 — runs at registry load. Iterates every D-145 topic

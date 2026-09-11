@@ -37,10 +37,26 @@
  *      (caller is responsible for mail-side typing — producer
  *      assumes the supplied `mail_rows` already match this).
  *    - dedupe_acceptance: `'exact_only'` — matches by Message-ID
- *      are exact + collapse; quadruple-fallback matches surface
- *      as 'probable' confidence + count as out-of-band (the
- *      probable match isn't strong enough to assume "the CRM
- *      has it").
+ *      are exact + collapse.
+ *
+ *  ⚠ CORRECTED 2026-09-10. This paragraph used to end "quadruple-fallback
+ *  matches surface as 'probable' confidence + count as out-of-band (the
+ *  probable match isn't strong enough to assume 'the CRM has it')", which
+ *  CONTRADICTS both the code and the paragraph above it: `computeOutOfBand-
+ *  Engagement` does `if (matchedQuadruple) continue`, so a quadruple match
+ *  SUPPRESSES the count, exactly as the matching-strategy note says
+ *  ("counted as 'matched' so we don't flag mail that's almost certainly the
+ *  CRM row"). The two halves of one header disagreed from P4 onward.
+ *
+ *  ⛔ AND THE FALLBACK WAS DEAD UNTIL 2026-09-10. It reads
+ *  `meta.subject_hash`, and no reconciler wrote that field — a whole-repo
+ *  sweep found it only here, in this file's tests (which hand-build the
+ *  meta), and in the decisions-log. So `matchesCrmQuadruple` returned false
+ *  on every real row and every mail the Message-ID path missed would have
+ *  been reported as a CRM visibility gap. Both email reconcilers now project
+ *  it via the shared `engagementSubjectHash`; see
+ *  `d-139-subject-hash-join.test.ts` for the join assertion neither side's
+ *  own unit tests could make.
  *
  *  Spec: D-139 § A.9.2b + § P4 acceptance. */
 
@@ -130,6 +146,34 @@ export interface OutOfBandContactConfidence {
  *  Codex P1 #2 fold — only outbound CRM rows are indexed; an inbound
  *  CRM row carrying the same Message-ID must not suppress an
  *  outbound visibility-gap alert. */
+/** ⛔ THE TWO SIDES SPELL A MESSAGE-ID DIFFERENTLY, so the index owns the
+ *  normalisation.
+ *
+ *  CRM ingest stores the header VERBATIM — HubSpot's
+ *  `hs_email_internet_message_id`, Salesforce's `MessageIdentifier` — which
+ *  for most providers arrives angle-bracketed: `<abc@host>`. `data.mail`
+ *  stores `rfc_message_id` already stripped and trimmed
+ *  (`normalizeRfcMessageId`, and `createMailTwinResolver` normalises the CRM
+ *  half at lookup for exactly this reason).
+ *
+ *  Indexing the raw CRM string against a normalised mail string means the
+ *  exact-match path silently never fires for any bracketing provider, and
+ *  every one of those mails falls through to the fallback — or, before the
+ *  fallback had a join key at all, straight to "out of band". Same
+ *  write-key-vs-read-key asymmetry as `subject_hash`; third instance in this
+ *  one producer.
+ *
+ *  Normalising HERE rather than at the two call sites keeps the match rule
+ *  in one place: the kernel decides what "same message" means, and callers
+ *  hand it whatever their source stored. */
+const normalizeMessageId = (raw: unknown): string | null => {
+  if (typeof raw !== 'string') return null;
+  let s = raw.trim();
+  if (s.length >= 2 && s.startsWith('<') && s.endsWith('>')) s = s.slice(1, -1).trim();
+
+  return s.length > 0 ? s : null;
+};
+
 export const buildCrmMessageIdIndex = (
   rows: ReadonlyArray<EngagementRow>,
 ): ReadonlyMap<string, EngagementRow> => {
@@ -137,10 +181,10 @@ export const buildCrmMessageIdIndex = (
   for (const row of rows) {
     if (row.entity !== 'email' && row.entity !== 'email_message') continue;
     if (row.direction !== 'outbound') continue;
-    const message_id = (row.meta as { message_id?: unknown } | undefined)?.message_id;
-    if (typeof message_id === 'string' && message_id.length > 0) {
-      idx.set(message_id, row);
-    }
+    const message_id = normalizeMessageId(
+      (row.meta as { message_id?: unknown } | undefined)?.message_id,
+    );
+    if (message_id !== null) idx.set(message_id, row);
   }
   return idx;
 };
@@ -251,8 +295,9 @@ export const computeOutOfBandEngagement = (
     // Grace window — mail < 30 min old isn't yet flagged.
     if (input.now - mail.sent_at < OUT_OF_BAND_GRACE_MS) continue;
 
-    // Match attempt 1 — Message-ID exact match.
-    if (mail.message_id && messageIdIndex.has(mail.message_id)) continue;
+    // Match attempt 1 — Message-ID exact match, both sides normalised.
+    const mailMessageId = normalizeMessageId(mail.message_id);
+    if (mailMessageId !== null && messageIdIndex.has(mailMessageId)) continue;
 
     // Match attempt 2 — quadruple fallback against any CRM email row.
     let matchedQuadruple = false;

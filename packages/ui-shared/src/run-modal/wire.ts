@@ -12,6 +12,9 @@
 import {
   buildTargetRequiredMessage,
   CRON_PRESETS,
+  parsePreparePreapproval,
+  PREAPPROVAL_LIMITS,
+  type PreparePreapproval,
 } from '@recued/contracts';
 
 import {
@@ -112,6 +115,7 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
   const caps: RunModalCaps = {
     canExecute: opts.execute !== undefined,
     canSchedule: opts.schedulesList !== undefined,
+    canPreapprove: opts.preapprovalPrepare !== undefined,
     canTrigger: opts.triggersList !== undefined,
     canPickFiles: opts.fileRefSearch !== undefined,
     canPickRecords: opts.recordRefSearch !== undefined,
@@ -473,6 +477,41 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
     );
   };
 
+  // Keep the same key, deadlines and body after an uncertain response. Only
+  // an explicit material edit starts a different preparation request.
+  let pendingPreparation: { material: string; request: PreparePreapproval } | null = null;
+  const reviewSchedule = async (): Promise<void> => {
+    if (destroyed || state.mutating || !opts.preapprovalPrepare) return;
+    const focus = captureFocusIdentity();
+    try {
+      if (state.repeat) throw new Error('Choose Run once to review this new scheduled execution.');
+      const runAt = parseLocalDateTime(state.run_at_local);
+      if (runAt === null || runAt <= Date.now()) throw new Error('Pick a future date and time to run once.');
+      const config = parseRunConfig(state.config_text);
+      const subject = { kind: 'recipe', recipe_id: opts.recipe.recipe_id,
+        publisher_id: opts.publisherId ?? opts.recipe.publisher_id, config };
+      const activation = { kind: 'one_shot', run_at: runAt,
+        time_zone: Intl.DateTimeFormat().resolvedOptions().timeZone };
+      const material = JSON.stringify({ subject, activation });
+      if (pendingPreparation?.material !== material) {
+        pendingPreparation = { material, request: parsePreparePreapproval({
+          idempotency_key: crypto.randomUUID(), subject, activation,
+          decision_deadline: Math.min(runAt, Date.now() + PREAPPROVAL_LIMITS.default_decision_ms),
+          dispatch_deadline: runAt + PREAPPROVAL_LIMITS.default_dispatch_grace_ms,
+        }) };
+      }
+      state = { ...state, mutating: true, schedule_error: null }; paint(focus);
+      const result = await opts.preapprovalPrepare(pendingPreparation.request);
+      if (destroyed) return;
+      state = { ...state, mutating: false };
+      close();
+      opts.onPreapprovalPrepared?.(result);
+    } catch (err) {
+      if (destroyed) return;
+      state = { ...state, mutating: false, schedule_error: errMessage(err) }; paint(focus);
+    }
+  };
+
   const toggleSchedule = (ruleId: string, to: boolean): Promise<void> => {
     const update = opts.schedulesUpdate;
     if (update === undefined) return scheduleNotWired();
@@ -698,6 +737,10 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
     }
     if (action === 'add-schedule') {
       void addSchedule();
+      return;
+    }
+    if (action === 'review-schedule') {
+      void reviewSchedule();
       return;
     }
     if (action === 'add-trigger') {
@@ -1039,6 +1082,7 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
     setRunAtLocal,
     confirmRun,
     addSchedule,
+    reviewSchedule,
     toggleSchedule,
     removeSchedule,
     setPatternText,

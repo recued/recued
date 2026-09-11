@@ -14,6 +14,17 @@ import {
 } from '@recued/ui-shared';
 import { createComposerAttachments } from './composer-attachments.js';
 import {
+  browserVoiceCaptureFactory,
+  createVoiceComposer,
+  type VoiceCaptureFactory,
+  type VoiceComposer,
+} from './voice-capture.js';
+import {
+  browserVoiceSpeaker,
+  speechTextFromReply,
+  type VoiceSpeakerFactory,
+} from './voice-speech.js';
+import {
   transparencyStreamSettingsFromPrefs,
   CHAT_HISTORY_WINDOW,
   classForTransparencyEventKind,
@@ -34,6 +45,9 @@ import {
   type ChatSession,
   type ChatSessionSummary,
   type InstancePrefs,
+  DEFAULT_INSTANCE_PREFS,
+  getPref,
+  type VoiceSpeakMode,
   type ServerEvent,
   type TransparencyEventKind,
   type TransparencyStreamSettings,
@@ -59,6 +73,8 @@ import {
   type PlanApprovalCard,
   type PlanExecutionReceipt,
   type TurnFailureNotice,
+  buildCarriedBriefModel,
+  CARRIED_BRIEF_FIELD_LABELS,
 } from './index.js';
 import type { BroadcastSubscriber } from '../realtime/subscriber.js';
 import type { WebclientReconnectSubscriber } from '../realtime/connection-status.js';
@@ -129,6 +145,10 @@ export const CHAT_ROUTE_SESSION_ROW_ATTR = 'data-recued-chat-route-session-row';
 /** The thread's scrolling region — the element whose position has to survive a
  *  render, since every broadcast rebuilds the route wholesale. */
 export const CHAT_ROUTE_MESSAGES_ATTR = 'data-recued-chat-route-messages';
+/** The carried-brief disclosure panel, and its clear control. */
+export const CHAT_ROUTE_CARRY_ATTR = 'data-recued-chat-route-carry';
+export const CHAT_ROUTE_CARRY_ROW_ATTR = 'data-recued-chat-route-carry-row';
+export const CHAT_ROUTE_CARRY_CLEAR_ATTR = 'data-recued-chat-route-carry-clear';
 /** The control that pulls an older page in. Present only while the server says
  *  older messages exist. */
 export const CHAT_ROUTE_LOAD_OLDER_ATTR = 'data-recued-chat-route-load-older';
@@ -280,6 +300,11 @@ export const CHAT_ROUTE_COMPOSER_ATTR = 'data-recued-chat-route-composer';
 export const CHAT_ROUTE_ATTACH_ATTR = 'data-recued-chat-route-attach';
 export const CHAT_ROUTE_ATTACH_INPUT_ATTR = 'data-recued-chat-route-attach-input';
 export const CHAT_ROUTE_ATTACHMENTS_ATTR = 'data-recued-chat-route-attachments';
+/** D-262 § 5 — the press-to-talk control, and the line that says why a press
+ *  failed. Both carry an accessible name too: the e2e drives by name, the unit
+ *  suite by attribute, and a control located only one way is half-covered. */
+export const CHAT_ROUTE_VOICE_ATTR = 'data-recued-chat-route-voice';
+export const CHAT_ROUTE_VOICE_ERROR_ATTR = 'data-recued-chat-route-voice-error';
 export const CHAT_ROUTE_ATTACHMENT_ATTR = 'data-recued-chat-route-attachment';
 export const CHAT_ROUTE_ATTACHMENT_REMOVE_ATTR = 'data-recued-chat-route-attachment-remove';
 /** The in-composer model picker `<select>` — lists only CONFIGURED
@@ -384,6 +409,15 @@ export const CHAT_ROUTE_CREATE_CLOSE_ATTR = CREATE_OVERLAY_CLOSE_ATTR;
 // screen. The chat route is back to a thin DOM host.
 
 export interface ChatRouteConn {
+  /** What the assistant is CARRYING about this conversation, and a way to drop
+   *  it. ⛔ The brief sits in the packet of every later turn and only its fold
+   *  TRAIL ever reached the owner — that folds happened, never what they kept. */
+  (method: 'chat.session.brief.get', payload: { session_id: string }): Promise<{
+    brief: unknown | null;
+  }>;
+  (method: 'chat.session.brief.clear', payload: { session_id: string }): Promise<{
+    ok: true;
+  }>;
   (method: 'chat.sessions.list'): Promise<{
     sessions: ChatSessionSummary[];
     /** Every session running a turn, from any surface. ⛔ PRESENT-BUT-EMPTY
@@ -937,6 +971,10 @@ export const CHAT_ROUTE_CHROME_STYLES = `
 }
 [${CHAT_ROUTE_HOST_ATTR}] .chat-thread-messages {
   display: grid;
+  /* Cards with clipped overflow otherwise shrink to fit the bounded thread,
+     hiding their reference controls. Keep each row at its content height and
+     let the message region scroll. */
+  grid-auto-rows: max-content;
   align-content: start;
   gap: 10px;
   padding: 12px;
@@ -1142,6 +1180,7 @@ export const CHAT_ROUTE_CHROME_STYLES = `
      overflows, that is a finding about the FLOOR, to be fixed there once. */
 }
 [${CHAT_ROUTE_HOST_ATTR}] .chat-composer-input-row > [${CHAT_ROUTE_ATTACH_ATTR}],
+[${CHAT_ROUTE_HOST_ATTR}] .chat-composer-input-row > [${CHAT_ROUTE_VOICE_ATTR}],
 [${CHAT_ROUTE_HOST_ATTR}] .chat-composer-input-row > [${CHAT_ROUTE_SEND_ATTR}] {
   flex: 0 0 auto;
 }
@@ -1587,6 +1626,31 @@ export const CHAT_ROUTE_CHROME_STYLES = `
   padding: 0 2px;
 }
 [${CHAT_ROUTE_ATTACH_INPUT_ATTR}] { display: none; }
+/* D-262 § 5 — the mic matches the attach control, and SAYS it is live: a
+   recording that looked identical to an idle one is how a person leaves the
+   microphone open. */
+[${CHAT_ROUTE_VOICE_ATTR}] {
+  border: 1px solid var(--border);
+  border-radius: var(--chat-radius-control);
+  background: var(--surface);
+  cursor: pointer;
+  padding: 7px 11px;
+  font-size: 15px;
+  line-height: 1;
+}
+[${CHAT_ROUTE_VOICE_ATTR}="recording"] {
+  border-color: var(--danger, #c0392b);
+  color: var(--danger, #c0392b);
+}
+[${CHAT_ROUTE_VOICE_ATTR}][disabled] {
+  opacity: 0.55;
+  cursor: default;
+}
+[${CHAT_ROUTE_VOICE_ERROR_ATTR}] {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--danger, #c0392b);
+}
 [${CHAT_ROUTE_ATTACH_ATTR}] {
   border: 1px solid var(--border);
   border-radius: var(--chat-radius-control);
@@ -2398,6 +2462,15 @@ export interface BootstrapChatRouteOptions {
    *  can never finish, which is worse than no button. */
   uploadCallers?: Upload.UploadCallers;
   uploadConnect?: Upload.UploadConnectFactory;
+  /** D-262 § 5 — press-to-talk capture. Omitted in production, where the
+   *  browser factory is built from globals; supplied by tests, which have no
+   *  `navigator` and no `MediaRecorder`. `null` from either source means this
+   *  context cannot record and the mic control never renders. */
+  voiceCapture?: VoiceCaptureFactory;
+  /** D-262 slice 4 — reply speech. Omitted in production (built from
+   *  `speechSynthesis`); supplied by tests, which have no browser. `null`
+   *  means this context cannot speak and the setting simply has no effect. */
+  voiceSpeaker?: VoiceSpeakerFactory;
   subscribe?: BroadcastSubscriber['on'];
   /** Reconcile the open session from durable state after every successful
    * transport reconnect (including a server restart with a fresh event epoch). */
@@ -2524,6 +2597,17 @@ interface ChatRouteState {
    *  never flashes the banner — the distinction the model-routing badge's
    *  `pending` state cannot make. */
   aiAvailable: boolean | null;
+  /** D-262 § B8 — is a transcription source PROPERLY CONFIGURED (provider,
+   *  model and a stored key)? Tri-state like `aiAvailable`: `null` while the
+   *  config read is in flight, so a slow boot never renders a control it may
+   *  have to take away. */
+  transcriptionAvailable: boolean | null;
+  /** D-262 slice 4 — the two voice preferences, defaulted from the registry
+   *  until `prefs.get` lands. ⚠ Defaults rather than `null`: a person who
+   *  speaks before the pref read returns should get the DEFAULT behaviour, not
+   *  no behaviour. */
+  voiceAutoSend: boolean;
+  voiceSpeakReplies: VoiceSpeakMode;
   /** § B.8.9 — resolved transparency-stream visibility policy for the
    *  activity disclosure. Substrate defaults until the `prefs.get`
    *  read lands (or forever, when it fails — soft signal); the route
@@ -3258,6 +3342,9 @@ export const bootstrapChatRoute = (
     sending: false,
     pending_turn_id: null,
     aiAvailable: null,
+    transcriptionAvailable: null,
+    voiceAutoSend: getPref(DEFAULT_INSTANCE_PREFS, 'ui.voice.auto_send'),
+    voiceSpeakReplies: getPref(DEFAULT_INSTANCE_PREFS, 'ui.voice.speak_replies'),
     transparency: DEFAULT_TRANSPARENCY_STREAM_SETTINGS,
     modelSources: null,
     defaultSourceId: null,
@@ -3291,6 +3378,39 @@ export const bootstrapChatRoute = (
       : null;
   let historyQuery = '';
   let openingSessionId: string | null = null;
+  /** What the assistant is carrying for the OPEN session.
+   *  ⛔ THREE STATES, KEPT APART: `undefined` = not asked yet (the panel stays
+   *  hidden rather than claiming nothing is carried), `null` = the server has no
+   *  carry, an object = the carry. "Nothing carried" and "we have not asked"
+   *  look identical on screen and mean opposite things. */
+  let carriedBriefSnapshot: unknown | null | undefined = undefined;
+  /** ⚠ Best-effort and never blocking the thread: a carry the server will not
+   *  return is a missing disclosure, not a broken conversation, so a failed read
+   *  leaves the panel hidden rather than surfacing an error over the messages. */
+  const loadCarriedBrief = async (sessionId: string): Promise<void> => {
+    const before = carriedBriefSnapshot;
+    try {
+      const out = await opts.conn('chat.session.brief.get', { session_id: sessionId });
+      carriedBriefSnapshot = out.brief;
+    } catch { carriedBriefSnapshot = undefined; }
+    // ⛔⛔ ONLY RE-RENDER ON A CHANGE. This read is async and lands AFTER the
+    //   thread has painted, so an unconditional `render()` repaints the route
+    //   out from under whatever the turn just focused — measured: it moved
+    //   focus off the composer textarea onto a button and turned
+    //   `d-174-p2-contracts-chat-route` red on same-session drafting. A server
+    //   with no carry (or one that cannot answer) leaves the snapshot exactly
+    //   as it was, so the common case must cost nothing at all.
+    if (carriedBriefSnapshot !== before) render();
+  };
+  const clearCarriedBrief = async (): Promise<void> => {
+    const sessionId = state.thread?.session?.id;
+    if (typeof sessionId !== 'string') return;
+    try {
+      await opts.conn('chat.session.brief.clear', { session_id: sessionId });
+      carriedBriefSnapshot = null;
+    } catch { /* leave the panel as it was; the carry is unchanged */ }
+    render();
+  };
   // Which navigation the person most recently ASKED for. A session open is one
   // awaited `chat.session.get`, and clicks land faster than that resolves — so
   // the question is what a second click means while the first is loading. It
@@ -4405,7 +4525,7 @@ export const bootstrapChatRoute = (
 
   const renderMessage = (
     host: HTMLElement,
-    message: Pick<ChatMessage, 'role' | 'content' | 'id'>,
+    message: Pick<ChatMessage, 'role' | 'content' | 'id' | 'tool_call'>,
     activity: ReadonlyArray<ChatActivityRow> = [],
     pendingText?: string,
   ): HTMLElement => {
@@ -4419,6 +4539,13 @@ export const bootstrapChatRoute = (
     const role = doc.createElement('span');
     role.className = 'chat-message-role';
     role.textContent = messageRoleLabel(message.role);
+    if (message.tool_call) {
+      const labels = {
+        running: 'Running', held: 'Waiting for a result', succeeded: 'Completed',
+        failed: 'Failed', interrupted: 'Interrupted — outcome unconfirmed',
+      };
+      role.textContent += ` · ${labels[message.tool_call.state]}`;
+    }
     row.appendChild(role);
     // Activity sits between the role label and the content on BOTH the
     // in-flight scaffold and the completed row (§ B.8.7 "between the
@@ -7216,9 +7343,72 @@ export const bootstrapChatRoute = (
       attach.addEventListener('click', () => { fileInput.click(); });
       inputRow.appendChild(fileInput);
       inputRow.appendChild(attach);
+      // D-262 § 5 + § B8 — press to talk. Renders ONLY when this context can
+      // record AND the server has a configured transcription source, so the
+      // control's presence is itself the whole capability answer and there is
+      // no "microphone unavailable" state to explain after the fact.
+      //
+      // ⚠ `=== true`, not truthy: `null` means the config read has not landed,
+      // and rendering a mic that a moment later disappears is worse than one
+      // that arrives a moment late.
+      if (voiceComposer !== null && state.transcriptionAvailable === true) {
+        const phase = voiceComposer.phase();
+        const mic = doc.createElement('button');
+        mic.type = 'button';
+        mic.setAttribute(CHAT_ROUTE_VOICE_ATTR, phase);
+        // ⚠ The NAME changes with the phase, not just the glyph. A button that
+        // still reads "Record a voice note" while recording tells a screen
+        // reader the opposite of what the button now does.
+        mic.setAttribute(
+          'aria-label',
+          phase === 'recording'
+            // ⚠ AND IT SAYS WHICH ONE WILL HAPPEN. A note stops itself into a
+            // send only when the box is empty; with a draft in it the note
+            // becomes an ordinary attachment and waits. A button promising
+            // "and send" in that state names the wrong outcome.
+            ? (composerDraft.trim().length === 0
+              ? 'Stop recording and send'
+              : 'Stop recording and attach')
+            : phase === 'opening'
+              ? 'Waiting for microphone permission'
+              : 'Record a voice note',
+        );
+        mic.setAttribute('aria-pressed', phase === 'recording' ? 'true' : 'false');
+        mic.textContent = phase === 'recording' ? '\u25a0' : '\u25cf';
+        // An in-flight send owns the composer; `opening` is waiting on the
+        // browser's own prompt and has nothing to toggle.
+        if (state.sending || phase === 'opening') mic.disabled = true;
+        mic.addEventListener('click', () => { voiceComposer?.toggle(); });
+        inputRow.appendChild(mic);
+        // ⚠ A stopped recording SENDS ITSELF, so discard has to exist while the
+        // recording is still running — after the upload finalizes there is no
+        // window left in which to change your mind.
+        if (phase === 'recording') {
+          const discard = doc.createElement('button');
+          discard.type = 'button';
+          discard.setAttribute(CHAT_ROUTE_VOICE_ATTR, 'discard');
+          discard.setAttribute('aria-label', 'Discard recording');
+          discard.textContent = '\u00d7';
+          discard.addEventListener('click', () => { voiceComposer?.cancel(); });
+          inputRow.appendChild(discard);
+        }
+      }
     }
     inputRow.appendChild(input);
     inputRow.appendChild(send);
+    // D-262 § 5 — a refused microphone SAYS SO. A denial that resolved into a
+    // button quietly returning to idle is indistinguishable from a broken
+    // feature, and the person's next move (grant permission vs check the
+    // hardware) depends on which one it was.
+    const voiceError = voiceComposer?.error() ?? null;
+    if (voiceError !== null) {
+      const line = doc.createElement('p');
+      line.className = 'chat-composer-voice-error';
+      line.setAttribute(CHAT_ROUTE_VOICE_ERROR_ATTR, '');
+      line.setAttribute('role', 'status');
+      line.textContent = voiceError;
+      composer.appendChild(line);
+    }
     // The chip row sits BELOW the input, so a growing list never pushes the
     // textarea around mid-sentence.
     if (composerAttachments !== null && composerAttachments.rows().length > 0) {
@@ -7261,6 +7451,92 @@ export const bootstrapChatRoute = (
     return composer;
   };
 
+  /** D-262 § 5 — set when a recording is handed to the upload path, cleared
+   *  the moment that upload settles either way. A voice note is not a file
+   *  someone is composing WITH; it is the message, so it sends itself. */
+  let pendingVoiceSend = false;
+  /** ⛔ D-262 — WHICH composer rows are recordings, by stable row id.
+   *  `payload().length` cannot answer "did the recording upload succeed": with
+   *  a file already attached it is non-zero even when the recording FAILED, so
+   *  a failed voice note auto-sent whatever was sitting in the composer — an
+   *  unasked-for turn carrying someone's PDF, and the failed chip cleared with
+   *  it. Row ids are stable across removals (see `ComposerAttachmentRow.id`);
+   *  positions are not. */
+  const voiceRowIds = new Set<number>();
+  let pendingVoiceRowId: number | null = null;
+  /** D-262 slice 4 — set for the single `sendMessage` call an auto-send makes,
+   *  so its ack can record the turn id as voice-originated. */
+  let voiceTurnPending = false;
+
+  /** D-262 slice 4 — the browser's own speech, or `null` where the API is
+   *  absent. Built once: `speechSynthesis` is a singleton, and a second
+   *  wrapper would cancel the first one's utterance as readily as its own. */
+  const voiceSpeaker: VoiceSpeakerFactory = opts.voiceSpeaker !== undefined
+    ? opts.voiceSpeaker
+    : browserVoiceSpeaker();
+
+  /** Turn ids that began as a spoken note, for `after_voice`.
+   *
+   *  ⚠ A SET WITH A LID. Some turns never complete — a failed send, a closed
+   *  tab — so entries would accumulate for the life of the route without one.
+   *  It stays small because it only holds turns still awaiting a reply. */
+  const voiceOriginTurns = new Set<string>();
+  const rememberVoiceTurn = (turnId: string): void => {
+    voiceOriginTurns.add(turnId);
+    if (voiceOriginTurns.size > 20) {
+      const oldest = voiceOriginTurns.values().next().value;
+      if (oldest !== undefined) voiceOriginTurns.delete(oldest);
+    }
+  };
+
+  /** D-262 slice 4 — speak a completed reply, if the owner asked for it.
+   *
+   *  ⛔ THE TEXT IS NOT SPOKEN VERBATIM. `speechTextFromReply` strips markdown
+   *  and replaces fenced code with a spoken marker: reading "asterisk asterisk
+   *  important asterisk asterisk" and forty lines of shell aloud is how this
+   *  feature gets switched off on its first day. */
+  const maybeSpeakReply = (turnId: string | undefined, content: unknown): void => {
+    if (voiceSpeaker === null) return;
+    const mode = state.voiceSpeakReplies;
+    if (mode === 'never') return;
+    if (mode === 'after_voice' && (turnId === undefined || !voiceOriginTurns.has(turnId))) return;
+    if (typeof content !== 'string' || content.trim().length === 0) return;
+    voiceSpeaker.speak(speechTextFromReply(content));
+  };
+
+  const settleVoiceSend = (): void => {
+    if (!pendingVoiceSend || composerAttachments === null) return;
+    // Still climbing — `chat.send` carries finalized ids only, so sending now
+    // would send a turn with no note on it.
+    if (composerAttachments.hasInFlight()) return;
+    pendingVoiceSend = false;
+    const recordedRowId = pendingVoiceRowId;
+    pendingVoiceRowId = null;
+    // ⛔ THIS RECORDING'S OUTCOME, not "is anything attached". The chip already
+    // says the upload failed and holds a retry; inventing a second failure
+    // message here would contradict it. But asking `payload().length === 0`
+    // asked a different question — with a file already in the composer it is
+    // non-zero however the recording went, so a failed note auto-sent the
+    // OTHER attachment as though the person had asked for it.
+    const recorded = recordedRowId === null
+      ? undefined
+      : composerAttachments.rows().find((r) => r.id === recordedRowId);
+    if (recorded === undefined || recorded.file_id === undefined) return;
+    // ⚠ SPEAK-AND-TYPE IS NORMAL. Text in the box means the person is still
+    // composing, so the note waits for Send like any other attachment — and
+    // the server's voice branch requires an empty message anyway, so
+    // auto-sending here would produce a turn whose note is a file, not speech.
+    if (composerDraft.trim().length !== 0) return;
+    // D-262 slice 4 — the owner's setting. ⛔ Checked HERE rather than before
+    // the upload: turning auto-send off must leave the note attached and ready
+    // to send, not discard the recording. The desktop chat UIs behave the same
+    // way — the transcript lands in the composer and waits.
+    if (!state.voiceAutoSend) return;
+    // ⚠ The turn is attributed inside `sendMessage`, which is the ONE place
+    // both send paths pass through — see the note there.
+    void sendMessage('');
+  };
+
   // D-172 P2 — files attached to the turn being composed. Created only when
   // BOTH upload seams are wired; `null` means the attach control never renders.
   const composerAttachments = opts.uploadCallers && opts.uploadConnect
@@ -7268,10 +7544,39 @@ export const bootstrapChatRoute = (
       callers: opts.uploadCallers,
       connect: opts.uploadConnect,
       // Every phase change repaints the composer: the chips, and Send's
-      // disabled state while a file is still climbing.
-      onChange: () => { render(); },
+      // disabled state while a file is still climbing. Clearing even an empty
+      // set at send acknowledgement must preserve the current focus/caret.
+      onChange: () => { renderPreservingHandoffFocus(); settleVoiceSend(); },
     })
     : null;
+
+  /** D-262 § 5 — press-to-talk, or `null` when this context cannot record.
+   *
+   *  ⚠ Gated on `composerAttachments` too: a recording reaches the server
+   *  through the SAME resumable upload an attached file uses, so without the
+   *  upload seams there is nowhere for the bytes to go. */
+  const voiceComposer: VoiceComposer | null = ((): VoiceComposer | null => {
+    if (composerAttachments === null) return null;
+    const attachments = composerAttachments;
+    const factory = opts.voiceCapture !== undefined
+      ? opts.voiceCapture
+      : browserVoiceCaptureFactory();
+    if (factory === null) return null;
+    return createVoiceComposer({
+      factory,
+      onRecording: (file) => {
+        pendingVoiceSend = true;
+        attachments.attach(file);
+        // `rows()` is in attach order, so the recording is the row just added.
+        const rows = attachments.rows();
+        const added = rows.length > 0 ? rows[rows.length - 1] : undefined;
+        pendingVoiceRowId = added?.id ?? null;
+        if (added !== undefined) voiceRowIds.add(added.id);
+        render();
+      },
+      onChange: () => { render(); },
+    });
+  })();
 
   const render = (): void => {
     if (disposed) return;
@@ -7892,6 +8197,52 @@ export const bootstrapChatRoute = (
       threadTitle.textContent = sessionTitle(state.thread.session);
       threadHeader.appendChild(threadTitle);
       thread.appendChild(threadHeader);
+
+      // ⛔⛔ WHAT THE ASSISTANT IS CARRYING, shown above the thread it steers.
+      //   The brief is in the packet of every later turn and only its fold
+      //   TRAIL ever reached the owner. It asserts values at 98.4% accuracy, so
+      //   roughly 1 in 60 carried values is wrong and then propagates faithfully
+      //   — and the owner is the only party who can recognise a stale figure,
+      //   because the model cannot know its own carry is wrong.
+      //   ⚠ The projection ships its own `caveat`; rendering the rows without it
+      //   would lend a wrong value the credibility of being displayed.
+      const carryModel = buildCarriedBriefModel(carriedBriefSnapshot);
+      if (carryModel.kind !== 'loading') {
+        const carry = doc.createElement('section');
+        carry.className = 'chat-thread-carry';
+        carry.setAttribute(CHAT_ROUTE_CARRY_ATTR, carryModel.kind);
+        const h = doc.createElement('h3');
+        h.className = 'chat-thread-carry-heading';
+        h.textContent = carryModel.heading;
+        carry.appendChild(h);
+        for (const row of carryModel.rows) {
+          const line = doc.createElement('p');
+          line.className = 'chat-thread-carry-row';
+          line.setAttribute(CHAT_ROUTE_CARRY_ROW_ATTR, row.field);
+          // ⚠ Owner-originated rows are marked: `constraints` is the field a
+          //   reader can check against their own memory and the one nothing can
+          //   re-derive, so it is the one worth correcting.
+          if (row.from_owner) line.setAttribute('data-from-owner', '');
+          line.textContent = `${CARRIED_BRIEF_FIELD_LABELS[row.field]}: ${row.text}`;
+          carry.appendChild(line);
+        }
+        const note = doc.createElement('p');
+        note.className = 'chat-thread-carry-caveat';
+        note.textContent = carryModel.caveat;
+        carry.appendChild(note);
+        if (carryModel.kind === 'carrying') {
+          const clear = doc.createElement('button');
+          clear.className = 'rx-btn chat-thread-carry-clear';
+          clear.setAttribute(CHAT_ROUTE_CARRY_CLEAR_ATTR, '');
+          clear.textContent = 'Clear what is carried';
+          // ⚠ Coarse by design: drops the whole carry, not one bad entry. The
+          //   facts remain in the transcript, which `recall.search` reads, so
+          //   the next fold rebuilds from source.
+          clear.addEventListener('click', () => { void clearCarriedBrief(); });
+          carry.appendChild(clear);
+        }
+        thread.appendChild(carry);
+      }
 
       const messages = doc.createElement('div');
       messages.className = 'chat-thread-messages';
@@ -8779,13 +9130,27 @@ export const bootstrapChatRoute = (
       const { config } = await opts.conn('server.getLLMConfig');
       if (disposed) return;
       const available = isAnyAiSourceConfigured(config);
+      // D-262 § B8 — COMPLETE, not PROVEN. The Test probe passing is stale the
+      // instant a key is revoked, so gating on it would persist state in order
+      // to hand out confidence it cannot back. Complete is what the server's
+      // own availability reasons test, and it is what the redacted config can
+      // answer honestly: provider + model present, and a key stored.
+      const transcriptionSlot = (config as { transcription_slot?: unknown } | null)
+        ?.transcription_slot;
+      const transcriptionAvailable =
+        typeof transcriptionSlot === 'object' && transcriptionSlot !== null
+        && typeof (transcriptionSlot as { provider?: unknown }).provider === 'string'
+        && ((transcriptionSlot as { provider: string }).provider.length > 0)
+        && typeof (transcriptionSlot as { model?: unknown }).model === 'string'
+        && ((transcriptionSlot as { model: string }).model.length > 0)
+        && (transcriptionSlot as { has_key?: unknown }).has_key === true;
       // Shell-frame Step 3 — project the SAME config to the slot-based source
       // list the composer picker renders (so picker + Send-gate read one
       // source of truth).
       const modelSources = buildChatModelSourceOptions(
         config as LlmConfigRecord,
       );
-      state = { ...state, aiAvailable: available, modelSources };
+      state = { ...state, aiAvailable: available, transcriptionAvailable, modelSources };
       if (maybeSeedConnectedSourcePrompt()) {
         renderPreservingHandoffFocus();
       } else {
@@ -8826,6 +9191,10 @@ export const bootstrapChatRoute = (
       state = {
         ...state,
         transparency: transparencyStreamSettingsFromPrefs(prefs),
+        // D-262 slice 4 — same read, same soft-signal posture: a failed
+        // `prefs.get` leaves the registry defaults in place.
+        voiceAutoSend: getPref(prefs, 'ui.voice.auto_send'),
+        voiceSpeakReplies: getPref(prefs, 'ui.voice.speak_replies'),
       };
       render();
     } catch {
@@ -8866,6 +9235,11 @@ export const bootstrapChatRoute = (
       'navigation',
     );
     try {
+      // ⛔ RESET BEFORE THE LOAD, not after it. Switching sessions must not
+      //   leave the previous conversation's carry on screen under a new
+      //   thread — `undefined` hides the panel until this session's read lands.
+      carriedBriefSnapshot = undefined;
+      void loadCarriedBrief(sessionId);
       const snapshot = await opts.conn('chat.session.get', {
         session_id: sessionId,
         limit: CHAT_HISTORY_WINDOW,
@@ -9235,6 +9609,11 @@ export const bootstrapChatRoute = (
     if (threadSnapshotLoad?.kind === 'navigation') return;
     const snapshotGeneration = beginThreadSnapshotLoad(sessionId, 'recovery');
     try {
+      // ⛔ RESET BEFORE THE LOAD, not after it. Switching sessions must not
+      //   leave the previous conversation's carry on screen under a new
+      //   thread — `undefined` hides the panel until this session's read lands.
+      carriedBriefSnapshot = undefined;
+      void loadCarriedBrief(sessionId);
       const snapshot = await opts.conn('chat.session.get', {
         session_id: sessionId,
         // Recovery pays the same read as an open, and used to pay it in FULL
@@ -9795,6 +10174,21 @@ export const bootstrapChatRoute = (
         && (composerAttachments?.payload().length ?? 0) === 0)
       || state.sending
     ) return;
+    // ⛔⛔ D-262 — VOICE ORIGIN IS ATTRIBUTED HERE, where BOTH send paths meet.
+    // It used to be set only on the auto-send branch, which silently coupled
+    // two independent settings: turning auto-send OFF also disabled
+    // `speak replies: after voice`, because a recording the owner sent by
+    // pressing Send was never marked as voice-origin and `maybeSpeakReply`
+    // then declined to speak. Marked BEFORE the first `await` so the ack can
+    // attribute the turn — the reply can arrive before the send resolves.
+    if (
+      composerAttachments !== null
+      && composerAttachments.rows().some(
+        (r) => voiceRowIds.has(r.id) && r.file_id !== undefined,
+      )
+    ) {
+      voiceTurnPending = true;
+    }
     const activeBeforeSend = doc.activeElement as HTMLElement | null | undefined;
     const composerInputBeforeSend = routeRoot.querySelector?.(
       `[${CHAT_ROUTE_INPUT_ATTR}]`,
@@ -9926,10 +10320,19 @@ export const bootstrapChatRoute = (
           : {}),
       });
       const { turn_id } = sendAck;
+      // D-262 slice 4 — attribute the turn now that it has an id, so
+      // `after_voice` can tell a spoken turn from a typed one when the reply
+      // lands. Cleared unconditionally: a later typed turn must not inherit it.
+      if (voiceTurnPending && typeof turn_id === 'string') rememberVoiceTurn(turn_id);
+      voiceTurnPending = false;
       // D-172 P2 — the turn owns them now. Cleared only AFTER the ack, so a
       // send that threw leaves the chips in place and the person can retry
       // without re-uploading.
       composerAttachments?.clear();
+      // The rows are gone, so their ids name nothing. Clearing here keeps the
+      // set from growing across a session and from matching a recycled id.
+      voiceRowIds.clear();
+      pendingVoiceRowId = null;
       if (disposed) return;
       // ⛔ THE THREAD CAN HAVE MOVED WHILE `chat.send` WAS AWAITED. Every
       // switch path refuses mid-send (`retainPendingSend`), but that check
@@ -10161,6 +10564,7 @@ export const bootstrapChatRoute = (
             state.phase === 'ready'
             && evt.kind === 'chat.session_changed'
             && (event as { field?: unknown }).field !== 'busy'
+            && (event as { field?: unknown }).field !== 'tool_call'
           ) {
             // Titles, archive state, and their updated recency are list
             // projections. Re-read them quietly so returning-user history
@@ -10169,6 +10573,14 @@ export const bootstrapChatRoute = (
           }
           if (evt.kind === 'chat.message_complete') {
             hasCompletedChat = true;
+            // D-262 slice 4 — speak the reply if the owner asked. Placed on the
+            // completion event rather than the streaming deltas: synthesising
+            // partial text would read half-sentences aloud and then talk over
+            // itself as the rest arrives.
+            maybeSpeakReply(
+              typeof evt.turn_id === 'string' ? evt.turn_id : undefined,
+              (evt.final as { content?: unknown } | null)?.content,
+            );
             rememberSettledTurn(evt.session_id, evt.turn_id);
             if (typeof evt.session_id === 'string') {
               settleTrackedTurn(evt.session_id, evt.turn_id);
@@ -10443,17 +10855,20 @@ export const bootstrapChatRoute = (
     && opts.initialStarterPrompt !== true
     && connectedSource === null
     && initialSessionIdOnLoad === null;
+  // Setup suggestions can arrive after the session and composer are ready.
+  // An optional connections/recipes read must not keep a rescued draft blank
+  // or prevent recovery from recognizing that the session has loaded.
+  void loadActivationState();
   const initialLoad = Promise.all([
-    loadActivationState(),
     loadSessions(),
     loadAiAvailability(),
     loadDefaultModelPref(),
     loadTransparencySettings(),
     refreshConnectedSourceStatus(true),
   ]).then(() => {
-    // Each cold-start read can rebuild the textarea on a different network
-    // tick. Focus only after the initial reads have settled so a handoff does
-    // not leave focus on a detached, earlier render of the composer.
+    // Session and composer reads can rebuild the textarea on different ticks.
+    // Restore focus after they settle; the optional activation read preserves
+    // focus if it later repaints its suggestions.
     if (!disposed && pendingRecoveryDraft !== null) {
       const recovery = pendingRecoveryDraft;
       pendingRecoveryDraft = null;
@@ -10593,6 +11008,14 @@ export const bootstrapChatRoute = (
       // D-172 P2 — cancel any climbing upload with the route. Leaving an engine
       // running would keep a socket open against a surface nobody is watching.
       composerAttachments?.destroy();
+      // ⛔ Releases the microphone. A route torn down mid-recording that left
+      // the track live would keep the browser's recording indicator lit with
+      // nothing on screen to explain it.
+      voiceComposer?.destroy();
+      // ⛔ And stops the voice. `speechSynthesis` outlives the page's own
+      // teardown, so a reply left speaking would carry on talking over
+      // whatever the person navigated to.
+      voiceSpeaker?.cancel();
       doc.removeEventListener(
         'pointerdown',
         handleActionDisclosurePointerDown,

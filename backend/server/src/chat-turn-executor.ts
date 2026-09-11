@@ -40,7 +40,40 @@
  *  Spec: D-160 § N.9 + A.8.
  */
 
+import { piiEgress } from '@recued/gateway';
+
 import { resolveContextSlice, type ContextSliceRequest } from './chat-context-slice.js';
+import { chatToolCallFailureResult, isNonTerminalToolResult, savedChatToolCallId } from './chat-tool-call-context.js';
+import {
+  CONTEXT_OMISSION_NOTICE,
+  buildEvictionBriefing,
+} from './chat-eviction-briefing.js';
+import {
+  BRIEF_INSTRUCTION,
+  FORCE_WAIVABLE_OUTCOMES,
+  stripAliasBearing,
+  type BriefOutcome,
+  briefAsPriorToolCall,
+  clearSessionBrief,
+  markCarryIncomplete,
+  isFoldRecallBearing,
+  mergeBriefs,
+  hasAnchor,
+  shouldFailOnCaptureFailure,
+  BRIEF_CALL_TIMEOUT_MS,
+  withCompletedActions,
+  buildBriefPrompt,
+  appendUnfoldedUserMessage,
+  peekUnfoldedUserMessages,
+  hasStalePendingStatement,
+  clearIngestedUserMessages,
+  clearUnfoldedUserMessages,
+  getSessionBrief,
+  parseBrief,
+  setSessionBrief,
+  shouldBrief,
+  type RollingBrief,
+} from './chat-rolling-brief.js';
 import {
   groundingCorpusFromPacket,
   ungroundedArgumentsInCall,
@@ -55,6 +88,8 @@ import {
   aggregateTokenUsageReports,
   chatModelLayerToForceLayer,
   modelTierToModelHint,
+  NON_RETAINABLE_RECALL_TOOL_NAMES,
+  withRecallReceipts,
   partitionPriorToolCalls,
   validateAIOutput,
   coerceAIOutput,
@@ -295,14 +330,80 @@ const EMPTY_AI_OUTPUT_MESSAGE =
  *  over (chat_tail is content-only; a "continue" turn starts fresh). */
 const TOOL_BUDGET_EXHAUSTED_MESSAGE =
   'The AI used all of this turn\'s tool budget before finishing an answer. Ask it to continue — or narrow the request if this keeps happening.';
+/** Fail-loud message for the trim-livelock exit.
+ *
+ *  ⛔⛔ WHY THE TURN ENDS HERE RATHER THAN CARRYING ON. Measured 2026-09-05
+ *  (internal benchmarks task 342, a 40,000-token budget with 22,005 of
+ *  working room — 55%, so not a floor artifact): the model read four notes, the
+ *  trim elided all four `work.read` results, it re-read the IDENTICAL four ids,
+ *  those were elided too, and it repeated that four times before the round cap.
+ *  0/4 runs produced an answer, against a ~75% baseline.
+ *
+ *  Continuing is strictly worse than stopping: the loop spends the whole round
+ *  budget AND the tokens of every re-fetch, and still exits at
+ *  `max_rounds_exhausted` with nothing — so the user waits longer for the same
+ *  non-answer, and pays for it. Stopping at the second confirmed re-fetch turns
+ *  a slow silent failure into a fast legible one.
+ *
+ *  ⚠ THE TEXT MUST NOT SUGGEST "TRY AGAIN". An identical retry re-enters the
+ *  same loop — the budget has not changed, the result is still too large to
+ *  carry, and re-reading is precisely what the model already did four times.
+ *  The two remedies that actually change the outcome are a narrower request
+ *  (fewer or smaller records per turn) or a larger context window. */
+const CONTEXT_TRIM_LIVELOCK_MESSAGE =
+  'This turn needed more context than the selected model\'s window allows: a tool result was '
+  + 'too large to keep, and re-reading it produced the same result again. Ask for fewer or '
+  + 'smaller items at a time — or pick a model with a larger context window in '
+  + 'Settings → AI / Models. Repeating this request unchanged will hit the same limit.';
 const OUTPUT_LENGTH_EXHAUSTED_MESSAGE =
   'The model reached its output limit before it could finish a valid response.';
-const LLM_GATEWAY_CONTEXT_OMISSION_NOTICE =
-  '[llm_gateway context notice] Older complete conversation or tool-result groups were omitted to fit the selected model context window.';
+// Re-exported from `chat-eviction-briefing` so the notice and the briefing that
+// replaces it cannot drift apart.
+const LLM_GATEWAY_CONTEXT_OMISSION_NOTICE = CONTEXT_OMISSION_NOTICE;
 const LLM_GATEWAY_TOOL_RESULT_PREVIEW_CHARS = 2_048;
 
 /** Distinct error so the OpenAI-compatible surface can translate a local
  * preflight failure to `400 context_length_exceeded` instead of a provider 502. */
+/** The turn's CLOSING fold failed, so this turn's user-stated facts were never
+ *  captured by any brief.
+ *
+ *  ⛔⛔ THIS FAILS THE TURN INSTEAD OF DEGRADING, AND THE OLD JUSTIFICATION FOR
+ *  DEGRADING IS NO LONGER TRUE. The silent fallback was reasoned as "the turn
+ *  still works, it just works the old way" — true when `chat_tail` carried the
+ *  conversation. It does not: `CHAT_TAIL_LIMIT` is 3 ROWS, fixed and
+ *  budget-independent, so a fact is visible for about two turns and then exists
+ *  only in whatever the brief captured. Measured on task 363: the facts stated
+ *  at turns 1, 3 and 5 were absent from EVERY packet field by turn 8, in a
+ *  packet holding 767 bytes of tail against a 34,000-token budget. There is no
+ *  "old way" to fall back to — the fallback is a permanent hole.
+ *
+ *  ⛔ ONLY THE CLOSING FOLD RAISES THIS. A mid-turn fold that fails is repaired
+ *  by the turn-end fold, which runs regardless and reads the same
+ *  `user_request`. The closing fold has no successor, so its failure is the
+ *  only one that loses a user statement irrecoverably.
+ *
+ *  🔑 FAILING RESTORES A REPAIR PATH THAT SILENCE DESTROYS. The user's message
+ *  is still in the tail for ~2 turns, so a surfaced failure can be retried and
+ *  the fold gets another attempt. Degrading spends that window and the fact is
+ *  gone — and the loss surfaces later as a confident wrong answer built on a
+ *  subset, which is the hardest shape to attribute.
+ *
+ *  ⚠ MEASURED COST: 9 of ~330 folds failed to parse (2.7%). Closing folds are a
+ *  subset of those, so the user-visible rate is lower. It is not zero, and that
+ *  is the point — those 9 produced no signal, so nothing ever pressured anyone
+ *  to fix them. A failure with no consequence is a failure that stays. */
+export class ChatBriefCaptureError extends Error {
+  readonly code = 'brief_capture_failed';
+
+  constructor(readonly detail: string) {
+    super(
+      'the turn-end brief could not be written, so this turn\'s stated facts '
+      + `were not carried forward (${detail})`,
+    );
+    this.name = 'ChatBriefCaptureError';
+  }
+}
+
 export class ChatContextLengthError extends Error {
   readonly code = 'context_length_exceeded';
 
@@ -337,13 +438,6 @@ const decoderUnavailableReason = (failure: {
     : failure.validation_issues !== undefined
       ? 'invalid_output'
       : 'provider_failure';
-/** Is this dispatch result an acknowledgement rather than an outcome?
- *
- *  ⛔ KEYS ON THE MARKER `projectRunResultForAgent` SETS, not on a status
- *  string of its own invention. `awaiting_approval: true` is the third-state
- *  projection every agent surface already routes through, and the bench's
- *  held-detection reads the same field — so this cannot drift from what the
- *  model was told without the bench noticing too. */
 /** The run address a held dispatch carries, which is the PAIR KEY.
  *
  *  ⚠ `undefined` means only that the halves CANNOT BE JOINED — not that the
@@ -356,33 +450,7 @@ export const runIdOf = (result: unknown): string | undefined => {
   return typeof id === 'string' && id.length > 0 ? id : undefined;
 };
 
-export const isNonTerminalToolResult = (result: unknown): boolean => {
-  if (result === null || typeof result !== 'object') return false;
-  const envelope = result as {
-    run_held?: unknown;
-    awaiting_approval?: unknown;
-    result?: unknown;
-  };
-  // ⛔⛔ `run_held` IS THE ENGINE'S OWN MARKER AND IT IS THE OUTER ONE. The
-  //   first cut checked only `awaiting_approval` on the top level, and the real
-  //   dispatch envelope is
-  //     { ok, result: { status:'awaiting_approval', awaiting_approval:true, … },
-  //       run_held: { kind:'approval' }, run_id }
-  //   so the marker sits one level DEEPER than it looked for and the check
-  //   never fired. Every unit test passed, because I wrote the fixtures from
-  //   the same wrong assumption as the code — a bench drive against the real
-  //   binary is what found it, on its first honest run.
-  if (envelope.run_held !== undefined && envelope.run_held !== null) return true;
-  if (envelope.awaiting_approval === true) return true;
-  // ⚠ And the agent-facing projection, wherever it rides. `run_held` is the
-  //   engine's word; `awaiting_approval` is what `projectRunResultForAgent`
-  //   shows the model. Reading both means a change to either shape degrades to
-  //   "do not store a result", which is the safe direction.
-  const inner = envelope.result;
-  return inner !== null
-    && typeof inner === 'object'
-    && (inner as { awaiting_approval?: unknown }).awaiting_approval === true;
-};
+export { isNonTerminalToolResult } from './chat-tool-call-context.js';
 
 /** ⚗ BENCH-ONLY IN-TURN RETENTION (`RECUED_CHAT_PRIOR_TOOL_CALLS_KEEP`).
  *
@@ -668,6 +736,30 @@ export const DEFAULT_CHAT_ROLE_INSTRUCTIONS =
  *  worst class of failure here is not a dropped call — it is a CONFIDENT REPORT
  *  of work that did not happen.
  *
+ *  ⛔⛔ THE VALUE-GROUNDING SENTENCE EXISTS BECAUSE THE MODEL ANSWERS WITHOUT A
+ *  SOURCE, AND IT IS THE SAME FAILURE FAMILY AS THE `events` ONE ABOVE — a
+ *  CONFIDENT REPORT, this time of a value rather than of work.
+ *
+ *  🔑 MEASURED over every stored bench run (433 ring-cost claims in model prose,
+ *  ground truth read from the seed):
+ *    - true value AVAILABLE in the packet → 314 correct, 2 wrong  (99.4%)
+ *    - true value ABSENT from the packet  →  85 correct, 32 wrong (72.6%)
+ *  94% of all wrong claims had NO source in the packet. When the model can see
+ *  the value it is essentially never wrong; when it cannot, it fabricates about
+ *  a quarter of the time — and the other three quarters it GUESSES CORRECTLY,
+ *  which is why the behaviour does not announce itself.
+ *
+ *  ⚠ IT KNOWS HOW TO FETCH. In run `2026-09-06T19-02-39-435Z` the model read
+ *  rings 01-04 with `work.read` and reported all four correctly, then reached
+ *  for `memory.search` on rings 05 and 06, got nothing, and stated "184 units"
+ *  and "229 units" — numbers that appear nowhere in the seed, no tool result and
+ *  no packet. The gap is not capability; it is treating an empty search as
+ *  licence to supply a value.
+ *
+ *  ⛔ IT LIVES IN THE CORE TEXT, NOT IN `DEFAULT_CHAT_ROLE_INSTRUCTIONS`, which
+ *  is a user-replaceable persona — a correctness rule there vanishes the moment
+ *  anyone customises their prompt.
+ *
  *  ⛔ THE ECHO SENTENCE, same run: the model emitted its own `prior_tool_calls`
  *  block back as its output (a 2-entry array of `{tool_name, args, status,
  *  result}`), and separately a `tools.search` catalog entry (`{recipe_slug,
@@ -718,10 +810,15 @@ AIOutput shape:
   "reasoning": "<work the answer out here FIRST, in full, before writing \"response\". Show any arithmetic step by step. This field is internal and is never shown to the user.>",
   "response": "<short, calm reply>",
   "events": [ {"kind": "extraction.<class>", "payload": {...}}, ... ],
-  "tool_calls": [{ "tool": "<recipe_slug>", "args": {...} }]
+  "tool_calls": [{ "tool": "<recipe_slug>", "args": {...} }],
+  "nothing_outstanding": <true only when you plan no further action — the ask is answered, or you have concluded it cannot be answered. Omit it otherwise.>
 }
 
 "events" RECORDS something worth remembering. It never performs an action — only a "tool_calls" entry does anything at all. Never tell the user you have done something unless a tool call in this turn did it.
+
+Never state a specific value — an amount, a cost, a date, a count, an address — unless it is in front of you: in a tool result this turn, in "prior_tool_calls", in the carried brief, or said earlier in this conversation. If it is not there, FETCH it with a tool. A search that came back empty is not permission to supply the value from your own guess; it means the value has not been found yet, and the right move is a different tool or a different query, not an answer. Saying "I do not have that yet" is always better than a number you cannot point to.
+
+"nothing_outstanding" is true when there is nothing left for you to do on this ask — including when the honest outcome is that it cannot be done. It is NOT a claim that you succeeded. If any part of the request is still open, or you intend another tool call, omit the field.
 
 Never echo back what you were shown. A tool result, a catalog entry, or your own earlier call is INPUT. Your reply is always the AIOutput shape above.
 
@@ -1146,6 +1243,49 @@ interface ChatMainTurnPromptPacket {
    *  reliable and the carried text adds nothing. If results ever start being
    *  PRUNED under context pressure, that reasoning expires and this is worth
    *  re-measuring. */
+  /** ⛔⛔ USER STATEMENTS NO FOLD HAS RECORDED YET — CARRIED FOR FREE.
+   *
+   *  🔑 THE FOLD DOES TWO JOBS AT ONE PRICE, AND ONLY ONE OF THEM NEEDS A
+   *  MODEL. Compressing tool results requires judgement; preserving a user's
+   *  statement does not — the brief's own instruction says to copy those
+   *  VERBATIM, "digits and all, never paraphrased or rounded". Paying a full
+   *  model call to copy text exactly is the expensive way to do a free thing.
+   *
+   *  🔑 MEASURED — the split is the whole economics of the feature:
+   *    · 363 (user-stated verbal facts, unrecoverable): brief OFF 0/2 correct,
+   *      brief ON 2/2. The carry is decisive.
+   *    · 368 / 369 (values readable from a store): both arms correct, and the
+   *      brief cost +11.4% tokens on 369 for nothing.
+   *  A tool result can be RE-READ. A user's statement cannot. The trigger only
+   *  ever knew about SIZE, so it paid full price on turns whose content was
+   *  recoverable anyway.
+   *
+   *  ⇒ The backlog fed the FOLD input only, so an uncaptured statement was
+   *  invisible to the main turn until an expensive fold happened to run. Putting
+   *  it in the packet preserves the unrecoverable half at ZERO token cost and
+   *  leaves the fold to do the job that actually needs one.
+   *
+   *  ⚠ Same field NAME as the fold prompt on purpose, and it MUST appear in
+   *  `uniformContentScanDataFields`'s enumeration to be aliased. A name absent
+   *  from that list egresses RAW — which is exactly how the brief's four fields
+   *  leaked, measured at 144 of 2,865 packets carrying a real contact name.
+   *  ⇒ THE NAME AND THE ENUMERATION ENTRY MOVE IN ONE COMMIT, NEVER TWO.
+   *
+   *  ⛔⛔ IT WAS `earlier_user_statements`, AND THE NAME ITSELF WAS THE DEFECT.
+   *  This is a WINDOW of statements no brief has recorded yet — bounded at 12
+   *  entries / 4 KB, keeping the OLDEST on overflow — but "earlier user
+   *  statements" reads as a chronological history. Driven (probe 376): asked
+   *  what the user said in their FIRST message, the model returned index 0
+   *  verbatim and asserted it as such. It was turn 3. The answer was confident,
+   *  wrong, and unfalsifiable from the packet, because nothing in it says the
+   *  list has a floor.
+   *
+   *  🔑 `pending_*` MATCHES WHAT THE CODE ALREADY CALLS THESE — `PendingStatement`,
+   *  `MAX_PENDING_STATEMENT_TURNS`, `oldestPendingStatementAge`,
+   *  `hasStalePendingStatement`. The model-facing name now says the same thing
+   *  the implementation does: these are AWAITING capture, not a record of the
+   *  conversation. */
+  readonly pending_user_statements?: readonly string[];
   readonly prior_working_unverified?: string;
   /** EXPERIMENT (env-gated, `RECUED_VERIFY_PASS=1`, OFF by default) — the
    *  model's OWN draft answer, handed back for one re-examination pass before
@@ -1444,7 +1584,14 @@ export const composeChatMainTurnPromptParts = (
   // D-167 (recall path) — partition the accumulated dispatches: recall
   // results into the typed `recall_context` field, everything else into
   // `prior_tool_calls`. The egress aliases each field by type.
-  const { prior, recall } = partitionPriorToolCalls(packet.prior_tool_calls ?? []);
+  const { recall } = partitionPriorToolCalls(packet.prior_tool_calls ?? []);
+  // D-213 — recall content is routed OUT of `prior_tool_calls`, but dropping the
+  // call wholesale also erased the model's record of having made it. It keeps
+  // the dispatch as a RECEIPT (args yes, recalled result no) so the model can
+  // see what it already asked. Without this the model cannot observe a fruitless
+  // recall, re-derives the same plan after every trim, and re-issues the
+  // identical query until the tool-loop cap ends the turn.
+  const prior = withRecallReceipts(packet.prior_tool_calls ?? []);
   // The stable head, serialized ONCE. Dropping its closing brace yields — by
   // JSON's insertion-order guarantee — a byte-exact prefix of `body`.
   const headJson = JSON.stringify({
@@ -1465,6 +1612,10 @@ export const composeChatMainTurnPromptParts = (
     ...(packet.current_date ? { current_date: packet.current_date } : {}),
     ...(packet.in_flight_context ? { in_flight_context: packet.in_flight_context } : {}),
     user_message: packet.content.user_message,
+    ...(packet.pending_user_statements
+      && packet.pending_user_statements.length > 0
+      ? { pending_user_statements: packet.pending_user_statements }
+      : {}),
     ...(packet.execution_case_context
       && packet.execution_case_context.cards.length > 0
       ? { execution_case_context: packet.execution_case_context }
@@ -1688,6 +1839,13 @@ export interface RunChatTurnInputs {
   readonly available_tools: ReadonlyArray<ChatMainTurnTool>;
   readonly index_context?: string;
   readonly prior_tool_pointers?: ChatPriorToolPointers;
+  /** ⛔ THE ENDPOINT MANAGES ITS OWN CONTEXT. When every candidate slot
+   *  declares it, the eviction notice stays BARE: summarising here would be a
+   *  second, worse copy of a job the provider is already doing, and it would
+   *  spend input room the provider is about to reclaim. Declared, never
+   *  detected — no probe can safely establish it, and guessing wrong costs the
+   *  model its own history. Absent ⇒ our briefing, which is what runs today. */
+  readonly provider_compacts_context?: boolean;
   readonly in_flight_context?: string;
   /** The assembled content prompt parts (`chat_tail` + current
    *  `user_message`) after the before-turn gather. The model packet keeps
@@ -1750,6 +1908,69 @@ export interface RunChatTurnDeps {
    *  case stays a quiet substrate signal). */
   readonly executeAiCall?: ExecuteChatAiCall;
   readonly registry: InternalToolRegistry;
+  /** D-167 — is THIS TURN recall-bearing? Bound by the orchestrator to
+   *  `hasRegisteredRecallResult` over the turn's own scratch state.
+   *
+   *  ⛔⛔ THE AUTHORITATIVE SIGNAL, REPLACING A SLICE-SCOPED APPROXIMATION THAT
+   *  UNDER-TRIGGERED IN THE ONE CASE THAT MATTERS. The rolling brief used to
+   *  infer this by scanning the calls it was about to fold for a name in
+   *  `NON_RETAINABLE_RECALL_TOOL_NAMES`. That reads a SLICE; the real state is
+   *  per-TURN and MONOTONIC — once a recall result lands, every packet in the
+   *  turn must carry a valid `recall_context` for the rest of the turn's life.
+   *
+   *  🔑 SO THE FIRST FOLD BROKE THE SECOND. A fold sets `priorToolCalls.length
+   *  = 0`, which removes the recall call from the array; every later slice then
+   *  looks clean, the skip does not fire, the fold proceeds — and the packet it
+   *  produces has no `recall_context` while the turn is still registered as
+   *  recall-bearing, so `chat-pii-egress` throws
+   *  `recall-bearing packet has invalid recall_context` and the tool loop
+   *  ABORTS. Measured over four forced-budget runs of bench task 343: SEVEN
+   *  aborts, `recall_bearing_skip` fired ZERO times, and every one was reported
+   *  as `provider_failure` — the default arm of `decoderUnavailableReason`.
+   *
+   *  ⚠ The approximation's own comment claimed it errs by OVER-triggering
+   *  ("costs a carry we could have kept"). Measured, it under-triggered. No PII
+   *  escaped — the egress is fail-closed and did its job — but the brief walked
+   *  into that refusal on every recall-bearing turn that folded.
+   *
+   *  Absent → falls back to the slice approximation, so a harness that does not
+   *  wire it keeps today's behaviour.
+   *
+   *  ⚠ WIRED ON THE CHAT PATH ONLY. The gateway `runChatTurn` call site has no
+   *  `streamState` in scope (verified by the compiler, not by reading), so it
+   *  runs on the fallback — no worse than before, but the same abort is
+   *  reachable there if a gateway turn ever both recalls and folds. Wiring it
+   *  needs the driver's scratch threaded into that scope; deliberately not done
+   *  blind. */
+  readonly hasRegisteredRecall?: () => boolean;
+  /** Is the rolling brief enabled on this server? Bound by the composition
+   *  root to the stored `chat_config` value so an owner-facing surface can
+   *  turn it on; see `briefEnabled` in `runChatTurn` for why env still wins.
+   *
+   *  ⚠ SERVER-SCOPED, NOT PER-PAIR, and that is a scope decision rather than a
+   *  convenience. The brief is keyed on `session_id` and the executor holds no
+   *  peer identity — chat turns arrive with no paired client at all over MCP and
+   *  the D-148 P9 inbound channels — so a `prefs`-style per-pair knob has no
+   *  well-defined value to read on exactly the turns that matter most.
+   *
+   *  Absent → falls back to env alone, so a harness that does not wire it keeps
+   *  today's behaviour. */
+  readonly rollingBriefEnabled?: () => boolean;
+  /** DURABLE home for the carried brief. Bound by the composition root to the
+   *  chat store's encrypted `chat_briefs` rows.
+   *
+   *  ⛔⛔ ABSENT FALLS BACK TO THE IN-MEMORY MAP, AND THAT IS A HARNESS
+   *  AFFORDANCE, NOT A PRODUCTION MODE. The Map's own note calls itself
+   *  "experiment scaffolding … does not survive a restart", and the feature now
+   *  ships ON by default — so a supervisor respawn or an applied update would
+   *  drop every `constraints` entry, the one class nothing can re-derive. The
+   *  fallback exists so tests that drive `runChatTurn` directly need no
+   *  database, not so a server can run without one. */
+  readonly briefStore?: {
+    read(session_id: string): Promise<RollingBrief | null>;
+    write(session_id: string, brief: RollingBrief): Promise<void>;
+    clear(session_id: string): void;
+  };
   /** The orchestrator's `dispatchTool` — runs the plan-approval gate +
    *  the Self / peer routing split + its own broadcast / audit
    *  envelope. The turn calls it per tool; it is NOT re-implemented
@@ -1780,6 +2001,31 @@ export interface RunChatTurnDeps {
    *
    *  ⚠ Absent ⇒ no retry, which is the historical behaviour. */
   readonly resolveInputTokenBudget?: () => number | undefined;
+  /** ⛔⛔ WAS THIS VALUE ISSUED TO THE MODEL BY THE SUBSTRATE ITSELF?
+   *
+   *  `prefetch_context` is INJECTED AT THE EGRESS SEAM
+   *  (`chat-pii-egress.ts`), deliberately: the raw contact records arrive via
+   *  the wrapper closure and NEVER enter the JSON packet, so an inactive plan
+   *  cannot ship them raw. `lastPacketBody` is captured BEFORE that seam runs,
+   *  so the prefetch block — and every identifier in it — is absent from the
+   *  grounding corpus BY CONSTRUCTION, in both its real and aliased forms.
+   *
+   *  🔑 MEASURED (bench 343, instrumented run 2026-09-09). The prefetch block
+   *  tells the model, verbatim: "Use the alias directly as a tool argument."
+   *  The model did. Restore turned the alias back into the real address before
+   *  the guard saw it, the corpus contained neither form
+   *  (`corpusHasRealEmail=false`, `corpusHasAlias=false`, corpus 52,458 B), and
+   *  the call was refused as invented. The model re-sent the same correct value
+   *  and was refused identically — 9 rounds, 0 dispatches, ~220s, until the
+   *  turn timed out. THE SUBSTRATE INSTRUCTED THE MODEL TO DO THE ONE THING ITS
+   *  OWN GUARD ALWAYS REFUSES.
+   *
+   *  ⚠ Answering from the alias LEDGER rather than widening the packet keeps
+   *  the privacy property intact: a value the ledger aliased is one the model
+   *  was shown (in aliased form), which is exactly the grounding question. The
+   *  loop stays PII-unaware in the sense that matters — it already threads
+   *  restored real values; this only asks a yes/no about one of them. */
+  readonly wasValueIssuedToModel?: (value: string) => boolean;
 }
 
 /** What the turn produced. Chat-SHAPED (Stage 1b); maps cleanly onto
@@ -1789,15 +2035,10 @@ export interface RunChatTurnDeps {
 export interface RunChatTurnResult {
   readonly assistant_content: string;
   readonly tool_calls?: ChatToolCall[];
-  /** D-137 — what each dispatch RETURNED, so the orchestrator can persist it.
-   *
-   *  ⛔ `tool_calls` is the PROVENANCE shape: it carries an opaque `result_ref`
-   *  and no body, and its doc comment claims "the orchestrator persists the raw
-   *  result keyed on this id" — which nothing has ever done (`result_ref` is a
-   *  composed `session:turn:tool` string with no backing store). So the results
-   *  lived only in the per-turn `prior_tool_calls` accumulator and were
-   *  discarded at the turn boundary. This is the field that lets them out. */
+  /** Dispatch bodies for turn-end recall finalization or the legacy writer.
+   *  message_id identifies a call already saved before dispatch. */
   readonly tool_results?: ReadonlyArray<{
+    readonly message_id?: string;
     readonly tool_name: string;
     readonly args: unknown;
     /** Absent on a DISPATCH row — the run was acknowledged, not answered. */
@@ -1837,6 +2078,49 @@ export const runChatTurn = async (
   const { session_id, turn_id, picker_target } = inputs;
   const dispatchPeerName = inputs.dispatch_peer_name;
   const now = deps.now;
+  /** Is the rolling brief carrying context on this turn? Resolved ONCE, here,
+   *  and read by all five brief sites below.
+   *
+   *  ⛔⛔ IT WAS A BARE `BENCH_ROLLING_BRIEF` ENV READ, INLINE AT ALL FIVE SITES,
+   *  WHICH MADE THE FEATURE UNSHIPPABLE RATHER THAN MERELY UNCONFIGURED. An env
+   *  read inside the engine cannot be reached by any owner-facing surface, so
+   *  there was no path to turn the brief on in production at all — the gate was
+   *  the blocker, not the behaviour.
+   *
+   *  🔑 FIVE READS OF ONE CONDITION IS ALSO A CORRECTNESS HAZARD, not just
+   *  duplication: the sites straddle the fold and the retry paths, so a future
+   *  gate that is true at seed time and false at fold time would carry a brief
+   *  it then refuses to update. One resolution per turn cannot skew.
+   *
+   *  ⛔⛔ THERE IS NO ENV OVERRIDE, BY OWNER RULE: env is BOOT-CRITICAL ONLY
+   *  ("a pref, never an env var" — `d-219-spec.md`, `decisions-log.md`). A brief
+   *  arm is behaviour, not boot. This read WAS `BENCH_ROLLING_BRIEF`, and only
+   *  because `chat.rolling_brief.set` did not exist yet — the same
+   *  env-read-inside-the-engine is what made the feature unshippable in the
+   *  first place, reachable by no owner-facing surface.
+   *
+   *  🔑 SO THERE IS EXACTLY ONE SOURCE OF TRUTH, AND EVERY CALLER USES IT. The
+   *  bench sets its arms over `chat.rolling_brief.set` like the Settings control
+   *  does, and the tests whose subject is not the brief pin it with
+   *  `setRollingBriefEnabled(false)` — the same setter. A back door only one
+   *  caller can open is a path that stops being tested by everyone else.
+   *
+   *  ⚠ Absent dep → OFF, so a harness that does not wire `rollingBriefEnabled`
+   *  keeps the pre-default behaviour rather than inheriting one it never opted
+   *  into. */
+  const briefEnabled = deps.rollingBriefEnabled?.() ?? false;
+  // One place that decides durable-vs-memory, so the five brief sites below
+  // cannot drift apart on it.
+  const readCarriedBrief = async (): Promise<RollingBrief | null> =>
+    deps.briefStore ? await deps.briefStore.read(session_id) : getSessionBrief(session_id);
+  const saveCarriedBrief = async (brief: RollingBrief): Promise<void> => {
+    if (deps.briefStore) await deps.briefStore.write(session_id, brief);
+    else setSessionBrief(session_id, brief);
+  };
+  const dropCarriedBrief = (): void => {
+    if (deps.briefStore) deps.briefStore.clear(session_id);
+    else clearSessionBrief(session_id);
+  };
   // Current-instant date+time anchor, computed ONCE per turn (stable
   // across tool-loop rounds) from the injected clock, in the USER's
   // timezone when the surface supplied one (else server-local).
@@ -1875,11 +2159,328 @@ export const runChatTurn = async (
   // any other — which is precisely what a durable-row handle could not do, and
   // why that route was removed rather than repaired.
   const elidedValues = new Map<string, unknown>();
+  /** ⛔⛔ WHAT THE TRIM HAS ALREADY TAKEN THIS TURN, by `(tool, args)`.
+   *
+   *  A trim is stateless per composition: each round independently decides what
+   *  to elide, with no memory that it took the SAME value last round and the
+   *  model immediately went and fetched it again. Measured 2026-09-05 on
+   *  internal benchmarks task 342 at a 40,000-token budget with 22,005 of
+   *  working room (55% — NOT a floor artifact): the model read four notes, all
+   *  four `work.read` results were elided, it re-read the identical four ids
+   *  (`36661181`, `2e0b9ec6`, `948e8122`, `c093a967`), those were elided too,
+   *  and it repeated that four times before `max_rounds`. 0/4 runs answered,
+   *  against a ~75% baseline.
+   *
+   *  🔑 THE SHAPE: the elision rung is a pure SIZE THRESHOLD — everything above
+   *  `previewChars` goes, everything below stays — so the BIGGEST result is
+   *  always taken first. `work.read` exists to escape `work.search`'s clamp, so
+   *  its result is the biggest thing in the packet, so it is the first thing
+   *  evicted. The trim reliably discards the escalation the tool contract just
+   *  told the model to perform, and the ladder reports success every round.
+   *
+   *  This set is OBSERVATION ONLY for now. It counts the loop so a fix can be
+   *  gated on evidence rather than on the story above — the eviction-briefing
+   *  work earlier the same day was built on a diagnosis that turned out wrong
+   *  and was never exercised, which is the mistake this avoids repeating. */
+  const elidedCallSignatures = new Set<string>();
+  /** `(tool, args)` — the call a model would have to repeat to get a value
+   *  back. Args are serialized with sorted keys so two identical calls whose
+   *  object key order differs still collide; without that the counter reads
+   *  zero on a real loop. */
+  const elidedCallSignature = (call: { tool_name?: string; args?: unknown }): string => {
+    const sortKeys = (v: unknown): unknown => {
+      if (Array.isArray(v)) return v.map(sortKeys);
+      if (v !== null && typeof v === 'object') {
+        return Object.fromEntries(
+          Object.entries(v as Record<string, unknown>)
+            .sort(([a], [b]) => a.localeCompare(b))
+            .map(([k, val]) => [k, sortKeys(val)]),
+        );
+      }
+      return v;
+    };
+    try {
+      return `${call.tool_name ?? '?'}|${JSON.stringify(sortKeys(call.args)) ?? ''}`;
+    } catch {
+      return `${call.tool_name ?? '?'}|<unserializable>`;
+    }
+  };
+  /** How many results arrived that the trim had ALREADY taken earlier in this
+   *  turn — i.e. the model paid for a call whose answer it was about to lose
+   *  again. Non-zero means the turn is in the loop above. */
+  let refetchedAfterElisionCount = 0;
   // Stable ref per (call, field). The ladder re-composes many times — the
   // preview binary search alone runs ~log2(preview) rounds — and minting per
   // composition would hand the model a different ref for the same value on
   // every pass.
   const elidedRefs = new WeakMap<object, Map<string, string>>();
+
+  /** Fold this turn's un-briefed results into a carry-forward. Returns the new
+   *  brief, or null to continue exactly as today.
+   *
+   *  ⚠ ENV-GATED AT THE CALL SITE, and deliberately so: this spends an extra
+   *  model call per brief and whether that pays for itself is UNMEASURED.
+   *  Shipping it on by default would repeat the eviction-briefing mistake — a
+   *  mechanism built on an inferred failure and never exercised. */
+  const runRollingBrief = async (
+    unbriefed: ReadonlyArray<ChatPriorToolCall>,
+    previous: RollingBrief | null,
+    /** Appended with `<outcome>:<detail>` for every decision, so the trail
+     *  survives into the packet. */
+    trail: string[],
+    /** ⚠ `force` skips the SIZE trigger, for the turn-end fold only. That fold
+     *  is about COMPLETENESS — the stored brief must cover everything up to the
+     *  boundary — not about fitting a budget, and the size test would skip
+     *  exactly the small turns whose results would then vanish. The brief-call
+     *  CAPACITY guard still applies; it is the one that must never be waived. */
+    opts?: { readonly force?: boolean },
+  ): Promise<RollingBrief | null> => {
+    const executeAiCall = deps.executeAiCall;
+    if (!executeAiCall) return null;
+    const systemPrompt = composeChatMainTurnSystemPrompt(
+      inputs.catalog_mode,
+      inputs.system_prompt,
+    );
+    // The composer's own partition — recall dispatches carried through so the
+    // brief call is a valid recall-bearing packet, aliased by the same egress
+    // pass as every other packet in the turn.
+    const { prior: nonRecall, recall: recallContext } =
+      partitionPriorToolCalls([...unbriefed]);
+    // ⛔⛔ THE AUTHORITATIVE PER-TURN SIGNAL, WITH THE SLICE SCAN AS FALLBACK.
+    //   `hasRegisteredRecallResult` is monotonic for the turn; the scan below
+    //   reads only the calls THIS fold is about to consume. That difference is
+    //   the whole defect: the first fold empties `priorToolCalls`, so every
+    //   later slice looks recall-free, the skip never fires, and the packet the
+    //   fold produces carries no `recall_context` while the turn is still
+    //   registered recall-bearing — which `chat-pii-egress` refuses, aborting
+    //   the tool loop. Seven aborts across four forced-budget runs of bench
+    //   task 343, `recall_bearing_skip` fired zero times, all seven reported as
+    //   `provider_failure` because that is `decoderUnavailableReason`'s DEFAULT
+    //   arm whenever a failure carries no `validation_issues`.
+    //
+    //   ⚠ The scan stays as the fallback so a harness that wires no dep keeps
+    //   today's behaviour, and it is OR-ed rather than replaced: it can see a
+    //   recall in the current slice before the per-turn state is consulted, and
+    //   over-triggering costs a carry while under-triggering costs the turn.
+    const recallBearing = isFoldRecallBearing({
+      registered: deps.hasRegisteredRecall?.(),
+      sliceHasRecall: recallContext.length > 0,
+    });
+    const decision = shouldBrief({
+      recallBearing,
+      recallContext,
+      priorToolCalls: unbriefed,
+      // What would actually reach `tool_results_since`. Empty ⇒ no fold.
+      newResultCount: nonRecall.length,
+      budgetTokens: activeInputTokenBudget ?? Number.POSITIVE_INFINITY,
+      catalogTokens: Math.floor(JSON.stringify(inputs.available_tools).length / 2),
+      overheadTokens: Math.floor(systemPrompt.length / 2),
+      tailTokens: Math.floor(JSON.stringify(inputs.content.chat_tail).length / 2),
+      previous,
+    });
+    // ⛔ `force` WAIVES ONLY WHAT THE WHITELIST NAMES. It closes a turn's carry;
+    //   it does not overrule WHY a fold was refused. The first cut waived
+    //   everything but one special case, so a PRIVACY refusal
+    //   (`recall_bearing_skip`) was overridden by a flag meant for a BUDGET one
+    //   — and the fold was then rejected by the egress guard.
+    const waived = opts?.force === true
+      && FORCE_WAIVABLE_OUTCOMES.has(decision.outcome);
+    if (!decision.brief && !waived) {
+      trail.push(`${decision.outcome}:${decision.reason}`);
+      return null;
+    }
+    let produced: RollingBrief | null = null;
+    try {
+      // ⛔ NO CATALOG ON THIS CALL. A summarisation needs no tools, and the
+      //   catalog is ~39% of the budget on the measured configuration — that
+      //   headroom is the entire reason the brief can read results the main
+      //   packet could not hold.
+      //   ⚠ It therefore does NOT share the D-164 cacheable prefix and cannot
+      //   reuse the cached catalog. A real cost, paid once per brief, and the
+      //   trade that makes the mechanism possible at all.
+      /** One fold attempt: call, then parse. Returns `null` when the reply is
+       *  not a usable brief.
+       *
+       *  ⛔⛔ EXTRACTED SO THE FOLD CAN RETRY ONCE, WHICH EVERY OTHER AIOUTPUT
+       *  SITE ALREADY DOES AND THIS ONE DID NOT. The main turn retries an
+       *  unusable output ("an empty output has already earned its retry"), the
+       *  tool-loop reinvoke gets a guided retry, and `packages/llm` retries a
+       *  json-mode REJECTION — but that last one fires at the request boundary
+       *  before tokens are billed and cannot see a malformed completion. So
+       *  nothing retried a fold, and the asymmetry was never a decision.
+       *
+       *  🔑 THE EXISTING "silent fallback is the right failure" NOTE BELOW DOES
+       *  NOT COVER THIS. It argues against KEEPING a bad brief — carrying a
+       *  confident subset with the rest silently missing. Asking again for a
+       *  good one is a different act, and if the retry also fails the fallback
+       *  is exactly as before.
+       *
+       *  ⚠ MEASURED COST OF NOT RETRYING (bench 377, 40 turns): 1 of 17 folds
+       *  came back unparseable, and the user-stated charge that fold was
+       *  carrying never reached `constraints`. The turn answered correctly only
+       *  because recall found the value in an earlier ASSISTANT message. The
+       *  brief's own doc is why that is the expensive failure: "a tool can
+       *  re-derive a ring cost; nothing can re-derive what the user said."
+       *
+       *  ⚠ AND THE COST OF RETRYING IS ONE CALL ON A FOLD THAT ALREADY FAILED —
+       *  ~6% of folds at the observed rate, under 1% of a turn's calls. */
+      const attemptFold = async (): Promise<RollingBrief | null> => {
+      const result = await executeAiCall(buildChatMainTurnManifest(), {
+        'llm.system_prompt': BRIEF_INSTRUCTION,
+        'llm.system_role': inputs.system_role ?? 'system',
+        'llm.prompt': buildBriefPrompt({
+          userMessage: inputs.content.user_message,
+          previous,
+          // ⚠ NON-RECALL results only in `tool_results_since`; the recall half
+          //   rides in `recall_context` where the egress knows how to alias it.
+          since: nonRecall,
+          ...(recallContext.length > 0 ? { recallContext } : {}),
+          // ⛔ The backlog from turns that never got a fold — see
+          //   `appendUnfoldedUserMessage`. PEEKED, not taken: a fold that fails
+          //   must not consume the statements it failed to record.
+          ...(earlierUserStatements().length > 0
+            ? { earlierUserMessages: earlierUserStatements() }
+            : {}),
+        }),
+        'llm.output_format': 'json',
+      }, { timeout_ms: BRIEF_CALL_TIMEOUT_MS });
+      // ⚠ THE BODY ITSELF, NOT `body.response`. In JSON mode the layer returns
+      //   the PARSED object as the body; `response` is absent. Reading the
+      //   string field returned null on a brief the model had produced
+      //   correctly — measured on the first live run, twice.
+      const body = (result as { body?: unknown } | undefined)?.body;
+        return parseBrief(body)
+          ?? parseBrief((body as { response?: unknown } | undefined)?.response);
+      };
+      let parsedRaw = await attemptFold();
+      if (parsedRaw === null) {
+        // ⚠ ONE retry, and the trail records it either way — a fold that
+        //   succeeded only on the second attempt is a different signal from one
+        //   that never failed, and `parse_failed` alone could not tell them
+        //   apart. See the `BriefOutcome` note: a negative must name its cause.
+        trail.push('parse_retry:first reply did not parse; retrying once');
+        parsedRaw = await attemptFold();
+      }
+      // ⛔⛔ NOTHING ALIAS-BEARING PERSISTS. The brief READ recalled content
+      //   (aliased to `pii.PersonN` by the egress); it must not REMEMBER it.
+      //   `chat-pii-slot-ordering.ts` is explicit that live turns were safe
+      //   because "no alias ever crossed a restart boundary in a resolvable
+      //   position" — a persisted brief would be the first thing to break that.
+      const raw = parsedRaw === null ? null : ((): RollingBrief | null => {
+        // ⛔ INSTRUMENTED AT THE PERSISTENCE POINT, BECAUSE THE LIVE EVIDENCE IS
+        //   AN ABSENCE. Measured across every stored bench report: 37 of 127
+        //   captured brief outputs contain a PII alias literal, and
+        //   `alias_stripped` appears in the trail ZERO times. The benign reading
+        //   is that the egress RESTORES aliases to real names before the brief
+        //   reaches here, so there is nothing left to strip and the bench is
+        //   capturing the pre-restore view — but an untested guard and a dead
+        //   guard look identical from outside. This line distinguishes them: it
+        //   fires only when the strip actually had work to do.
+        //
+        //   ⚠ LOGS THE FACT, NEVER THE CONTENT. The whole point is that this
+        //   material must not be written down.
+        const rawHadAlias = piiEgress.hasPotentialPiiAliasLiteral(
+          JSON.stringify(parsedRaw),
+        );
+        const { brief: clean, dropped } = stripAliasBearing(
+          parsedRaw,
+          (text) => piiEgress.hasPotentialPiiAliasLiteral(text),
+        );
+        if (dropped > 0) trail.push(`alias_stripped:${String(dropped)} entr(ies)`);
+        if (rawHadAlias) {
+          console.warn(
+            '[chat] rolling brief: model reply reached persistence still '
+            + `alias-bearing — stripped ${String(dropped)} entr(ies). The egress `
+            + 'restore did NOT resolve it upstream; the strip is load-bearing here.',
+          );
+        }
+        // ⛔⛔ FAIL CLOSED. If an alias survives the strip, the brief is NOT
+        //   persisted at all. A brief outlives its turn, so a surviving alias
+        //   would be the first thing in the system to cross a restart boundary
+        //   in a resolvable position — the exact invariant
+        //   `chat-pii-slot-ordering.ts` says has never been broken. Losing a
+        //   carry is a degradation; persisting one is a leak.
+        if (piiEgress.hasPotentialPiiAliasLiteral(JSON.stringify(clean))) {
+          trail.push('alias_survived:brief refused, not persisted');
+          console.warn(
+            '[chat] rolling brief: an alias SURVIVED stripAliasBearing — refusing '
+            + 'to persist the brief. This should be unreachable; the strip drops '
+            + 'whole entries, so a survivor means a shape it does not walk.',
+          );
+          return null;
+        }
+        return clean;
+      })();
+      // ⛔ THE UNION IS CODE, NOT PROMPT. The model reports only what is NEW;
+      //   everything carried is merged here, where it cannot be dropped by a
+      //   summariser that was never asked to repeat it.
+      // ⛔ THE COMPLETED-ACTION RECORD IS APPENDED AFTER THE MERGE, IN CODE.
+      //   The model is never asked for it — it was measured filing a SUCCEEDED
+      //   `memory.write` as outstanding work, so the field that exists to stop
+      //   re-execution cannot be authored by the thing that re-executes.
+      produced = raw === null
+        ? null
+        : withCompletedActions(
+            mergeBriefs(previous, raw),
+            unbriefed,
+          );
+      // ⛔⛔ A PERSISTED BRIEF MUST CARRY AN ANCHOR, AND THE FALLBACK IS NOT
+      //   UNIVERSAL. Two paths empty `intent` rather than dropping the brief —
+      //   `stripAliasBearing` for an alias-bearing intent, `parseBrief` for one
+      //   that echoes the schema — and both are safe ONLY because `mergeBriefs`
+      //   reads '' as "nothing to say" and carries the previous intent. On the
+      //   FIRST brief there is no previous: `mergeBriefs(null, produced)`
+      //   returns `produced` untouched, so '' is simply the intent.
+      //
+      //   ⛔ AND THE TWO FAILURES ARE NOT EQUIVALENT. Refusing leaves the turn
+      //   exactly as it was — no fold, prior calls intact — so the turn that
+      //   STATED the goal is still in the window and the next attempt can still
+      //   capture it. Persisting an anchorless brief performs the fold, evicts
+      //   that turn, and then asks a later brief to restate an intent it can no
+      //   longer see. The first is a degradation; the second is unrecoverable.
+      //
+      //   🔑 SO THE INVARIANT LIVES HERE, NOT IN THE PROMPT. Forcing the model
+      //   to always emit `intent` would be a format demand on the one field we
+      //   least want it able to get wrong, and prompt rules do not hold — five
+      //   instruction variants moved this model's brief behaviour not at all.
+      //   The check does not care WHY intent is empty; it refuses to persist a
+      //   brief that has no goal in it.
+      if (produced !== null && !hasAnchor(produced)) {
+        trail.push('no_intent:brief refused, no anchor to carry');
+        console.warn(
+          '[chat] rolling brief: refusing a brief with no intent — nothing to '
+          + 'carry the goal forward, and folding would evict the turn that '
+          + 'stated it. Continuing unbriefed so it can still be captured.',
+        );
+        produced = null;
+      }
+    } catch (err) {
+      produced = null;
+      trail.push(`call_failed:${err instanceof Error ? err.message.slice(0, 80) : 'unknown'}`);
+    }
+    if (produced === null) {
+      // ⛔⛔ SILENT FALLBACK IS THE RIGHT FAILURE, AND IT IS A REAL COST. A
+      //   brief that failed or came back malformed leaves the turn exactly as
+      //   it was, and the ladder then does what it does today. That is a
+      //   DEGRADATION, not an error — the turn still works, it just works the
+      //   old way, and nothing surfaces to the user. The alternative, carrying
+      //   a partial brief, is worse: the turn would hold a confident subset
+      //   with the rest silently missing and no way to tell.
+      if (!trail.some((x) => x.startsWith('call_failed'))) {
+        trail.push(`parse_failed:reply did not parse as a brief`);
+      }
+      console.warn(
+        '[chat] rolling brief unusable — continuing unbriefed '
+        + `(${String(unbriefed.length)} call(s) left to the ladder)`,
+      );
+      return null;
+    }
+    trail.push(`folded:${String(unbriefed.length)} result(s)${opts?.force === true ? ' (turn-end)' : ''}`);
+    console.warn(
+      `[chat] rolling brief: ${String(unbriefed.length)} result(s) -> brief (${decision.reason})`,
+    );
+    return produced;
+  };
 
   const tryMainTurn = async (
     prior_tool_calls?: ReadonlyArray<ChatPriorToolCall>,
@@ -1909,14 +2510,25 @@ export const runChatTurn = async (
     );
     const systemRole: LLMMessageRole = inputs.system_role ?? 'system';
     let fittedChatTail = [...inputs.content.chat_tail];
+    // What eviction took, in original order, so the briefing can name it.
+    let evictedTail: ReadonlyArray<{ role: string; content: string }> = [];
     let fittedPriorToolCalls = prior_tool_calls ? [...prior_tool_calls] : [];
+    /** The sources the SHIPPED calls line up with. Not the original list:
+     *  drop-oldest reassigns `sourceToolCalls`, so after a drop the shipped
+     *  array is positionally aligned with the survivors and keying against the
+     *  original would attribute one call's elision to another's identity. */
+    let settledSourceToolCalls: ReadonlyArray<ChatPriorToolCall> = fittedPriorToolCalls;
     let omittedContext = false;
     const contentForPrompt = (): RunChatTurnPromptContent => ({
       chat_tail: omittedContext
         ? [
             {
               role: 'assistant',
-              content: LLM_GATEWAY_CONTEXT_OMISSION_NOTICE,
+              content: buildEvictionBriefing(evictedTail, {
+                ...(inputs.provider_compacts_context === true
+                  ? { providerCompacts: true }
+                  : {}),
+              }),
             },
             ...fittedChatTail,
           ]
@@ -1949,6 +2561,13 @@ export const runChatTurn = async (
           : {}),
         ...(fittedPriorToolCalls.length > 0
           ? { prior_tool_calls: fittedPriorToolCalls }
+          : {}),
+        // ⛔ THE UNRECORDED USER STATEMENTS RIDE THE MAIN PACKET, not just the
+        //   fold input — see `pending_user_statements` on the packet type. This
+        //   is the FREE half of what the fold was doing: preserving a statement
+        //   verbatim needs no model call, only compression does.
+        ...(earlierUserStatements().length > 0
+          ? { pending_user_statements: earlierUserStatements() }
           : {}),
         ...(carriedWorking ? { prior_working_unverified: carriedWorking } : {}),
         ...(output_feedback ? { output_feedback } : {}),
@@ -2016,6 +2635,8 @@ export const runChatTurn = async (
             break;
           }
         }
+        const dropped = nextUser < 0 ? fittedChatTail : fittedChatTail.slice(0, nextUser);
+        evictedTail = [...evictedTail, ...dropped];
         fittedChatTail = nextUser < 0 ? [] : fittedChatTail.slice(nextUser);
         omittedContext = true;
         promptParts = composePrompt();
@@ -2028,6 +2649,7 @@ export const runChatTurn = async (
       // budget; a fixed preview can itself overflow a narrow context window.
       if (!promptFits(promptParts) && fittedPriorToolCalls.length > 0) {
         let sourceToolCalls = fittedPriorToolCalls;
+        settledSourceToolCalls = sourceToolCalls;
         const serialize = (value: unknown): string => {
           try {
             return JSON.stringify(value) ?? String(value);
@@ -2125,6 +2747,7 @@ export const runChatTurn = async (
         promptParts = composePrompt();
         while (!promptFits(promptParts) && sourceToolCalls.length > 1) {
           sourceToolCalls = sourceToolCalls.slice(1);
+          settledSourceToolCalls = sourceToolCalls;
           fittedPriorToolCalls = boundToolCalls(
             sourceToolCalls,
             LLM_GATEWAY_TOOL_RESULT_PREVIEW_CHARS,
@@ -2207,6 +2830,46 @@ export const runChatTurn = async (
         omittedContext = false;
         promptParts = composePrompt();
       }
+    }
+    // ⛔⛔ RECORD WHAT ACTUALLY SHIPPED, NOT WHAT THE SEARCH PROBED. The binary
+    //   search calls `boundToolCalls` with `forceMarker: true` at every
+    //   threshold it tries, which pushes EVERY field through the marker path
+    //   regardless of size. Recording from inside that marks calls whose result
+    //   came through whole — the first cut did exactly that, and a
+    //   big-args/small-result call (a write, a paste) was flagged as a lost
+    //   answer when its answer had arrived intact. The abandon comment above
+    //   warns about the same hazard from the other side: probe state and shipped
+    //   state are two different trims and were never meant to be observed
+    //   together.
+    //
+    //   So the signatures come from the SETTLED composition, keyed positionally
+    //   against the un-elided sources so the identity is the real `(tool, args)`
+    //   even when the shipped copy has both fields behind refs.
+    for (const [i, shipped] of fittedPriorToolCalls.entries()) {
+      const source = settledSourceToolCalls[i];
+      if (source === undefined) continue;
+      const result = (shipped as { readonly result?: unknown }).result;
+      if (result === null || typeof result !== 'object') continue;
+      const marker = result as Record<string, unknown>;
+      if (!('llm_gateway_context_omitted' in marker)) continue;
+      // ⛔⛔ THE MARKER'S PRESENCE IS NOT EVIDENCE ANYTHING WAS WITHHELD. The
+      //   binary search composes with `forceMarker: true` at every threshold —
+      //   including the one that ships — so a THIRTEEN-CHARACTER result comes
+      //   through wrapped as an omission marker with its whole content in the
+      //   `preview`. Nothing was lost; only the rendering changed. Keying on
+      //   the marker alone flagged a big-args/small-result write (`{ok:true}`)
+      //   as a lost answer, which would end turns that were fine.
+      //
+      //   So the test is whether the model can still SEE the value: content was
+      //   withheld only when the source is longer than the preview it was given.
+      const raw = (source as { readonly result?: unknown }).result;
+      const rawLen = typeof raw === 'string'
+        ? raw.length
+        : ((): number => { try { return JSON.stringify(raw)?.length ?? 0; } catch { return 0; } })();
+      const previewLen = typeof marker['preview'] === 'string'
+        ? (marker['preview']).length
+        : 0;
+      if (rawLen > previewLen) elidedCallSignatures.add(elidedCallSignature(source));
     }
     const layer: ChatModelRoutingLayer = inputs.model_layer;
     const forceLayer = chatModelLayerToForceLayer(layer);
@@ -2381,7 +3044,46 @@ export const runChatTurn = async (
   // Own flag: the tool loop's `invalidRecoveryUsed` is declared inside the
   // loop's scope below and governs a different call. One retry each.
   let initialInvalidRetryUsed = false;
-  let initialResult = await tryMainTurn();
+  /** The carry-forward this turn opens with, if any.
+   *
+   *  ⛔⛔ SEEDED HERE, BEFORE THE FIRST COMPOSITION, AND THE FIRST ATTEMPT PUT
+   *  IT IN THE WRONG PLACE. The seed lived inside the tool loop, which runs
+   *  only AFTER `tryMainTurn()` has already composed and sent the turn's
+   *  opening call — so every turn opened with `prior_tool_calls: []` and the
+   *  carry was invisible at the exact moment the model decides what to do.
+   *  Measured 2026-09-06: turns 2 and 3 both opened empty while a valid brief
+   *  sat in session state, and the brief only appeared mid-turn once that turn
+   *  had done its own work — i.e. never carrying anything ACROSS a boundary.
+   *
+   *  ⚠ It is threaded through `tryMainTurn`'s `prior_tool_calls` parameter
+   *  rather than mutated into a shared array, because the retry paths below
+   *  each call `tryMainTurn` again and must see the same opening state. */
+  const carriedBrief = briefEnabled
+    ? await readCarriedBrief()
+    : null;
+  // ⛔⛔ RECORD THE USER'S MESSAGE BEFORE ANYTHING CAN DECIDE NOT TO FOLD.
+  //   A turn that does no tool work runs no closing fold (27% of measured
+  //   turns) and writes no trail line, so this is the only point at which the
+  //   statement is guaranteed to be seen. Cleared once a fold has actually
+  //   stored a brief that ingested it.
+  if (briefEnabled) {
+    appendUnfoldedUserMessage(session_id, inputs.content.user_message);
+  }
+  /** The backlog MINUS this turn's own message.
+   *
+   *  ⛔ "EARLIER" MUST MEAN EARLIER. The append above runs at turn START, so the
+   *  current message is in the backlog by the time anything renders it — and
+   *  without this the main packet carries `user_message` twice (once as itself,
+   *  once as its own "earlier statement") and the fold prompt duplicates
+   *  `user_request` into `pending_user_statements`. Caught by the permitting
+   *  witness on the main-packet test, which is the case that would otherwise
+   *  have shipped as silent per-packet waste. */
+  const earlierUserStatements = (): readonly string[] =>
+    peekUnfoldedUserMessages(session_id)
+      .filter((m) => m !== inputs.content.user_message);
+  const openingPriorToolCalls: ReadonlyArray<ChatPriorToolCall> | undefined =
+    carriedBrief === null ? undefined : [briefAsPriorToolCall(carriedBrief)];
+  let initialResult = await tryMainTurn(openingPriorToolCalls);
   totalUsage = aggregateTokenUsageReports(totalUsage, initialResult.usage);
 
   // ⛔⛔ THE SAME GUIDED RETRY THE MID-LOOP REINVOKE GETS, at the site where an
@@ -2430,7 +3132,13 @@ export const runChatTurn = async (
       && (activeInputTokenBudget === undefined || relearned < activeInputTokenBudget)
     ) {
       activeInputTokenBudget = relearned;
-      const fitted = await tryMainTurn();
+      // ⛔ THE CARRY SURVIVES THE REFIT TOO. This was a bare `tryMainTurn()`,
+      //   which composes with no `prior_tool_calls` at all — so a turn that
+      //   overflowed lost its ENTIRE brief, which is the worst moment to lose
+      //   it. Re-composing under the relearned ceiling is exactly when the trim
+      //   runs, and the brief is ~400 est against a floor of ~18,000: if
+      //   anything has to go, the ladder decides that, not an omitted argument.
+      const fitted = await tryMainTurn(openingPriorToolCalls);
       totalUsage = aggregateTokenUsageReports(totalUsage, fitted.usage);
       initialResult = fitted;
     }
@@ -2442,7 +3150,9 @@ export const runChatTurn = async (
   ) {
     initialInvalidRetryUsed = true;
     const initialRetry = await tryMainTurn(
-      undefined,
+      // ⛔ See the note on the absence retry below — a repair packet must not
+      //   carry LESS grounding than the call it is repairing.
+      openingPriorToolCalls,
       buildInvalidAiOutputFeedback(initialResult.validation_issues),
     );
     totalUsage = aggregateTokenUsageReports(totalUsage, initialRetry.usage);
@@ -2523,7 +3233,7 @@ export const runChatTurn = async (
     if (isEmptyChatAiOutput(currentAiOutput)) {
       recoveryCalls = 1;
       const retryResult = await tryMainTurn(
-        undefined,
+        openingPriorToolCalls,
         buildEmptyAiOutputFeedback(currentAiOutput),
       );
       totalUsage = aggregateTokenUsageReports(totalUsage, retryResult.usage);
@@ -2552,7 +3262,9 @@ export const runChatTurn = async (
     ) {
       recoveryCalls += 1;
       const inventedRetry = await tryMainTurn(
-        undefined,
+        // ⚠ THIS ONE MOST OF ALL: the retry that exists to stop invented values
+        //   was removing the grounding that prevents inventing them.
+        openingPriorToolCalls,
         buildInventedValueFeedback(),
       );
       totalUsage = aggregateTokenUsageReports(totalUsage, inventedRetry.usage);
@@ -2563,8 +3275,34 @@ export const runChatTurn = async (
       && assertedAbsenceWithoutLooking(currentAiOutput)
     ) {
       recoveryCalls += 1;
+      // ⛔⛔ THE CARRY MUST SURVIVE THE REPAIR. This argument was `undefined` on
+      //   all four recovery paths — the positional-parameter trap: to supply
+      //   `output_feedback` you must write something for `prior_tool_calls`,
+      //   and `undefined` silently dropped the brief.
+      //
+      //   🔑 MEASURED (bench 343, run 2026-09-09T10-22-04-925Z, turn 6). The
+      //   retry packet arrived with NO `prior_tool_calls`: rings 01-08, the
+      //   constraints, all of it gone. Stripped of the record of what it knew,
+      //   the model emitted a tool call AND "Ring 09's checkpoint cost is 413
+      //   units" in the same reply — a number appearing NOWHERE in the run's
+      //   1.4 MB. Corpus-wide, 22 of 50 `output_feedback` packets (44%) carried
+      //   no `prior_tool_calls`.
+      //
+      //   ⛔⛔ CORRECTED 2026-09-09 — THE FIRST RATIONALE FOR THIS FIX WAS
+      //   WRONG, and it was wrong from a TRUNCATED READ. It claimed the guard
+      //   punished a CORRECT refusal because "ring 09 genuinely has no cost".
+      //   Ring 09 DOES have one: 162 units, at the END of a 9,259-byte body,
+      //   past the head-anchored search clamp — `work.search` returns 4,408 B
+      //   of it and never reaches the value, so only a full `work.read` sees
+      //   it. That run never issued one, so the guard was RIGHT: the model had
+      //   not looked where the answer was, and "call the tool that would know"
+      //   was accurate advice.
+      //
+      //   🔑 THE FIX STANDS ON ITS OWN TERMS. A repair packet must not carry
+      //   LESS grounding than the call it repairs — true whether or not the
+      //   guard was right to fire. Only the story about WHY was wrong.
       const absenceRetry = await tryMainTurn(
-        undefined,
+        openingPriorToolCalls,
         buildUnverifiedAbsenceFeedback(),
       );
       totalUsage = aggregateTokenUsageReports(totalUsage, absenceRetry.usage);
@@ -2599,9 +3337,41 @@ export const runChatTurn = async (
       // the third view: the durable body.
       const toolResultsAccum: Array<{
         tool_name: string; args: unknown; result?: unknown;
-        ts: number; pair_id?: string;
+        ts: number; pair_id?: string; message_id?: string;
       }> = [];
       const priorToolCalls: ChatPriorToolCall[] = [];
+      /** The carry-forward, seeded from the SESSION rather than from null.
+       *
+       *  ⛔ `runChatTurn` is per USER TURN, so a brief scoped to this function
+       *  starts every turn empty — measured 2026-09-06, turn 2's brief lost the
+       *  user's 252-unit surcharge that turn 1's had carried, and the run only
+       *  passed because the chat tail happened to hold the number. Reading the
+       *  session's brief is what makes "rolling" roll across turns. */
+      /** Results already folded into `rollingBrief` — cleared from the packet,
+       *  so what remains is the brief plus anything newer. */
+      /** ⛔ EVERY BRIEF DECISION THIS TURN, IN ORDER. Emitted into the packet
+       *  (not a `console.warn`, which the bench harness discards) so a run can
+       *  be read for WHICH BRANCH RAN rather than inferred from packet
+       *  forensics. `not_triggered`, `capacity_refused`, `call_failed` and
+       *  `parse_failed` want different fixes and are otherwise identical from
+       *  the outside — a distinction that already cost two investigations. */
+      const briefTrail: string[] = [];
+      let briefedCallCount = 0;
+      let rollingBrief: RollingBrief | null = carriedBrief;
+      if (carriedBrief !== null) {
+        // ⛔⛔ PERSISTING A BRIEF IS NOT THE SAME AS PRESENTING IT, AND THE
+        //   FIRST CROSS-TURN RUN ONLY DID THE FIRST. `getSessionBrief` made the
+        //   carry-forward survive the turn boundary, but `priorToolCalls`
+        //   starts empty every turn, so the brief was read ONLY as input to the
+        //   NEXT brief — a turn that does no tool work never saw it at all, and
+        //   the answer came from the chat tail exactly as before.
+        //
+        //   Seeding it here is what makes a later turn OPEN holding what the
+        //   earlier ones established. It costs ~400 est against a floor of
+        //   ~18,000, which is the cheapest thing in the packet.
+        priorToolCalls.push(briefAsPriorToolCall(carriedBrief));
+        briefedCallCount = priorToolCalls.length;
+      }
       let nextToolCalls: ReadonlyArray<ToolCall> = currentAiOutput.tool_calls;
       let roundIndex = 0;
       // `(tool, args)` → how many times this EXACT call has been refused in this
@@ -2632,6 +3402,7 @@ export const runChatTurn = async (
         | 'completed'
         | 'output_unreadable'
         | 'max_rounds_exhausted'
+        | 'context_trim_livelock'
         | 'aborted' = 'completed';
 
       toolLoop: while (nextToolCalls.length > 0) {
@@ -2829,7 +3600,14 @@ export const runChatTurn = async (
               };
             }
 
-            const ungrounded = ungroundedArgumentsInCall(tc.args, lastPacketBody);
+            const issued = deps.wasValueIssuedToModel;
+            const ungrounded = ungroundedArgumentsInCall(tc.args, lastPacketBody)
+              // ⛔ A VALUE THE SUBSTRATE ISSUED IS NOT AN INVENTION. See
+              //   `wasValueIssuedToModel` — the prefetch block is injected after
+              //   the corpus is captured, so its identifiers can never appear in
+              //   it. Without this the guard refuses exactly the arguments the
+              //   prefetch instructs the model to pass.
+              .filter((u) => !(issued?.(String(u.value)) ?? false));
             if (ungrounded.length > 0) {
               const completed_at = now();
               refusedCallCounts.set(identity, (refusedCallCounts.get(identity) ?? 0) + 1);
@@ -2906,7 +3684,7 @@ export const runChatTurn = async (
           const execution: ToolCallExecution = outcome.ok
             ? outcome.value
             : {
-                result: { ok: false, reason: 'execution_error' },
+                result: chatToolCallFailureResult(outcome.error) ?? { ok: false, reason: 'execution_error' },
                 started_at: now(),
                 completed_at: now(),
               };
@@ -2985,6 +3763,7 @@ export const runChatTurn = async (
           const held = isNonTerminalToolResult(execution.result);
           const heldRunId = held ? runIdOf(execution.result) : undefined;
           toolResultsAccum.push({
+            message_id: savedChatToolCallId(execution.result),
             tool_name: tc.tool,
             args: tc.args,
             // ⚠ A held run has no answer YET. The row records the ask.
@@ -2995,6 +3774,15 @@ export const runChatTurn = async (
             ...(heldRunId !== undefined ? { pair_id: heldRunId } : {}),
             ts: execution.completed_at ?? execution.started_at,
           });
+          // ⛔ THE LOOP DETECTOR. This result is arriving now; if the trim
+          //   already took the answer to this exact call earlier in the turn,
+          //   the model has just paid for work it is about to lose again.
+          if (elidedCallSignatures.has(elidedCallSignature({
+            tool_name: tc.tool,
+            args: tc.args,
+          }))) {
+            refetchedAfterElisionCount += 1;
+          }
           priorToolCalls.push(priorToolCallEntry(
             tc,
             execution.result,
@@ -3007,6 +3795,91 @@ export const runChatTurn = async (
             dispatchPeerName !== null ? 3 : undefined,
           ));
           toolCallsExecuted += 1;
+        }
+        // ⛔ THE ROLLING BRIEF, flag-gated. Compress this turn's accumulated
+        //   results into a carry-forward BEFORE they force a trim, then drop
+        //   them. Runs here — at the round boundary, after the batch has landed
+        //   and before the next composition — the only point where the results
+        //   are complete AND still readable.
+        if (briefEnabled) {
+          const folded = await runRollingBrief(
+            priorToolCalls.slice(briefedCallCount),
+            rollingBrief,
+            briefTrail,
+          );
+          if (folded !== null) {
+            rollingBrief = folded;
+            await saveCarriedBrief(folded);
+            // ⛔ Clear only what the fold DEMONSTRABLY carried. A statement
+            //   holding a figure the brief does not contain is re-offered to
+            //   the next fold rather than discarded on the strength of "a brief
+            //   was produced" — see `clearIngestedUserMessages`.
+            const swept = clearIngestedUserMessages(session_id, folded);
+            if (swept.retained.length > 0) {
+              briefTrail.push(
+                `statements_retained:${String(swept.retained.length)} `
+                + 'with figures the brief does not carry',
+              );
+            }
+            // ⛔ REPLACE, do not append. The saving IS the replacement: eight
+            //   elided results cost 19,155 bytes where a brief costs ~400. It
+            //   also makes the brief the turn's ONLY record of those results,
+            //   which is why `parseBrief` refuses anything partial.
+            // ⛔⛔ THE RECALL DISPATCHES SURVIVE THE FOLD, AS RECEIPTS. Once a
+            //   recall result lands, the egress requires a valid
+            //   `recall_context` on EVERY packet for the rest of the turn
+            //   (`hasRegisteredRecallResult` is per-turn and monotonic).
+            //   Emptying this array removed the only source of that field, so
+            //   the NEXT main-turn packet was refused with "recall-bearing
+            //   packet has invalid recall_context" and the tool loop ABORTED —
+            //   reported as `provider_failure`, which is merely
+            //   `decoderUnavailableReason`'s default arm.
+            //
+            //   🔑 SKIPPING THE FOLD IS THE WRONG LEVER, MEASURED. Making the
+            //   skip read per-turn state took the aborts from 3 to 1 and no
+            //   further: when the slice DOES carry recall calls the brief is
+            //   correctly allowed — it can carry the context — and the fold
+            //   then discarded them anyway. The damage is the DISCARD, not the
+            //   fold.
+            //
+            //   ⚠ A receipt carries the model's own args and NO recalled
+            //   result, so this re-supplies the field without re-supplying any
+            //   recalled content — the packet is valid and there is less PII in
+            //   it than before, not more. It also keeps the model's record of
+            //   what it already asked, which the fold otherwise erased.
+            const survivingRecall = withRecallReceipts(
+              partitionPriorToolCalls(priorToolCalls).recall,
+            );
+            priorToolCalls.length = 0;
+            priorToolCalls.push(briefAsPriorToolCall(folded), ...survivingRecall);
+            briefedCallCount = priorToolCalls.length;
+          }
+        }
+        // ⛔⛔ THE LIVELOCK EXIT. Two results this turn that the trim had ALREADY
+        //   taken means the model is re-fetching into a hole: the elision rung
+        //   removes the biggest value, `work.read` results ARE the biggest
+        //   value, and re-reading produces the same too-large result. Measured
+        //   4 cycles on task 342 before the round cap, 0/4 answered.
+        //
+        //   ⚠ END OF ROUND, NOT MID-DISPATCH. The other calls in this batch are
+        //   already executing and their results belong in the audit; breaking
+        //   between them would record a round that half-happened.
+        //
+        //   ⚠ AND `>= 2`, MATCHING THE DETECTOR. One re-fetch is ordinary
+        //   recovery from a lost result; stopping there would abort turns that
+        //   were about to succeed.
+        if (refetchedAfterElisionCount >= 2) {
+          console.warn(
+            `[chat] context-trim livelock: ${String(refetchedAfterElisionCount)} tool `
+            + `result(s) re-fetched after the trim had already elided them this turn `
+            + `(${String(elidedCallSignatures.size)} distinct call(s) elided over `
+            + `${String(roundIndex)} round(s)). Ending the turn instead of looping — `
+            + `the trim reaches fit every round by discarding the work the round `
+            + `produced, so further rounds cannot make progress.`,
+          );
+          terminationReason = 'context_trim_livelock';
+          assistantContent = CONTEXT_TRIM_LIVELOCK_MESSAGE;
+          break toolLoop;
         }
 
         // Codex Trio #B P2 fold #1 — the cap check fires AFTER the
@@ -3044,6 +3917,27 @@ export const runChatTurn = async (
 
         if (effectiveReinvoke.kind !== 'ok') {
           toolLoopFailure = { detail: effectiveReinvoke.detail };
+          // ⛔ LOG THE CAUSE, BECAUSE THE EMITTED `reason` CANNOT CARRY IT.
+          //   `decoderUnavailableReason` is a three-way classification whose
+          //   DEFAULT arm is `provider_failure` — returned whenever the failure
+          //   has no `validation_issues` and does not match the no-source
+          //   pattern. So a failure with any other cause is stamped
+          //   "provider_failure" and reads, to anyone holding only the
+          //   transparency stream, as a network outage.
+          //
+          //   🔑 MEASURED: three forced-budget bench runs showed 7 faults all
+          //   labelled `provider_failure`, and the label sent the investigation
+          //   at a provider problem that did not exist — every model call had
+          //   returned a result (ai.calls === ai.results) and every dispatch
+          //   succeeded. The detail was held in `toolLoopFailure`, which is
+          //   returned in the turn result and appears in NO event, so the one
+          //   string that identifies the cause was unreachable from a report.
+          console.warn(
+            '[chat] tool-loop reinvoke FAILED — round '
+            + `${String(roundIndex)}, reason `
+            + `${decoderUnavailableReason(effectiveReinvoke)}: `
+            + effectiveReinvoke.detail.slice(0, 300),
+          );
           deps.emit({
             kind: 'chat.transparency',
             session_id,
@@ -3309,6 +4203,169 @@ export const runChatTurn = async (
       // this function returns — not here. The intermediate "planning"
       // responses from prior rounds stay suppressed (the tool-call
       // events surfaced that activity visually).
+      // ⛔⛔ CLOSE THE TURN'S CARRY, OR THE NEXT TURN INHERITS A LIE. A turn's
+      //   `prior_tool_calls` is per-turn and discarded at this boundary, while
+      //   the SESSION brief persists — so a turn that did tool work but stayed
+      //   under the brief trigger drops its results here, and the next turn
+      //   seeds a brief from an EARLIER turn that never saw them. The model
+      //   then opens holding a carry-forward whose own note says "this is what
+      //   you kept", with a whole turn silently missing.
+      //
+      //   🔑 A BRIEF MUST NOT CLAIM MORE COVERAGE THAN IT HAS: told it has
+      //   everything, the model answers instead of re-reading. Same failure
+      //   family as the fabricated total — asserting more certainty than the
+      //   mechanism has.
+      //
+      //   ⚠ THE ANSWER TO THAT IS A DECLARED GAP, NOT A WIPE. This block read
+      //   "a stale brief is worse than no brief" and cleared the carry on a
+      //   failed fold; that threw away verified facts to avoid a claim the
+      //   facts never made. `markCarryIncomplete` keeps them and files the
+      //   shortfall under `pending`, which is the field that exists to say what
+      //   is still outstanding.
+      //
+      //   ⚠ THE COST IS A MODEL CALL on any turn that did tool work and did not
+      //   already brief. That is the price of the invariant "the stored brief
+      //   covers everything up to the boundary", and it is why this runs ONLY
+      //   when there is something unbriefed to fold.
+      if (briefEnabled) {
+        const unfolded = priorToolCalls.slice(briefedCallCount);
+        // ⛔⛔ COUNT WHAT COULD ACTUALLY BE FOLDED, NOT WHAT WAS DISPATCHED.
+        //   `unfolded` includes RECALL calls, whose results are non-retainable
+        //   and never reach `tool_results_since` — so a turn that did only
+        //   recall has nothing summarisable, `nothing_to_fold` declines, and the
+        //   old code then reported "the closing brief failed" and declared a gap.
+        //
+        //   🔑 MEASURED (task 343, run `2026-09-07T10-56-14-384Z`): turns 3, 4
+        //   and 7 did ONLY `memory.search`. Three "failed" lines appeared in the
+        //   log for folds that had correctly declined, and turn 7's six recall
+        //   calls became "8 unbriefed result(s)" in a note telling the model
+        //   information was lost. NOTHING was lost — recall content never
+        //   persists by design and the receipts already record that those
+        //   queries ran. Inflating the gap lands hardest on the recall-only
+        //   path, which is exactly where fabrication concentrates (24%).
+        //   ⛔⛔ AMENDED — "NOTHING WAS LOST" WAS TRUE FOR PERSISTENCE AND FALSE
+        //   FOR THE NEXT DECISION. Bench 368: turn 3 retrieved the pilot-boat
+        //   retainer via `memory.search`, this branch declined, and NO fold saw
+        //   the value — `274` appears in zero of the run's four fold prompts. At
+        //   turn 6 the brief read as a complete account, the model issued ZERO
+        //   dispatches and answered without it; the brief-OFF arm re-searched
+        //   and got it right. A lossy carry is worse than none, because it
+        //   suppresses the recovery path.
+        //
+        //   🔑 THE CONTENT WAS ALWAYS ALLOWED — `stripAliasBearing` exists so a
+        //   recall-bearing turn CAN be briefed: the model reads the recalled
+        //   material and only ALIAS-BEARING entries are dropped before storage.
+        //   "The retainer is 274 units" carries no alias and survives. The fold
+        //   simply never ran to produce it.
+        const partitionedUnfolded = partitionPriorToolCalls([...unfolded]);
+        const retainableUnfolded = partitionedUnfolded.prior
+          .filter((c) => c.tool_name !== 'context.brief').length;
+        const recallUnfolded = partitionedUnfolded.recall.length;
+        // ⚠ A USER-MESSAGE BACKLOG DELIBERATELY DOES *NOT* FORCE A FOLD. It
+        //   rides along whenever one runs for either reason above; forcing one
+        //   would put a model call on every tool-free turn, which is the exact
+        //   cost `appendUnfoldedUserMessage` exists to avoid.
+        // ⛔⛔ A STATEMENT ABOUT TO AGE OUT UNCLASSIFIED IS WORTH A FOLD. The
+        //   backlog is a HOLDING PEN, and without a deadline it asserts
+        //   relevance it has not earned — a session resumed a month later would
+        //   still carry an unclassified line, which is STRICTLY WORSE than
+        //   `chat_tail`, since the tail would have let it go.
+        //
+        //   🔑 THIS IS WHERE THE FOLD EARNS ITS PLACE, and the only place it
+        //   clearly does on cost grounds. The content is USER-STATED and so
+        //   unrecoverable by any tool (363: brief OFF 0/2 correct, ON 2/2), and
+        //   one call converts "held indefinitely" into "durable or dropped".
+        //   Far rarer than folding every tool-free turn, which is the spend the
+        //   backlog exists to avoid.
+        const staleStatement = hasStalePendingStatement(session_id);
+        if (retainableUnfolded === 0 && recallUnfolded === 0 && !staleStatement) {
+          if (unfolded.length > 0) {
+            briefTrail.push(
+              `nothing_to_close:${String(unfolded.length)} unfolded call(s), `
+              + 'none retainable — no gap, nothing was lost',
+            );
+          }
+        } else {
+          const closing = await runRollingBrief(unfolded, rollingBrief, briefTrail,
+            { force: true });
+          if (closing !== null) {
+            await saveCarriedBrief(closing);
+            const sweptClosing = clearIngestedUserMessages(session_id, closing);
+            if (sweptClosing.retained.length > 0) {
+              briefTrail.push(
+                `statements_retained:${String(sweptClosing.retained.length)} `
+                + 'with figures the brief does not carry',
+              );
+            }
+          }
+          else {
+            // ⛔⛔ FAIL THE TURN — see `ChatBriefCaptureError`. The closing fold
+            //   is the last chance to capture THIS turn's user statement, and
+            //   `chat_tail` (3 rows, fixed) forgets it within ~2 turns. Keeping
+            //   the prior carry below is still right for what it holds, but the
+            //   turn must not report success on a capture that did not happen:
+            //   the loss is silent, partial, and surfaces later as a confident
+            //   answer built on a subset.
+            if (shouldFailOnCaptureFailure({
+              closing,
+              isClosingFold: true,
+              propagateTypedErrors: inputs.propagate_typed_errors === true,
+            })) {
+              briefTrail.push('capture_failed:closing fold produced no brief');
+              throw new ChatBriefCaptureError(
+                briefTrail.filter((x) => x.startsWith('parse_failed')
+                  || x.startsWith('call_failed')).join('; ') || 'no brief produced',
+              );
+            }
+            // ⛔⛔ KEEP THE FACTS, DECLARE THE GAP. This used to
+            //   `clearSessionBrief`, reasoned as "a stale brief is worse than
+            //   no brief" — which conflated STALE (claims now false) with
+            //   INCOMPLETE (claims still true, coverage short). A failed fold
+            //   only ever produces the second, and clearing GUARANTEED the loss
+            //   it meant to prevent: measured on task 343, a carry holding four
+            //   verified ring costs was wiped by one unparseable brief and the
+            //   turn answered "I don't have the individual costs ... in my
+            //   current context". See `markCarryIncomplete`.
+            // ⚠ The gap counts RETAINABLE results only. A recall call that was
+            //   never summarisable is not a hole in the carry.
+            const kept = markCarryIncomplete(rollingBrief, retainableUnfolded);
+            if (kept !== null) await saveCarriedBrief(kept);
+            else dropCarriedBrief();
+            briefTrail.push(
+              `carry_incomplete:${String(retainableUnfolded)} retainable result(s) `
+              + `${kept !== null ? 'kept with gap declared' : 'and no prior carry'}`,
+            );
+            console.warn(
+              '[chat] rolling brief: turn ended with '
+              + `${String(retainableUnfolded)} retainable result(s) and the closing `
+              + 'brief '
+              + (kept !== null
+                ? 'failed — carry KEPT with the gap declared in `pending`'
+                : 'failed — no prior carry to keep'),
+            );
+          }
+        }
+      }
+      // ⛔⛔ THE DECISION TRAIL GOES TO TRANSPARENCY, NOT THE PACKET. Two
+      //   reasons, both learned the hard way:
+      //     1. A trail carried ON the brief disappears exactly when no brief
+      //        was produced — which is the case most in need of explaining. A
+      //        turn that accumulated nine results and never folded leaves no
+      //        `context.brief` entry at all, so the trail would vanish with it.
+      //     2. Anything in the packet is MODEL-VISIBLE. A diagnostic that the
+      //        model can read is a diagnostic that can change what it does.
+      //   The bench captures `broadcast_events`, so this is readable there.
+      if (briefEnabled && briefTrail.length > 0) {
+        deps.emit({
+          kind: 'chat.transparency',
+          session_id,
+          turn_id,
+          event: {
+            kind: 'recued.rolling_brief.trail',
+            decisions: [...briefTrail],
+          },
+        } as never);
+      }
       if (toolCallsAccum.length > 0) {
         assistantToolCalls = toolCallsAccum;
       }

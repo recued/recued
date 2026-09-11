@@ -260,6 +260,12 @@ describe('composeIngressRpcContext', () => {
       intakeFormSubmissionStore: storage.intakeFormSubmissionStoreRef,
       intakeRecipePairStore: storage.intakeRecipePairStoreRef,
       recipeStore: storage.recipeStore,
+      // D-220 Slice B — the store the pack install writes shipped intake templates
+      // into; `reception.template.list` reads them back through it. Named here so
+      // the exhaustive literal records the wire even while the fixture app carries
+      // no store (the store → rpc-dep join is driven for real in
+      // `d-220-slice-b-pack-reception-templates.test.ts`).
+      contractStore: app.contractStoreRef,
       // D-207 slice 1c — the reception door. The contract stores come from the SAME
       // execution bundle the Gateway was built from, so a grant the mint writes is a grant
       // the gate can read. `resolveRecipeOp` is absent here: this stub `executeDeps` has no

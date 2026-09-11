@@ -54,6 +54,7 @@
 
 import type { ContractStore } from './contract-store.js';
 import type { ConnectionStoreSqlite } from './connection-store.js';
+import { PREAPPROVAL_CONNECTION_GRANTS_QUERY, withPreapprovalContractProjection } from './preapproval-contract-reads.js';
 
 /** The contract.grant scope name (a `composite_keys` entry in the contract schema). */
 const GRANT_SCOPE = 'grant';
@@ -279,7 +280,8 @@ export const createContractGrantStore = (
       // match can't be anchored by a leading-prefix scan — scan the whole (bounded)
       // grant scope and filter. The `__user__` sentinel is excluded so this stays
       // disjoint from `listUserGroups` (the seed unions the two).
-      const rows = contractStore.scan(GRANT_SCOPE, []);
+      const rows = withPreapprovalContractProjection(GRANT_SCOPE, { scope: PREAPPROVAL_CONNECTION_GRANTS_QUERY,
+        segments: [ingredient_id, connection_name, excludePackId ?? ''], exact: true }, () => contractStore.scan(GRANT_SCOPE, []));
       const groups: string[] = [];
       const seen = new Set<string>();
       for (const row of rows) {

@@ -57,6 +57,9 @@ const internalRegistry = (): InternalToolRegistry => ({
   subscribeRefresh: () => () => undefined,
 });
 
+// D-262 § B1 — transcription reads the DEDICATED slot, not the chat pool. The
+// chat slot below stays so the turn still has a model to answer with; only the
+// transcription source moved.
 const audioConfig: LLMConfig = {
   slot_1: {
     provider: 'openai',
@@ -64,8 +67,11 @@ const audioConfig: LLMConfig = {
     api_key: 'sk-test',
     speed: 'fast',
     supports_json: true,
-    modalities: { audio: true },
-    transcription_model: 'whisper-1',
+  },
+  transcription_slot: {
+    provider: 'openai',
+    model: 'whisper-1',
+    api_key: 'sk-test',
   },
 };
 
@@ -145,14 +151,12 @@ const runScenario = async (input: ScenarioInput) => {
       ...(input.fileNames
         ? { resolveFileNames: () => input.fileNames! }
         : {}),
-      messengerVoiceTranscription: {
+      voiceTranscription: {
         getFileReadDeps: () => ({ registry, blobs }),
         transcribeDeps: {
           config: audioConfig,
           adapters,
           quota: createQuotaTracker(),
-          tabProbe: async () => new Set(),
-          webChatSupported: false,
         },
       },
       now: () => NOW,

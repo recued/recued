@@ -37,6 +37,7 @@ import { emitSchedule } from './events/emit-sites.js';
 
 export interface ScheduleHandlerDeps {
   store: ScheduleStore;
+  preapprovalStatus?: (scheduleId: string) => Pick<ServerSchedule, 'enabled' | 'lifecycle_revision' | 'preapproval'> | null;
   /** When provided, schedule creation validates that targets already
    *  exist in the local recipe store. The legacy UI path leaves this
    *  absent for backward compatibility; the recipe-callable
@@ -135,9 +136,8 @@ const scheduleWithConfig = (
   deps: ScheduleHandlerDeps,
   s: Schedule,
 ): ServerSchedule => {
-  if (s.dish_id === undefined || !deps.dishStore) return s;
-  const overlay = deps.dishStore.get(s.dish_id)?.config_overlay;
-  return overlay !== undefined ? { ...s, config_overlay: overlay } : s;
+  const overlay = s.dish_id !== undefined ? deps.dishStore?.get(s.dish_id)?.config_overlay : undefined;
+  return { ...s, ...deps.preapprovalStatus?.(s.schedule_id), ...(overlay !== undefined ? { config_overlay: overlay } : {}) };
 };
 
 export const listSchedules = (

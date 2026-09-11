@@ -95,7 +95,10 @@ export const invokeGoverned = async (
     // D-181 slice 4 — a kill that landed while this call queued for a slot must
     // not now dispatch a fresh side effect.
     if (ctx.runAbortSignal?.aborted) throw new RunKilledError();
-    const result = await ctx.ingredientExecutor(slug, input, output, stepOptions, stepMeta);
+    const dispatch = () => ctx.ingredientExecutor(slug, input, output, stepOptions, stepMeta);
+    const result = ctx.reviewedExecution
+      ? await ctx.reviewedExecution.invoke({ slug, input, output, catalog: false, connection_name: '', stepMeta }, dispatch)
+      : await dispatch();
     // A kill that landed DURING this call: the in-flight call already ran (there
     // is no mid-flight cancel — "no mid-flight LLM abort"), but the run MUST NOT
     // proceed to later steps. Fail this step so the engine halts; the result is

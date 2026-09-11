@@ -34,7 +34,7 @@ const KILL_GRACE_MS = 2000;
  *  PATH-resolved launchers like `npx`/`uvx`/`node` work) + `HOME` (npm /
  *  uv caches) + the connection's explicit `config.env` — NOT a full
  *  `process.env` inherit (see the file header). */
-const buildEnv = (extra?: Record<string, string>): Record<string, string> => {
+export const buildStdioMcpEnvironment = (extra?: Record<string, string>): Record<string, string> => {
   const env: Record<string, string> = {};
   if (process.env.PATH !== undefined) env.PATH = process.env.PATH;
   if (process.env.HOME !== undefined) env.HOME = process.env.HOME;
@@ -119,7 +119,7 @@ export const createStdioSpawn = (): StdioSpawn =>
         child = spawn(spec.command, spec.args, {
           shell: false,
           stdio: ['pipe', 'pipe', 'pipe'],
-          env: buildEnv(spec.env),
+          env: buildStdioMcpEnvironment(spec.env),
         });
       } catch (e) {
         reject(e instanceof Error ? e : new Error(String(e)));

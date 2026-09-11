@@ -1146,6 +1146,32 @@ const uniformContentScanDataFields = (
     }
   }
   if (aliasLedgerFieldInPlace(record, 'correction_context', plan)) changed = true;
+  // ⛔⛔⛔ THE ROLLING BRIEF'S OWN PACKET FIELDS — ABSENT FROM THIS ENUMERATION
+  //   SINCE THE FEATURE SHIPPED, SO THEY REACHED THE PROVIDER RAW.
+  //
+  //   🔑 MEASURED 2026-09-09 over 2,865 outbound packets: 144 (5.0%) carried the
+  //   seed contact's REAL NAME. Every one was a BRIEF packet, and the field
+  //   census is exact — `carried_forward` 88, `user_request` 70,
+  //   `tool_results_since` 43. The MAIN packet for the same turn carried
+  //   `pii.Person1` and NO raw name, so the ledger was live and working the
+  //   whole time; the brief simply named fields nobody had enumerated.
+  //
+  //   ⇒ THIS FILE PREDICTED IT, in the note on `execution_precedent` below:
+  //   "this scan is an ENUMERATION: a new model-bound field is silently absent
+  //   from it and reaches the provider unaliased, WITH NOTHING FAILING." The
+  //   brief added four such fields and none were added here.
+  //
+  //   ⚠ `pending_user_statements` is the newest of them and the worst-shaped:
+  //   it carries the user's messages VERBATIM, which is the highest-density PII
+  //   surface in the packet.
+  for (const briefField of [
+    'user_request',
+    'carried_forward',
+    'tool_results_since',
+    'pending_user_statements',
+  ]) {
+    if (aliasLedgerFieldInPlace(record, briefField, plan)) changed = true;
+  }
   // The pre-seed INDEX rides the same boundary. It is built from the owner's own
   // prompt terms, so every token in it is one the ledger may already alias from
   // `user_message` — and an index naming the raw name beside an aliased message
@@ -1479,10 +1505,55 @@ const aliasChatAiInput = async (
     // ⚠ It SEEDS the ledger, so the uniform ledger scan below then covers sibling
     // fields — intended compounding, not double-aliasing: the helper is
     // byte-identity guarded and a no-op when it changes nothing.
-    if (recallCtx !== undefined
-      && aliasRecallFieldInPlace(
-        target as Record<string, unknown>, 'prior_tool_calls', plan, recallCtx)) {
-      changed = true;
+    // ⛔⛔ PER-ENTRY, AND `args` TAKES THE PLAIN LEDGER PASS — NOT THE RECALL ONE.
+    //   This passed the WHOLE `prior_tool_calls` array to the recall pass, which
+    //   runs `decorateOverlapReveal` on every string leaf. The whole-warehouse
+    //   resolver is right for a tool RESULT (that is why the call was widened);
+    //   the overlap DECORATION rode along, and it landed on the model's own
+    //   echoed ARGUMENTS.
+    //
+    //   🔑 MEASURED (bench 343, run z-343-r4, turn 1). One packet, one contact,
+    //   two surface forms: `user_message` + `prefetch_context` carried the plain
+    //   `pii.Person1` / `m1@d1.invalid`, while `prior_tool_calls` carried the
+    //   decorated `pii.Person1.dana.reyes` / `m1.dana.reyes@d1.invalid`. The
+    //   model wrote the ONLY email form it was ever shown (`m1@d1.invalid`, from
+    //   `prefetch_context`); its echoed args came back wearing a form that
+    //   appears NOWHERE in what it read. The grounding corpus excludes
+    //   `prior_tool_calls` by design, so the decorated identifier is
+    //   unattributable — the call was refused, the model re-sent the same
+    //   correct value, and the turn livelocked for 9 rounds until it timed out.
+    //
+    //   ⛔ AN EMAIL IS AN EXACT-MATCH FIELD. A coreference tail is a harmless
+    //   hint on a NAME; on an ADDRESS one extra character is a different
+    //   address, so a second surface form is a correctness bug, not cosmetics.
+    //   The name alias already carries the coreference.
+    //
+    //   ⇒ `aliasRecallContextField` (above) ALREADY draws this line for the
+    //   identical shape: `result` takes the recall pass, `args` / `detail` take
+    //   `aliasLedgerFieldInPlace`. Results are CONTENT; args are a RECORD of
+    //   what the model sent. This mirrors it instead of inventing a rule.
+    if (recallCtx !== undefined) {
+      const calls = (target as Record<string, unknown>).prior_tool_calls;
+      if (Array.isArray(calls)) {
+        for (const raw of calls) {
+          if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) continue;
+          const entry = raw as Record<string, unknown>;
+          if (aliasRecallFieldInPlace(entry, 'result', plan, recallCtx)) changed = true;
+          // ⛔⛔ SAME WHOLE-WAREHOUSE ALIASING, NO OVERLAP DECORATION. The first
+          //   attempt at this fix sent `args` through the plain ledger pass and
+          //   its own test caught the regression immediately: a contact email
+          //   the session ledger had never seen EGRESSED RAW. Whole-warehouse
+          //   seeding is exactly why this call was widened to `prior_tool_calls`
+          //   — dropping it trades a livelock for a leak, which is worse.
+          //   Passing an EMPTY disclosed set keeps the resolver and makes
+          //   `decorateOverlapReveal` a no-op (it reveals nothing when nothing
+          //   was disclosed), so args are aliased identically to every other
+          //   field and carry no coreference tail.
+          const recordCtx = { ...recallCtx, disclosedTexts: [] };
+          if (aliasRecallFieldInPlace(entry, 'args', plan, recordCtx)) changed = true;
+          if (aliasRecallFieldInPlace(entry, 'detail', plan, recordCtx)) changed = true;
+        }
+      }
     }
     if (plan.ledger.byKindRealValue.size > 0 && uniformContentScanDataFields(target, plan)) {
       changed = true;
@@ -1823,7 +1894,10 @@ export const wrapExecuteAiCallForPii = (
   ) => void,
 ): ExecuteChatAiCall => {
   if (!plan.active) return real;
-  return (manifest, input) => withSerializedLedgerRequest(
+  // ⚠ `opts` IS FORWARDED, AND TYPESCRIPT CANNOT CHECK THAT IT IS. A 2-arg
+  //   function is assignable to a 3-arg type, so a wrapper that drops the
+  //   per-call options compiles clean and the option silently never arrives.
+  return (manifest, input, opts) => withSerializedLedgerRequest(
     plan.ledger,
     async () => {
     // D-167 — fix the slot ordering BEFORE anything in this request allocates:
@@ -1901,7 +1975,7 @@ export const wrapExecuteAiCallForPii = (
     // D-191 — aliasing-only: the wrap aliases the outbound packet + restores the
     // returned body. Force-local routing is retired — aliasing is the sole PII
     // protection; routing is the user's slot_1/slot_2/free_pool choice.
-    const result = await real(manifest, aliasedInput);
+    const result = await real(manifest, aliasedInput, opts);
     piiEgress.commitLedgerForRequest(plan.ledger, stagedLedger);
     plan.summary.value = mergeRedactionSummary(
       plan.summary.value,

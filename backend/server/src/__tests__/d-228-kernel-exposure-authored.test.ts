@@ -105,8 +105,41 @@ describe('the REAL kernel manifests', () => {
     // ⛔ The point of this ratchet is that widening MCP's kernel reach is a
     // visible decision. If a future entry is not read-tier, do not add it here
     // — ask why it is exposed at all.
+    //
+    // ── D-261, 2026-09-06 — five entries, and THREE ARE NOT READ-TIER. The
+    //    question above is therefore answered here rather than waved through.
+    //
+    // `preapproval-request` (read) is the easy half: it is inert by
+    // construction. It prepares a proposal and returns a reference; the D-261
+    // decision is recorded ONLY by the protected owner ask, which rejects
+    // generic settlement (`notification/src/index.ts` — `submitAnswer` /
+    // `cancelAsk` / `registerAskHandler` all throw on the protected kind). No
+    // model, recipe or MCP caller can move a proposal to approved.
+    //
+    // `mail-draft-{create,update}` (write) and `mail-draft-delete`
+    // (DESTRUCTIVE) are the ones this ratchet exists to stop. They are admitted
+    // because their damage class is bounded by the store, not by hope:
+    //   - Every method funnels through `mail-drafts.ts` `read()`, which requires
+    //     the same `owner_id` AND — for a contract caller — the same
+    //     `contract_id`. A caller reaches only drafts it authored itself; the
+    //     principal is host-derived and "never a wire argument".
+    //   - `update` / `delete` additionally require the current
+    //     `expected_revision`, so neither can act on a draft it has not read.
+    //   - The manifest states the boundary the slug cannot cross: the operation
+    //     "cannot send, schedule or approve a message". Sending stays behind
+    //     `mail-send`; scheduling stays behind the owner decision.
+    // So `destructive` here means "deletes the caller's own local draft", not
+    // "reaches owner content" — which is the distinction `risk_tier` alone was
+    // never going to express, and the reason this list is authored.
+    //
+    // ⚠ The `preapproval.` / `mail.drafts.` RPC namespaces are the OTHER half of
+    // the same decision, and they went the other way: both are in
+    // `MCP_RESERVED_RPC_PREFIXES`, so the owner control plane stays unreachable
+    // from this channel. An agent gets the governed kernel ops and nothing else.
     expect(flagged).toEqual([
       'csv-columns', 'csv-filter', 'csv-stats', 'data-file-read',
+      'mail-draft-create', 'mail-draft-delete', 'mail-draft-read',
+      'mail-draft-update', 'preapproval-request',
     ]);
   });
 
@@ -118,6 +151,8 @@ describe('the REAL kernel manifests', () => {
     // are reachable, not the file's layout.
     expect(reachable.map((m) => m.slug).sort()).toEqual([
       'csv-columns', 'csv-filter', 'csv-stats', 'data-file-read',
+      'mail-draft-create', 'mail-draft-delete', 'mail-draft-read',
+      'mail-draft-update', 'preapproval-request',
     ]);
   });
 });

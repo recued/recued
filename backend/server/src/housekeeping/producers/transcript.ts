@@ -23,6 +23,7 @@ import {
   fileMimeTypeOf,
   fileNameOf,
   isFileMediaClass,
+  mayAiEnrichFile,
 } from './_file-media.js';
 
 const baseProducerVersionHash = computeProducerVersionHash({
@@ -53,6 +54,10 @@ export const transcriptProducer: HousekeepingEnrichmentProducer<CollectionRecord
     source_record: SourceRecord<CollectionRecord>,
   ) {
     if (!isFileMediaClass(source_record.data, 'voice')) return null;
+    // D-262 § B12.2 — ⛔ a stranger's reception drop does not spend the owner's
+    // tokens on an unattended cycle. See `mayAiEnrichFile` for why this is an
+    // allowlist and what is deliberately not in it.
+    if (!mayAiEnrichFile(source_record.data)) return null;
     if (!ctx.transcribe) {
       throw new Error(
         'transcript_producer_misconfigured: ctx.transcribe is required for voice file enrichment',

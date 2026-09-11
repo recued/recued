@@ -135,6 +135,9 @@ const own = (obj: Record<string, unknown>, key: string): unknown =>
   hasOwn(obj, key) ? obj[key] : undefined;
 
 export interface ConnectionApiHandlerDeps {
+  /** Host revalidation after asynchronous auth and before each bounded request
+   * attempt. The unsigned destination also exposes a refresh-time route change. */
+  beforeRequest?: (call: ResolvedCall, target: { expected: string; actual: string }) => Promise<void>;
   /** Decrypt at-rest `auth_ciphertext` to a typed `ConnectionAuth`.
    *  Boot site closes over `decodeAuthFromStorage` from
    *  `backend/server/src/connection-handler.ts` + the connection
@@ -384,15 +387,10 @@ const stringifyJsonBodyWithDecimalIntegers = (
  *
  *  Returns `undefined` when no upload piece is present — the ordinary
  *  JSON/form path then runs unchanged. */
-const buildUploadBody = async (
-  params: Record<string, unknown>,
-  headers: Headers,
-  deps: ConnectionApiHandlerDeps,
-): Promise<{
-  body: Uint8Array;
-  contentType: string;
-  contentSha256?: string;
-} | undefined> => {
+/** The actual upload declaration and wire fields, without reading bytes.
+ * Shared by review and encoding; caller-authored body slots never create an
+ * upload declaration. */
+export const describeConnectionApiUpload = (params: Record<string, unknown>, headers: Headers) => {
   const fileFields = extractDotPrefix(params, 'body_file');
   const hasBinary = hasOwn(params, 'body_binary');
   const hasFiles = Object.keys(fileFields).length > 0;
@@ -470,6 +468,31 @@ const buildUploadBody = async (
   if (headers.get('Content-Type') !== null) {
     throw new IngredientError('BAD_INPUT', 'connection.api: an upload body sets its own Content-Type — remove the pinned header.content-type', {});
   }
+  const refs = hasChunk ? [] : hasBinary ? [{ field: null, record_id: own(params, 'body_binary') }]
+    : Object.entries(fileFields).map(([field, record_id]) => ({ field, record_id }));
+  const files = refs.map(ref => {
+    if (typeof ref.record_id !== 'string' || !ref.record_id) throw new IngredientError('BAD_INPUT',
+      `connection.api: ${ref.field === null ? 'body_binary' : `body_file.${ref.field}`} must be a non-empty file_ref string`, {});
+    return { field: ref.field, record_id: ref.record_id };
+  });
+  return { kind: hasChunk ? 'chunked' as const : hasBinary ? 'binary' as const : 'multipart' as const,
+    files, max_bytes: hasChunk ? null : resolveUploadMaxBytes(own(params, HTTP_UPLOAD_WIRE_MAX_BYTES_KEY)),
+    text_parts: Object.entries(extractDotPrefix(params, 'body')).map(([name, value]) => ({ name, value: value == null ? '' : String(value) })),
+    fileFields, hasBinary, hasChunk, chunkTextFields, chunkIsMultipart };
+};
+
+const buildUploadBody = async (
+  params: Record<string, unknown>,
+  headers: Headers,
+  deps: ConnectionApiHandlerDeps,
+): Promise<{
+  body: Uint8Array;
+  contentType: string;
+  contentSha256?: string;
+} | undefined> => {
+  const description = describeConnectionApiUpload(params, headers);
+  if (!description) return undefined;
+  const { fileFields, hasBinary, hasChunk, chunkTextFields, chunkIsMultipart } = description;
   // D-217 slice 2b-ii — ONE chunk of a staged plaintext. The engine already
   // staged and content-verified the file (slice 0) and fixed the request count
   // (slice 2a); what arrives here is a token plus a range, and the bytes are
@@ -535,7 +558,7 @@ const buildUploadBody = async (
     throw new IngredientError('SERVER_NOT_REACHABLE', 'connection.api: this host cannot resolve file_ref bytes — an upload op fails closed', {});
   }
 
-  const maxBytes = resolveUploadMaxBytes(own(params, HTTP_UPLOAD_WIRE_MAX_BYTES_KEY));
+  const maxBytes = description.max_bytes!;
   let total = 0;
   const resolveRef = async (ref: unknown, where: string) => {
     if (typeof ref !== 'string' || ref.length === 0) {
@@ -561,8 +584,7 @@ const buildUploadBody = async (
     };
   }
 
-  const textParts: MultipartField[] = Object.entries(extractDotPrefix(params, 'body'))
-    .map(([name, value]) => ({ name, value: value == null ? '' : String(value) }));
+  const textParts: MultipartField[] = description.text_parts;
   const files: MultipartFile[] = [];
   for (const [field, ref] of Object.entries(fileFields)) {
     const file = await resolveRef(ref, `body_file.${field}`);
@@ -604,7 +626,7 @@ const bodyByteLength = (body: string | Uint8Array | undefined): number => {
   return body.byteLength;
 };
 
-const buildBody = (
+export const buildConnectionApiBody = (
   params: Record<string, unknown>,
   headers: Headers,
 ): string | undefined => {
@@ -1978,6 +2000,122 @@ export const createEnsureFreshAuth = (
  *  + extensions get separate maps; that's correct: each runtime
  *  refreshes independently, with LWW + OAuth2-issuer revocation
  *  resolving cross-runtime races. */
+/** Pure URL/method/header construction used by the live connection adapter
+ * and D-261 review. It never decrypts a credential or reads file contents. */
+export const describeConnectionApiRequest = (record: ConnectionRow, params: Record<string, unknown>, slug: string) => {
+  // ────────────── input validation ──────────────
+  const rawMethod = own(params, 'method');
+  if (typeof rawMethod !== 'string' || rawMethod === '') {
+    throw new IngredientError(
+      'INGREDIENT_OUTPUT_VALIDATION_FAILED',
+      `connection.api: 'method' is required (got ${typeof rawMethod})`,
+      { slug: slug, name: record.name },
+    );
+  }
+  const method = rawMethod.toUpperCase();
+  if (!ALLOWED_METHODS.has(method)) {
+    throw new IngredientError(
+      'INGREDIENT_OUTPUT_VALIDATION_FAILED',
+      `connection.api: 'method' must be one of GET / POST / PUT / PATCH / DELETE / HEAD / OPTIONS (got '${rawMethod}')`,
+      { slug: slug, name: record.name, method: rawMethod },
+    );
+  }
+  const rawPath = own(params, 'path');
+  if (typeof rawPath !== 'string' || rawPath === '') {
+    throw new IngredientError(
+      'INGREDIENT_OUTPUT_VALIDATION_FAILED',
+      `connection.api: 'path' is required (got ${typeof rawPath})`,
+      { slug: slug, name: record.name },
+    );
+  }
+
+  const baseUrl = readBaseUrl(record);
+
+  // ────────────── path param interpolation (D-112 parity) ──────────────
+  // The engine's namespace resolver (`resolveDeep`) resolves only
+  // namespace refs (`{{config.*}}`, `{{step.*}}`, …) before dispatch —
+  // a bare `{{deal_id}}` / `{{contact_id}}` is NOT a namespace, so it
+  // survives to here as a literal in `path`. Connection-api wrappers
+  // declare such path params as flat input fields (`deal_id: null` +
+  // `path: '/crm/v3/objects/deals/{{deal_id}}'`), exactly like the HTTP
+  // adapter does; mirror its D-112 pass so the id lands in the URL.
+  // `interpolateUrl` applies position-aware encoding + rejects raw `/`
+  // injection; `assertUrlSafe` catches a `..` segment a ref value could
+  // smuggle in (encodeURIComponent leaves `.` untouched). Run on the raw
+  // path BEFORE `new URL`, which would normalise `..`/`.` away. A missing
+  // param leaves its `{{ref}}` marker in place (HTTP-adapter parity) —
+  // recipe validation requires the wrapper's `null` inputs, so a live
+  // call always supplies them.
+  let resolvedPath: string;
+  try {
+    resolvedPath = interpolateUrl(rawPath, (ref) => own(params, ref));
+    assertUrlSafe(resolvedPath);
+  } catch (e) {
+    if (e instanceof UrlRefInvalidError) {
+      throw new IngredientError(
+        'URL_REF_INVALID',
+        `connection.api (${slug}): ${e.message}`,
+        { slug: slug, name: record.name, ref: e.ref },
+      );
+    }
+    throw e;
+  }
+
+  // ────────────── URL construction ──────────────
+  // D-192 #8h — `composeApiUrl` preserves the base_url's path prefix for a leading-slash
+  // op path (OpenAPI server+path concatenation); a bare `new URL(path, base)` would REPLACE
+  // it, dropping a versioned base segment (`.../v1.0` + `/me/…` → `.../me/…`). Absolute /
+  // protocol-relative paths fall through unchanged so the cross-origin guard below still
+  // refuses them; an already-rooted continuation cursor (Graph `@odata.nextLink`) is not
+  // doubled. `assertUrlSafe(resolvedPath)` (above) still guards `..`/`.` traversal.
+  const queryParams = extractDotPrefix(params, 'query');
+  const resolveRequestUrl = (apiBase: string): { url: URL; baseOrigin: string } => {
+    let nextUrl: URL;
+    try {
+      nextUrl = composeApiUrl(apiBase, resolvedPath);
+    } catch (e) {
+      throw new IngredientError(
+        'INGREDIENT_OUTPUT_VALIDATION_FAILED',
+        `connection.api: cannot resolve path '${resolvedPath}' against base_url '${apiBase}': ${(e as Error).message}`,
+        { slug: slug, name: record.name },
+      );
+    }
+    // Cross-origin guard (Codex review HIGH). A path that resolves to a
+    // DIFFERENT origin than base_url — absolute `scheme://host`,
+    // protocol-relative `//host`, or a backslash trick `new URL` normalizes —
+    // would send the request WITH the connection's auth to an attacker host.
+    let nextBaseOrigin = '';
+    try {
+      nextBaseOrigin = new URL(apiBase).origin;
+    } catch { /* readBaseUrl already validated the stored base; refreshed bases are normalized. */ }
+    if (nextUrl.origin !== nextBaseOrigin) {
+      throw new IngredientError(
+        'URL_REF_INVALID',
+        `connection.api (${slug}): resolved path '${resolvedPath}' changes the origin to `
+          + `'${nextUrl.origin}' (base_url origin '${nextBaseOrigin}') — cross-origin dispatch refused`,
+        { slug: slug, name: record.name },
+      );
+    }
+    for (const [k, v] of Object.entries(queryParams)) {
+      if (Array.isArray(v)) {
+        for (const item of v) appendQueryScalar(nextUrl.searchParams, k, item);
+      } else {
+        appendQueryScalar(nextUrl.searchParams, k, v);
+      }
+    }
+    return { url: nextUrl, baseOrigin: nextBaseOrigin };
+  };
+
+
+  // ────────────── headers + body ──────────────
+  const headerInputs = extractDotPrefix(params, 'header');
+  const headers = new Headers();
+  for (const [k, v] of Object.entries(headerInputs)) {
+    headers.set(k, String(v));
+  }
+  return { method, baseUrl, resolveRequestUrl, headers };
+};
+
 export const createConnectionApiHandler = (
   deps: ConnectionApiHandlerDeps,
 ): ConnectionKindHandler => {
@@ -2018,116 +2156,10 @@ export const createConnectionApiHandler = (
       return runWalk(record, params, call, ctx);
     }
 
-    // ────────────── input validation ──────────────
-    const rawMethod = own(params, 'method');
-    if (typeof rawMethod !== 'string' || rawMethod === '') {
-      throw new IngredientError(
-        'INGREDIENT_OUTPUT_VALIDATION_FAILED',
-        `connection.api: 'method' is required (got ${typeof rawMethod})`,
-        { slug: call.slug, name: record.name },
-      );
-    }
-    const method = rawMethod.toUpperCase();
-    if (!ALLOWED_METHODS.has(method)) {
-      throw new IngredientError(
-        'INGREDIENT_OUTPUT_VALIDATION_FAILED',
-        `connection.api: 'method' must be one of GET / POST / PUT / PATCH / DELETE / HEAD / OPTIONS (got '${rawMethod}')`,
-        { slug: call.slug, name: record.name, method: rawMethod },
-      );
-    }
-    const rawPath = own(params, 'path');
-    if (typeof rawPath !== 'string' || rawPath === '') {
-      throw new IngredientError(
-        'INGREDIENT_OUTPUT_VALIDATION_FAILED',
-        `connection.api: 'path' is required (got ${typeof rawPath})`,
-        { slug: call.slug, name: record.name },
-      );
-    }
-
-    let baseUrl = readBaseUrl(record);
-
-    // ────────────── path param interpolation (D-112 parity) ──────────────
-    // The engine's namespace resolver (`resolveDeep`) resolves only
-    // namespace refs (`{{config.*}}`, `{{step.*}}`, …) before dispatch —
-    // a bare `{{deal_id}}` / `{{contact_id}}` is NOT a namespace, so it
-    // survives to here as a literal in `path`. Connection-api wrappers
-    // declare such path params as flat input fields (`deal_id: null` +
-    // `path: '/crm/v3/objects/deals/{{deal_id}}'`), exactly like the HTTP
-    // adapter does; mirror its D-112 pass so the id lands in the URL.
-    // `interpolateUrl` applies position-aware encoding + rejects raw `/`
-    // injection; `assertUrlSafe` catches a `..` segment a ref value could
-    // smuggle in (encodeURIComponent leaves `.` untouched). Run on the raw
-    // path BEFORE `new URL`, which would normalise `..`/`.` away. A missing
-    // param leaves its `{{ref}}` marker in place (HTTP-adapter parity) —
-    // recipe validation requires the wrapper's `null` inputs, so a live
-    // call always supplies them.
-    let resolvedPath: string;
-    try {
-      resolvedPath = interpolateUrl(rawPath, (ref) => own(params, ref));
-      assertUrlSafe(resolvedPath);
-    } catch (e) {
-      if (e instanceof UrlRefInvalidError) {
-        throw new IngredientError(
-          'URL_REF_INVALID',
-          `connection.api (${call.slug}): ${e.message}`,
-          { slug: call.slug, name: record.name, ref: e.ref },
-        );
-      }
-      throw e;
-    }
-
-    // ────────────── URL construction ──────────────
-    // D-192 #8h — `composeApiUrl` preserves the base_url's path prefix for a leading-slash
-    // op path (OpenAPI server+path concatenation); a bare `new URL(path, base)` would REPLACE
-    // it, dropping a versioned base segment (`.../v1.0` + `/me/…` → `.../me/…`). Absolute /
-    // protocol-relative paths fall through unchanged so the cross-origin guard below still
-    // refuses them; an already-rooted continuation cursor (Graph `@odata.nextLink`) is not
-    // doubled. `assertUrlSafe(resolvedPath)` (above) still guards `..`/`.` traversal.
-    const queryParams = extractDotPrefix(params, 'query');
-    const resolveRequestUrl = (apiBase: string): { url: URL; baseOrigin: string } => {
-      let nextUrl: URL;
-      try {
-        nextUrl = composeApiUrl(apiBase, resolvedPath);
-      } catch (e) {
-        throw new IngredientError(
-          'INGREDIENT_OUTPUT_VALIDATION_FAILED',
-          `connection.api: cannot resolve path '${resolvedPath}' against base_url '${apiBase}': ${(e as Error).message}`,
-          { slug: call.slug, name: record.name },
-        );
-      }
-      // Cross-origin guard (Codex review HIGH). A path that resolves to a
-      // DIFFERENT origin than base_url — absolute `scheme://host`,
-      // protocol-relative `//host`, or a backslash trick `new URL` normalizes —
-      // would send the request WITH the connection's auth to an attacker host.
-      let nextBaseOrigin = '';
-      try {
-        nextBaseOrigin = new URL(apiBase).origin;
-      } catch { /* readBaseUrl already validated the stored base; refreshed bases are normalized. */ }
-      if (nextUrl.origin !== nextBaseOrigin) {
-        throw new IngredientError(
-          'URL_REF_INVALID',
-          `connection.api (${call.slug}): resolved path '${resolvedPath}' changes the origin to `
-            + `'${nextUrl.origin}' (base_url origin '${nextBaseOrigin}') — cross-origin dispatch refused`,
-          { slug: call.slug, name: record.name },
-        );
-      }
-      for (const [k, v] of Object.entries(queryParams)) {
-        if (Array.isArray(v)) {
-          for (const item of v) appendQueryScalar(nextUrl.searchParams, k, item);
-        } else {
-          appendQueryScalar(nextUrl.searchParams, k, v);
-        }
-      }
-      return { url: nextUrl, baseOrigin: nextBaseOrigin };
-    };
+    const request = describeConnectionApiRequest(record, params, call.slug);
+    const { method, resolveRequestUrl, headers } = request;
+    let baseUrl = request.baseUrl;
     let { url, baseOrigin } = resolveRequestUrl(baseUrl);
-
-    // ────────────── headers + body ──────────────
-    const headerInputs = extractDotPrefix(params, 'header');
-    const headers = new Headers();
-    for (const [k, v] of Object.entries(headerInputs)) {
-      headers.set(k, String(v));
-    }
     // D-216 — an upload body short-circuits the JSON/form path and brings
     // its own Content-Type (a generated multipart boundary, or the record's
     // own type). GET/HEAD never carry one.
@@ -2144,7 +2176,7 @@ export const createConnectionApiHandler = (
       ? upload.body
       : method === 'GET' || method === 'HEAD'
         ? undefined
-        : buildBody(params, headers);
+        : buildConnectionApiBody(params, headers);
 
     // ────────────── auth (decrypt + maybe refresh + inject) ──────────────
     const auth = await deps.decodeAuth(record);
@@ -2188,6 +2220,10 @@ export const createConnectionApiHandler = (
       readonly response: Response;
       finish(): void;
     }> => {
+      await deps.beforeRequest?.(call, {
+        expected: resolveRequestUrl(request.baseUrl).url.toString(),
+        actual: resolveRequestUrl(baseUrl).url.toString(),
+      });
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), timeoutMs);
       let finished = false;

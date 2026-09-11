@@ -42,6 +42,7 @@ import type {
 } from './work-entities.js';
 import type { WorkEntitySourceFreshness } from './work-entity-sources.js';
 import type { WorkEntityEdgeView } from './work-entity-edges.js';
+import type { TaskListFilter } from './task-data-view.js';
 
 /** List one own-it kind, polymorphic across the kind's registered
  *  Sources (or scoped to one via `source_id`). Mirrors the resolver's
@@ -55,8 +56,10 @@ export interface WorkEntityListRpcRequest {
   include_deleted?: boolean;
   limit?: number;
   offset?: number;
-  /** Booking-only, server-side search across the complete result set. */
+  /** Task/booking search across the complete result set, before pagination. */
   search?: string;
+  /** Task-only completion, resolved date window, and ordering. */
+  task_filter?: TaskListFilter;
   /** Booking-only business lifecycle filter. */
   booking_lifecycle_states?: readonly BookingLifecycleState[];
 }
@@ -65,8 +68,7 @@ export interface WorkEntityListRpcResponse {
   /** Tagged records (`_kind` discriminator on each) so the caller can
    *  render a mixed list without re-deriving the kind. */
   entities: WorkEntity[];
-  /** Count matching the query's Source / sync filters (ignores
-   *  `limit` / `offset`), for the list view's pagination. */
+  /** Count matching all query and visibility filters, ignoring limit/offset. */
   total: number;
   /** D-192 read resolution — per-Source freshness for every Source the
    *  result can draw from (the query's scope, same filter composition

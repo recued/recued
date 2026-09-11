@@ -1,28 +1,6 @@
-/** Recipe editor — the visible half of the Kitchen recipe inspector (D-148
- *  salvage, Step 3 / slice 3).
- *
- *  This is the imperative-DOM step inspector that the pure helpers in
- *  `./step-utils.js` + `./step-logic.js` back. It mirrors the pack editor
- *  (`../ingredient-builder/operation-family-table.ts`) one-for-one: a single
- *  mutable `state`, a full `rerender()` from the working `RecipeDefinition`,
- *  the `makeButton` primitive, the card/field-grid CSS, and the canonical
- *  `@recued/ui-shared` design tokens (no raw hex; light + dark; responsive
- *  12–24px spacing; card r14 / control r9; sentence-case labels; accent rings).
- *
- *  Callers are INJECTED (`validateCaller` / `saveCaller`) — wiring this into
- *  `webclient-bootstrap` (a `recipe.validate` / `recipe.save` `Conn`) is a
- *  later slice. The route holds a working recipe and never reaches the wire
- *  itself.
- *
- *  Step kinds — all fully editable (the D-182 absorb relaxed the `recipe.save`
- *  seam to accept inline op-steps; the dispatch path lowers + runs them):
- *    - transform / ingredient / guard — discriminator + schema-/manifest-derived
- *      fields.
- *    - op — op id, vendor-neutral args (add / edit / remove), the per-operand
- *      connection slot, and `foreach`. A CRM op needs a `type:'connection'`
- *      recipe variable for its slot (declared in a later slice) or the save seam
- *      rejects it as slotless — the notice points the user there.
- *  Every kind also carries a `skip_when` / `fail_on` condition builder. */
+/** Kitchen recipe workbench. The route owns an unsaved document, editor history,
+ * field drafts, navigation, and sample results; callers supply server simulation, validation
+ * and persistence. Owner webhook controls remain separate from document history. */
 
 import type {
   LocalRecipeWebhookStatus,
@@ -44,7 +22,12 @@ import {
   validateRecipeEventTriggerEntry,
   WEBHOOK_PROFILE_REGISTRY,
 } from '@recued/contracts';
-import { TRANSFORM_SCHEMAS } from '@recued/transforms';
+import { TRANSFORM_SCHEMAS, type ParamDef } from '@recued/transforms';
+import { createValueEditor, parseEditorValue, type FieldDraft } from './value-editor.js';
+import { createEditorHistory, readEditorDraft, writeEditorDraft, type DraftRecovery, type EditorSnapshot } from './editor-history.js';
+import { renderRecipeSettings, EDITOR_WORKBENCH_STYLES } from './editor-panels.js';
+import type { RecipeSimulationResult } from '@recued/contracts';
+import type { RecipeSimulationCaller } from './recipe-simulation-caller.js';
 import { PRIMITIVE_STYLES } from '@recued/ui-shared/primitives';
 
 import {
@@ -55,7 +38,6 @@ import {
   formatCondition,
   generateStepId,
   parseCSV,
-  parseOpArgValue,
   parseStepFieldValue,
   removeStepById,
   renameStepIdInRecipe,
@@ -64,13 +46,11 @@ import {
 } from './step-utils.js';
 import {
   CONDITION_OP_LABELS,
-  detectStepFieldType,
   detectStepKind,
   enumerateIngredientInputs,
   enumerateOpArgs,
   enumerateTransformParams,
   getStepDiscriminator,
-  type StepFieldType,
   type StepKind,
 } from './step-logic.js';
 import {
@@ -224,7 +204,9 @@ export type RecipeEditorSaveStage =
 export interface BootstrapRecipeEditorRouteOptions {
   root: HTMLElement;
   document?: Document;
+  recovery?: DraftRecovery;
   validateCaller: (args: { recipe: RecipeDefinition }) => Promise<RecipeValidateResult>;
+  simulateCaller?: RecipeSimulationCaller;
   saveCaller: (args: {
     recipe: RecipeDefinition;
     publisher_id?: string;
@@ -358,6 +340,7 @@ const adoptRecipe = (
 const allStepIds = (recipe: RecipeDefinition): string[] => [
   // ⚠ Same optional-field hazard as the Prefetch section guard below: the key
   // is absent on a valid recipe, and unguarded this threw on every rename.
+  ...(recipe.trigger_steps ?? []).map((s) => s.id),
   ...(recipe.prefetch_steps ?? []).map((s) => s.id),
   ...recipe.steps.map((s) => s.id),
 ];
@@ -1300,7 +1283,7 @@ const injectStyles = (doc: Document): void => {
   ) {
     const style = doc.createElement('style');
     style.setAttribute(RECIPE_EDITOR_STYLES_MARKER, '');
-    style.textContent = [PRIMITIVE_STYLES, RECIPE_EDITOR_STYLES].join('\n');
+    style.textContent = [PRIMITIVE_STYLES, RECIPE_EDITOR_STYLES, EDITOR_WORKBENCH_STYLES].join('\n');
     doc.head.appendChild(style);
   }
 };
@@ -1350,6 +1333,52 @@ export const bootstrapRecipeEditorRoute = (
     openConditions: new Set(),
     editEpoch: 0,
   };
+  let fieldDrafts: Record<string, FieldDraft> = {};
+  const validationFields = new Map<HTMLElement, string>();
+  let savedRecipe = state.recipe;
+  let neverSaved = options.initialDirty ?? false;
+  const snapshot = (): EditorSnapshot => ({ recipe: state.recipe, fields: fieldDrafts });
+  const history = createEditorHistory(snapshot());
+  let recoveredDraft = readEditorDraft(options.recovery);
+  let recoveryTimer: ReturnType<typeof setTimeout> | undefined;
+  let recoveryFailed = false;
+  const persistDraft = (): void => {
+    if (recoveryTimer !== undefined) clearTimeout(recoveryTimer);
+    recoveryTimer = undefined;
+    if (!options.recovery || (recoveredDraft && state.editEpoch === 0)) return;
+    recoveryFailed = !writeEditorDraft(options.recovery, state.dirty
+      ? { base: savedRecipe, snapshot: snapshot() } : null);
+    if (recoveryFailed) {
+      const status = host.querySelector?.<HTMLElement>(`[${RECIPE_EDITOR_STATUS_ATTR}]`);
+      if (status) status.textContent = 'Local recovery is unavailable. Save to keep your work.';
+      announce('Local recovery is unavailable. Save to keep your work.');
+    }
+  };
+  const queueDraft = (): void => {
+    if (!options.recovery) return;
+    if (recoveryTimer !== undefined) clearTimeout(recoveryTimer);
+    recoveryTimer = setTimeout(persistDraft, 250);
+  };
+  const panelOpen = new Set<string>();
+  if ((doc.defaultView?.innerWidth ?? 1440) > 1100) panelOpen.add('outline');
+  let outlineQuery = '';
+  let refreshOutline: (() => void) | undefined;
+  let activeOutlineStep: string | undefined;
+  let undoBtn: HTMLButtonElement | undefined;
+  let redoBtn: HTMLButtonElement | undefined;
+  let testText = JSON.stringify({ config: {}, context: { event: {} }, mocks: {} }, null, 2);
+  let testResult: RecipeSimulationResult | undefined;
+  let testError = '';
+  let testEpoch = -1;
+  let sampleEpoch = 0;
+  let testedSampleEpoch = -1;
+  let testStatusEl: HTMLElement | undefined;
+  let testRunBtn: HTMLButtonElement | undefined;
+  let testCancelBtn: HTMLButtonElement | undefined;
+  let testAbort: AbortController | undefined;
+  let testGeneration = 0;
+  const idsOnLoad = allStepIds(state.recipe);
+  if (idsOnLoad.length > 100) for (const id of idsOnLoad.slice(1)) state.collapsed.add(id);
   const webhookSelections = new Map(
     options.webhookControl?.initialStatus.bindings.map((selection) => [
       selection.binding,
@@ -1370,6 +1399,7 @@ export const bootstrapRecipeEditorRoute = (
   const host = doc.createElement('section');
   host.setAttribute(RECIPE_EDITOR_ROUTE_ATTR, '');
   options.root.appendChild(host);
+  host.addEventListener('focusout', () => history.breakGroup());
 
   // Screen-reader outcome announcer — one PERSISTENT visually-hidden live
   // region. A live region only announces mutations made while it is already
@@ -1466,21 +1496,44 @@ export const bootstrapRecipeEditorRoute = (
    *  the recipe dirty + invalidates the prior validate result, and updates the
    *  Save button label in place via `syncActionLabels`. */
   const markDirty = (): void => {
+    if (recoveredDraft) {
+      recoveredDraft = null;
+      if (!recoveryFailed) host.querySelector?.('.recipe-editor-recovery')?.remove();
+    }
     state.dirty = true;
     state.saveStage = 'idle';
+    const hadIssues = state.issues.length > 0;
     state.issues = [];
+    if (!rpcInFlight && !webhookBusy) state.status = 'Edits pending — validate or save to check them.';
     state.editEpoch += 1;
+    for (const [field, key] of validationFields) {
+      if (!fieldDrafts[key]) field.removeAttribute('aria-invalid');
+    }
+    validationFields.clear();
+    for (const message of Array.from(host.querySelectorAll?.('[data-recued-recipe-validation-message]') ?? [])) message.remove();
+    issuesPanel?.remove(); issuesPanel = undefined;
+    statusbarEl?.remove();
+    if (topbarEl) renderStatusLine(topbarEl);
+    if (hadIssues || outlineQuery.trim()) refreshOutline?.();
+    const active = doc.activeElement as HTMLElement | null;
+    const group = active?.getAttribute?.(RECIPE_EDITOR_FIELD_ATTR) ?? undefined;
+    history.record(snapshot(), group);
+    queueDraft();
     syncActionLabels();
   };
 
   /** Mutate the recipe and rerender (structure changed — add / remove / rename /
    *  kind change / condition rebuild). */
   const mutateAndRerender = (next: RecipeDefinition): void => {
+    recoveredDraft = null;
     state.recipe = next;
     state.dirty = true;
     state.saveStage = 'idle';
     state.issues = [];
+    if (!rpcInFlight && !webhookBusy) state.status = 'Edits pending — validate or save to check them.';
     state.editEpoch += 1;
+    history.record(snapshot());
+    queueDraft();
     rerender();
   };
 
@@ -1505,6 +1558,7 @@ export const bootstrapRecipeEditorRoute = (
   let dirtyCue: HTMLElement | undefined;
   let issuesPanel: HTMLElement | undefined;
   let topbarEl: HTMLElement | undefined;
+  let statusbarEl: HTMLElement | undefined;
   let routeHeading: HTMLElement | undefined;
   let webhookAuthorityBtn: HTMLButtonElement | undefined;
   // Render-owning controls rebuild the entire editor. Remember which one had
@@ -1533,6 +1587,12 @@ export const bootstrapRecipeEditorRoute = (
   };
 
   const syncActionLabels = (): void => {
+    if (testResult && testStatusEl && testEpoch !== state.editEpoch) {
+      testStatusEl.textContent = `Test ${testResult.status} — recipe changed since this test`;
+      testStatusEl.setAttribute('data-state', 'stale');
+    }
+    if (undoBtn) undoBtn.setAttribute('aria-disabled', String(!history.canUndo || rpcInFlight || webhookBusy));
+    if (redoBtn) redoBtn.setAttribute('aria-disabled', String(!history.canRedo || rpcInFlight || webhookBusy));
     // While an rpc is in flight, a mid-flight edit resets the stage — but the
     // busy labels/disabled state must hold until the completion repaints
     // (an enabled-looking 'Save' over a still-disabled button lies).
@@ -1589,7 +1649,7 @@ export const bootstrapRecipeEditorRoute = (
   };
 
   const runValidate = (): void => {
-    if (disposed || rpcInFlight || webhookBusy) return;
+    if (disposed || rpcInFlight || webhookBusy || blockInvalidFields()) return;
     state.saveStage = 'validating';
     state.status = 'Validating…';
     rerender();
@@ -1626,6 +1686,7 @@ export const bootstrapRecipeEditorRoute = (
   };
 
   const runSave = (): void => {
+    if (blockInvalidFields()) return;
     if (disposed || rpcInFlight || webhookBusy) return;
     if (webhookStatus?.armed && state.recipe.recipe_id !== persistedRecipeId) {
       state.saveStage = 'error';
@@ -1677,6 +1738,7 @@ export const bootstrapRecipeEditorRoute = (
     // Edits landing while the save is in flight are NOT in the saved body —
     // the completion checks the epoch so it never reports them clean.
     const epochAtSave = state.editEpoch;
+    const recipeAtSave = state.recipe;
     void options
       .saveCaller({
         recipe: state.recipe,
@@ -1715,7 +1777,23 @@ export const bootstrapRecipeEditorRoute = (
           webhookError = null;
         }
         persistedRecipeId = result.recipe_id;
+        savedRecipe = { ...recipeAtSave, version: result.version };
+        if (state.recipe.recipe_id === recipeAtSave.recipe_id) {
+          state.recipe = { ...state.recipe, version: result.version };
+        }
+        history.updateVersion(recipeAtSave.recipe_id, result.version);
+        neverSaved = false;
+        recoveredDraft = null;
         state.dirty = staleEdits;
+        history.breakGroup();
+        if (options.recovery?.savedKey) {
+          const key = options.recovery.savedKey(result.recipe_id);
+          if (key !== options.recovery.key) {
+            writeEditorDraft(options.recovery, null);
+            options.recovery.key = key;
+          }
+        }
+        persistDraft();
         rerender();
         announce(state.status);
         revealIssues();
@@ -1751,9 +1829,337 @@ export const bootstrapRecipeEditorRoute = (
   // ────────────────────────────────────────────────────────────
   // Condition builder (skip_when / fail_on) — common to all kinds
   // ────────────────────────────────────────────────────────────
+  const locateStep = (id: string): { key: 'trigger_steps' | 'prefetch_steps' | 'steps'; index: number } | undefined => {
+    for (const key of ['trigger_steps', 'prefetch_steps', 'steps'] as const) {
+      const index = (state.recipe[key] ?? []).findIndex(step => step.id === id);
+      if (index >= 0) return { key, index };
+    }
+    return undefined;
+  };
+  const fieldPath = (key: string, stepId?: string): string => {
+    if (!stepId) return key;
+    const location = locateStep(stepId);
+    const suffix = key.replace(/^param:/, '').replace(/^input:/, 'input.').replace(/^arg:/, 'args.');
+    return location ? `${location.key}[${location.index}].${suffix}` : key;
+  };
+  const valueField = (
+    label: string, key: string, value: unknown, schema: ParamDef | undefined,
+    apply: (next: unknown) => void, stepId?: string,
+  ): HTMLElement => {
+    const draftKey = JSON.stringify([stepId ?? '', key]);
+    const field = doc.createElement('div');
+    const compact = stepId !== undefined && ['string', 'number', 'boolean'].includes(schema?.type ?? '');
+    field.className = compact ? 'recipe-editor-field' : 'recipe-editor-field span-full';
+    appendText(doc, field, 'label', label + (schema?.required ? ' *' : ''));
+    const patch = (next: unknown, draft?: FieldDraft): void => {
+      if (draft) fieldDrafts[draftKey] = draft;
+      else { delete fieldDrafts[draftKey]; apply(next); }
+      markDirty();
+    };
+    field.appendChild(createValueEditor({
+      document: doc, fieldAttribute: RECIPE_EDITOR_FIELD_ATTR, fieldKey: key,
+      label: stepId ? `${label} for step ${stepId}` : label, value, schema,
+      draft: fieldDrafts[draftKey],
+      references: stepId ? () => {
+        const ids = allStepIds(state.recipe);
+        const phase = locateStep(stepId)?.key;
+        const earlier = ids.slice(0, ids.indexOf(stepId)).filter(id =>
+          phase !== 'prefetch_steps' || locateStep(id)?.key !== 'prefetch_steps');
+        return [
+          ...earlier.map(id => {
+            const ns = locateStep(id)?.key === 'trigger_steps' ? 'trigger' : 'step';
+            return { value: `{{${ns}.${id}}}`, label: `Output: ${id}` };
+          }),
+          ...Object.keys(state.recipe.variables).map(name => ({ value: `{{config.${name}}}`, label: `Variable: ${name}` })),
+          { value: '{{context.event}}', label: 'Trigger event' },
+        ];
+      } : undefined,
+      change: patch,
+      chooseReference: next => {
+        patch(next);
+        pendingFieldFocus = { fieldKey: key, occurrence: 0, selectionStart: null, selectionEnd: null };
+        rerender();
+        revealIssue(fieldPath(key, stepId));
+      },
+    }));
+    return field;
+  };
+  const blockInvalidFields = (): boolean => {
+    const local = Object.entries(fieldDrafts).map(([key, draft]) => {
+      const [stepId, field] = JSON.parse(key) as [string, string];
+      return { path: fieldPath(field, stepId || undefined), message: draft.error, severity: 'error' as const };
+    });
+    if (!local.length) return false;
+    state.issues = local;
+    state.status = 'Finish the highlighted fields before validating or saving.';
+    state.saveStage = 'error';
+    rerender(); revealIssues();
+    return true;
+  };
+  const changeHistory = (direction: 'undo' | 'redo'): void => {
+    if (rpcInFlight || webhookBusy) return;
+    const active = doc.activeElement as HTMLElement | null;
+    const focus = active ? captureFieldFocus(active) : null;
+    const next = history[direction]();
+    if (!next) return;
+    state.recipe = adoptRecipe(next.recipe)!;
+    fieldDrafts = next.fields;
+    state.dirty = neverSaved || JSON.stringify(state.recipe) !== JSON.stringify(savedRecipe) || Object.keys(fieldDrafts).length > 0;
+    state.editEpoch += 1; state.issues = []; state.saveStage = 'idle';
+    state.status = direction === 'undo' ? 'Undid last edit' : 'Redid edit';
+    pendingFieldFocus = focus;
+    queueDraft(); rerender(); announce(state.status);
+    if (!focus) (direction === 'undo' ? undoBtn : redoBtn)?.focus();
+  };
+  const issueDestination = (path: string): { stepId?: string; field: string } => {
+    const normalized = path.replace(/^recipe\./, '');
+    const match = /^(steps|prefetch_steps|trigger_steps)(?:\[(\d+)\]|\.(\d+))(?:\.(.*))?/.exec(normalized);
+    if (match) {
+      const key = match[1] as 'steps' | 'prefetch_steps' | 'trigger_steps';
+      const step = state.recipe[key]?.[Number(match[2] ?? match[3])];
+      const suffix = match[4] ?? 'id';
+      let field = suffix === 'id' ? 'step_id' : suffix;
+      if (/^(skip_when|fail_on)([.\[]|$)/.test(suffix)) field = suffix.split(/[.\[]/)[0]!;
+      else if (suffix.startsWith('args.')) field = `arg:${suffix.slice(5).split(/[.\[]/)[0]}`;
+      else if (suffix.startsWith('input.')) field = `input:${suffix.slice(6).split(/[.\[]/)[0]}`;
+      else if (step && detectStepKind(step as RecipeStep) === 'transform'
+        && !['step_id', 'skip_when', 'fail_on'].includes(field)) field = `param:${suffix.split(/[.\[]/)[0]}`;
+      return { stepId: step?.id, field };
+    }
+    if (/^output([.\[]|$)/.test(normalized)) return { field: 'output' };
+    const variable = /^variables\.([^.\[]+)/.exec(normalized)?.[1];
+    if (variable) return { field: connectionVarNames(state.recipe).includes(variable)
+      ? `${normalized.endsWith('.kind') ? 'conn_var_kind' : 'conn_var_label'}:${variable}`
+      : `variables.${variable}` };
+    return { field: normalized === 'metadata.name' ? 'recipe_name' : normalized };
+  };
+  const revealIssue = (path: string): void => {
+    const destination = issueDestination(path);
+    let scope: HTMLElement = host;
+    if (destination.stepId) {
+      const cards = host.querySelectorAll?.<HTMLElement>(`[${RECIPE_EDITOR_ROW_ATTR}]`);
+      const card = cards ? Array.from(cards).find(el => el.getAttribute(RECIPE_EDITOR_ROW_ATTR) === destination.stepId) : undefined;
+      if (card) { card.setAttribute('open', ''); state.collapsed.delete(destination.stepId); scope = card; }
+    }
+    const fields = scope.querySelectorAll?.<HTMLElement>(`[${RECIPE_EDITOR_FIELD_ATTR}]`);
+    const target = fields ? Array.from(fields).find(el => el.getAttribute(RECIPE_EDITOR_FIELD_ATTR) === destination.field)
+      ?? Array.from(fields).find(el => destination.field.startsWith(`${el.getAttribute(RECIPE_EDITOR_FIELD_ATTR)}.`)) : undefined;
+    const fallback = target ?? (scope === host ? editorFields('recipe_id')[0] : scope.querySelector?.<HTMLElement>('summary'));
+    let ancestor = fallback?.parentElement;
+    while (ancestor && ancestor !== host) {
+      if (ancestor.tagName === 'DETAILS') ancestor.setAttribute('open', '');
+      ancestor = ancestor.parentElement;
+    }
+    fallback?.focus?.({ preventScroll: true });
+    fallback?.scrollIntoView?.({ block: 'center' });
+  };
+  const renderOutline = (): HTMLElement => {
+    const nav = doc.createElement('nav'); nav.className = 'recipe-editor-outline';
+    nav.setAttribute('aria-label', 'Recipe step outline');
+    const disclosure = doc.createElement('details');
+    disclosure.setAttribute('data-recued-recipe-outline', '');
+    const summary = appendText(doc, disclosure, 'summary', '');
+    appendText(doc, summary, 'span', 'Recipe outline');
+    appendText(doc, summary, 'span', plural(allStepIds(state.recipe).length, 'step')).className = 'recipe-editor-panel-hint';
+    rememberPanel(disclosure, 'outline'); nav.appendChild(disclosure);
+    const body = doc.createElement('div'); body.className = 'recipe-editor-panel-body'; disclosure.appendChild(body);
+    const shortcuts = doc.createElement('div'); shortcuts.className = 'recipe-editor-outline-shortcuts';
+    for (const [label, selector, panel] of [
+      ['Settings', '[data-recued-recipe-settings]', 'settings'],
+      ['Runs when', `[${RECIPE_EDITOR_TRIGGERS_ATTR}]`, ''],
+      ['Connections', `[${RECIPE_EDITOR_BINDINGS_ATTR}]`, ''],
+      ['Sample test', '[data-recued-recipe-test]', 'test'],
+    ] as const) {
+      const link = makeButton(doc, label, 'secondary', 'sm', () => {
+        const target = host.querySelector<HTMLElement>(selector);
+        if (!target) return;
+        if (panel) { target.setAttribute('open', ''); panelOpen.add(panel); }
+        const heading = target.querySelector<HTMLElement>('summary, h2');
+        if (heading) {
+          if (heading.tagName !== 'SUMMARY') heading.tabIndex = -1;
+          heading.focus({ preventScroll: true });
+        }
+        target.scrollIntoView({ block: 'center' });
+      });
+      shortcuts.appendChild(link);
+    }
+    body.appendChild(shortcuts);
+    const toolbar = doc.createElement('div'); toolbar.className = 'recipe-editor-search';
+    const search = makeTextInput(doc, outlineQuery, 'outline_search', next => { outlineQuery = next; paint(); });
+    search.type = 'search'; search.setAttribute('aria-label', 'Search recipe steps');
+    search.placeholder = 'Find a step…'; toolbar.appendChild(search);
+    const clear = makeButton(doc, 'Clear', 'secondary', 'sm', () => {
+      outlineQuery = ''; search.value = ''; paint(); search.focus();
+    });
+    clear.setAttribute('aria-label', 'Clear step search'); toolbar.appendChild(clear);
+    body.appendChild(toolbar);
+    const countLabel = appendText(doc, body, 'span', '');
+    countLabel.className = 'recipe-editor-search-count'; countLabel.setAttribute('role', 'status');
+    const list = doc.createElement('div'); list.className = 'recipe-editor-outline-list'; body.appendChild(list);
+    search.addEventListener('keydown', event => {
+      if (event.isComposing) return;
+      if (event.key === 'Escape' && outlineQuery) { event.preventDefault(); event.stopPropagation(); clear.click(); }
+      if (event.key === 'Enter') { event.preventDefault(); list.querySelector<HTMLButtonElement>('button')?.click(); }
+    });
+    const paint = (): void => {
+      clearChildren(list);
+      const query = outlineQuery.toLowerCase().trim();
+      clear.hidden = outlineQuery.length === 0;
+      let count = 0;
+      for (const key of ['trigger_steps', 'prefetch_steps', 'steps'] as const) {
+        const group = doc.createElement('div'); group.className = 'recipe-editor-outline-group';
+        appendText(doc, group, 'span', key === 'trigger_steps' ? 'Trigger steps' : key === 'prefetch_steps' ? 'Prefetch' : 'Steps')
+          .className = 'recipe-editor-outline-group-title';
+        for (const [index, step] of (state.recipe[key] ?? []).entries()) {
+          if (query && !JSON.stringify(step).toLowerCase().includes(query)) continue;
+          count += 1;
+          const issues = state.issues.filter(issue => issue.path && issueDestination(issue.path).stepId === step.id);
+          const link = makeButton(doc, '', 'secondary', 'sm', () => {
+            activeOutlineStep = step.id;
+            for (const item of Array.from(list.querySelectorAll<HTMLElement>('[data-recued-recipe-outline-step]'))) {
+              if (item.getAttribute('data-recued-recipe-outline-step') === step.id) item.setAttribute('aria-current', 'step');
+              else item.removeAttribute('aria-current');
+            }
+            revealIssue(`${key}[${index}].id`);
+          });
+          appendText(doc, link, 'span', String(index + 1)).className = 'recipe-editor-outline-number';
+          const copy = doc.createElement('span'); copy.className = 'recipe-editor-outline-copy';
+          appendText(doc, copy, 'strong', step.id);
+          appendText(doc, copy, 'span', getStepDiscriminator(step as RecipeStep)); link.appendChild(copy);
+          if (issues.length) appendText(doc, link, 'span', `⚠ ${issues.length}`);
+          link.setAttribute('data-recued-recipe-outline-step', step.id);
+          if (issues.length) link.setAttribute('data-has-error', '');
+          if (activeOutlineStep === step.id) link.setAttribute('aria-current', 'step');
+          group.appendChild(link);
+        }
+        if (group.children.length > 1) list.appendChild(group);
+      }
+      countLabel.textContent = query ? `${count} of ${plural(allStepIds(state.recipe).length, 'step')}` : '';
+      if (!count) appendText(doc, list, 'span', query ? 'No matching steps. Try a name, operation, or input.' : 'Add a step to start building.').className = 'recipe-editor-outline-empty';
+    };
+    refreshOutline = paint; paint();
+    return nav;
+  };
+  const rememberPanel = (panel: HTMLElement, key: string): void => {
+    if (panelOpen.has(key)) panel.setAttribute('open', '');
+    panel.addEventListener('toggle', () => {
+      if (panel.isConnected === false) return;
+      if (panel.hasAttribute('open')) panelOpen.add(key); else panelOpen.delete(key);
+    });
+  };
+  const renderRecovery = (): HTMLElement | null => {
+    if (!recoveredDraft && !recoveryFailed) return null;
+    const row = doc.createElement('div'); row.className = 'recipe-editor-recovery';
+    if (recoveryFailed) appendText(doc, row, 'span', 'Local recovery is unavailable. Save this draft to keep your work.');
+    if (recoveredDraft) {
+      appendText(doc, row, 'span', JSON.stringify(recoveredDraft.base) === JSON.stringify(savedRecipe)
+        ? 'Unsaved work is available from this tab.'
+        : 'Unsaved work is available. The saved recipe has changed since that draft.');
+      row.appendChild(makeButton(doc, 'Restore draft', 'secondary', 'sm', () => {
+        if (!recoveredDraft) return;
+        fieldDrafts = recoveredDraft.snapshot.fields;
+        const recipe = recoveredDraft.snapshot.recipe;
+        recoveredDraft = null;
+        mutateAndRerender(adoptRecipe(recipe)!);
+      }));
+      row.appendChild(makeButton(doc, 'Discard draft', 'secondary', 'sm', () => {
+        recoveredDraft = null; writeEditorDraft(options.recovery, null); rerender();
+      }));
+    }
+    return row;
+  };
+  const renderTestPanel = (): HTMLElement => {
+    const section = doc.createElement('details'); section.className = 'recipe-editor-section recipe-editor-test';
+    section.setAttribute('data-recued-recipe-test', '');
+    const summary = appendText(doc, section, 'summary', '');
+    appendText(doc, summary, 'span', 'Test with sample data');
+    appendText(doc, summary, 'span', 'Sample preview').className = 'recipe-editor-panel-hint';
+    rememberPanel(section, 'test');
+    const body = doc.createElement('div'); body.className = 'recipe-editor-panel-body'; section.appendChild(body);
+    appendText(doc, body, 'p', 'Run transforms and conditions with sample inputs and mocked outputs. No connected service is called.').className = 'recipe-editor-test-intro';
+    const help = doc.createElement('details'); help.className = 'recipe-editor-test-help';
+    appendText(doc, help, 'summary', 'How to write sample data');
+    appendText(doc, help, 'p', 'Use config to override variables, context for event data, and mocks for external step outputs, keyed by step id.');
+    appendText(doc, help, 'pre', JSON.stringify({ config: {}, context: { event: {} }, mocks: { read: { result: [] } } }, null, 2));
+    appendText(doc, help, 'p', 'For different outputs in a loop, use {"iterations": [...]}. To test a failed call, use {"error": "message"}.');
+    rememberPanel(help, 'test-help'); body.appendChild(help);
+    const sampleLabel = appendText(doc, body, 'label', 'Sample data (JSON)');
+    sampleLabel.className = 'recipe-editor-sample-label';
+    const sample = makeTextArea(doc, testText, 'test_sample', next => {
+      testText = next; sampleEpoch += 1; testError = '';
+      if (testStatusEl) {
+        testStatusEl.textContent = 'Sample changed — run the test again';
+        testStatusEl.setAttribute('data-state', 'stale');
+      }
+    });
+    sample.setAttribute('aria-label', 'Sample config, context, data, and mock outputs (JSON)'); sample.rows = 8;
+    body.appendChild(sample);
+    const status = appendText(doc, body, 'p', testAbort ? 'Testing…' : testError || (testResult
+      ? `Test ${testResult.status}${testEpoch !== state.editEpoch ? ' — recipe changed since this test' : testedSampleEpoch !== sampleEpoch ? ' — sample changed since this test' : ''}` : 'Ready to test'));
+    status.setAttribute('role', 'status'); status.setAttribute('data-recued-recipe-test-status', '');
+    status.setAttribute('data-state', testAbort ? 'running' : testError ? 'failed'
+      : testResult && (testEpoch !== state.editEpoch || testedSampleEpoch !== sampleEpoch) ? 'stale' : testResult?.status ?? 'ready');
+    testStatusEl = status;
+    const actions = doc.createElement('div'); actions.className = 'recipe-editor-actions'; body.appendChild(actions);
+    const run = makeButton(doc, testAbort ? 'Testing…' : 'Test recipe', 'primary', 'sm', () => {
+      if (testAbort || blockInvalidFields()) return;
+      if (!options.simulateCaller) { testError = 'Recipe tests are unavailable on this server.'; rerender(); return; }
+      let sampleInput: unknown;
+      try {
+        sampleInput = JSON.parse(testText);
+        if (!sampleInput || typeof sampleInput !== 'object' || Array.isArray(sampleInput)) throw new Error('Sample data must be a JSON object.');
+      } catch (error) { testError = errorMessage(error); rerender(); return; }
+      const controller = new AbortController(); testAbort = controller;
+      const generation = ++testGeneration; testEpoch = state.editEpoch; testedSampleEpoch = sampleEpoch;
+      const recipe = JSON.parse(JSON.stringify(state.recipe)) as RecipeDefinition;
+      testError = ''; testResult = undefined; panelOpen.add('test'); rerender();
+      void options.simulateCaller({ recipe, sample: sampleInput }, controller.signal).then(result => {
+        controller.signal.throwIfAborted();
+        if (!disposed && generation === testGeneration) testResult = result;
+      }).catch((error: unknown) => {
+        if (!disposed && generation === testGeneration) testError = controller.signal.aborted ? 'Test cancelled' : errorMessage(error);
+      }).finally(() => {
+        if (disposed || generation !== testGeneration) return;
+        testAbort = undefined; rerender();
+      });
+    });
+    run.setAttribute('data-recued-recipe-test-run', ''); run.setAttribute('aria-disabled', String(testAbort !== undefined)); run.setAttribute('aria-busy', String(testAbort !== undefined)); testRunBtn = run; actions.appendChild(run);
+    testCancelBtn = undefined;
+    if (testAbort) {
+      testCancelBtn = makeButton(doc, 'Cancel test', 'secondary', 'sm', () => testAbort?.abort());
+      actions.appendChild(testCancelBtn);
+    }
+    if (testResult) {
+      const results = doc.createElement('div'); results.className = 'recipe-editor-test-results';
+      const counts = new Map<string, number>();
+      for (const step of testResult.steps) counts.set(step.status, (counts.get(step.status) ?? 0) + 1);
+      const totals = appendText(doc, results, 'p', Array.from(counts, ([key, count]) => `${count} ${key}`).join(' · '));
+      totals.className = 'recipe-editor-test-totals';
+      for (const step of testResult.steps) {
+        const detail = doc.createElement('details');
+        detail.setAttribute('data-state', step.status);
+        const summary = appendText(doc, detail, 'summary', `${step.id} · ${step.status}${step.mocked ? ' · mocked' : ''}`);
+        summary.setAttribute('data-recued-recipe-test-step', step.id);
+        if (step.message) appendText(doc, detail, 'p', step.message);
+        const values = doc.createElement('div'); values.className = 'recipe-editor-test-values';
+        for (const [label, value] of [['Input', step.input], ['Output', step.output]] as const) {
+          const valueHost = doc.createElement('div');
+          appendText(doc, valueHost, 'strong', label); appendText(doc, valueHost, 'pre', JSON.stringify(value, null, 2) ?? `No ${label.toLowerCase()}`);
+          values.appendChild(valueHost);
+        }
+        detail.appendChild(values);
+        const location = locateStep(step.id);
+        if (location) detail.appendChild(makeButton(doc, 'Go to step', 'secondary', 'sm', () => revealIssue(`${location.key}[${location.index}].id`)));
+        results.appendChild(detail);
+      }
+      body.appendChild(results);
+    }
+    return section;
+  };
+
   const renderConditionField = (
     step: RecipeStep,
-    listKey: 'prefetch_steps' | 'steps',
+    listKey: 'trigger_steps' | 'prefetch_steps' | 'steps',
     field: 'skip_when' | 'fail_on',
     grid: HTMLElement,
   ): void => {
@@ -1761,21 +2167,8 @@ export const bootstrapRecipeEditorRoute = (
     const current = conditionFieldString(raw);
     const conditionLabel = field === 'skip_when' ? 'Skip when' : 'Fail on';
 
-    // Object-form condition → show read-only JSON with an "edit as JSON" hint.
     if (isObjectCondition(raw)) {
-      const wrap = doc.createElement('div');
-      wrap.className = 'recipe-editor-field span-full';
-      const label = doc.createElement('label');
-      label.textContent = conditionLabel;
-      wrap.appendChild(label);
-      const ro = doc.createElement('code');
-      ro.className = 'recipe-editor-readonly';
-      ro.setAttribute(RECIPE_EDITOR_FIELD_ATTR, field);
-      ro.textContent = current;
-      wrap.appendChild(ro);
-      const hint = appendText(doc, wrap, 'span', 'Object-form condition — edit as JSON');
-      hint.className = 'recipe-editor-hint';
-      grid.appendChild(wrap);
+      stepValue(grid, step, listKey, conditionLabel, field, raw, { type: 'object' });
       return;
     }
 
@@ -1831,7 +2224,11 @@ export const bootstrapRecipeEditorRoute = (
       `${conditionLabel} source for step ${step.id}`,
     );
     fieldInput.setAttribute('placeholder', '{{step.x}}');
-    fieldInput.addEventListener('change', () => applyCondition(false));
+    fieldInput.setAttribute('data-recued-recipe-deferred-value', parts.field);
+    fieldInput.addEventListener('change', () => {
+      fieldInput.setAttribute('data-recued-recipe-deferred-value', fieldInput.value);
+      applyCondition(false);
+    });
     row.appendChild(fieldInput);
 
     const opOptions = ['', ...CONDITION_OP_LABELS.map((entry) => entry.op)];
@@ -1857,7 +2254,11 @@ export const bootstrapRecipeEditorRoute = (
         `${conditionLabel} value for step ${step.id}`,
       );
       valueInput.setAttribute('placeholder', 'value');
-      valueInput.addEventListener('change', () => applyCondition(false));
+      valueInput.setAttribute('data-recued-recipe-deferred-value', parts.value);
+      valueInput.addEventListener('change', () => {
+        valueInput.setAttribute('data-recued-recipe-deferred-value', valueInput.value);
+        applyCondition(false);
+      });
       row.appendChild(valueInput);
     }
 
@@ -1873,125 +2274,54 @@ export const bootstrapRecipeEditorRoute = (
   // ────────────────────────────────────────────────────────────
   // Per-kind body renderers
   // ────────────────────────────────────────────────────────────
+  const stepValue = (
+    grid: HTMLElement, step: RecipeStep, listKey: 'trigger_steps' | 'prefetch_steps' | 'steps',
+    name: string, key: string, value: unknown, schema?: ParamDef,
+  ): void => {
+    const field = valueField(name, key, value, schema, next => {
+      const nextList = applyFieldToStep(state.recipe[listKey] as RecipeStep[], step.id, key, next);
+      state.recipe = { ...state.recipe, [listKey]: nextList } as RecipeDefinition;
+    }, step.id);
+    grid.appendChild(field);
+  };
+
   const renderTransformBody = (
-    step: RecipeStep,
-    listKey: 'prefetch_steps' | 'steps',
-    grid: HTMLElement,
+    step: RecipeStep, listKey: 'trigger_steps' | 'prefetch_steps' | 'steps', grid: HTMLElement,
   ): void => {
     for (const { name, value, def } of enumerateTransformParams(step)) {
-      const fieldType: StepFieldType = detectStepFieldType(value, def);
-      const fieldKey = `param:${name}`;
-
-      if (fieldType === 'unsupported') {
-        addReadonlyField(doc, grid, name, serializeValue(value));
-        continue;
-      }
-
-      const apply = (raw: string): void => {
-        const parsed = parseStepFieldValue(raw, fieldType, false);
-        const nextList = applyFieldToStep(
-          state.recipe[listKey] as Array<{ id: string }>,
-          step.id,
-          fieldKey,
-          parsed,
-        );
-        state.recipe = { ...state.recipe, [listKey]: nextList } as RecipeDefinition;
-        markDirty();
-      };
-
-      if (fieldType === 'boolean') {
-        const wrap = doc.createElement('div');
-        wrap.className = 'recipe-editor-field';
-        const cbLabel = doc.createElement('label');
-        cbLabel.className = 'recipe-editor-field-checkbox';
-        const cb = doc.createElement('input');
-        cb.type = 'checkbox';
-        cb.checked = value === true;
-        cb.setAttribute(RECIPE_EDITOR_FIELD_ATTR, fieldKey);
-        cb.addEventListener('change', () => apply(cb.checked ? 'true' : 'false'));
-        cbLabel.appendChild(cb);
-        appendText(doc, cbLabel, 'span', name);
-        wrap.appendChild(cbLabel);
-        grid.appendChild(wrap);
-      } else if (fieldType === 'enum') {
-        const enumValues = def?.enum ?? [];
-        addField(
-          doc,
-          grid,
-          name,
-          makeSelect(doc, serializeValue(value), enumValues, fieldKey, apply),
-        );
-      } else if (fieldType === 'number') {
-        addField(doc, grid, name, makeNumberInput(doc, serializeValue(value), fieldKey, apply));
-      } else {
-        addField(doc, grid, name, makeTextInput(doc, serializeValue(value), fieldKey, apply));
-      }
+      stepValue(grid, step, listKey, name, `param:${name}`, value, def);
     }
   };
 
   const renderIngredientBody = (
-    step: RecipeStep,
-    listKey: 'prefetch_steps' | 'steps',
-    grid: HTMLElement,
+    step: RecipeStep, listKey: 'trigger_steps' | 'prefetch_steps' | 'steps', grid: HTMLElement,
   ): void => {
-    const slug = getStepDiscriminator(step);
-    addField(
-      doc,
-      grid,
-      'Ingredient',
-      makeTextInput(doc, slug, 'ingredient', (next) => {
-        const nextList = (state.recipe[listKey] as Array<{ id: string }>).map((s) =>
-          s.id === step.id ? { ...s, ingredient: next } : s,
-        );
-        state.recipe = { ...state.recipe, [listKey]: nextList } as RecipeDefinition;
-        markDirty();
-      }),
-      true,
-    );
-
+    addField(doc, grid, 'Ingredient', makeTextInput(doc, getStepDiscriminator(step), 'ingredient', next => {
+      const list = (state.recipe[listKey] as RecipeStep[]).map(s => s.id === step.id ? { ...s, ingredient: next } : s);
+      state.recipe = { ...state.recipe, [listKey]: list } as RecipeDefinition;
+      markDirty();
+    }), true);
     for (const { name, value } of enumerateIngredientInputs(step)) {
-      const fieldType = detectStepFieldType(value);
-      const fieldKey = `input:${name}`;
-      if (fieldType === 'unsupported') {
-        addReadonlyField(doc, grid, name, serializeValue(value));
-        continue;
-      }
-      const apply = (raw: string): void => {
-        const parsed = parseStepFieldValue(raw, fieldType, false);
-        const nextList = applyFieldToStep(
-          state.recipe[listKey] as Array<{ id: string }>,
-          step.id,
-          fieldKey,
-          parsed,
-        );
-        state.recipe = { ...state.recipe, [listKey]: nextList } as RecipeDefinition;
-        markDirty();
-      };
-      if (fieldType === 'boolean') {
-        const wrap = doc.createElement('div');
-        wrap.className = 'recipe-editor-field';
-        const cbLabel = doc.createElement('label');
-        cbLabel.className = 'recipe-editor-field-checkbox';
-        const cb = doc.createElement('input');
-        cb.type = 'checkbox';
-        cb.checked = value === true;
-        cb.setAttribute(RECIPE_EDITOR_FIELD_ATTR, fieldKey);
-        cb.addEventListener('change', () => apply(cb.checked ? 'true' : 'false'));
-        cbLabel.appendChild(cb);
-        appendText(doc, cbLabel, 'span', name);
-        wrap.appendChild(cbLabel);
-        grid.appendChild(wrap);
-      } else if (fieldType === 'number') {
-        addField(doc, grid, name, makeNumberInput(doc, serializeValue(value), fieldKey, apply));
-      } else {
-        addField(doc, grid, name, makeTextInput(doc, serializeValue(value), fieldKey, apply));
-      }
+      stepValue(grid, step, listKey, name, `input:${name}`, value);
     }
+    const row = doc.createElement('div'); row.className = 'recipe-editor-variable-row span-full';
+    const name = makeTextInput(doc, '', 'new_ingredient_input', () => {});
+    name.setAttribute('aria-label', `New input name for step ${step.id}`);
+    row.appendChild(name);
+    row.appendChild(makeButton(doc, 'Add input', 'secondary', 'sm', () => {
+      const key = name.value.trim();
+      if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(key) || ['__proto__', 'constructor', 'prototype'].includes(key)) return;
+      const current = (state.recipe[listKey] as RecipeStep[]).find(s => s.id === step.id) as { input?: Record<string, unknown> } | undefined;
+      if (Object.hasOwn(current?.input ?? {}, key)) return;
+      const list = applyFieldToStep(state.recipe[listKey] as RecipeStep[], step.id, `input:${key}`, null);
+      mutateAndRerender({ ...state.recipe, [listKey]: list } as RecipeDefinition);
+    }));
+    grid.appendChild(row);
   };
 
   const renderGuardBody = (
     step: RecipeStep,
-    listKey: 'prefetch_steps' | 'steps',
+    listKey: 'trigger_steps' | 'prefetch_steps' | 'steps',
     grid: HTMLElement,
   ): void => {
     const guardValue = String((step as { guard?: unknown }).guard ?? '');
@@ -2012,7 +2342,7 @@ export const bootstrapRecipeEditorRoute = (
 
   const renderOpBody = (
     step: RecipeStep,
-    listKey: 'prefetch_steps' | 'steps',
+    listKey: 'trigger_steps' | 'prefetch_steps' | 'steps',
     grid: HTMLElement,
   ): void => {
     const opStep = step as { op?: unknown; connection?: unknown; foreach?: unknown };
@@ -2100,13 +2430,28 @@ export const bootstrapRecipeEditorRoute = (
       const row = doc.createElement('div');
       row.className = 'recipe-editor-arg-row';
 
-      const serialized = serializeValue(value);
+      const draftKey = JSON.stringify([step.id, `arg:${name}`]);
+      const serialized = fieldDrafts[draftKey]?.text ?? serializeValue(value);
+      const error = doc.createElement('span');
+      error.className = 'recipe-editor-field-error';
+      error.setAttribute('role', 'status');
+      error.textContent = fieldDrafts[draftKey]?.error ?? '';
       const applyArg = (raw: string): void => {
+        const parsed = parseEditorValue(raw, undefined, undefined, true);
+        error.textContent = parsed.error ?? '';
+        if (parsed.error !== undefined) {
+          fieldDrafts[draftKey] = { text: raw, error: parsed.error };
+          valueInput.setAttribute('aria-invalid', 'true');
+          markDirty();
+          return;
+        }
+        delete fieldDrafts[draftKey];
+        valueInput.removeAttribute('aria-invalid');
         const nextList = applyFieldToStep(
           state.recipe[listKey] as Array<{ id: string }>,
           step.id,
           `arg:${name}`,
-          parseOpArgValue(raw),
+          parsed.value,
         );
         state.recipe = { ...state.recipe, [listKey]: nextList } as RecipeDefinition;
         markDirty();
@@ -2120,9 +2465,11 @@ export const bootstrapRecipeEditorRoute = (
         'aria-label',
         `Argument ${name} value for step ${step.id}`,
       );
+      if (fieldDrafts[draftKey]) valueInput.setAttribute('aria-invalid', 'true');
       row.appendChild(valueInput);
 
       const removeArg = makeButton(doc, 'Remove', 'danger-text', 'xs', () => {
+        delete fieldDrafts[draftKey];
         const fresh = (state.recipe[listKey] as RecipeStep[]).find(
           (candidate) => candidate.id === step.id,
         );
@@ -2157,6 +2504,7 @@ export const bootstrapRecipeEditorRoute = (
       );
 
       wrap.appendChild(row);
+      wrap.appendChild(error);
       grid.appendChild(wrap);
     }
 
@@ -2223,7 +2571,7 @@ export const bootstrapRecipeEditorRoute = (
   // ────────────────────────────────────────────────────────────
   const renderStepCard = (
     step: RecipeStep,
-    listKey: 'prefetch_steps' | 'steps',
+    listKey: 'trigger_steps' | 'prefetch_steps' | 'steps',
     index: number,
     listLength: number,
   ): HTMLElement => {
@@ -2238,6 +2586,7 @@ export const bootstrapRecipeEditorRoute = (
     // rerenders via state.collapsed keyed on the step id.
     if (!state.collapsed.has(step.id)) card.setAttribute('open', '');
     card.addEventListener('toggle', () => {
+      if (card.isConnected === false) return;
       if ((card as unknown as { open?: boolean }).open === true) {
         state.collapsed.delete(step.id);
       } else {
@@ -2261,6 +2610,7 @@ export const bootstrapRecipeEditorRoute = (
     const idInput = doc.createElement('input');
     idInput.type = 'text';
     idInput.value = step.id;
+    idInput.setAttribute('data-recued-recipe-deferred-value', step.id);
     idInput.setAttribute(RECIPE_EDITOR_FIELD_ATTR, 'step_id');
     idInput.setAttribute('aria-label', `Step id (${step.id})`);
     let renameFocusTarget: 'self' | 'previous' | 'next' = 'self';
@@ -2279,6 +2629,10 @@ export const bootstrapRecipeEditorRoute = (
       }
       // Carry per-card UI state (collapse / revealed conditions) across the
       // rename — both sets are keyed on the step id.
+      for (const [key, draft] of Object.entries(fieldDrafts)) {
+        const [owner, field] = JSON.parse(key) as [string, string];
+        if (owner === step.id) { delete fieldDrafts[key]; fieldDrafts[JSON.stringify([proposed, field])] = draft; }
+      }
       if (state.collapsed.delete(step.id)) state.collapsed.add(proposed);
       for (const field of CONDITION_FIELDS) {
         if (state.openConditions.delete(`${step.id}:${field}`)) {
@@ -2370,6 +2724,9 @@ export const bootstrapRecipeEditorRoute = (
       // a stale entry would make a later fresh step render collapsed (or with
       // a pre-revealed condition builder).
       state.collapsed.delete(step.id);
+      for (const key of Object.keys(fieldDrafts)) {
+        if ((JSON.parse(key) as string[])[0] === step.id) delete fieldDrafts[key];
+      }
       for (const field of CONDITION_FIELDS) {
         state.openConditions.delete(`${step.id}:${field}`);
       }
@@ -2385,6 +2742,24 @@ export const bootstrapRecipeEditorRoute = (
     actions.setAttribute('aria-label', `Step ${step.id} actions`);
     actions.appendChild(moveUp);
     actions.appendChild(moveDown);
+    const duplicate = makeButton(doc, 'Duplicate', 'secondary', 'xs', () => {
+      const id = generateStepId(allStepIds(state.recipe), `${step.id}_copy`);
+      const renamed = renameStepIdInRecipe(state.recipe, step.id, id);
+      const copy = (renamed[listKey] as RecipeStep[]).find(candidate => candidate.id === id);
+      if (!copy) return;
+      const list = [...(state.recipe[listKey] as RecipeStep[])];
+      list.splice(index + 1, 0, copy);
+      for (const [key, draft] of Object.entries(fieldDrafts)) {
+        const [owner, field] = JSON.parse(key) as [string, string];
+        if (owner === step.id) fieldDrafts[JSON.stringify([id, field])] = { ...draft };
+      }
+      pendingAddedStepFocusId = id;
+      mutateAndRerender({ ...state.recipe, [listKey]: list } as RecipeDefinition);
+      revealStep(id);
+    });
+    duplicate.setAttribute('aria-label', `Duplicate step ${step.id}`);
+    duplicate.setAttribute('data-recued-recipe-duplicate', step.id);
+    actions.appendChild(duplicate);
     actions.appendChild(remove);
     summary.appendChild(actions);
 
@@ -2538,10 +2913,10 @@ export const bootstrapRecipeEditorRoute = (
   const renderStepsSection = (
     host2: HTMLElement,
     title: string,
-    listKey: 'prefetch_steps' | 'steps',
+    listKey: 'trigger_steps' | 'prefetch_steps' | 'steps',
     controls: ReadonlyArray<HTMLElement | undefined>,
   ): void => {
-    const list = state.recipe[listKey];
+    const list = state.recipe[listKey] ?? [];
     const section = doc.createElement('section');
     section.className = 'recipe-editor-section';
 
@@ -2593,7 +2968,7 @@ export const bootstrapRecipeEditorRoute = (
     card?.scrollIntoView?.({ block: 'nearest' });
   };
 
-  const buildAddStepControl = (): HTMLElement => {
+  const buildAddStepControl = (listKey: 'trigger_steps' | 'prefetch_steps' | 'steps' = 'steps'): HTMLElement => {
     const wrap = doc.createElement('div');
     wrap.className = 'recipe-editor-add recipe-editor-add--step';
 
@@ -2616,7 +2991,7 @@ export const bootstrapRecipeEditorRoute = (
       // Transform offers a known-name picker; the others a free text input.
       rebuildNameControl();
     });
-    kindSelect.setAttribute(RECIPE_EDITOR_ADD_KIND_ATTR, '');
+    kindSelect.setAttribute(listKey === 'steps' ? RECIPE_EDITOR_ADD_KIND_ATTR : 'data-recued-recipe-trigger-add-kind', '');
     kindSelect.setAttribute('aria-label', 'Step kind');
     kindField.appendChild(kindSelect);
     wrap.appendChild(kindField);
@@ -2645,14 +3020,14 @@ export const bootstrapRecipeEditorRoute = (
         const sel = makeSelect(doc, draft.name, TRANSFORM_NAMES, 'add_name', (next) => {
           draft.name = next;
         });
-        sel.setAttribute(RECIPE_EDITOR_ADD_NAME_ATTR, '');
+        sel.setAttribute(listKey === 'steps' ? RECIPE_EDITOR_ADD_NAME_ATTR : 'data-recued-recipe-trigger-add-name', '');
         sel.setAttribute('aria-label', 'Step name');
         nameField.appendChild(sel);
       } else {
         const inp = makeTextInput(doc, draft.name, 'add_name', (next) => {
           draft.name = next;
         });
-        inp.setAttribute(RECIPE_EDITOR_ADD_NAME_ATTR, '');
+        inp.setAttribute(listKey === 'steps' ? RECIPE_EDITOR_ADD_NAME_ATTR : 'data-recued-recipe-trigger-add-name', '');
         inp.setAttribute('aria-label', 'Step name');
         const placeholder =
           draft.kind === 'ingredient'
@@ -2676,7 +3051,7 @@ export const bootstrapRecipeEditorRoute = (
         pendingAddedStepFocusId = id;
         mutateAndRerender({
           ...state.recipe,
-          steps: [...state.recipe.steps, createBlankOpStep(opName, id)],
+          [listKey]: [...(state.recipe[listKey] ?? []), createBlankOpStep(opName, id)],
         });
         revealStep(id);
         return;
@@ -2687,12 +3062,12 @@ export const bootstrapRecipeEditorRoute = (
       pendingAddedStepFocusId = id;
       mutateAndRerender({
         ...state.recipe,
-        steps: [...state.recipe.steps, step],
+        [listKey]: [...(state.recipe[listKey] ?? []), step],
       });
       revealStep(id);
     });
-    add.setAttribute(RECIPE_EDITOR_ADD_ATTR, '');
-    addStepBtn = add;
+    add.setAttribute(listKey === 'steps' ? RECIPE_EDITOR_ADD_ATTR : 'data-recued-recipe-trigger-add', '');
+    if (listKey === 'steps') addStepBtn = add;
     wrap.appendChild(add);
 
     return wrap;
@@ -3275,16 +3650,17 @@ export const bootstrapRecipeEditorRoute = (
       doc,
       section,
       'p',
-      'Triggers can start this recipe automatically. New triggers stay paused in Automation '
-        + 'until the owner arms them. An accepted form response fires only after owner review; '
-        + 'submitted answers stay behind core.data.form-response.get.',
+      'Start from an event. New triggers stay paused until you enable them in Automation. '
+        + 'Form responses fire after owner review; add a response reader to use the submitted answers.',
     );
     hint.className = 'recipe-editor-hint';
 
     if (triggers.length === 0) {
       const empty = doc.createElement('div');
-      empty.className = 'recipe-editor-empty';
-      appendText(doc, empty, 'strong', 'Runs manually');
+      empty.className = 'recipe-editor-empty recipe-editor-trigger-empty';
+      appendText(doc, empty, 'strong', state.recipe.auto_run
+        ? `Runs every ${state.recipe.auto_run.interval_ms} ms${state.recipe.auto_run.default_enabled === false ? ' (initially paused)' : ''}`
+        : 'Runs manually');
       appendText(doc, empty, 'span', 'Add a trigger to start this recipe from an event.');
       section.appendChild(empty);
     }
@@ -3745,11 +4121,13 @@ export const bootstrapRecipeEditorRoute = (
    *  result of Validate / Save appears next to the buttons that ran them —
    *  never below the fold. Announced politely to screen readers. */
   const renderStatusLine = (topbar: HTMLElement): void => {
+    statusbarEl = undefined;
     const hasChip = state.saveStage === 'idle' && state.status === 'Valid';
     if (state.status.length === 0 && !hasChip) return;
 
     const bar = doc.createElement('div');
     bar.className = 'recipe-editor-statusbar';
+    statusbarEl = bar;
 
     if (hasChip) {
       const chip = doc.createElement('span');
@@ -3782,8 +4160,10 @@ export const bootstrapRecipeEditorRoute = (
         badge.className = 'recipe-editor-issue-badge';
       }
       if (issue.path !== undefined && issue.path.length > 0) {
-        const path = appendText(doc, row, 'span', issue.path);
-        path.className = 'recipe-editor-issue-path';
+        const path = makeButton(doc, issue.path, 'secondary', 'sm', () => revealIssue(issue.path!));
+        path.className += ' recipe-editor-issue-path';
+        path.setAttribute('aria-label', `Fix ${issue.path}`);
+        row.appendChild(path);
       }
       appendText(doc, row, 'span', issue.message);
       issues.appendChild(row);
@@ -3806,6 +4186,8 @@ export const bootstrapRecipeEditorRoute = (
       const capturedField = captureFieldFocus(activeBeforeRender);
       if (capturedField !== null) restoreActiveField = capturedField;
     }
+    const restoreTestFocus = (testRunBtn !== undefined && activeBeforeRender === testRunBtn)
+      || (testCancelBtn !== undefined && activeBeforeRender === testCancelBtn);
     if (activeBeforeRender === validateBtn) {
       pendingActionFocus = 'validate';
     } else if (activeBeforeRender === saveBtn) {
@@ -3822,6 +4204,7 @@ export const bootstrapRecipeEditorRoute = (
       pendingActionFocus = null;
     }
     clearChildren(content);
+    validationFields.clear();
     renderedStepFocusTargets = new Map();
     renderedConditionFocusTargets = new Map();
     renderedOpArgFocusTargets = new Map();
@@ -3891,6 +4274,12 @@ export const bootstrapRecipeEditorRoute = (
     dirtyCue.className = 'recipe-editor-dirty-dot';
     dirtyCue.setAttribute(RECIPE_EDITOR_DIRTY_ATTR, '');
     actions.appendChild(dirtyCue);
+    undoBtn = makeButton(doc, 'Undo', 'secondary', 'sm', () => changeHistory('undo'));
+    undoBtn.setAttribute('title', 'Undo (⌘Z or Ctrl+Z)');
+    undoBtn.setAttribute('data-recued-recipe-undo', ''); actions.appendChild(undoBtn);
+    redoBtn = makeButton(doc, 'Redo', 'secondary', 'sm', () => changeHistory('redo'));
+    redoBtn.setAttribute('title', 'Redo (⌘⇧Z or Ctrl+Shift+Z)');
+    redoBtn.setAttribute('data-recued-recipe-redo', ''); actions.appendChild(redoBtn);
 
     validateBtn = makeButton(doc, 'Validate', 'secondary', 'sm', runValidate);
     validateBtn.setAttribute(RECIPE_EDITOR_VALIDATE_ATTR, '');
@@ -3913,26 +4302,66 @@ export const bootstrapRecipeEditorRoute = (
     // that reports them — not below the step list.
     renderIssues(content);
 
-    // The event starts the recipe, then the steps do its work. Supporting
-    // bindings (connection variables + depends_on) stay last.
-    renderWebhooksSection(content);
-    renderTriggersSection(content);
-    // ⛔ OPTIONAL FIELD, and the editor assumed it was always there. Only
-    // `blankRecipe()` seeds `prefetch_steps: []`; an `initialRecipe` is used
-    // as given, and `parseRecipe` accepts a recipe without the key at all — so
-    // a perfectly VALID recipe crashed the editor at mount with "Cannot read
-    // properties of undefined (reading 'length')". Hit live on 2026-07-29 by
-    // the first D-219 AI draft, but nothing about it is AI-specific: a
-    // hand-written or imported recipe omitting the key crashed identically.
-    if ((state.recipe.prefetch_steps?.length ?? 0) > 0) {
-      renderStepsSection(content, 'Prefetch', 'prefetch_steps', []);
+    const recovery = renderRecovery(); if (recovery) content.appendChild(recovery);
+    const workspace = doc.createElement('div'); workspace.className = 'recipe-editor-workspace';
+    workspace.appendChild(renderOutline());
+    const body = doc.createElement('div'); workspace.appendChild(body); content.appendChild(workspace);
+    const settings = renderRecipeSettings({
+      document: doc,
+      get recipe() { return state.recipe; },
+      change(recipe, rebuild) {
+        if (rebuild) {
+          for (const key of Object.keys(fieldDrafts)) {
+            const [owner, field] = JSON.parse(key) as [string, string];
+            if (owner) continue;
+            if ((field.startsWith('variables.') && !Object.hasOwn(recipe.variables, field.slice(10)))
+              || (field.startsWith('auto_run.') && !recipe.auto_run)) delete fieldDrafts[key];
+          }
+          const added = Object.keys(recipe.variables).find(key => !Object.hasOwn(state.recipe.variables, key));
+          const intervalChanged = Boolean(state.recipe.auto_run) !== Boolean(recipe.auto_run);
+          pendingFieldFocus = { fieldKey: added ? `variables.${added}` : intervalChanged
+            ? recipe.auto_run ? 'auto_run.interval_ms' : 'auto_run_enabled' : 'variable_new_name',
+            occurrence: 0, selectionStart: null, selectionEnd: null, reveal: true };
+          panelOpen.add('settings'); mutateAndRerender(recipe);
+        }
+        else state.recipe = recipe;
+      },
+      value: valueField,
+    });
+    rememberPanel(settings, 'settings'); body.appendChild(settings);
+    renderWebhooksSection(body);
+    renderTriggersSection(body);
+    if (state.recipe.auto_run || state.recipe.trigger_steps?.length) {
+      renderStepsSection(body, 'Trigger steps', 'trigger_steps', [buildAddStepControl('trigger_steps')]);
     }
-    renderStepsSection(content, 'Steps', 'steps', [
-      buildCollapseAllControl(),
-      buildAddStepControl(),
-    ]);
-
-    renderBindingsSection(content);
+    if ((state.recipe.prefetch_steps?.length ?? 0) > 0) {
+      renderStepsSection(body, 'Prefetch', 'prefetch_steps', []);
+    }
+    renderStepsSection(body, 'Steps', 'steps', [buildCollapseAllControl(), buildAddStepControl()]);
+    renderBindingsSection(body);
+    body.appendChild(renderTestPanel());
+    if (restoreTestFocus) testRunBtn?.focus?.({ preventScroll: true });
+    for (const issue of state.issues) {
+      if (!issue.path) continue;
+      const destination = issueDestination(issue.path);
+      const scope = destination.stepId
+        ? Array.from(host.querySelectorAll?.<HTMLElement>(`[${RECIPE_EDITOR_ROW_ATTR}]`) ?? [])
+          .find(el => el.getAttribute(RECIPE_EDITOR_ROW_ATTR) === destination.stepId)
+        : host;
+      const field = Array.from(scope?.querySelectorAll?.<HTMLElement>(`[${RECIPE_EDITOR_FIELD_ATTR}]`) ?? [])
+        .find(el => el.getAttribute(RECIPE_EDITOR_FIELD_ATTR) === destination.field);
+      if (field?.parentElement) {
+        const draftKey = JSON.stringify([destination.stepId ?? '', destination.field]);
+        if (fieldDrafts[draftKey]?.error === issue.message) continue;
+        if (issue.severity === 'error') {
+          field.setAttribute('aria-invalid', 'true');
+          validationFields.set(field, draftKey);
+        }
+        const message = appendText(doc, field.parentElement, 'span', issue.message);
+        message.className = 'recipe-editor-field-error';
+        message.setAttribute('data-recued-recipe-validation-message', '');
+      }
+    }
 
     const ownedAction = pendingActionFocus === 'validate'
       ? validateBtn
@@ -4042,7 +4471,7 @@ export const bootstrapRecipeEditorRoute = (
   const onKeydown = (event: KeyboardEvent): void => {
     if (event.isComposing) return;
     if (!(event.metaKey || event.ctrlKey)) return;
-    if (event.key !== 's' && event.key !== 'S') return;
+    if (!['s', 'z', 'y'].includes(event.key.toLowerCase())) return;
     const target = event.target as Node | null;
     const scoped =
       target === null
@@ -4050,7 +4479,21 @@ export const bootstrapRecipeEditorRoute = (
       || typeof host.contains !== 'function'
       || host.contains(target);
     if (!scoped) return;
+    const fieldKey = (target as HTMLElement | null)?.getAttribute?.(RECIPE_EDITOR_FIELD_ATTR);
+    const deferredValue = (target as HTMLElement | null)?.getAttribute?.('data-recued-recipe-deferred-value');
+    if (event.key.toLowerCase() !== 's' && deferredValue !== null && deferredValue !== undefined
+      && (target as HTMLInputElement).value !== deferredValue) return;
+    // These inputs edit UI drafts rather than the recipe. Keep their native
+    // text undo instead of unexpectedly undoing an unrelated recipe edit.
+    if (event.key.toLowerCase() !== 's' && fieldKey && [
+      'test_sample', 'outline_search', 'variable_new_name', 'new_ingredient_input',
+      'op_arg_name', 'add_name', 'conn_var_new_name', 'event_trigger_add_event',
+    ].includes(fieldKey)) return;
     event.preventDefault();
+    if (event.key.toLowerCase() !== 's') {
+      changeHistory(event.key.toLowerCase() === 'y' || event.shiftKey ? 'redo' : 'undo');
+      return;
+    }
     if (rpcInFlight) return;
     if (state.saveStage === 'saving' || state.saveStage === 'validating') return;
     // Flush the in-progress field edit first — commit handlers run on
@@ -4082,12 +4525,17 @@ export const bootstrapRecipeEditorRoute = (
   >;
   if (typeof docEvents.addEventListener === 'function') {
     docEvents.addEventListener('keydown', onKeydown as EventListener);
+    doc.defaultView?.addEventListener('pagehide', persistDraft);
   }
 
   return {
     dispose() {
       if (disposed) return;
       disposed = true;
+      testGeneration += 1; testAbort?.abort();
+      if (state.dirty) persistDraft();
+      else if (recoveryTimer !== undefined) clearTimeout(recoveryTimer);
+      doc.defaultView?.removeEventListener('pagehide', persistDraft);
       if (typeof docEvents.removeEventListener === 'function') {
         docEvents.removeEventListener('keydown', onKeydown as EventListener);
       }

@@ -190,6 +190,12 @@ const renderAppContentRow = (c: PackContentRef): string => {
       kind = 'Policy';
       label = c.policy_id;
       break;
+    case 'reception_template':
+      // D-220 Slice B — disclosed as what it is: a form the owner can start
+      // from. Nothing is enabled by installing it.
+      kind = 'Form template';
+      label = `${c.template?.name ?? '(unnamed template)'} — a Reception intake form you can review and enable`;
+      break;
   }
   return `
     <li class="bulk-pack-capability" data-kind="${e(c.type)}">

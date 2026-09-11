@@ -4714,8 +4714,7 @@ describe('Data accepted response → manual automation run', () => {
       'data-recued-data-action': 'review-form-response-automation',
       'data-recued-data-form-response-run-recipe': 'handle-project-intake',
     });
-    const content = routeContentRoot(fixture.root);
-    const runModal = content.childList.at(-1);
+    const runModal = dataRoot!.parentRef?.childList.at(-1);
     expect(runModal).not.toBe(dataRoot);
     expect(runModal?.innerHTML).toContain('Context JSON (prefilled)');
     runModal?.fireAttributeClick({

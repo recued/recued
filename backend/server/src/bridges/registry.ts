@@ -19,7 +19,7 @@
  *  D-148 P11 along with the legacy extension/webapp surfaces.
  */
 
-import type { BridgeCapabilityProfile } from '@recued/contracts';
+import type { BridgeCapabilityProfile, BridgeDocumentIdentity } from '@recued/contracts';
 
 export interface BridgeConnectionRecord {
   client_token_id: string;
@@ -66,6 +66,8 @@ export interface BridgeRegistry {
   list(): BridgeConnectionRecord[];
   /** Look up by token id. */
   get(client_token_id: string): BridgeConnectionRecord | null;
+  /** Host-private document inventory; omitted by old/test compositions. */
+  documents?(client_token_id: string): BridgeDocumentIdentity[];
   /** Subset by client label (for "default bridge" dispatch). */
   byLabel(label: string): BridgeConnectionRecord | null;
   /** Wipe all connections (server shutdown / test reset). */
@@ -74,12 +76,20 @@ export interface BridgeRegistry {
 
 export const createBridgeRegistry = (): BridgeRegistry => {
   const records = new Map<string, BridgeConnectionRecord>();
+  const documents = new Map<string, BridgeDocumentIdentity[]>();
+  const publicProfile = (id: string, profile: BridgeCapabilityProfile): BridgeCapabilityProfile => {
+    const { dom_documents, ...visible } = profile;
+    documents.set(id, structuredClone(dom_documents?.version === 1 ? dom_documents.documents : []));
+    return dom_documents === undefined ? profile : visible;
+  };
   return {
     attach(record) {
-      records.set(record.client_token_id, record);
+      records.set(record.client_token_id, { ...record,
+        capabilities: publicProfile(record.client_token_id, record.capabilities) });
     },
     detach(client_token_id) {
       records.delete(client_token_id);
+      documents.delete(client_token_id);
     },
     touch(client_token_id, at) {
       const entry = records.get(client_token_id);
@@ -88,7 +98,7 @@ export const createBridgeRegistry = (): BridgeRegistry => {
     updateCapabilities(client_token_id, capabilities, at) {
       const existing = records.get(client_token_id);
       if (!existing) return false;
-      existing.capabilities = capabilities;
+      existing.capabilities = publicProfile(client_token_id, capabilities);
       existing.last_seen_at = at;
       return true;
     },
@@ -98,6 +108,7 @@ export const createBridgeRegistry = (): BridgeRegistry => {
     get(client_token_id) {
       return records.get(client_token_id) ?? null;
     },
+    documents(client_token_id) { return structuredClone(documents.get(client_token_id) ?? []); },
     byLabel(label) {
       for (const r of records.values()) {
         if (r.client_label === label) return r;
@@ -106,6 +117,7 @@ export const createBridgeRegistry = (): BridgeRegistry => {
     },
     clear() {
       records.clear();
+      documents.clear();
     },
   };
 };

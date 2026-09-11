@@ -257,6 +257,8 @@ describe('D-165 contract schema seed', () => {
     expect(Object.keys(D165_CONTRACT_SCHEMA.composite_keys)).toEqual([
       'installed_ingredient',
       'installed_pack',
+      // D-220 Slice B — pack-shipped intake templates, persisted at install.
+      'installed_reception_template',
       'connection_catalog_binding',
       // D-182 §7.2 — per-(principal × cli-ingredient × operation) reachability.
       'cli_reachability',
@@ -288,6 +290,8 @@ describe('D-165 contract schema seed', () => {
     expect(Object.keys(D165_CONTRACT_SCHEMA.value_shapes)).toEqual([
       'installed_ingredient_info',
       'installed_pack_info',
+      // D-220 Slice B — one persisted pack-shipped intake template.
+      'installed_reception_template_info',
       'catalog_binding_info',
       // D-182 §7.2 — per-contract cli reachability state (allowlist bit).
       'cli_reachability_state',
@@ -387,6 +391,8 @@ describe('D-165 contract schema seed', () => {
     ).toEqual({
       installed_ingredient: 0,
       installed_pack: 0,
+      // D-220 Slice B — pack-shipped intake templates.
+      installed_reception_template: 0,
       connection_catalog_binding: 0,
       // D-182 §7.2 — per-contract cli reachability, no composition (override).
       cli_reachability: 0,

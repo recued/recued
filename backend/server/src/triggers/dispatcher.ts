@@ -38,6 +38,8 @@ import type { EventTriggersStore } from './store.js';
 import type { BackfillStateLookup } from './backfill-state.js';
 import { createTriggerDispatchQueue } from './queue.js';
 import { presentAutomationFailure } from '../automation-failure.js';
+import { triggerEventContext } from './event-context.js';
+import type { PreapprovalDriver } from '../preapproval-driver.js';
 
 /** Callback the dispatcher invokes when a trigger matches. Wired to
  *  `serverExecutor.executeRecipe` by the composition root; tests
@@ -54,7 +56,9 @@ export interface TriggerDispatchRuntime {
      *  lives in the runtime's runRecipe). Null = dishless. */
     dish_id: string | null;
     trigger_id: string;
-  }) => Promise<void>;
+    /** Private queue metadata, never part of recipe context or public RPC. */
+    candidate?: object;
+  }) => Promise<void | { skipped: true }>;
 }
 
 export interface EventTriggerDispatcher {
@@ -110,6 +114,8 @@ export interface EventTriggerDispatcherDeps {
    *  best-effort at-most-once surface, so a dropped external event is
    *  not re-delivered. Absent → un-gated (legacy / tests). */
   isVaultUnlocked?: () => boolean;
+  /** Late-bound because the realm review service composes after this bus. */
+  getPreapprovalDriver?: () => PreapprovalDriver | undefined;
 }
 
 interface Subscription {
@@ -144,7 +150,7 @@ export const createEventTriggerDispatcher = (
     errorsByTrigger.delete(trigger_id);
   };
 
-  const onEvent = async (trigger: EventTrigger, event: WarehouseEvent): Promise<void> => {
+  const onEvent = async (trigger: EventTrigger, event: WarehouseEvent, candidate?: object): Promise<void> => {
     // D-124 Phase 2.2 — suppress trigger fan-out for events emitted
     // while the source adapter is still in initial-backfill drain.
     // The check is fan-out only — `bus.emit` already fired, so FTS
@@ -178,40 +184,15 @@ export const createEventTriggerDispatcher = (
       return;
     }
     try {
-      await deps.runtime.runRecipe({
+      const outcome = await deps.runtime.runRecipe({
         recipe_id: trigger.recipe_id,
         publisher_id: trigger.publisher_id,
-        context: {
-          event: {
-            topic: eventPath(event.platform, event.slug, event.entity_type, event.event_kind).split('.'),
-            kind: event.event_kind,
-            payload: {
-              record_id: event.record_id,
-              at: event.at,
-              platform: event.platform,
-              slug: event.slug,
-              entity_type: event.entity_type,
-              // D-124 Phase 1 — prev rides through to recipes for
-              // updated/deleted events. Spread-conditional keeps
-              // created/synced wire shape clean (no undefined keys
-              // on the payload), so `{{context.event.payload.prev}}
-              // is_null` evaluates correctly in skip_when branches.
-              ...(event.prev !== undefined ? { prev: event.prev } : {}),
-              // Poll-manager / G6 — the watch loop's emits carry the
-              // fresh canonical projection + the changed canonical
-              // field keys; same spread-conditional posture so
-              // adapter-sourced events keep their exact wire shape.
-              ...(event.record !== undefined ? { record: event.record } : {}),
-              ...(event.changed_fields !== undefined
-                ? { changed_fields: event.changed_fields }
-                : {}),
-            },
-            trigger_id: trigger.trigger_id,
-          },
-        },
+        context: triggerEventContext(trigger.trigger_id, event),
         dish_id: trigger.dish_id ?? null,
         trigger_id: trigger.trigger_id,
+        ...(candidate ? { candidate } : {}),
       });
+      if (outcome?.skipped) return;
       deps.store.update(trigger.trigger_id, {
         last_fired_at: now(),
         last_error: null,
@@ -270,8 +251,15 @@ export const createEventTriggerDispatcher = (
     }
     subscriptions.length = 0;
 
-    for (const trigger of deps.store.listEnabled()) {
-      const unsubscribe = deps.bus.subscribe(trigger.pattern, (event) => {
+    // With the owned driver, include paused rows in subscriptions: accepting
+    // their next execution can arm them without an asynchronous rebuild gap.
+    // Every callback still checks the live row and captures only eligible work.
+    for (const subscribed of deps.getPreapprovalDriver ? deps.store.list() : deps.store.listEnabled()) {
+      const unsubscribe = deps.bus.subscribe(subscribed.pattern, (event) => {
+        const driver = deps.getPreapprovalDriver?.();
+        const trigger = deps.getPreapprovalDriver ? deps.store.get(subscribed.trigger_id) : subscribed;
+        if (!trigger) return;
+        if (deps.getPreapprovalDriver && !driver && !trigger.enabled) return;
         // Match is already guaranteed by the bus; this extra check
         // is a defense-in-depth for the disable race (a subscription
         // from a prior rebuild firing during the tear-down window).
@@ -321,9 +309,18 @@ export const createEventTriggerDispatcher = (
         // Same `(trigger_id, record_id)` serializes; rapid edits to the
         // same record coalesce at depth 2 (in-flight + tail) preserving
         // the original prev anchor across collapses.
-        queue.enqueue(trigger, event);
+        // Capture only after the same suppression/self-loop rules that govern
+        // execution. An initial backfill is not a qualifying future event.
+        if (driver) {
+          if ((deps.backfillState && !deps.backfillState.isComplete(event.platform, event.slug))
+            || (deps.isVaultUnlocked && !deps.isVaultUnlocked())
+            || (event.platform === RUN_OUTCOME_PLATFORM && event.record?.origin_trigger_id === trigger.trigger_id)) return;
+          const candidate = driver.captureTrigger(trigger, event);
+          if (!candidate) return;
+          queue.enqueue(trigger, event, candidate);
+        } else queue.enqueue(trigger, event);
       });
-      subscriptions.push({ trigger_id: trigger.trigger_id, unsubscribe });
+      subscriptions.push({ trigger_id: subscribed.trigger_id, unsubscribe });
     }
   };
 

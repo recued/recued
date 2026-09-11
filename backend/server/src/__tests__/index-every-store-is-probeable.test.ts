@@ -8,6 +8,8 @@ import { createWarehouseEventBus } from '@recued/warehouse-events';
 
 import {
   CHAT_INDEX_STORES,
+  chatIndexProbeTool,
+  chatIndexProbeLabel,
   CHAT_INDEX_PROBE_ARGS,
   CHAT_INDEX_TOO_COMMON_CAP,
 } from '../chat-index-context.js';
@@ -365,5 +367,77 @@ describe('file matching is TIERED, not binary', () => {
         'with NO query there is nothing to rank, so recency stands',
       ).toEqual(['file:NEW-terms', 'file:OLD-phrase']);
     } finally { db.close(); }
+  });
+});
+
+describe('every entry in CHAT_INDEX_STORES resolves to a real tool', () => {
+  /** ⛔⛔ THE RATCHET ABOVE ITERATES A HARDCODED LIST, so an entry added to
+   *  `CHAT_INDEX_STORES` is not covered by it — which is exactly how the five
+   *  `work.search:<kind>` probes were added and the suite stayed green.
+   *
+   *  🔑 A probe key that does not resolve to a tool name is DENIED at
+   *  `admitTier1` or missing from `tier1Handlers`, and a denied probe reads
+   *  EXACTLY like an empty store. That is this feature's own measured harm mode
+   *  — and the reason work entities were invisible in the first place: the
+   *  index reported `ring: memory.search` while twelve "Kestrel ring NN" notes
+   *  sat in a store it never asked. */
+  it('the tool name is what admitTier1 and tier1Handlers will see', () => {
+    for (const [probeKey] of CHAT_INDEX_STORES) {
+      const tool = chatIndexProbeTool(probeKey);
+      expect(tool, `${probeKey} must resolve to a tool name`).not.toContain(':');
+      expect(tool.length, `${probeKey} must not resolve to empty`).toBeGreaterThan(0);
+    }
+  });
+
+  it('every discriminated key carries the args its tool needs', () => {
+    // `work.search` takes one `kind` per call; a key without it probes nothing.
+    for (const [probeKey] of CHAT_INDEX_STORES) {
+      if (!probeKey.includes(':')) continue;
+      const args = CHAT_INDEX_PROBE_ARGS[probeKey];
+      expect(args, `${probeKey} must have probe args`).toBeDefined();
+      expect(Object.keys(args ?? {}).length,
+        `${probeKey} args must not be empty`).toBeGreaterThan(0);
+    }
+  });
+
+  it('🔑 work entities are probed — the blind spot that caused a wrong pointer', () => {
+    const kinds = CHAT_INDEX_STORES
+      .map(([k]) => k)
+      .filter((k) => chatIndexProbeTool(k) === 'work.search')
+      .map((k) => (CHAT_INDEX_PROBE_ARGS[k] as { kind?: string } | undefined)?.kind);
+    // All five work-entity kinds, not just `note`: a partial list leaves the
+    // same failure shape for a term that lives in a task or a booking.
+    expect(new Set(kinds)).toEqual(
+      new Set(['task', 'note', 'commitment', 'project', 'booking']),
+    );
+  });
+});
+
+describe('the rendered line never names a probe key', () => {
+  /** ⛔ MEASURED LIVE (task 343, run `2026-09-07T13-45-02-144Z`). The
+   *  co-occurrence path pushed PROBE KEYS where the per-term path pushed
+   *  LABELS, producing:
+   *    "ring note read checkpoint cost: work.search:note; ring: memory.search,
+   *     work.search; note: memory.search, work.search; ..."
+   *  Two defects in one line: `work.search:note` is a tool name the model
+   *  CANNOT call, and the collapse silently failed — `collapsed.has(label)` is
+   *  false when the set holds a key — so the terms it should have removed are
+   *  listed right beside the phrase.
+   */
+  it('every probe key labels to something a model could actually call', () => {
+    for (const [probeKey] of CHAT_INDEX_STORES) {
+      const label = chatIndexProbeLabel(probeKey);
+      expect(label, `${probeKey} label must not carry a discriminator`)
+        .not.toContain(':');
+    }
+  });
+
+  it('🔑 the label is what the collapse compares on, for every store', () => {
+    // If these two ever disagree, the collapse stops removing single-term
+    // entries and the line double-reports — silently, since both halves look
+    // plausible on their own.
+    for (const [probeKey] of CHAT_INDEX_STORES) {
+      expect(chatIndexProbeLabel(probeKey)).toBe(chatIndexProbeTool(probeKey));
+    }
   });
 });

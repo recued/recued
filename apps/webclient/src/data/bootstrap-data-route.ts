@@ -6,6 +6,10 @@
  */
 
 import type {
+  SavedDataView,
+  SavedDataViewDefinition,
+  TaskViewFilters,
+  CollectionSourceFreshness,
   ConnectionVendorEntity,
   ContactContributionView,
   ContactFieldProvenance,
@@ -98,6 +102,10 @@ import type {
   WorkEntityUpsertRpcResponse,
   TimelineRollup,
 } from '@recued/contracts';
+import {
+  sameSavedDataViewDefinition, DEFAULT_TASK_VIEW_FILTERS, parseTaskViewFilters,
+  resolveTaskListFilter,
+} from '@recued/contracts';
 import { rankSearchable } from '@recued/contracts';
 import {
   getContactSourceDeclaration,
@@ -186,6 +194,7 @@ import {
   type SourceRecordDataTab,
 } from '../shell/route.js';
 import { humanizeRpcError } from '../shell/rpc-error-copy.js';
+import { loadToday, renderToday, TODAY_VIEW_STYLES, type TodaySnapshot } from './today-view.js';
 import { fileRefOptionsFromMirrorResults } from '../recipes/file-ref-picker.js';
 import {
   MEMORY_ADD_ACTION,
@@ -475,6 +484,7 @@ export type DataTabId =
   | 'webhook'
   | 'records'
   | 'search'
+  | 'today'
   | DataSingleCollectionTabId;
 
 export const DATA_OWN_IT_TABS: readonly DataOwnItTabId[] = [
@@ -513,6 +523,7 @@ export const DATA_RECORDS_TABS: readonly DataTabId[] = ['records'];
 const DATA_SEARCH_TABS: readonly DataTabId[] = ['search'];
 
 const DATA_TABS: readonly DataTabId[] = [
+  'today',
   ...DATA_OWN_IT_TABS,
   ...DATA_RECEIVED_TABS,
   'webhook',
@@ -711,7 +722,7 @@ export type DataCollectionListInstancesCaller = () => Promise<{
 }>;
 export type DataCollectionListCaller = (
   args: CollectionListQuery,
-) => Promise<{ records: CollectionRecord[] }>;
+) => Promise<{ records: CollectionRecord[]; source_freshness?: CollectionSourceFreshness }>;
 /** UNIVERSAL SEARCH — one query fanned across every collection, GROUPED. */
 export type DataCollectionSearchAllCaller = (
   args: { query: string; per_group?: number },
@@ -803,6 +814,11 @@ export type DataFileReadCaller = (args: {
 }>;
 
 export interface BootstrapDataRouteOptions {
+  /** Resolved by the saved-view host before any collection reads start. */
+  savedView?: SavedDataView;
+  /** Settings changes, including entering/leaving a detail or draft (null). */
+  onViewChange?: (definition: SavedDataViewDefinition | null) => void;
+  hideHeading?: boolean;
   root: HTMLElement;
   document?: Document;
   workEntitySourceListCaller?: WorkEntitySourceListCaller;
@@ -960,9 +976,10 @@ export interface BootstrapDataRouteOptions {
   /** Coalesces keyboard input in the server-backed Bookings search. Default
    *  180ms; client-filtered work-item kinds remain immediate. */
   bookingSearchDebounceMs?: number;
-  /** `Date.now`-compatible clock for the entity-detail panel's
-   *  relative-time copy. Tests pass a fixed timestamp for determinism. */
+  /** Clock for relative-time copy and task date windows. */
   now?: () => number;
+  /** Task search debounce, independently configurable by embedded hosts. */
+  taskSearchDebounceMs?: number;
 }
 
 export interface DataLoadErrors {
@@ -1097,6 +1114,12 @@ interface ContactScanState {
 }
 
 export interface DataRoute {
+  currentView(): SavedDataViewDefinition | null;
+  /** Rebind saved settings without reloading records or disposing a draft. */
+  bindSavedView(view: SavedDataView): void;
+  /** Remove the bookmark binding without tearing down a Data action or its draft. */
+  detachSavedView(): void;
+  getRecoveryContextFreshness(): 'current' | 'unavailable';
   activeTab(): DataTabId;
   /** D-198 Slice 1b — the active lens ('data' tabs vs the 'memory' feed). */
   activeLens(): 'data' | 'memory';
@@ -2212,6 +2235,8 @@ const isDataTab = (tab: string): tab is DataTabId =>
 
 const tabLabel = (tab: DataTabId): string => {
   switch (tab) {
+    case 'today':
+      return 'Today';
     case 'search':
       return 'Search';
     case 'contact':
@@ -2681,6 +2706,7 @@ const renderTabGroup = (
 const renderTabs = (active: DataTabId, locked = false): string => `
   <div class="data-tab-groups" ${DATA_ROUTE_TABLIST_ATTR}
     role="tablist" aria-label="Data collections" aria-orientation="horizontal">
+    ${renderTabGroup('Overview', ['today'], active, locked)}
     ${renderTabGroup('Owned', DATA_OWN_IT_TABS, active, locked)}
     ${renderTabGroup('Received', DATA_RECEIVED_CLUSTER, active, locked)}
     ${renderTabGroup('Connected', DATA_MIRROR_TABS, active, locked)}
@@ -4660,6 +4686,7 @@ const renderWorkEntitySurface = (
   loadingMore: boolean,
   openingEntityId: string | null,
   bookingLifecycleFilter: BookingLifecycleState | 'all',
+  taskViewFilters: TaskViewFilters,
   bookingDetailId: string | null,
   bookingDetail: WorkEntityGetRpcResponse | null,
   bookingDetailError: string | null,
@@ -4669,7 +4696,10 @@ const renderWorkEntitySurface = (
   manageLinkNotice: { kind: 'ok' | 'error'; text: string } | null,
   discardGuardOpen: boolean,
 ): string => {
-  const options = sourceOptionsForKind(sources, state.kind);
+  const options = [...sourceOptionsForKind(sources, state.kind)];
+  if (state.selected_source_id !== null && !options.some((option) => option.id === state.selected_source_id)) {
+    options.push({ id: state.selected_source_id, label: 'Unavailable source', source_kind: 'sentinel', write_capable: false });
+  }
   const activeSourceId = state.dialog?.source_id ?? state.selected_source_id;
   const activeSource = activeSourceId === null
     ? undefined
@@ -4717,11 +4747,12 @@ const renderWorkEntitySurface = (
       <p role="alert">This booking no longer exists.</p>
     </section>${dialogHtml}`;
   }
-  // Booking search is already applied by SQL before pagination. Do not apply
+  // Task search and ordering are already applied to the complete SQL result.
+  // Booking search is also applied before pagination. Do not apply
   // the generic client title/body predicate a second time: the server also
   // searches booking id and opaque customer id, and a second narrower filter
   // would hide valid matches it just returned.
-  const visible = filterAndSortEntities(
+  const visible = state.kind === 'task' ? entities : filterAndSortEntities(
     state.kind,
     entities,
     state.kind === 'booking' ? '' : state.search_query,
@@ -4754,6 +4785,7 @@ const renderWorkEntitySurface = (
     // `data.contact` ref fields render as live name→id pickers; the route
     // wires them after each render via `mountWorkEntityRefPickers`.
     ref_picker: true,
+    ...(state.kind === 'task' ? { task_filters: taskViewFilters } : {}),
     ...(state.kind === 'booking'
       ? { booking_lifecycle_filter: bookingLifecycleFilter }
       : {}),
@@ -4853,6 +4885,7 @@ export const bootstrapDataRoute = (
       COLLECTION_EXPLORER_STYLES,
       // 2026-08-28 — universal search across every collection.
       UNIVERSAL_SEARCH_STYLES,
+      TODAY_VIEW_STYLES,
       // D-221 — full-ref, schema-driven pack Records owner explorer.
       RECORDS_EXPLORER_STYLES,
     ].join('\n');
@@ -4864,6 +4897,9 @@ export const bootstrapDataRoute = (
   opts.root.appendChild(routeRoot);
 
   let disposed = false;
+  let todaySnapshot: TodaySnapshot | null = null;
+  let todayRefreshing = false;
+  let todayLiveRefreshQueued = false;
   // R18 — hydrate the initial tab from the `#data/<tab>` deep link (validated;
   // unknown → Contacts). A work-entity tab seeds the work-entity page state to
   // that kind so the deep link lands on the right list.
@@ -4873,7 +4909,8 @@ export const bootstrapDataRoute = (
   let activeLens: 'data' | 'memory' = opts.initialTab === 'memory' ? 'memory' : 'data';
   // Memory lens feed state — orthogonal to the Data tabs.
   let memoryEntries: MemoryListEntry[] = [];
-  let memoryOriginFilter: MemoryOriginFilter = 'all';
+  let memoryOriginFilter: MemoryOriginFilter = opts.savedView?.definition.tab === 'memory'
+    ? opts.savedView.definition.origin : 'all';
   let memoryFilteringOrigin: MemoryOriginFilter | null = null;
   let memoryLoading = false;
   let memoryError: string | undefined;
@@ -4963,6 +5000,9 @@ export const bootstrapDataRoute = (
   };
   let workEntityState = initialWorkEntityPageState({
     kind: isWorkEntityTab(activeTab) ? activeTab : 'task',
+    ...(opts.savedView !== undefined && 'source_id' in opts.savedView.definition
+      ? { selected_source_id: opts.savedView.definition.source_id, search_query: opts.savedView.definition.query }
+      : {}),
   });
   let sources: SourceRegistration[] = [];
   let defaultsByKind: Partial<Record<WorkEntityKind, string>> = {};
@@ -4983,7 +5023,12 @@ export const bootstrapDataRoute = (
   let workEntityDiscardReturnFocus:
     | { kind: 'close' | 'cancel' | 'field' | 'form'; field?: string }
     | null = null;
-  let bookingLifecycleFilter: BookingLifecycleState | 'all' = 'all';
+  let bookingLifecycleFilter: BookingLifecycleState | 'all' = opts.savedView !== undefined
+    && 'booking_lifecycle' in opts.savedView.definition ? opts.savedView.definition.booking_lifecycle : 'all';
+  let taskViewFilters: TaskViewFilters = opts.savedView?.definition.tab === 'task'
+    ? opts.savedView.definition.task_filters ?? DEFAULT_TASK_VIEW_FILTERS : DEFAULT_TASK_VIEW_FILTERS;
+  let taskListFilter = resolveTaskListFilter(taskViewFilters, (opts.now ?? Date.now)());
+  let taskListSearch = workEntityState.kind === 'task' ? workEntityState.search_query.trim() : '';
   let bookingDetailId: string | null = null;
   let bookingDetail: WorkEntityGetRpcResponse | null = null;
   let bookingDetailError: string | null = null;
@@ -5021,7 +5066,7 @@ export const bootstrapDataRoute = (
   let contactLoadMoreQueued = false;
   let pendingContactLoadMoreFocus = false;
   let pendingLoadedContactEmail: string | null = null;
-  let contactSearch = '';
+  let contactSearch = opts.savedView?.definition.tab === 'contact' ? opts.savedView.definition.query : '';
   let contactDialog: ContactDialogState | null = null;
   let contactDialogReturnFocus:
     | { kind: 'create' }
@@ -5195,12 +5240,18 @@ export const bootstrapDataRoute = (
   let explorerCollection: CanonicalCollectionName | null = null;
   let explorerInstances: CollectionInstanceRow[] = [];
   let explorerSelectedSlug: string | null = null;
+  // Keep intended source identity separately from the latest available roster.
+  // A disconnected selection must survive repeated refreshes and tab returns.
+  const savedExplorerScopes = new Map<DataTabId, string | null>();
+  if (opts.savedView !== undefined && 'collection_slug' in opts.savedView.definition) {
+    savedExplorerScopes.set(opts.savedView.definition.tab, opts.savedView.definition.collection_slug);
+  }
   // ── UNIVERSAL SEARCH state ───────────────────────────────────────────────
   // ⚠ `groups === undefined` means "not searched yet" and `[]` means "searched,
   // nothing matched" — the renderer shows a prompt for the first and a scoped
   // empty for the second. Collapsing them would tell an owner their data is
   // absent when the search simply has not run.
-  let universalSearchQuery = '';
+  let universalSearchQuery = opts.savedView?.definition.tab === 'search' ? opts.savedView.definition.query : '';
   let universalSearchGroups: CollectionSearchGroup[] | undefined;
   let universalSearchLoading = false;
   let universalSearchError: string | undefined;
@@ -5299,6 +5350,9 @@ export const bootstrapDataRoute = (
   // `explorerRecords`: its callers are `records.*` owner RPCs, never a
   // `collection.*`/`data.*` resolver that a recipe could accidentally share.
   let recordsSeq = 0;
+  let savedRecordsSelection = opts.savedView?.definition.tab === 'records'
+    ? { owner: opts.savedView.definition.owner, entity: opts.savedView.definition.entity }
+    : null;
   let recordsState: RecordsExplorerState = {
     namespaces: [],
     globalQuota: null,
@@ -5825,6 +5879,37 @@ export const bootstrapDataRoute = (
     </section>`;
   };
 
+  /** Capture only the active list's settings; edit drafts and result bodies never enter a view. */
+  const currentView = (): SavedDataViewDefinition | null => {
+    if (activeLens === 'memory') {
+      if (memoryDetail !== null || memoryCompose.open || memoryImport.open) return null;
+      return { tab: 'memory', origin: memoryOriginFilter };
+    }
+    if (contactDialog !== null || workEntityState.dialog !== null
+      || contactImport !== null || contactScan !== null || currentDeepLinkEntity() !== undefined) return null;
+    if (activeTab === 'contact') return { tab: activeTab, query: contactSearch };
+    if (activeTab === 'search') return { tab: activeTab, query: universalSearchQuery };
+    if (activeTab === 'today') return { tab: activeTab };
+    if (isWorkEntityTab(activeTab)) return {
+      tab: activeTab, query: workEntityState.search_query, source_id: workEntityState.selected_source_id,
+      booking_lifecycle: activeTab === 'booking' ? bookingLifecycleFilter : 'all',
+      ...(activeTab === 'task' && (taskViewFilters.completion !== 'all'
+        || taskViewFilters.due !== 'all' || taskViewFilters.sort !== 'default')
+        ? { task_filters: taskViewFilters } : {}),
+    };
+    if (activeTab === 'mail' || activeTab === 'calendar' || activeTab === 'files' || activeTab === 'webhook') {
+      return { tab: activeTab, collection_slug: explorerSelectedSlug
+        ?? savedExplorerScopes.get(activeTab) ?? null };
+    }
+    if (activeTab === 'records') {
+      if (recordsState.detail !== null || recordsState.purgePending || recordsState.outboxOpen) return null;
+      return { tab: activeTab, owner: recordsState.selectedNamespace?.owner ?? savedRecordsSelection?.owner ?? null,
+        entity: recordsState.selectedKind ?? savedRecordsSelection?.entity ?? null };
+    }
+    if (activeTab === 'form_response' || activeTab === 'annotation' || activeTab === 'link' || activeTab === 'shared') return { tab: activeTab };
+    return null;
+  };
+
   const render = (): void => {
     if (disposed) return;
     // This route repaints with `innerHTML` as reads settle. Preserve ownership
@@ -5835,6 +5920,13 @@ export const bootstrapDataRoute = (
     // captures the live owner again, so moving to another control while a read
     // is pending cancels the restoration naturally.
     const activeElement = doc.activeElement as HTMLElement | null | undefined;
+    const focusedTodayControl = activeLens === 'data' && activeTab === 'today'
+      && activeElement?.closest?.('[data-today-view]') != null ? activeElement : null;
+    const focusedTodayHref = focusedTodayControl?.getAttribute('href');
+    const focusedTodayRefresh = focusedTodayControl?.getAttribute(DATA_ROUTE_ACTION_ATTR) === 'refresh-today';
+    const focusedTodaySources = focusedTodayControl?.tagName === 'SUMMARY';
+    const todaySourcesOpen = activeLens === 'data' && activeTab === 'today'
+      ? routeRoot.querySelector<HTMLDetailsElement>('.today-sources')?.open : undefined;
     const focusedContactScanOwnerKind: 'action' | 'result' | null = contactScan === null
       ? null
       : activeElement?.getAttribute?.(DATA_ROUTE_ACTION_ATTR) === 'run-merge-scan'
@@ -5902,6 +5994,14 @@ export const bootstrapDataRoute = (
       }
     }
     const activeSearch = activeElement as HTMLInputElement | null | undefined;
+    const draftFieldAttribute = contactDialog !== null ? DATA_ROUTE_CONTACT_FIELD_ATTR
+      : workEntityState.dialog !== null ? 'data-form-field' : null;
+    const draftField = draftFieldAttribute === null ? null : activeElement?.getAttribute?.(draftFieldAttribute);
+    const focusedDraftField = draftField == null || draftFieldAttribute === null ? null : {
+      attribute: draftFieldAttribute, field: draftField,
+      selectionStart: activeSearch?.selectionStart, selectionEnd: activeSearch?.selectionEnd,
+      selectionDirection: activeSearch?.selectionDirection,
+    };
     const focusedWorkEntityRow =
       activeLens === 'data'
       && renderedActiveTab === activeTab
@@ -6168,6 +6268,10 @@ export const bootstrapDataRoute = (
         pendingContactEditFocusEmail = null;
       }
     }
+    const focusedTaskFilter = activeLens === 'data' && activeTab === 'task'
+      && renderedActiveTab === 'task'
+      && activeElement?.getAttribute?.(SHARED_ACTION_ATTR)?.startsWith('filter-task-')
+      ? activeElement.getAttribute(SHARED_ACTION_ATTR) : null;
     const focusedSearch =
       activeLens === 'data'
       && renderedActiveTab === activeTab
@@ -6266,7 +6370,9 @@ export const bootstrapDataRoute = (
         pendingExplorerRecordFocus = null;
       }
     }
-    const body = activeTab === 'contact'
+    const body = activeTab === 'today'
+      ? renderToday(todaySnapshot, loading || todayRefreshing, DATA_ROUTE_ACTION_ATTR, todaySourcesOpen)
+      : activeTab === 'contact'
       ? renderContactSurface(
           contacts,
           contactRollups,
@@ -6320,6 +6426,7 @@ export const bootstrapDataRoute = (
               ? pendingWorkEntityDialogOpen.id
               : null,
             bookingLifecycleFilter,
+            taskViewFilters,
             bookingDetailId,
             bookingDetail,
             bookingDetailError,
@@ -6489,9 +6596,9 @@ export const bootstrapDataRoute = (
             verificationItemReady,
           );
     routeRoot.innerHTML = `
-      <header class="data-header">
+      ${opts.hideHeading ? '' : `<header class="data-header">
         <h1 class="data-title" ${DATA_ROUTE_HEADING_ATTR}>Data</h1>
-      </header>
+      </header>`}
       ${routeReturn}
       ${renderLensSwitcher(
         activeLens,
@@ -6519,6 +6626,17 @@ export const bootstrapDataRoute = (
       ${verificationNext}
     `;
     renderedActiveTab = activeTab;
+    if (focusedTodayHref) {
+      const replacement = Array.from(routeRoot.querySelectorAll<HTMLAnchorElement>('[data-today-view] a'))
+        .find((link) => link.getAttribute('href') === focusedTodayHref);
+      (replacement ?? routeRoot.querySelector<HTMLElement>('.today-refresh'))?.focus({ preventScroll: true });
+    } else if (focusedTodayRefresh || focusedTodaySources) {
+      routeRoot.querySelector<HTMLElement>(focusedTodayRefresh ? '.today-refresh' : '.today-sources summary')?.focus({ preventScroll: true });
+    }
+    if (opts.savedView !== undefined && currentView() !== null
+      && (activeLens === 'memory' ? !memoryLoading : !loading && !explorerLoading && !recordsState.loading)) {
+      syncDataHash();
+    }
     if (
       focusedContactImportFileOwner
       && activeLens === 'data'
@@ -6578,6 +6696,10 @@ export const bootstrapDataRoute = (
         `[${DATA_ROUTE_TAB_ATTR}="${focusedTab}"]`,
       ) as HTMLElement | null;
       replacement?.focus?.({ preventScroll: true });
+    }
+    if (focusedTaskFilter !== null && activeLens === 'data' && activeTab === 'task') {
+      routeRoot.querySelector<HTMLElement>(`select[${SHARED_ACTION_ATTR}="${focusedTaskFilter}"]`)
+        ?.focus?.({ preventScroll: true });
     }
     if (
       focusedSearch !== null
@@ -6644,6 +6766,18 @@ export const bootstrapDataRoute = (
         `[${DATA_ROUTE_ACTION_ATTR}="submit-contact-dialog"]`,
       ) as HTMLElement | null;
       replacement?.focus?.({ preventScroll: true });
+    }
+    if (focusedDraftField !== null) {
+      const replacement = Array.from(routeRoot.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>(
+        `[${focusedDraftField.attribute}]`,
+      )).find((element) => element.getAttribute(focusedDraftField.attribute) === focusedDraftField.field
+        && element.getAttribute('type') !== 'hidden');
+      replacement?.focus?.({ preventScroll: true });
+      if (replacement !== undefined && typeof replacement.setSelectionRange === 'function'
+        && focusedDraftField.selectionStart != null && focusedDraftField.selectionEnd != null) {
+        replacement.setSelectionRange(focusedDraftField.selectionStart, focusedDraftField.selectionEnd,
+          focusedDraftField.selectionDirection ?? undefined);
+      }
     }
     if (
       focusedContactDetailEmail !== null
@@ -7101,6 +7235,7 @@ export const bootstrapDataRoute = (
       focusDataTab(pendingFormResponseDiscardTabFocus);
       if (!loading) pendingFormResponseDiscardTabFocus = null;
     }
+    opts.onViewChange?.(currentView());
   };
 
   /** An exact run → Data address should land keyboard and screen-reader users
@@ -7152,9 +7287,8 @@ export const bootstrapDataRoute = (
   };
 
   // Shared request shape for the initial/replace fetch (offset 0) + the
-  // load-more append. Booking search/filter are server-side so matches beyond
-  // the first page are not stranded; older work-entity kinds retain their
-  // client-side search behavior.
+  // load-more append. Tasks and bookings filter before pagination. Task dates
+  // and search stay fixed across pages until the next full refresh.
   const workEntityListRequest = (offset: number): WorkEntityListRpcRequest => {
     const request: WorkEntityListRpcRequest = {
       kind: workEntityState.kind,
@@ -7163,6 +7297,10 @@ export const bootstrapDataRoute = (
     if (offset > 0) request.offset = offset;
     if (workEntityState.selected_source_id !== null) {
       request.source_id = workEntityState.selected_source_id;
+    }
+    if (workEntityState.kind === 'task') {
+      request.task_filter = taskListFilter;
+      if (taskListSearch.length > 0) request.search = taskListSearch;
     }
     if (workEntityState.kind === 'booking') {
       const search = workEntityState.search_query.trim();
@@ -7178,6 +7316,15 @@ export const bootstrapDataRoute = (
     nextErrors: DataLoadErrors,
     generation: number,
   ): Promise<void> => {
+    // Retain the exact saved Source even after it disconnects. A select with no
+    // matching option must not show All while the query still names that Source.
+    const selectedSource = workEntityState.selected_source_id;
+    if (opts.savedView !== undefined && selectedSource !== null && !sourceOptionsForKind(sources, workEntityState.kind).some((source) => source.id === selectedSource)) {
+      workEntities = [];
+      workEntityTotal = 0;
+      nextErrors.work_entities = 'The source selected for this view is no longer available. Choose a source to continue.';
+      return;
+    }
     if (opts.workEntityListCaller === undefined) {
       workEntities = [];
       workEntityTotal = 0;
@@ -7628,7 +7775,7 @@ export const bootstrapDataRoute = (
     if (isSingleCollectionTab(tab)) return loadSingleCollection(tab);
     const platform = EXPLORER_TAB_PLATFORM[tab];
     const seq = ++explorerSeq;
-    const requestedSlug = initialExplorerSlug;
+    const requestedSlug = initialExplorerSlug ?? savedExplorerScopes.get(tab) ?? null;
     initialExplorerSlug = null;
     const previouslySelectedSlug = explorerSelectedSlug;
     // The display schema is keyed on the canonical collection name = the
@@ -7697,10 +7844,13 @@ export const bootstrapDataRoute = (
       explorerRecords = [];
       if (requestedSlug !== null && explorerSelectedSlug === null) {
         explorerError =
-          'The connected source for this cited record is no longer available.';
+          opts.savedView === undefined
+            ? 'The connected source for this cited record is no longer available.'
+            : 'The connected source for this view is no longer available. Choose a source to continue.';
         explorerErrorRetryable = false;
       }
       if (explorerSelectedSlug !== null) {
+        if (opts.savedView !== undefined) savedExplorerScopes.set(tab, explorerSelectedSlug);
         await fetchExplorerRecords(platform, explorerSelectedSlug, seq);
       }
     } catch (err) {
@@ -7719,6 +7869,7 @@ export const bootstrapDataRoute = (
     const platform = EXPLORER_TAB_PLATFORM[activeTab];
     if (platform === undefined || slug === explorerSelectedSlug) return;
     explorerSelectedSlug = slug;
+    if (opts.savedView !== undefined) savedExplorerScopes.set(activeTab, slug);
     explorerRecords = [];
     explorerDetail = null;
     explorerDetailRetryable = false;
@@ -7985,6 +8136,9 @@ export const bootstrapDataRoute = (
     const kindsCaller = opts.recordsKindListCaller;
     const searchCaller = opts.recordsSearchCaller;
     const seq = ++recordsSeq;
+    if (opts.savedView !== undefined) {
+      savedRecordsSelection = { owner: namespace.owner, entity: preferredKind ?? null };
+    }
     recordsState = {
       ...recordsState,
       selectedNamespace: namespace,
@@ -8033,9 +8187,14 @@ export const bootstrapDataRoute = (
       const counts = new Map(kindResponse.kinds.map((kind) => [kind.kind, kind]));
       const kinds = Object.keys(namespace.schema.entities).sort().map((kind) =>
         counts.get(kind) ?? { kind, rows: 0, payload_bytes: 0 });
+      if (opts.savedView !== undefined && preferredKind !== undefined && !kinds.some((kind) => kind.kind === preferredKind)) {
+        recordsState = { ...recordsState, kinds, loading: false, error: 'The record kind selected for this view is no longer available. Choose a kind to continue.' };
+        return;
+      }
       const selectedKind = preferredKind && kinds.some((kind) => kind.kind === preferredKind)
         ? preferredKind
         : kinds[0]?.kind ?? null;
+      if (opts.savedView !== undefined) savedRecordsSelection = { owner: namespace.owner, entity: selectedKind };
       recordsState = {
         ...recordsState,
         kinds,
@@ -8086,13 +8245,12 @@ export const bootstrapDataRoute = (
     try {
       const response = await caller();
       if (disposed || seq !== recordsSeq) return;
-      const previous = recordsState.selectedNamespace?.owner;
+      const previous = recordsState.selectedNamespace?.owner ?? savedRecordsSelection?.owner ?? undefined;
       const selected = previous === undefined
         ? response.namespaces[0] ?? null
         : response.namespaces.find((namespace) =>
-            recordsOwnerKey(namespace.owner) === recordsOwnerKey(previous))
-          ?? response.namespaces[0]
-          ?? null;
+            namespace.owner.publisher === previous.publisher && namespace.owner.pack_slug === previous.pack_slug)
+          ?? (opts.savedView === undefined ? response.namespaces[0] ?? null : null);
       recordsState = {
         ...recordsState,
         namespaces: response.namespaces,
@@ -8100,10 +8258,15 @@ export const bootstrapDataRoute = (
         selectedNamespace: selected,
         loading: selected !== null,
       };
-      if (selected === null) return;
+      if (selected === null) {
+        recordsState = { ...recordsState, records: [], kinds: [], selectedKind: null, detail: null,
+          diagnostics: null, outbox: null, outboxOpen: false, retention: {}, loading: false,
+          ...(previous === undefined ? {} : { error: 'The pack selected for this view is no longer available. Choose a pack to continue.' }) };
+        return;
+      }
       await loadRecordsNamespace(
         selected,
-        recordsState.selectedKind ?? undefined,
+        recordsState.selectedKind ?? savedRecordsSelection?.entity ?? undefined,
         returnFocusId,
       );
     } catch (error) {
@@ -8165,6 +8328,7 @@ export const bootstrapDataRoute = (
       || !recordsState.kinds.some((entry) => entry.kind === kind)
       || (recordsState.selectedKind === kind && recordsState.error === undefined)
     ) return;
+    if (opts.savedView !== undefined) savedRecordsSelection = { owner: namespace.owner, entity: kind };
     const seq = ++recordsSeq;
     const focusedControl = activeRecordsFocusIdentity();
     recordsState = {
@@ -8600,6 +8764,10 @@ export const bootstrapDataRoute = (
 
   const refreshActive = async (silent = false): Promise<void> => {
     const generation = ++loadGeneration;
+    if (activeTab === 'task') {
+      taskListFilter = resolveTaskListFilter(taskViewFilters, (opts.now ?? Date.now)());
+      taskListSearch = workEntityState.search_query.trim();
+    }
     // A full refresh REPLACES the list from offset 0 — the generation bump above
     // already invalidates any in-flight append, so clear its footer spinner too.
     loadingMoreContacts = false;
@@ -8630,7 +8798,14 @@ export const bootstrapDataRoute = (
     }
 
     const nextErrors: DataLoadErrors = {};
-    if (activeTab === 'contact') {
+    if (activeTab === 'today') {
+      todayRefreshing = true;
+      todayLiveRefreshQueued = false;
+      const snapshot = await loadToday(opts, (opts.now ?? Date.now)(), () => !disposed && generation === loadGeneration);
+      if (disposed || generation !== loadGeneration) return;
+      todaySnapshot = snapshot;
+      todayRefreshing = false;
+    } else if (activeTab === 'contact') {
       // D-205 #2c — in PARALLEL: the strip diagnoses the list, so making the user
       // wait for one before the other buys nothing, and a slow Source-health read
       // must not delay the contacts themselves.
@@ -8646,6 +8821,8 @@ export const bootstrapDataRoute = (
       // management slice is absent or recovering.
       await refreshSources(nextErrors, generation);
       await refreshWorkEntities(nextErrors, generation);
+    } else if (activeTab === 'search') {
+      await runUniversalSearch();
     } else if (activeTab === 'records') {
       await loadRecords();
     } else if (isExplorerTab(activeTab) || isSingleCollectionTab(activeTab)) {
@@ -8659,6 +8836,10 @@ export const bootstrapDataRoute = (
     errors = nextErrors;
     loading = false;
     render();
+    if (activeTab === 'today' && todayLiveRefreshQueued) {
+      todayLiveRefreshQueued = false;
+      scheduleLiveRefresh();
+    }
   };
 
   const startRefresh = (): void => {
@@ -8724,6 +8905,7 @@ export const bootstrapDataRoute = (
   const bookingSearchRefresh = createDebouncedRefresh(
     opts.bookingSearchDebounceMs ?? 180,
   );
+  const taskSearchRefresh = createDebouncedRefresh(opts.taskSearchDebounceMs ?? 180);
 
   /** ⚠ ITS OWN TIMER, NOT `createDebouncedRefresh`. That helper debounces the
    *  route's whole-page `startRefresh()`, which re-reads every lens; this loader
@@ -8976,7 +9158,9 @@ export const bootstrapDataRoute = (
     : undefined;
   const dataHistory = createHierarchicalHistory({
     initial: dataAddress(
-      activeLens === 'memory'
+      opts.savedView !== undefined
+        ? serializeShellRoute('data', 'view', opts.savedView.id)
+        : activeLens === 'memory'
         ? serializeShellRoute('data', 'memory')
         : serializeShellRoute('data', activeTab, initialDataEntity),
       initialDataEntity,
@@ -8984,7 +9168,15 @@ export const bootstrapDataRoute = (
     history: () => doc.defaultView?.history,
     onCommit: (address) => opts.onHashSync?.(address.hash),
   });
+  let savedViewLinked = opts.savedView !== undefined;
+  let savedViewBinding = opts.savedView;
   const syncDataHash = (): void => {
+    const definition = currentView();
+    if (savedViewLinked && savedViewBinding !== undefined && definition !== null
+      && sameSavedDataViewDefinition(definition, savedViewBinding.definition)) {
+      dataHistory.navigate(dataAddress(serializeShellRoute('data', 'view', savedViewBinding.id), undefined));
+      return;
+    }
     // D-198 Slice 1b — the Memory lens addresses as `#data/memory` (no entity
     // segment); the Data lens keeps `#data/<tab>/<entity>`.
     const exactSourceRecordTab: SourceRecordDataTab | null =
@@ -12544,6 +12736,10 @@ export const bootstrapDataRoute = (
       if (tab !== null && isDataTab(tab)) void selectTab(tab);
       return;
     }
+    if (action === 'refresh-today') {
+      if (!loading && !todayRefreshing) startRefresh();
+      return;
+    }
     // D-198 Slice 1b — Data | Memory lens switch + Memory origin filter.
     if (action === MEMORY_LENS_SELECT_ACTION) {
       const lens = target.getAttribute(MEMORY_LENS_VALUE_ATTR);
@@ -13261,6 +13457,13 @@ export const bootstrapDataRoute = (
   const onInput = (ev: Event): void => {
     const target = ev.target as HTMLInputElement | HTMLTextAreaElement | null;
     if (target === null) return;
+    if (workEntityState.dialog !== null && !workEntityState.dialog.submitting && !workEntityDiscardGuardOpen
+      && target.closest?.('.work-entity-dialog-form') != null) {
+      // The form renderer owns its inputs. Keep the draft in route state too,
+      // so a pending list read cannot repaint those inputs with old values.
+      syncWorkEntityDialogFromDom();
+      return;
+    }
     if (
       typeof target.hasAttribute === 'function'
       && target.hasAttribute(SEARCH_INPUT_ATTR)
@@ -13276,6 +13479,7 @@ export const bootstrapDataRoute = (
         universalSearchError = undefined;
       }
       scheduleUniversalSearch();
+      opts.onViewChange?.(currentView());
       return;
     }
     if (
@@ -13309,6 +13513,7 @@ export const bootstrapDataRoute = (
     }
     if (typeof target.hasAttribute === 'function' && target.hasAttribute(DATA_ROUTE_CONTACT_SEARCH_ATTR)) {
       contactSearch = target.value;
+      opts.onViewChange?.(currentView());
       if (activeTab === 'contact') scheduleContactSearchRefresh();
       return;
     }
@@ -13353,6 +13558,7 @@ export const bootstrapDataRoute = (
         const kind = target.getAttribute('data-kind');
         if (isWorkEntityTab(activeTab) && kind === workEntityState.kind) {
           workEntityState = applySearchTransition(workEntityState, target.value);
+          opts.onViewChange?.(currentView());
           if (workEntityState.kind === 'booking') {
             const scheduledSearch = workEntityState.search_query;
             bookingSearchRefresh.schedule(() =>
@@ -13360,6 +13566,10 @@ export const bootstrapDataRoute = (
               && activeTab === 'booking'
               && workEntityState.kind === 'booking'
               && workEntityState.search_query === scheduledSearch);
+          } else if (workEntityState.kind === 'task') {
+            const scheduledSearch = workEntityState.search_query;
+            taskSearchRefresh.schedule(() => activeLens === 'data' && activeTab === 'task'
+              && workEntityState.kind === 'task' && workEntityState.search_query === scheduledSearch);
           } else {
             render();
           }
@@ -13422,6 +13632,11 @@ export const bootstrapDataRoute = (
   const onChange = (ev: Event): void => {
     const target = ev.target as HTMLSelectElement | null;
     if (target === null || typeof target.getAttribute !== 'function') return;
+    if (workEntityState.dialog !== null && !workEntityState.dialog.submitting && !workEntityDiscardGuardOpen
+      && target.closest?.('.work-entity-dialog-form') != null) {
+      syncWorkEntityDialogFromDom();
+      return;
+    }
     if (
       formResponseEditorDraft !== null
       && formResponseDetailId === formResponseEditorDraft.submissionId
@@ -13449,6 +13664,7 @@ export const bootstrapDataRoute = (
       const valid = new Set(options.map((option) => option.id));
       workEntityState = selectSourceTransition(workEntityState, target.value, valid);
       bookingSearchRefresh.cancel();
+      taskSearchRefresh.cancel();
       startRefresh();
       return;
     }
@@ -13458,6 +13674,17 @@ export const bootstrapDataRoute = (
         bookingLifecycleFilter = next as BookingLifecycleState | 'all';
         bookingSearchRefresh.cancel();
         pendingLoadPromise = refreshActive(true);
+      }
+      return;
+    }
+    if (activeTab === 'task' && action?.startsWith('filter-task-')) {
+      const field = action.slice('filter-task-'.length);
+      if (field !== 'completion' && field !== 'due' && field !== 'sort') return;
+      const next = parseTaskViewFilters({ ...taskViewFilters, [field]: target.value });
+      if (next !== null) {
+        taskViewFilters = next;
+        taskSearchRefresh.cancel();
+        startRefresh();
       }
       return;
     }
@@ -13700,6 +13927,12 @@ export const bootstrapDataRoute = (
   let liveRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   const runLiveRefresh = (): void => {
     if (disposed) return;
+    // A calendar sync can keep emitting warehouse changes while Today pages
+    // through its sources. Finish and paint this read before one follow-up.
+    if (activeLens === 'data' && activeTab === 'today' && todayRefreshing) {
+      todayLiveRefreshQueued = true;
+      return;
+    }
     pendingLoadPromise = refreshActive(true);
     if (contactDetail !== null) {
       void openContactDetail(contactDetail.email);
@@ -13719,6 +13952,16 @@ export const bootstrapDataRoute = (
       runLiveRefresh();
     }, liveRefreshDebounceMs);
   };
+  // Deadlines and local-day boundaries advance even without warehouse writes.
+  const todayClock = doc.defaultView?.setInterval?.(() => {
+    if (activeLens === 'data' && activeTab === 'today' && !loading && !todayRefreshing
+      && doc.visibilityState !== 'hidden') runLiveRefresh();
+  }, 60_000);
+  const onTodayVisible = (): void => {
+    if (doc.visibilityState === 'visible' && activeLens === 'data' && activeTab === 'today'
+      && !loading && !todayRefreshing) runLiveRefresh();
+  };
+  doc.addEventListener?.('visibilitychange', onTodayVisible);
   if (opts.subscribe !== undefined) {
     liveUnsubscribers.push(
       opts.subscribe('warehouse', scheduleLiveRefresh),
@@ -13808,6 +14051,19 @@ export const bootstrapDataRoute = (
     || formResponseRunModal?.getState().trigger_mutating === true;
 
   return {
+    currentView,
+    bindSavedView: (view) => { savedViewBinding = view; savedViewLinked = true; syncDataHash(); },
+    detachSavedView: () => { savedViewLinked = false; syncDataHash(); },
+    getRecoveryContextFreshness: () => {
+      const unavailable = activeLens === 'memory'
+        ? memoryLoading || memoryError !== undefined
+        : loading || Object.values(errors).some(Boolean)
+          || (activeTab === 'records' && (recordsState.loading || recordsState.error !== undefined))
+          || (activeTab === 'search' && (universalSearchLoading || universalSearchError !== undefined))
+          || (activeTab === 'today' && (todayRefreshing || todaySnapshot === null || todaySnapshot.issues.length > 0))
+          || ((isExplorerTab(activeTab) || isSingleCollectionTab(activeTab)) && (explorerLoading || explorerError !== undefined));
+      return disposed || unavailable ? 'unavailable' : 'current';
+    },
     activeTab: () => activeTab,
     activeLens: () => activeLens,
     memoryEntries: () => memoryEntries,
@@ -13880,8 +14136,11 @@ export const bootstrapDataRoute = (
     dispose: () => {
       if (disposed) return;
       disposed = true;
+      if (todayClock !== undefined) doc.defaultView?.clearInterval(todayClock);
+      doc.removeEventListener?.('visibilitychange', onTodayVisible);
       contactSearchRefresh.cancel();
       bookingSearchRefresh.cancel();
+      taskSearchRefresh.cancel();
       if (liveRefreshTimer !== null) {
         clearTimeout(liveRefreshTimer);
         liveRefreshTimer = null;

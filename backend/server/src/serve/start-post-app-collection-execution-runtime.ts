@@ -98,6 +98,7 @@ export const startPostAppCollectionExecutionRuntime = async (
     ? {
         recoverPeerDeliveries: async (): Promise<void> => {
           await recoverPeerAskDeliveries({
+            canPublishReviewedCheckpoint: checkpoint => execution.executeDeps.preapprovalRuntime?.canPublishCheckpoint(checkpoint.checkpoint_id) ?? false,
             outbox: peerOutbox,
             auditLog: peerAuditLog,
             checkpoints: peerCheckpoints,

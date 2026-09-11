@@ -154,6 +154,11 @@ import {
   proposedEndpointConfigToAuthoringSeed,
 } from '@recued/contracts';
 
+// D-220 Slice B — pack-shipped intake templates on the gallery + seed path.
+import type {
+  PackReceptionTemplateListing,
+  PackReceptionTemplateUnavailable,
+} from '@recued/contracts';
 import { receptionConfigTemplateAuthoringSeed } from './reception-config-templates.js';
 import type { EnterAuthoringTarget } from './reception-page-host.js';
 import {
@@ -323,6 +328,11 @@ export const mountReceptionRoute = (
   // D-151 — the non-intake config templates from the same
   // `reception.template.list` cache (scheduling links + contact pages).
   let rawConfigTemplates: ReadonlyArray<ReceptionConfigTemplate> = [];
+  // D-220 Slice B — the intake templates INSTALLED PACKS shipped, off the same
+  // `reception.template.list` reply. Absent on a server that predates Slice B
+  // ⇒ stays empty, which the gallery renders as "no pack section".
+  let rawPackTemplates: ReadonlyArray<PackReceptionTemplateListing> = [];
+  let rawPackTemplatesUnavailable: ReadonlyArray<PackReceptionTemplateUnavailable> = [];
   let disposed = false;
   // DD#3 — coalesce concurrent reloadPageConfig invocations. A storm of
   // shell-state changes (e.g. loadPage flipping loading=true → false →
@@ -374,6 +384,8 @@ export const mountReceptionRoute = (
       if (disposed) return;
       rawTemplates = result.templates;
       rawConfigTemplates = result.config_templates;
+      rawPackTemplates = result.pack_templates ?? [];
+      rawPackTemplatesUnavailable = result.pack_templates_unavailable ?? [];
     } catch {
       // rawTemplates / rawConfigTemplates stay at the previous value;
       // resolveTemplateSeed / resolveConfigTemplateSeed return null for any
@@ -413,9 +425,14 @@ export const mountReceptionRoute = (
     exposureProfile: opts.exposureProfile,
     resolvePageConfig: () => pageConfig,
     resolveTemplateSeed: (templateRef) => {
+      // D-220 Slice B — a `pack:` ref lives in the pack cache; the Foundation
+      // cache is searched first because its refs are a closed list that can
+      // never collide with the `pack:` grammar.
       const template = rawTemplates.find(
         (t) => t.template_ref === templateRef,
-      );
+      ) ?? rawPackTemplates.find(
+        (listing) => listing.template.template_ref === templateRef,
+      )?.template;
       if (template === undefined) return null;
       // DD#4 — empty display_name; the user types one in the form.
       return intakeFormConfigFromTemplate(template, { display_name: '' });
@@ -429,6 +446,9 @@ export const mountReceptionRoute = (
     // D-151 — the non-intake config templates (scheduling links + contact
     // pages) the same gallery renders, off the same cache.
     getConfigTemplates: () => rawConfigTemplates,
+    // D-220 Slice B — the installed packs' intake templates + the note.
+    getPackTemplates: () => rawPackTemplates,
+    getPackTemplatesUnavailable: () => rawPackTemplatesUnavailable,
     resolveConfigTemplateSeed: (templateRef) => {
       const template = rawConfigTemplates.find(
         (t) => t.template_ref === templateRef,
@@ -582,12 +602,26 @@ export const mountReceptionRoute = (
     void reloadPendingAsks();
   }
 
+  // D-220 Slice B (audit) — a pack install / upgrade / uninstall on ANY client
+  // changes which pack templates exist. Refresh the cache on those events so the
+  // next gallery open (and the seed a pick resolves) reflects the current set
+  // rather than a card for a template that already left with its pack.
+  const packUnsubscribes: Array<() => void> = [];
+  if (opts.subscribe) {
+    const onPackChange = (): void => {
+      void reloadTemplates();
+    };
+    packUnsubscribes.push(opts.subscribe('pack_installed', onPackChange));
+    packUnsubscribes.push(opts.subscribe('pack_uninstalled', onPackChange));
+  }
+
   return {
     update: () => {
       if (disposed) return;
       host.update();
     },
     dispose: () => {
+      for (const unsubscribe of packUnsubscribes) unsubscribe();
       if (disposed) return;
       disposed = true;
       // DD#5 — unsubscribe first so a satellite-close-driven state

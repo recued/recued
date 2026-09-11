@@ -478,7 +478,20 @@ export const resumePeerHold = async (
       : {}),
   } as ExecuteRequest;
 
+  let reviewed: Awaited<ReturnType<NonNullable<ExecuteHandlerDeps['preapprovalRuntime']>['resume']>> | undefined;
   try {
+    if (checkpoint.auto_run_qualification && !executeDeps.preapprovalDriver) {
+      throw new Error('The automatic qualification driver is unavailable for this peer continuation.');
+    }
+    if ((checkpoint.preapproval_execution_ref || checkpoint.preapproval_candidate_ref) && !executeDeps.preapprovalRuntime) {
+      throw new Error('The reviewed execution runtime is unavailable for this peer continuation.');
+    }
+    reviewed = await executeDeps.preapprovalRuntime?.resume(checkpoint);
+    if (reviewed) {
+      request.config = reviewed.config;
+      request.execution_source = reviewed.plan.origin.source;
+      request.contract_snapshot = executeDeps.preapprovalRuntime!.resolveOrigin(reviewed.handle).contract_snapshot;
+    }
     await handleExecute(
       executeDeps,
       request,
@@ -486,6 +499,11 @@ export const resumePeerHold = async (
         // Same run identity, so the resumed execution lands on the SAME anchor
         // rather than minting a second run for one conversation.
         run_id: target.run_id,
+        ...(checkpoint.entry_tool_name !== undefined ? { entry_tool_name: checkpoint.entry_tool_name } : {}),
+        ...(reviewed?.kind === 'candidate' ? { preapproval_candidate: reviewed.handle }
+          : reviewed ? { preapproval_run: reviewed.handle } : {}),
+        ...(!reviewed && checkpoint.execution_phase === 'trigger' && request.trigger_source === 'auto_run'
+          && executeDeps.preapprovalDriver ? executeDeps.preapprovalDriver.resumeAutoRunQualification(checkpoint) : {}),
         // ⛔⛔ `step_state` IS NOT OPTIONAL, and omitting it does not degrade — it
         // THROWS. `handleExecute` seeds the resumed run's `step.*` from it through
         // `assignOwnSafe`, which calls `Object.entries` on whatever it is given, so
@@ -505,6 +523,9 @@ export const resumePeerHold = async (
           ? { exchange_ref: resumeAnchor.exchange_ref }
           : {}),
         resume_from: {
+          ...(checkpoint.execution_phase ? { execution_phase: checkpoint.execution_phase } : {}),
+          ...(checkpoint.trigger_state ? { trigger_state: checkpoint.trigger_state } : {}),
+          ...(checkpoint.prefetch_completed ? { prefetch_completed: checkpoint.prefetch_completed } : {}),
           gated_step_id: target.gated_step_id,
           step_state: checkpoint.step_state,
           ...(checkpoint.foreach_progress !== undefined
@@ -527,6 +548,7 @@ export const resumePeerHold = async (
     );
   } catch (error) {
     if (!continuationClaimed || target.exchange_ref === undefined) throw error;
+    if (reviewed) await executeDeps.preapprovalRuntime!.finish(reviewed.handle, 'in_doubt');
     await settleClaimedContinuationInDoubt(
       anchor,
       checkpoint,

@@ -31,6 +31,8 @@
  */
 
 import type Database from 'better-sqlite3';
+import { initializePreapprovalContractReads, mutatePreapprovalContractQueries, recordPreapprovalContractRead,
+  refreshPreapprovalContractQueries, PREAPPROVAL_CLIENT_TOKEN_QUERY } from '../storage/preapproval-contract-reads.js';
 import {
   generateBearerToken,
   hashBearerToken,
@@ -214,6 +216,7 @@ export const createClientTokenStore = (
   options: CreateClientTokenStoreOptions = {},
 ): ClientTokenStore => {
   db.exec(SCHEMA);
+  initializePreapprovalContractReads(db);
   const params = options.argon2_params ?? TOKEN_ARGON2_PARAMS;
   const clock = options.now ?? Date.now;
 
@@ -318,6 +321,7 @@ export const createClientTokenStore = (
       // INSERT above is undone.
       throw new Error(ROTATE_RACE_SENTINEL);
     }
+    refreshPreapprovalContractQueries(db, PREAPPROVAL_CLIENT_TOKEN_QUERY);
   });
 
   return {
@@ -329,7 +333,7 @@ export const createClientTokenStore = (
       const token_id = generateTokenId();
       const hash = await hashBearerToken(bearer, params);
       const metadata_blob = opts.metadata ? JSON.stringify(opts.metadata) : null;
-      insertStmt.run(
+      mutatePreapprovalContractQueries(db, PREAPPROVAL_CLIENT_TOKEN_QUERY, () => insertStmt.run(
         token_id,
         JSON.stringify(hash),
         opts.client_kind,
@@ -339,7 +343,7 @@ export const createClientTokenStore = (
         null,
         null,
         metadata_blob,
-      );
+      ));
       return { token_id, bearer };
     },
 
@@ -426,15 +430,16 @@ export const createClientTokenStore = (
     },
 
     revoke(token_id, reason, now) {
-      revokeStmt.run(now ?? clock(), reason, token_id);
+      mutatePreapprovalContractQueries(db, PREAPPROVAL_CLIENT_TOKEN_QUERY, () => revokeStmt.run(now ?? clock(), reason, token_id));
     },
 
     revokeAll(reason, now) {
-      const result = revokeAllStmt.run(now ?? clock(), reason);
+      const result = mutatePreapprovalContractQueries(db, PREAPPROVAL_CLIENT_TOKEN_QUERY, () => revokeAllStmt.run(now ?? clock(), reason));
       return result.changes ?? 0;
     },
 
     get(token_id) {
+      recordPreapprovalContractRead(db, PREAPPROVAL_CLIENT_TOKEN_QUERY, [token_id], true);
       const row = getStmt.get(token_id) as RawRow | undefined;
       return row ? rowToRecord(row) : null;
     },

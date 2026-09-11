@@ -50,6 +50,7 @@ import type {
   HousekeepingInvalidateHint,
   HousekeepingTaskInstance,
 } from './registry.js';
+import { isPoolUnsatisfiable } from './pool-unsatisfiable.js';
 import { wrapHousekeepingCtxForRecord } from './enrichment-pii-egress.js';
 import type { SourceCollectionWalker, SourceRecord } from './source-walkers.js';
 import type { ConsumesExternalContextEntry } from '../storage/external-context-pulse.js';
@@ -538,7 +539,11 @@ export const buildEnrichmentProducerTask = <TData>(
       // throwing the entire step.
       type ProduceOutcome =
         | { kind: 'output'; output: EnrichmentProducerOutput | null }
-        | { kind: 'pool_unsatisfiable'; layer: 'free' | 'byok'; message: string }
+        // ⛔ `layer` is OPTIONAL because not every unsatisfiable state is a
+        // pool-LAYER verdict: an unconfigured transcription slot and a spent
+        // daily cap are server-wide, and reporting them as `forceLayer=free`
+        // would send a reader to the wrong setting.
+        | { kind: 'pool_unsatisfiable'; layer?: 'free' | 'byok'; message: string }
         | { kind: 'producer_failure'; reason: string };
       const runProduce = async (record: SourceRecord<TData>): Promise<ProduceOutcome> => {
         // D-167 — non-chat AI-egress PII aliasing. Wrap the per-record ctx so
@@ -555,6 +560,18 @@ export const buildEnrichmentProducerTask = <TData>(
           const output = await producer.produce(recordCtx, record);
           return { kind: 'output', output };
         } catch (e) {
+          // ⛔⛔ D-262 — THE CODES THAT MEAN "WAIT", NOT "THIS ROW IS BROKEN".
+          // Anything falling through to `producer_failure` below gets per-row
+          // backoff and is `permanently_failed` at attempt 5 with no
+          // auto-retry — correct for a bad row, catastrophic for a server-wide
+          // condition the owner is about to fix. An unconfigured
+          // `transcription_slot` and a spent daily cap both clear on their
+          // own; punishing rows for them means the rows are STILL dead after
+          // the fix, and the only thing that would have revived them is the
+          // call the condition was refusing.
+          if (e instanceof LLMError && isPoolUnsatisfiable(e) && e.code !== 'AI_LLM_UNAVAILABLE') {
+            return { kind: 'pool_unsatisfiable', message: e.message };
+          }
           if (
             e instanceof LLMError &&
             e.code === 'AI_LLM_UNAVAILABLE' &&
@@ -627,7 +644,7 @@ export const buildEnrichmentProducerTask = <TData>(
         } catch { /* best-effort — ring buffer not yet persisted */ }
       };
       const handlePoolUnsatisfiable = (
-        layer: 'free' | 'byok',
+        layer: 'free' | 'byok' | undefined,
         message: string,
         cursorAfter: TopicCursor,
       ): HousekeepingStepResult => {
@@ -640,7 +657,9 @@ export const buildEnrichmentProducerTask = <TData>(
         try {
           appendTaskErrorEntry(ctx.db, id, {
             ts: ctx.now(),
-            message: `pool_policy_unsatisfiable: forceLayer=${layer}; ${message}`,
+            message: layer !== undefined
+              ? `pool_policy_unsatisfiable: forceLayer=${layer}; ${message}`
+              : `pool_policy_unsatisfiable: ${message}`,
           });
         } catch { /* best-effort */ }
         return {

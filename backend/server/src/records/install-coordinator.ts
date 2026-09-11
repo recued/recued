@@ -25,6 +25,13 @@ import { validateRecipe } from '@recued/recipes';
 import type { LocalManifestStore } from '../ingredient-authoring/local-manifest-store.js';
 import type { ManifestRegistry } from '../manifest-loader.js';
 import { getInstalledPack, recordPackInventory, removePackInventory } from '../pack-inventory.js';
+// D-220 Slice B (follow-up) — a Records pack's shipped intake templates land and
+// leave INSIDE the coordinator's transaction, with the namespace and inventory.
+import {
+  isReceptionTemplateContent,
+  recordPackReceptionTemplates,
+  removePackReceptionTemplates,
+} from '../pack-reception-templates.js';
 import type { RecipeStore } from '../recipe-store.js';
 import { createContractGrantStore } from '../storage/contract-grant-store.js';
 import type { ContractStore } from '../storage/contract-store.js';
@@ -825,6 +832,18 @@ export const installRecordsPackAtomic = async (
         }],
         installed_at: installedAt,
       });
+      // D-220 Slice B (follow-up) — the pack's shipped intake templates ride the SAME
+      // transaction as the namespace + inventory: a refused template fails the
+      // install outright instead of leaving a success with a missing row. Keyed by
+      // the AUTHORED slug + publisher (the ref's identity), not the catalog id.
+      recordPackReceptionTemplates(deps.contractStore, {
+        pack_slug: owner.pack_slug,
+        publisher: owner.publisher,
+        pack_name: input.manifest.name,
+        pack_version: input.manifest.version,
+        templates: (input.manifest.contents ?? []).filter(isReceptionTemplateContent).map((c) => c.template),
+        installed_at: installedAt,
+      });
 
       if (migrationPromotion !== null) {
         deps.recordsStore.promoteMigration({ owner, ...migrationPromotion });
@@ -954,6 +973,10 @@ export const uninstallRecordsPackAtomic = async (
       deps.applyAudience?.([], internalPackId, undefined);
       removePackInventory(deps.contractStore, internalPackId);
       deps.localManifestStore.delete(internalPackId);
+      // D-220 Slice B (follow-up) — and its shipped intake templates go with it, in
+      // the same transaction (a failed sweep now rolls the uninstall back rather
+      // than leaving rows the template list would still advertise).
+      removePackReceptionTemplates(deps.contractStore, owner.pack_slug, owner.publisher);
     });
   } catch (error) {
     throw new RecordsPackInstallError(

@@ -15,6 +15,10 @@ import { ensureSourceDependencyEntitySchema } from '../storage/source-dependency
 import { composeNotificationBlock } from '../composition/bin/wire-notification-block.js';
 import type { ExecuteHandlerDeps } from '../execute-handler.js';
 import { createSQLiteCollection } from '../sqlite-collection.js';
+import { createSavedDataViewStore } from '../saved-data-view-store.js';
+import { createSavedTaskViewReader } from '../saved-data-view-task-reader.js';
+import { createSavedDataViewAlertRuntime } from '../saved-data-view-alert-runtime.js';
+import { createWorkEntityStore, ensureWorkEntitySchema } from '../storage/work-entity-store.js';
 import { createBlobStore } from '../storage/blob-store.js';
 import {
   createAnnotationStore,
@@ -147,5 +151,26 @@ describe('D-169 P2 Slice 2 composeNotificationBlock notification persistence', (
 
     await expect(block.notify({ text: 'Still delivered.' })).resolves.toBeUndefined();
     expect(log.logActivity).toHaveBeenCalledTimes(1);
+  });
+
+  it('delivers an already-persisted alert through the real block without duplicating history', async () => {
+    const log = auditLog();
+    const bus = eventBus();
+    const { block, db } = composeHarness({ auditLog: log, eventBus: bus });
+    ensureWorkEntitySchema(db);
+    const tasks = createWorkEntityStore(db);
+    tasks.registerSource({ id: 'recued.task', top_tier_kind: 'task', source_kind: 'builtin', source_label: 'Tasks', write_capable: true });
+    const views = createSavedDataViewStore(db, { readTasks: createSavedTaskViewReader(tasks) });
+    const view = views.create({ name: 'Overdue', definition: { tab: 'task', query: '', source_id: null,
+      booking_lifecycle: 'all', task_filters: { completion: 'open', due: 'overdue', sort: 'default' } } });
+    views.update({ id: view.id, expected_revision: view.revision, alert: { enabled: true, time_zone: 'UTC' } });
+    tasks.writeTask({ id: 'new-task', title: 'New invoice', source_id: 'recued.task', due_at: 1 });
+    const runtime = createSavedDataViewAlertRuntime({ store: views.alerts, auditLog: log, notifier: block });
+    await runtime.tick(); await runtime.tick(); await runtime.stop();
+    expect(log.logActivity).toHaveBeenCalledTimes(1);
+    expect(log.logActivity.mock.calls[0]?.[0]).toMatchObject({ activity_id: expect.stringMatching(/^saved-view-alert:/),
+      action: 'notification_fired', target: view.id });
+    expect(bus.emit).toHaveBeenCalledExactlyOnceWith({ kind: 'notification.notify', title: 'New task in “Overdue”',
+      text: expect.stringContaining('New invoice'), link_url: `#data/view/${view.id}` });
   });
 });

@@ -158,6 +158,10 @@ export interface CalendarDeleteResult {
 }
 
 export interface CalendarListQuery {
+  is_all_day?: boolean;
+  /** Exclusive lower bound on end_at; paired with start_until for overlap. */
+  end_after?: number;
+  offset?: number;
   /** Lower bound on `start_at` (inclusive, unix-ms). */
   start_since?: number;
   /** Upper bound on `start_at` (exclusive, unix-ms). */
@@ -717,6 +721,14 @@ export const createCalendarTable = (
       where.push('start_at < ?');
       params.push(query.start_until);
     }
+    if (query.end_after !== undefined) {
+      where.push('end_at > ?');
+      params.push(query.end_after);
+    }
+    if (query.is_all_day !== undefined) {
+      where.push('is_all_day = ?');
+      params.push(query.is_all_day ? 1 : 0);
+    }
     if (query.modified_since !== undefined) {
       where.push('modified_at > ?');
       params.push(query.modified_since);
@@ -743,9 +755,9 @@ export const createCalendarTable = (
       SELECT * FROM ${tableName}
       ${whereClause}
       ${orderClause}
-      LIMIT ?
+      LIMIT ? OFFSET ?
     `;
-    params.push(limit);
+    params.push(limit, Math.max(0, Math.floor(query.offset ?? 0)));
     return { sql, params };
   };
 

@@ -43,7 +43,9 @@ import type {
   McpBearerVerifier,
   McpConcurrencyLimitResolver,
   McpDispatch,
+  McpSubscriptionsPort,
 } from '../../ports/mcp/handler.js';
+import { createMcpSubscriptions } from '../../mcp-subscriptions.js';
 import type { FormDefinitionReader } from '../../form-contract-gate.js';
 import { createMcpHttpDispatch, type McpDeps } from '../../mcp-server.js';
 import type { LoadCollectionRecord } from '../../mcp/timeline.js';
@@ -126,6 +128,11 @@ export interface McpHttpTransportBundle {
     readonly verifier: McpBearerVerifier;
     readonly dispatch: McpDispatch;
     readonly resolveConcurrencyLimit: McpConcurrencyLimitResolver;
+    /** MCP 2026-07-28 `subscriptions/listen`. Built over the SAME `dispatch`
+     *  below, so a catalog fingerprint travels the identical authority path a
+     *  client's own `tools/list` does — bearer resolution, bound-contract
+     *  liveness, seller admission and the per-token grants checklist included. */
+    readonly subscriptions: McpSubscriptionsPort;
   };
   readonly logBootBanner: () => void;
 }
@@ -531,7 +538,12 @@ export const composeMcpHttpTransport = (
   };
 
   return {
-    mcpHttpDeps: { verifier, dispatch, resolveConcurrencyLimit },
+    mcpHttpDeps: {
+      verifier,
+      dispatch,
+      resolveConcurrencyLimit,
+      subscriptions: createMcpSubscriptions({ dispatch }),
+    },
     logBootBanner,
   };
 };

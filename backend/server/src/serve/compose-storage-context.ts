@@ -147,6 +147,8 @@ import {
 import { ensureAuditIndexes } from '../audit-indexes.js';
 import { readAuditUsageBytes } from '../audit-usage-counter.js';
 import { createSQLiteCollection } from '../sqlite-collection.js';
+import { createPreapprovalStorage, type PreapprovalStorage } from '../storage/preapproval-storage.js';
+import { preapprovalLimitsFromEnvironment } from '../preapproval-limits.js';
 import {
   computeInitialUsage,
   createGateRegistry,
@@ -187,6 +189,7 @@ export interface ComposeStorageContextOptions {
 
 export interface StorageContext {
   db: Database.Database;
+  preapprovalStorage: PreapprovalStorage;
   manifests: ManifestRegistry;
   /** D-170 — persistent body store for locally-authored (decomposed)
    *  catalog / ingredient / entity-schema manifests. Boot re-registers its
@@ -443,7 +446,7 @@ export const composeStorageContext = async (
 
   bootTrace.mark('shared-setup-start');
 
-  const manifests = createManifestRegistry();
+  const manifests = createManifestRegistry(undefined, db);
   // D-170 — local manifest body store + boot preload. Persisted locally-authored
   // catalog / ingredient bodies are re-registered into the live `manifests`
   // registry so the gateway resolves their operations on this boot exactly as
@@ -805,6 +808,8 @@ export const composeStorageContext = async (
       changeClock: gatedActionChangeClock.snapshot,
     },
   );
+  const preapprovalStorage = createPreapprovalStorage(db, gatedActionChangeClock, () => getVaultKey?.() ?? null,
+    { limits: preapprovalLimitsFromEnvironment(process.env) });
   // Receipt content stays in the owner-only RPC. The bus frame only wakes
   // paired surfaces so reconnect/replay remains safe and bounded.
   gatedActionStore.subscribe(({ record }) => {
@@ -978,6 +983,7 @@ export const composeStorageContext = async (
 
   return {
     db,
+    preapprovalStorage,
     manifests,
     localManifestStore,
     draftStore,

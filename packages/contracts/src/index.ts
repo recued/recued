@@ -30,6 +30,7 @@ export type { Namespace } from './namespaces.js';
 export type { RecipeErrorCode, ErrorSeverity, RecipeError } from './errors.js';
 
 // Types — steps
+export type { RecipeSimulationInput, RecipeSimulationRequest, RecipeSimulationResult, SimulatedStep } from './recipe-simulation.js';
 export type { StepType, BaseStep, TransformStep, IngredientStep, GuardStep, CanonicalOpStep, RecipeStep, PrefetchStep, PrefetchOpStep, CacheFreshness, StepOptions, StepMeta, StepFailureKind } from './steps.js';
 export { isPrefetchOpStep } from './steps.js';
 
@@ -44,6 +45,9 @@ export {
   crmFieldPackTypeConforms,
   vendorEntitiesFromComposition,
 } from './connection-agnostic.js';
+export { parseMailDraftId, parseMailDraftContent, parseMailDraftCreate, parseMailDraftGet, parseMailDraftUpdate, parseMailDraftDelete, parseMailDraftList,
+  type MailDraft, type MailDraftContent, type MailDraftSummary, type MailDraftCreateRequest, type MailDraftUpdateRequest, type MailDraftDeleteRequest } from './mail-drafts.js';
+
 export type {
   PackResolutionContext,
   ResolvedBinding,
@@ -708,6 +712,8 @@ export type {
   PackContentRef, PackRecipeContentRef, PackIngredientContentRef,
   PackOperationGroupContentRef, PackChannelBindingContentRef, PackPolicyContentRef,
   PackCompositionContentRef,
+  // D-220 Slice B — a pack-shipped `intake_form` template, by value.
+  PackReceptionTemplateContentRef,
   // D-182 §7.1 — install grant dialog selection.
   InstallGrantSelection, InstallAudienceSelection, InstallAccessTier, InstallScopeWho,
   CompositionIngredient, CompositionSurface, CompositionAuthModel,
@@ -2397,6 +2403,7 @@ export type {
   HeaderAuthIssue,
   ConnectionRecord,
   ConnectionHealth,
+  McpPushCapability,
   ConnectionCredentialVerification,
   ConnectionCredentialCorrectionFieldKey,
   ConnectionCredentialRejectionCorrection,
@@ -2841,6 +2848,7 @@ export {
   projectEngagementRowForMCP,
   encodeEngagementsCursor,
   decodeEngagementsCursor,
+  engagementSubjectHash,
 } from './engagement.js';
 export type {
   EngagementRow,
@@ -2852,6 +2860,8 @@ export type {
   EngagementDedupeCandidateProjection,
   DedupeResolutionState,
   EngagementsResolverArgs,
+  EngagementsResolverFilters,
+  EngagementsForRecordArgs,
   EngagementsResolverRow,
   EngagementsResolverResult,
   EngagementsResolverCursor,
@@ -2982,8 +2992,9 @@ export {
   applyPrefsPatch,
   sanitizePrefsPatch,
   getPref,
+  VOICE_SPEAK_MODES,
 } from './prefs.js';
-export type { InstancePrefKey, InstancePrefs, InstancePrefSpec, InstancePrefValue } from './prefs.js';
+export type { InstancePrefKey, InstancePrefs, InstancePrefSpec, InstancePrefValue, VoiceSpeakMode } from './prefs.js';
 
 // Phase B — pressure details (heartbeat + server.getStatus shared shape).
 export {
@@ -3940,18 +3951,55 @@ export {
   INTAKE_FORM_TEMPLATE_ANTI_SPAM_DEFAULT_KEYS,
   INTAKE_FORM_TEMPLATE_ANTI_SPAM_DEFAULT_KEY_SET,
   validateIntakeFormTemplate,
+  // D-220 Slice B — the ref-independent half, shared with pack templates.
+  validateIntakeFormTemplateBody,
   intakeFormConfigFromTemplate,
   parseIntakeFormTemplate,
 } from './intake-form-template.js';
 export type {
   IntakeFormTemplateRef,
   IntakeFormTemplateAntiSpamDefaults,
+  IntakeFormTemplateBody,
   IntakeFormTemplate,
   IntakeFormTemplateValidationCode,
   IntakeFormTemplateValidationFailure,
   IntakeFormConfigFromTemplateOptions,
   IntakeFormTemplateParseResult,
 } from './intake-form-template.js';
+
+// D-220 Slice B — pack-shippable `intake_form` templates: the `pack:` ref
+// grammar, the safety-matrix clamp, the validator / parser, and the wire
+// shapes `reception.template.list` carries for them.
+export {
+  PACK_INTAKE_FORM_TEMPLATE_REF_PREFIX,
+  PACK_INTAKE_FORM_TEMPLATE_REF_MAX,
+  PACK_INTAKE_FORM_TEMPLATE_REF_RE,
+  parsePackIntakeFormTemplateRef,
+  isPackIntakeFormTemplateRef,
+  packIntakeFormTemplateRef,
+  PACK_INTAKE_FORM_TEMPLATE_VISITOR_PII_CEILING,
+  PACK_INTAKE_FORM_TEMPLATE_FORBIDDEN_FIELD_NAMES,
+  PACK_INTAKE_FORM_TEMPLATE_FIELD_TYPES,
+  PACK_INTAKE_FORM_TEMPLATE_RATE_LIMIT_CEILING,
+  PACK_INTAKE_FORM_TEMPLATE_TARGET_KINDS,
+  PACK_INTAKE_FORM_TEMPLATE_SAFETY_MATRIX,
+  packTemplateFieldNameMatchesForbidden,
+  inferPackTemplateVisitorPiiClass,
+  validatePackIntakeFormTemplate,
+  parsePackIntakeFormTemplate,
+} from './pack-intake-form-template.js';
+export type {
+  PackIntakeFormTemplateRef,
+  ParsedPackIntakeFormTemplateRef,
+  PackIntakeFormTemplate,
+  PackIntakeFormTemplateOwner,
+  PackIntakeFormTemplateSafetyMatrix,
+  PackIntakeFormTemplateValidationCode,
+  PackIntakeFormTemplateValidationFailure,
+  PackIntakeFormTemplateParseResult,
+  PackReceptionTemplateListing,
+  PackReceptionTemplateUnavailable,
+} from './pack-intake-form-template.js';
 
 // D-151 — pre-built scheduling_link + reception_page config templates
 // (the non-intake half of the Reception Templates browser) + the
@@ -4340,6 +4388,10 @@ export {
   NON_RETAINABLE_RECALL_TOOL_NAMES,
   MEMORY_RECALL_TOOL_NAMES,
   partitionPriorToolCalls,
+  RECALL_RECEIPT_RESULT,
+  recallMatchCount,
+  toRecallReceipt,
+  withRecallReceipts,
   // D-137 P2 § A.4 — Server-side read consolidation
   SCOPE_SEARCH_SOURCE_IDS,
   SCOPE_SEARCH_SOURCE_ID_SET,
@@ -4538,6 +4590,8 @@ export {
   isPatternWithinGrantedOrigins,
   isCommandWithinIngredientGrant,
   isValidChromeMatchPattern,
+  BRIDGE_REVIEW_DOCUMENT_LIMIT,
+  isBridgeDocumentIdentity,
 } from './bridge.js';
 export type {
   BridgeAction,
@@ -4545,6 +4599,7 @@ export type {
   BridgeIngredientRef,
   BridgeIngredientGrant,
   BridgeCommand,
+  BridgeDocumentIdentity,
   BridgeErrorCode,
   BridgeResultStatus,
   BridgeResult,
@@ -4850,6 +4905,8 @@ export type {
   ServerConfigValue,
   ServerLlmPrompt,
   ServerLlmProbeDiagnosis,
+  ServerLlmUsageResponse,
+  ServerLlmUsageSource,
   ServerLlmProbeResult,
   ServerLlmPromptSurface,
   ServerLlmMessageRole,
@@ -5466,11 +5523,13 @@ export type {
   MailComposeAttachment,
   ComposeDispatchResult,
   ComposeMailSendPayload,
+  NormalizedMailSend,
   ComposeDispatchHooks,
   ComposeRewriteRecipeInput,
 } from './mail-compose/index.js';
 export {
   MAIL_COMPOSE_MODES,
+  normalizeMailSend,
   EMPTY_MAIL_COMPOSE_VALUES,
   MAIL_COMPOSE_AI_ACTIONS,
   MAIL_COMPOSE_REWRITE_ACTIONS,
@@ -5655,7 +5714,6 @@ export {
   PROJECT_NEXT_ACTION_GAP_DECLARATION,
   TASK_DUPLICATE_CANDIDATE_DECLARATION,
   SOURCE_FRESHNESS_DEGRADATION_DECLARATION,
-  CONTEXT_PACKET_QUALITY_DECLARATION,
 } from './enrichment-declarations/index.js';
 
 // D-145 PA9 — Per-producer value-shape exports.
@@ -6326,6 +6384,7 @@ export * from './stall-detection.js';
 // LaneStatus / KillDescriptor / HeavyOpErrorCategory / LiveControlCapability +
 // the `execution.{active,kill,cancel,promote}` rpc shapes).
 export * from './execution-control.js';
+export * from './chat-tool-call.js';
 // Durable operation-scoped approval outcomes. A recipe run may own several;
 // one approval group may cover several receipts.
 export * from './gated-action.js';
@@ -6435,3 +6494,7 @@ export type {
 } from './metric-registry.js';
 export * from './date-compute.js';
 export * from './searchable-score.js';
+export * from './saved-data-views.js';
+export * from './task-data-view.js';
+export * from './preapproval.js';
+export * from './operation-phrase.js';

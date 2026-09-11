@@ -141,13 +141,24 @@
  *  affordance. Foundation packs (`pre_install: true`) hide the Delete
  *  button — `foundation-pack-pre-install.ts` would re-install on next
  *  boot, so surfacing Delete on a foundation pack would render a
- *  destructive action the next reboot quietly undoes. Power-user
- *  scripted scenarios can still call `packs.uninstall` directly.
+ *  destructive action the next reboot quietly undoes. ⚠ That reasoning is now
+ *  enforced at the rpc instead: `packs.uninstall` REFUSES a core pack, so the
+ *  "power-user scripted scenarios can still call it directly" escape this
+ *  paragraph once described is closed.
  *
- *  Foundation packs (`pre_install: true`) auto-install at boot via
- *  `foundation-pack-pre-install.ts`. The panel shows them with a
- *  "Foundation" badge + suppresses the Install button (boot did the
- *  work) + suppresses the Delete button (boot would undo it).
+ *  ⛔ FOUNDATION BRANCHES ARE UNREACHABLE SINCE 2026-09-07, and the paragraph
+ *  that stood here described behaviour the server no longer produces. The
+ *  owner's ruling split the two kinds: a `pre_install` pack is a CORE FEATURE
+ *  the server installs and the owner cannot manage, so `packs.list` never lists
+ *  one, and `packs.install` / `packs.uninstall` / `packs.resolveBySlug` refuse
+ *  it outright. Every row this panel can receive is an ordinary pack.
+ *
+ *  So the `pre_install` badge, the foundation Delete warning and the
+ *  failed-auto-install retry path below are DEAD CODE, kept only because
+ *  removing them touches ten test files and no behaviour. They are documented
+ *  rather than left to be re-derived — a stale claim in this header is how the
+ *  server's own gap doc came to assert an absence that had already been fixed.
+ *  See internal design notes.
  *
  *  ── Three exports ──────────────────────────────────────────────────
  *    - `mountPacksPanel(opts)` — DOM-construction mount. Returns a

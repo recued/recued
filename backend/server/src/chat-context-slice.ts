@@ -94,6 +94,59 @@ const selectMatches = (value: unknown, needle: string): unknown[] => {
   return walk(value);
 };
 
+/** A window of `text` centred on `needle`, at most `maxBytes` UTF-8 bytes.
+ *
+ *  ⛔⛔ WITHOUT THIS, A MATCH LARGER THAN THE BUDGET RETURNS NOTHING, AND THAT
+ *  IS THE CASE THIS TOOL EXISTS FOR. `takeWithinBudget` takes WHOLE elements,
+ *  so a single matched element bigger than the cap leaves `taken` empty and the
+ *  model gets `matched: 1, returned: 0, truncated: true` — a success-shaped
+ *  non-answer with no error to react to. Measured across the last 30 stored
+ *  reports: 28 of 28 `context.slice` calls that matched anything returned ZERO
+ *  of it. The tool has never once delivered a match.
+ *
+ *  The descend fix above solved the CONTAINER version of this ({rows:[…]} as
+ *  one atom). It cannot solve the LEAF version: descending bottoms out at
+ *  `long_text.text`, which for a work.read result is the whole note body —
+ *  7,612 bytes against a 2,048 cap in the measured run. And a truncated
+ *  `work.read` is exactly what the executor tells the model to recover with
+ *  `context.slice({ref, query})`, so the one path offered for a long body was
+ *  the one path guaranteed to return nothing.
+ *
+ *  🔑 A SUBSTRING IS NOT A HALF-SERIALIZED ELEMENT. The whole-element rule
+ *  exists so the model never receives malformed JSON — true of an object or an
+ *  array, whose halves do not parse. A string's substring is a valid string, so
+ *  a window is well-formed, and it is what the caller asked for: it supplied
+ *  the needle, so the bytes around it are the bytes it wants. Objects and
+ *  arrays keep the whole-element rule unchanged. */
+const windowAround = (
+  text: string,
+  needle: string,
+  maxBytes: number,
+): string => {
+  const at = text.toLowerCase().indexOf(needle.toLowerCase());
+  // Budget the marker text too, so the result never exceeds `maxBytes`.
+  const marker = '…';
+  const room = Math.max(0, maxBytes - Buffer.byteLength(`${marker}${marker}`, 'utf8'));
+  if (at < 0) return truncateUtf8(text, room);
+  const lead = Math.floor(room / 3);
+  const start = Math.max(0, at - lead);
+  const body = truncateUtf8(text.slice(start), room);
+  return `${start > 0 ? marker : ''}${body}${start + body.length < text.length ? marker : ''}`;
+};
+
+/** Cut to a byte budget on a character boundary — never mid-code-point. */
+const truncateUtf8 = (text: string, maxBytes: number): string => {
+  let out = '';
+  let used = 0;
+  for (const ch of text) {
+    const size = Buffer.byteLength(ch, 'utf8');
+    if (used + size > maxBytes) break;
+    out += ch;
+    used += size;
+  }
+  return out;
+};
+
 /** Take from `items` until the byte budget is spent. Returns whole elements —
  *  never a half-serialized one, which would hand the model malformed JSON and
  *  look like data. */
@@ -157,6 +210,22 @@ export const resolveContextSlice = (
     ? (Array.isArray(value) ? value : [value])
     : selectMatches(value, query);
   const { taken, truncated } = takeWithinBudget(items, requested);
+  // ⛔ NOTHING FIT, BUT SOMETHING MATCHED. Whole-element budgeting refuses a
+  //   single oversized match outright; for a STRING the honest answer is a
+  //   window around the needle rather than an empty slice. See `windowAround`.
+  if (taken.length === 0 && items.length > 0 && query !== '') {
+    const first = items[0];
+    if (typeof first === 'string') {
+      return {
+        ok: true,
+        ref,
+        matched: items.length,
+        returned: 1,
+        truncated: true,
+        slice: [windowAround(first, query, requested)],
+      };
+    }
+  }
   return {
     ok: true,
     ref,

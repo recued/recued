@@ -132,7 +132,8 @@ export interface PeerAnswerContinuationDeps {
       action_ref: string;
       run_id: string;
       gated_step_id: string;
-      current_checkpoint_id: string;
+      current_checkpoint_id?: string;
+      origin?: 'held_checkpoint' | 'preapproval_member';
     } | null>;
     confirmPeerHandoff(action_ref: string, input: {
       run_id: string;
@@ -173,7 +174,7 @@ export const continueRecordedPeerAnswer = (
         // answer belongs to. Looking up the latest receipt by run/step can select
         // a later foreach segment, while a legacy row with no action_ref must not
         // borrow any receipt merely because its subject happens to match.
-        if (row.checkpoint_id === undefined
+        if (action.origin === 'preapproval_member' || row.checkpoint_id === undefined
           || action.action_ref !== row.action_ref
           || action.run_id !== row.run_id
           || action.gated_step_id !== row.gated_step_id

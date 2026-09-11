@@ -42,6 +42,10 @@ import type { ExecuteHandlerDeps } from './execute-handler.js';
 import { handleExecute } from './execute-handler.js';
 import type { ExecuteRequest, ExecuteResponse } from './types.js';
 import { presentAutomationFailure } from './automation-failure.js';
+import {
+  assertPreapprovalLegacyEnable, initializePreapprovalLifecycle, mutatePreapprovalResource,
+  notePreapprovalOwnerMutation, preapprovalLogicalEnabled,
+} from './storage/preapproval-lifecycle.js';
 
 // ────────────────────────────────────────────────────────────────
 // Circuit-breaker persistence (SQLite)
@@ -89,6 +93,7 @@ export interface AutoRunSettingsStore {
 /** SQLite-backed settings store. Creates the table on first use —
  *  same shared-db posture as the circuit store above. */
 export const createAutoRunSettingsStore = (db: Database): AutoRunSettingsStore => {
+  initializePreapprovalLifecycle(db);
   db.exec(`
     CREATE TABLE IF NOT EXISTS auto_run_settings (
       recipe_id  TEXT PRIMARY KEY,
@@ -105,6 +110,11 @@ export const createAutoRunSettingsStore = (db: Database): AutoRunSettingsStore =
   if (!cols.has('dish_id')) {
     db.exec(`ALTER TABLE auto_run_settings ADD COLUMN dish_id TEXT`);
   }
+  const material = (id: string) => {
+    const row = db.prepare('SELECT enabled,dish_id FROM auto_run_settings WHERE recipe_id=?')
+      .get(id) as { enabled: number; dish_id: string | null } | undefined;
+    return row ? { enabled: preapprovalLogicalEnabled(db, 'next_auto_run', id, row.enabled === 1), dish_id: row.dish_id } : null;
+  };
 
   return {
     isEnabled(recipe_id, defaultEnabled = true) {
@@ -114,13 +124,17 @@ export const createAutoRunSettingsStore = (db: Database): AutoRunSettingsStore =
       return row === undefined ? defaultEnabled : row.enabled === 1;
     },
     setEnabled(recipe_id, enabled) {
-      db.prepare(`
-        INSERT INTO auto_run_settings (recipe_id, enabled, updated_at)
-        VALUES (?, ?, ?)
-        ON CONFLICT (recipe_id) DO UPDATE SET
-          enabled = excluded.enabled,
-          updated_at = excluded.updated_at
-      `).run(recipe_id, enabled ? 1 : 0, Date.now());
+      mutatePreapprovalResource(db, 'next_auto_run', recipe_id, () => material(recipe_id), () => {
+        assertPreapprovalLegacyEnable(db, 'next_auto_run', recipe_id, enabled);
+        notePreapprovalOwnerMutation(db, 'next_auto_run', recipe_id);
+        db.prepare(`
+          INSERT INTO auto_run_settings (recipe_id, enabled, updated_at)
+          VALUES (?, ?, ?)
+          ON CONFLICT (recipe_id) DO UPDATE SET
+            enabled = excluded.enabled,
+            updated_at = excluded.updated_at
+        `).run(recipe_id, enabled ? 1 : 0, Date.now());
+      });
     },
     listDisabled() {
       return (db.prepare(
@@ -134,15 +148,18 @@ export const createAutoRunSettingsStore = (db: Database): AutoRunSettingsStore =
       return row?.dish_id ?? null;
     },
     setDishId(recipe_id, dish_id, defaultEnabled = true) {
-      // A fresh row preserves the recipe's definitional default; a conflict
-      // touches only dish_id so explicit owner intent is preserved.
-      db.prepare(`
-        INSERT INTO auto_run_settings (recipe_id, enabled, updated_at, dish_id)
-        VALUES (?, ?, ?, ?)
-        ON CONFLICT (recipe_id) DO UPDATE SET
-          dish_id = excluded.dish_id,
-          updated_at = excluded.updated_at
-      `).run(recipe_id, defaultEnabled ? 1 : 0, Date.now(), dish_id);
+      mutatePreapprovalResource(db, 'next_auto_run', recipe_id, () => material(recipe_id), () => {
+        notePreapprovalOwnerMutation(db, 'next_auto_run', recipe_id);
+        // A fresh row preserves the recipe's definitional default; a conflict
+        // touches only dish_id so explicit owner intent is preserved.
+        db.prepare(`
+          INSERT INTO auto_run_settings (recipe_id, enabled, updated_at, dish_id)
+          VALUES (?, ?, ?, ?)
+          ON CONFLICT (recipe_id) DO UPDATE SET
+            dish_id = excluded.dish_id,
+            updated_at = excluded.updated_at
+        `).run(recipe_id, defaultEnabled ? 1 : 0, Date.now(), dish_id);
+      });
     },
   };
 };
@@ -151,6 +168,7 @@ export const createAutoRunSettingsStore = (db: Database): AutoRunSettingsStore =
  *  use — tolerates sharing the recued-server.db with every other
  *  table. */
 export const createCircuitBreakerStore = (db: Database): CircuitBreakerStore => {
+  initializePreapprovalLifecycle(db);
   db.exec(`
     CREATE TABLE IF NOT EXISTS auto_run_circuit (
       recipe_id            TEXT PRIMARY KEY,
@@ -186,21 +204,24 @@ export const createCircuitBreakerStore = (db: Database): CircuitBreakerStore => 
       return row ? rowToState(row) : null;
     },
     set(state) {
-      db.prepare(`
-        INSERT INTO auto_run_circuit (recipe_id, consecutive_failures, auto_disabled, last_failure_at, last_failure_reason)
-        VALUES (?, ?, ?, ?, ?)
-        ON CONFLICT (recipe_id) DO UPDATE SET
-          consecutive_failures = excluded.consecutive_failures,
-          auto_disabled = excluded.auto_disabled,
-          last_failure_at = excluded.last_failure_at,
-          last_failure_reason = excluded.last_failure_reason
-      `).run(
-        state.recipe_id,
-        state.consecutive_failures,
-        state.auto_disabled ? 1 : 0,
-        state.last_failure_at ?? null,
-        state.last_failure_reason ?? null,
-      );
+      db.transaction(() => {
+        if (state.auto_disabled) notePreapprovalOwnerMutation(db, 'next_auto_run', state.recipe_id);
+        db.prepare(`
+          INSERT INTO auto_run_circuit (recipe_id, consecutive_failures, auto_disabled, last_failure_at, last_failure_reason)
+          VALUES (?, ?, ?, ?, ?)
+          ON CONFLICT (recipe_id) DO UPDATE SET
+            consecutive_failures = excluded.consecutive_failures,
+            auto_disabled = excluded.auto_disabled,
+            last_failure_at = excluded.last_failure_at,
+            last_failure_reason = excluded.last_failure_reason
+        `).run(
+          state.recipe_id,
+          state.consecutive_failures,
+          state.auto_disabled ? 1 : 0,
+          state.last_failure_at ?? null,
+          state.last_failure_reason ?? null,
+        );
+      }).immediate();
     },
     clear(recipe_id) {
       db.prepare('DELETE FROM auto_run_circuit WHERE recipe_id = ?').run(recipe_id);
@@ -297,7 +318,14 @@ export const createServerAutoRunScheduler = (
     if (!config.executeDeps) {
       throw new Error('auto-run scheduler: executeDeps required when no custom execute provided');
     }
-    return handleExecute(config.executeDeps, request);
+    const recipe = request.recipe_id ? config.recipeStore.get(request.recipe_id) : null;
+    const enabled = !!recipe?.auto_run && (config.settingsStore
+      ? config.settingsStore.isEnabled(recipe.recipe_id, recipe.auto_run.default_enabled ?? true)
+      : recipe.auto_run.default_enabled ?? true);
+    if (config.executeDeps.preapprovalDriver) return config.executeDeps.preapprovalDriver.executeAutoRun(request, enabled);
+    // Recheck when a timer actually fires; a roster built before Disarm must
+    // not dispatch a now-disabled recipe through the ordinary path.
+    return enabled ? handleExecute(config.executeDeps, request) : Promise.resolve(null);
   });
 
   const timers = new Map<string, unknown>();
@@ -346,9 +374,10 @@ export const createServerAutoRunScheduler = (
       }
       if (!recipe.auto_run) continue;
       const defaultEnabled = recipe.auto_run.default_enabled ?? true;
-      const enabled = config.settingsStore
+      const legacyEnabled = config.settingsStore
         ? config.settingsStore.isEnabled(recipe.recipe_id, defaultEnabled)
         : defaultEnabled;
+      const enabled = config.executeDeps?.preapprovalDriver?.autoRunEligible(recipe.recipe_id, legacyEnabled) ?? legacyEnabled;
       out.push({
         recipe_id: recipe.recipe_id,
         publisher_id: row.publisher_id,
@@ -464,7 +493,7 @@ export const createServerAutoRunScheduler = (
           process_id,
           ...(configDishId !== null ? { dish_id: configDishId } : {}),
         });
-        nextRunHint = result.next_run_at;
+        nextRunHint = result?.next_run_at;
         // D-115 outcome classification mirrors the extension controller:
         // trigger_skipped takes precedence (silent-skip), then
         // success/failure. Skipped keeps the failure counter unchanged;
@@ -488,9 +517,9 @@ export const createServerAutoRunScheduler = (
         // come back to finish it. Reading the marker rather than
         // `result.awaiting_*` on the engine result is what keeps that
         // distinction.
-        const heldForAnswer = result.awaiting_approval === true
-          || result.awaiting_peer === true;
-        if (result.trigger_skipped) {
+        const heldForAnswer = result?.awaiting_approval === true
+          || result?.awaiting_peer === true;
+        if (result === null || result.trigger_skipped) {
           outcome = 'skipped';
         } else if (heldForAnswer) {
           outcome = 'held';

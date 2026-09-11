@@ -179,6 +179,8 @@ describe('createContractStore — seedSchema', () => {
       ['composite_keys', 'grant'],
       ['composite_keys', 'installed_ingredient'],
       ['composite_keys', 'installed_pack'],
+      // D-220 Slice B — pack-shipped intake templates ('installed_p' < 'installed_r').
+      ['composite_keys', 'installed_reception_template'],
       ['composite_keys', 'override'],
       ['composite_keys', 'owner_operation'],
       ['composite_keys', 'policy_resolution'],

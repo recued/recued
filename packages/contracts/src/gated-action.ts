@@ -71,6 +71,12 @@ export interface GatedActionReceipt {
   ingredient_slug?: string;
   operation_id?: string;
   connection_name?: string;
+  /** A pre-approved invocation has no invented held checkpoint. Its owner
+   * decision and encrypted result are addressed by this durable linkage. */
+  preapproval?: {
+    future_execution_ref: string; proposal_id: string; grant_id: string;
+    member_id: string; root_run_id: string; parent_member_id: string | null;
+  };
   status: GatedActionStatus;
   terminal: boolean;
   status_message: string;

@@ -27,6 +27,7 @@
  */
 import type {
   ActiveExecutionEntry,
+  ChatToolCallRecord,
   ExecutionActiveRequest,
   ExecutionActiveResponse,
   ExecutionCancelRequest,
@@ -42,6 +43,8 @@ import type {
 } from '@recued/contracts';
 import type { BroadcastSubscriber } from '../realtime/subscriber.js';
 import { humanizeRpcError } from '../shell/rpc-error-copy.js';
+import type { WebclientReconnectSubscriber } from '../realtime/connection-status.js';
+import { serializeChatSessionAddress, serializeLogsRunAddress } from '../shell/route.js';
 
 // ════════════════════════════════════════════════════════════════
 // Attribute constants — stable hooks for tests + host introspection.
@@ -55,6 +58,9 @@ export const LIVE_CONTROL_BUBBLE_CLOSE_ATTR = 'data-recued-live-control-close';
 /** One running entry row. Carries the control id (run_id / queued_call_id). */
 export const LIVE_CONTROL_BUBBLE_RUNNING_ROW_ATTR =
   'data-recued-live-control-running-row';
+export const LIVE_CONTROL_BUBBLE_TOOL_ROW_ATTR = 'data-recued-live-control-tool-row';
+const TOOL_REVIEW_ATTR = 'data-recued-tool-call-review';
+const TOOL_LINK_ATTR = 'data-recued-tool-call-link';
 /** A Kill / Cancel / Promote button. Carries the action. */
 export const LIVE_CONTROL_BUBBLE_RUN_CONTROL_ATTR =
   'data-recued-live-control-run-control';
@@ -72,13 +78,14 @@ const LIVE_CONTROL_BUBBLE_STYLES_MARKER =
   'data-recued-live-control-bubble-styles';
 
 type LiveControlRunAction = 'kill' | 'promote' | 'cancel';
-type LiveControlAction = LiveControlRunAction | 'revoke';
+type LiveControlAction = LiveControlRunAction | 'revoke' | 'review';
 
 const BUSY_CONTROL_LABELS: Readonly<Record<LiveControlAction, string>> = {
   kill: 'Killing…',
   promote: 'Promoting…',
   cancel: 'Cancelling…',
   revoke: 'Revoking…',
+  review: 'Saving…',
 };
 
 // ════════════════════════════════════════════════════════════════
@@ -111,6 +118,8 @@ export interface MountLiveControlBubbleOptions {
   document?: Document;
   /** RUNNING section (D-181). Absent `activeCaller` → no RUNNING section. */
   activeCaller?: LiveControlActiveCaller;
+  dismissToolCall?: (request: { session_id: string; message_id: string }) => Promise<{ dismissed: boolean }>;
+  reconnect?: WebclientReconnectSubscriber;
   killCaller?: LiveControlKillCaller;
   cancelCaller?: LiveControlCancelCaller;
   promoteCaller?: LiveControlPromoteCaller;
@@ -125,6 +134,7 @@ export interface MountLiveControlBubbleOptions {
 
 export interface LiveControlBubbleMount {
   getActiveEntries(): ReadonlyArray<ActiveExecutionEntry>;
+  getToolCalls(): ReadonlyArray<ChatToolCallRecord>;
   getSessionGrants(): ReadonlyArray<SessionGrantView>;
   isOpen(): boolean;
   refreshActive(): Promise<void>;
@@ -379,7 +389,9 @@ const LIVE_CONTROL_BUBBLE_STYLES = `
   margin-left: auto;
 }
 [${LIVE_CONTROL_BUBBLE_RUN_CONTROL_ATTR}],
-[${LIVE_CONTROL_BUBBLE_GRANT_CONTROL_ATTR}] {
+[${LIVE_CONTROL_BUBBLE_GRANT_CONTROL_ATTR}],
+[${TOOL_REVIEW_ATTR}],
+[${TOOL_LINK_ATTR}] {
   min-width: 36px;
   min-height: 36px;
   border: 1px solid var(--border);
@@ -390,13 +402,20 @@ const LIVE_CONTROL_BUBBLE_STYLES = `
   font-size: 12px;
   cursor: pointer;
 }
+[${TOOL_LINK_ATTR}] {
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
+  box-sizing: border-box;
+}
 [${LIVE_CONTROL_BUBBLE_RUN_CONTROL_ATTR}][data-danger="true"],
 [${LIVE_CONTROL_BUBBLE_GRANT_CONTROL_ATTR}][data-danger="true"] {
   border-color: var(--fail);
   color: var(--fail);
 }
 [${LIVE_CONTROL_BUBBLE_RUN_CONTROL_ATTR}][aria-disabled="true"],
-[${LIVE_CONTROL_BUBBLE_GRANT_CONTROL_ATTR}][aria-disabled="true"] {
+[${LIVE_CONTROL_BUBBLE_GRANT_CONTROL_ATTR}][aria-disabled="true"],
+[${TOOL_REVIEW_ATTR}][aria-disabled="true"] {
   opacity: 0.55;
   cursor: default;
 }
@@ -440,6 +459,8 @@ export const mountLiveControlBubble = (
   let expanded = false;
   // running
   let activeEntries: ReadonlyArray<ActiveExecutionEntry> = [];
+  let toolCalls: ReadonlyArray<ChatToolCallRecord> = [];
+  const reviewingCalls = new Set<string>();
   let activeNotice: string | null = null;
   let activeSeq = 0;
   const busyControlActions = new Map<string, LiveControlRunAction>();
@@ -460,7 +481,10 @@ export const mountLiveControlBubble = (
   const renderedRunFocusKeys: string[] = [];
   const renderedGrantFocusKeys: string[] = [];
 
-  const totalCount = (): number => activeEntries.length + sessionGrants.length;
+  const visibleActiveEntries = (): ReadonlyArray<ActiveExecutionEntry> => activeEntries.filter(entry =>
+    entry.entry_kind !== 'run' || !toolCalls.some(call =>
+      call.run_id === entry.run_id && call.state !== 'interrupted'));
+  const totalCount = (): number => visibleActiveEntries().length + toolCalls.length + sessionGrants.length;
 
   const clearChildren = (node: HTMLElement): void => {
     while (node.firstChild) node.removeChild(node.firstChild);
@@ -486,6 +510,8 @@ export const mountLiveControlBubble = (
     for (const attr of [
       LIVE_CONTROL_BUBBLE_RUN_CONTROL_ATTR,
       LIVE_CONTROL_BUBBLE_GRANT_CONTROL_ATTR,
+      TOOL_REVIEW_ATTR,
+      TOOL_LINK_ATTR,
     ]) {
       const action = element.getAttribute(attr);
       const id = element.getAttribute('data-id');
@@ -524,7 +550,7 @@ export const mountLiveControlBubble = (
     if (busy) button.setAttribute('aria-busy', 'true');
     const focusKey = controlFocusKey(rowAttr, action, id);
     renderedFocusTargets.set(focusKey, button);
-    if (rowAttr === LIVE_CONTROL_BUBBLE_RUN_CONTROL_ATTR) {
+    if (rowAttr === LIVE_CONTROL_BUBBLE_RUN_CONTROL_ATTR || rowAttr === TOOL_REVIEW_ATTR) {
       renderedRunFocusKeys.push(focusKey);
     } else if (rowAttr === LIVE_CONTROL_BUBBLE_GRANT_CONTROL_ATTR) {
       renderedGrantFocusKeys.push(focusKey);
@@ -567,7 +593,7 @@ export const mountLiveControlBubble = (
     section.appendChild(buildSectionHead('Running', 'server-wide'));
     if (activeNotice !== null) appendNotice(section, 'running', activeNotice);
     const now = nowMs();
-    for (const entry of activeEntries) {
+    for (const entry of visibleActiveEntries()) {
       const id = activeControlId(entry);
       const ownerLabel = activeEntryTitle(entry);
       const row = doc.createElement('div');
@@ -722,9 +748,85 @@ export const mountLiveControlBubble = (
     panel.appendChild(head);
 
     // RUNNING above GRANTS — only the non-empty sections render (ambient).
-    if (activeEntries.length > 0) panel.appendChild(buildRunningSection());
+    if (toolCalls.length > 0) panel.appendChild(buildToolCallsSection());
+    if (visibleActiveEntries().length > 0) panel.appendChild(buildRunningSection());
     if (sessionGrants.length > 0) panel.appendChild(buildGrantsSection());
     return panel;
+  };
+
+  const buildToolCallsSection = (): HTMLElement => {
+    const section = doc.createElement('div');
+    section.className = 'lc-section';
+    section.appendChild(buildSectionHead('Tool calls', 'your chats'));
+    if (activeNotice !== null) appendNotice(section, 'running', activeNotice);
+    const rememberLink = (link: HTMLElement, action: string, id: string): void => {
+      link.setAttribute(TOOL_LINK_ATTR, action);
+      link.setAttribute('data-id', id);
+      const key = controlFocusKey(TOOL_LINK_ATTR, action, id);
+      renderedFocusTargets.set(key, link);
+      renderedRunFocusKeys.push(key);
+    };
+    for (const call of toolCalls) {
+      const row = doc.createElement('div');
+      row.setAttribute(LIVE_CONTROL_BUBBLE_RUNNING_ROW_ATTR, call.message_id);
+      row.setAttribute(LIVE_CONTROL_BUBBLE_TOOL_ROW_ATTR, call.message_id);
+      const live = call.state === 'interrupted' ? undefined : activeEntries.find(entry =>
+        entry.entry_kind === 'run' && entry.run_id === call.run_id);
+      const title = doc.createElement('span');
+      title.className = 'lc-row-title';
+      title.textContent = call.tool_name;
+      row.appendChild(title);
+      const meta = doc.createElement('span');
+      meta.className = 'lc-row-meta';
+      const state = live ? ACTIVE_STATE_LABEL[live.state]
+        : call.state === 'interrupted' ? 'Interrupted — outcome unconfirmed'
+          : call.state === 'held' ? 'Waiting for a result' : 'Running';
+      const lastSignal = live?.progress.last_signal_at ?? call.last_signal_at;
+      meta.textContent = [state,
+        ...(lastSignal === undefined ? [] : [`last progress ${formatElapsed(nowMs() - lastSignal)} ago`]),
+        ...(live?.progress.stalled || call.stalled ? ['stalled'] : []),
+      ].join(' · ');
+      row.appendChild(meta);
+      const controls = doc.createElement('span');
+      controls.className = 'lc-row-controls';
+      const chatLink = doc.createElement('a');
+      chatLink.textContent = 'Open chat';
+      chatLink.setAttribute('href', serializeChatSessionAddress({ sessionId: call.session_id }));
+      rememberLink(chatLink, 'chat', call.message_id);
+      controls.appendChild(chatLink);
+      if (call.state === 'held' && call.run_id) {
+        const detail = doc.createElement('a');
+        detail.textContent = 'View execution';
+        detail.setAttribute('href', serializeLogsRunAddress({ runId: call.run_id }));
+        rememberLink(detail, 'execution', call.message_id);
+        controls.appendChild(detail);
+      }
+      if (live?.run_id && opts.killCaller) {
+        const id = live.run_id;
+        appendControl(controls, LIVE_CONTROL_BUBBLE_RUN_CONTROL_ATTR, 'kill', id,
+          'Kill', call.tool_name, true, busyControlActions.has(id),
+          busyControlActions.get(id) === 'kill', () => void killRun(id));
+      }
+      if (call.state === 'interrupted' && opts.dismissToolCall) {
+        appendControl(controls, TOOL_REVIEW_ATTR, 'review', call.message_id,
+          'Mark reviewed', call.tool_name, false, reviewingCalls.has(call.message_id),
+          reviewingCalls.has(call.message_id), () => {
+          if (reviewingCalls.has(call.message_id)) return;
+          reviewingCalls.add(call.message_id);
+          render();
+          void opts.dismissToolCall!({ session_id: call.session_id, message_id: call.message_id })
+            .catch(error => { activeNotice = errMessage(error); })
+            .finally(async () => {
+              await loadActive();
+              reviewingCalls.delete(call.message_id);
+              render();
+            });
+        });
+      }
+      row.appendChild(controls);
+      section.appendChild(row);
+    }
+    return section;
   };
 
   const render = (): void => {
@@ -752,7 +854,7 @@ export const mountLiveControlBubble = (
     toggle.setAttribute('aria-label', 'Live control');
     const anyStalled = activeEntries.some(
       (entry) => entry.progress.stalled === true,
-    );
+    ) || toolCalls.some(call => call.state === 'running' && call.stalled === true);
     toggle.setAttribute('data-stalled', anyStalled ? 'true' : 'false');
     // Built via join so no `${a} ${b}` template-literal interpolation sits at a
     // space boundary (a known Write/Edit NUL-corruption site).
@@ -811,7 +913,7 @@ export const mountLiveControlBubble = (
   // the other section stays populated), and collapse the panel only once
   // EVERYTHING is gone (ambient — the next thing in flight re-appears collapsed).
   const reconcileEmpty = (): void => {
-    if (activeEntries.length === 0) activeNotice = null;
+    if (activeEntries.length === 0 && toolCalls.length === 0) activeNotice = null;
     if (sessionGrants.length === 0) grantsNotice = null;
     if (totalCount() === 0) expanded = false;
   };
@@ -826,6 +928,7 @@ export const mountLiveControlBubble = (
         const response = await caller({});
         if (disposed || seq !== activeSeq) return;
         activeEntries = response.entries;
+        toolCalls = response.tool_calls ?? [];
         reconcileEmpty();
         render();
       } catch {
@@ -994,10 +1097,13 @@ export const mountLiveControlBubble = (
           if (disposed) return;
           // Skip the high-frequency, non-membership progress op — a stall /
           // start / complete changes the list, a progress tick does not.
-          if (event.op === 'progress') return;
+          if (event.op === 'progress' && toolCalls.length === 0) return;
           scheduleActiveRefresh();
         }),
       );
+      for (const kind of ['chat.tool_call_started', 'chat.tool_call_completed', 'chat.message_complete', 'chat.session_changed'] as const) {
+        unsubscribers.push(opts.subscribe(kind, () => scheduleActiveRefresh()));
+      }
     }
     if (hasGrants) {
       unsubscribers.push(
@@ -1012,11 +1118,16 @@ export const mountLiveControlBubble = (
   }
 
   render();
+  if (opts.reconnect) unsubscribers.push(opts.reconnect(() => {
+    void loadActive();
+    void loadGrants();
+  }));
   if (hasRunning) void loadActive();
   if (hasGrants) void loadGrants();
 
   return {
     getActiveEntries: () => activeEntries,
+    getToolCalls: () => toolCalls,
     getSessionGrants: () => sessionGrants,
     isOpen: () => expanded,
     refreshActive: loadActive,

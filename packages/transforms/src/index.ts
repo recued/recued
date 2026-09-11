@@ -103,6 +103,9 @@ export {
   // with the user-disclosed overlap fragment (`pii.Person1.sarah`) so a partial
   // reference re-binds without leaking the unrevealed rest.
   decorateOverlapReveal,
+  classifyAliasTokens,
+  rawLedgerValuesInText,
+  type AliasVocabularyReport,
   tokenizeForOverlap,
   createPiiLedgerStore,
   getFallbackPiiLedgerStore,

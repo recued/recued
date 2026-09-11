@@ -23,6 +23,7 @@ import {
   INTAKE_FORM_INSTRUCTIONS_MAX,
   INTAKE_FORM_SUCCESS_MESSAGE_MAX,
   INTAKE_FORM_SUBMIT_BUTTON_LABEL_MAX,
+  INTAKE_FORM_TEMPLATE_VERSION_MAX,
   validateIntakeFormConfig,
   type IntakeFormConfig,
   type IntakeFormConfigField,
@@ -110,13 +111,12 @@ export const INTAKE_FORM_TEMPLATE_ANTI_SPAM_DEFAULT_KEY_SET: ReadonlySet<string>
   INTAKE_FORM_TEMPLATE_ANTI_SPAM_DEFAULT_KEYS,
 );
 
-/** Portable `intake_form` template manifest per § A.10. Parsed from a
- *  JSON file under `community/packs/recued-core/personal-organizer-foundation/templates/`;
- *  converted to a concrete `IntakeFormConfig` via
- *  `intakeFormConfigFromTemplate` at "Use template" time. */
-export interface IntakeFormTemplate {
-  /** Closed-list ref — the template's stable identity + `data` key. */
-  readonly template_ref: IntakeFormTemplateRef;
+/** Everything an `intake_form` template carries EXCEPT its ref. D-220 Slice B
+ *  splits the body out so a pack-shipped template (`pack:<publisher>/<slug>/
+ *  intake/<name>`, `pack-intake-form-template.ts`) shares one body contract,
+ *  one body validator and one `intakeFormConfigFromTemplate` bridge with the
+ *  Foundation set, and differs ONLY in how its ref is admitted. */
+export interface IntakeFormTemplateBody {
   /** Semver string; versions independently of the pack. */
   readonly version: string;
   /** Settings UX list label (e.g. "Client inquiry"). */
@@ -146,6 +146,15 @@ export interface IntakeFormTemplate {
   readonly submission_processing_rule: IntakeFormSubmissionProcessingRule;
   /** Anti-spam defaults (four substrate-baseline knobs; no allowlist). */
   readonly anti_spam_defaults: IntakeFormTemplateAntiSpamDefaults;
+}
+
+/** Portable `intake_form` template manifest per § A.10. Parsed from a
+ *  JSON file under `community/packs/recued-core/personal-organizer-foundation/templates/`;
+ *  converted to a concrete `IntakeFormConfig` via
+ *  `intakeFormConfigFromTemplate` at "Use template" time. */
+export interface IntakeFormTemplate extends IntakeFormTemplateBody {
+  /** Closed-list ref — the template's stable identity + `data` key. */
+  readonly template_ref: IntakeFormTemplateRef;
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -216,11 +225,31 @@ export const validateIntakeFormTemplate = (
     });
   }
 
-  // version — semver shape.
-  if (typeof t.version !== 'string' || !INTAKE_FORM_TEMPLATE_VERSION_RE.test(t.version)) {
+  failures.push(...validateIntakeFormTemplateBody(t));
+  return failures;
+};
+
+/** Validate the ref-independent body of an intake template — every check
+ *  except `template_ref`. Shared by `validateIntakeFormTemplate` (Foundation,
+ *  closed-list ref) and D-220 Slice B's `validatePackIntakeFormTemplate`
+ *  (`pack:` ref + safety-matrix clamp), so the two can never drift on what a
+ *  template body must satisfy. Callers pass an already-shape-checked object. */
+export const validateIntakeFormTemplateBody = (
+  t: Record<string, unknown>,
+): ReadonlyArray<IntakeFormTemplateValidationFailure> => {
+  const failures: IntakeFormTemplateValidationFailure[] = [];
+
+  // version — semver shape, within the bound the generated config's
+  // `template_version` is checked against (a longer one would validate here
+  // and fail at endpoint create).
+  if (
+    typeof t.version !== 'string'
+    || !INTAKE_FORM_TEMPLATE_VERSION_RE.test(t.version)
+    || t.version.length > INTAKE_FORM_TEMPLATE_VERSION_MAX
+  ) {
     failures.push({
       code: 'version_invalid',
-      detail: 'version must match <major>.<minor>.<patch>',
+      detail: `version must match <major>.<minor>.<patch> and be ≤ ${INTAKE_FORM_TEMPLATE_VERSION_MAX} chars`,
     });
   }
 
@@ -355,9 +384,13 @@ export interface IntakeFormConfigFromTemplateOptions {
  *  the endpoint row records its full template provenance — after the
  *  Foundation pack revs a template, an endpoint created from the older
  *  JSON stays distinguishable (Settings / engine logic can tell which
- *  schema + copy it was based on). */
+ *  schema + copy it was based on).
+ *
+ *  Accepts any template BODY with a string ref — the Foundation
+ *  `IntakeFormTemplate` and D-220 Slice B's `PackIntakeFormTemplate` both
+ *  satisfy it, so one bridge serves both galleries. */
 export const intakeFormConfigFromTemplate = (
-  template: IntakeFormTemplate,
+  template: IntakeFormTemplateBody & { readonly template_ref: string },
   opts: IntakeFormConfigFromTemplateOptions,
 ): IntakeFormConfig => {
   const formDefinitionId =

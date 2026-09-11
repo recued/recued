@@ -19,6 +19,8 @@
 
 import type {
   EventTrigger,
+  PreparePreapproval,
+  PreapprovalResult,
   RecipeInvocation,
   ServerExecuteResponse,
   ServerRecipeListEntry,
@@ -185,6 +187,10 @@ export interface WireRunModalOptions {
   schedulesCreate?: RunModalSchedulesCreateCaller;
   schedulesUpdate?: RunModalSchedulesUpdateCaller;
   schedulesDelete?: RunModalSchedulesDeleteCaller;
+  /** Prepare one future execution for owner review. This does not activate
+   * a schedule or approve anything; the host opens the returned review. */
+  preapprovalPrepare?: (request: PreparePreapproval) => Promise<PreapprovalResult>;
+  onPreapprovalPrepared?: (result: PreapprovalResult) => void;
   /** `triggers.list` rpc. Absent → the Trigger tab hides (unless the
    *  modal opened on it — then a "not available" note). R21. */
   triggersList?: RunModalTriggersListCaller;
@@ -234,6 +240,8 @@ export interface RunModalHandle {
   confirmRun(): Promise<void>;
   /** Create a schedule from the selected preset. */
   addSchedule(): Promise<void>;
+  /** Prepare the configured one-shot execution without creating a schedule. */
+  reviewSchedule(): Promise<void>;
   /** Pause / resume one schedule. */
   toggleSchedule(scheduleId: string, enabled: boolean): Promise<void>;
   /** Delete one schedule. */

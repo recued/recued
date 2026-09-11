@@ -188,6 +188,9 @@ export class PreflightRequiredSignal extends Error {
   readonly name: string = PREFLIGHT_REQUIRED_SIGNAL_NAME;
   /** Engine-authored only: exact progress when this signal crossed a foreach. */
   foreach_progress?: ForeachCheckpointProgress;
+  /** Host-created continuation marker. This waits for an existing child run;
+   * it is never itself an owner approval request. */
+  preapproval_nested_wait?: { child_run_id: string };
 
   /** Optional structured fields the gateway attaches at raise time. The
    *  engine reads these out of the caught signal and surfaces them on

@@ -145,6 +145,7 @@
  *
  *  Spec: D-148 § A.4 (Thin Webclient). */
 
+import { createRecipeSimulationCaller } from './kitchen/recipe-editor/recipe-simulation-caller.js';
 import type {
   Conn,
   DiagnosticResponse,
@@ -313,6 +314,7 @@ import {
   type ApprovalSubscribeCaller,
 } from './approvals/bootstrap-approvals-route.js';
 import { bootstrapMailRoute } from './mail/bootstrap-mail-route.js';
+import { bootstrapPreapprovalRoute, preapprovalHref, removePreapproval } from './approvals/preapproval-route.js';
 import {
   listComposeFiles,
   openFilePickPanel,
@@ -382,7 +384,6 @@ import {
   type CatalogPackRow,
 } from './discover/catalog-client.js';
 import {
-  bootstrapDataRoute,
   type DataContactDeleteCaller,
   type DataContactContributionsCaller,
   type DataContactGetCaller,
@@ -439,6 +440,7 @@ import {
   type DataWorkEntityUpsertCaller,
   type WorkEntitySourceListCaller,
 } from './data/bootstrap-data-route.js';
+import { bootstrapSavedDataRoute } from './data/saved-data-route.js';
 import {
   bootstrapLogsRoute,
   type RunsActiveCaller,
@@ -2689,6 +2691,9 @@ export const buildRecipeExecuteArgs = (
 export const bootstrapWebclient = async (
   options: BootstrapWebclientOptions,
 ): Promise<WebclientHandle> => {
+  // Owner decision surfaces cannot be driven through the recipe DOM bridge.
+  // Mark the whole client before it renders or starts asynchronous hydration.
+  if (typeof document !== 'undefined') document.documentElement.setAttribute('data-recued-owner-surface', '');
   // 1. Hydrate pair state — the rest of the pipeline depends on this.
   const pair = await hydratePairState(options.localStore);
   // Restore the hydrated server as a named profile deliberately. The logical
@@ -3082,6 +3087,15 @@ export const bootstrapWebclient = async (
     }
     const location = doc.defaultView?.location;
     if (location !== undefined) location.hash = hash;
+  };
+  const mailDraftCallers: import('./mail/mail-compose-host.js').MailDraftCallers = {
+    create: args => rpcConn.call('mail.drafts.create', args),
+    get: args => rpcConn.call('mail.drafts.get', args),
+    list: args => rpcConn.call('mail.drafts.list', args),
+    update: args => rpcConn.call('mail.drafts.update', args),
+    delete: args => rpcConn.call('mail.drafts.delete', args),
+    prepare: args => rpcConn.call('preapproval.prepare', args),
+    openReview: id => navigateHash(serializeShellRoute('approvals', 'preapproval', id)),
   };
 
   // Mount the active route. The discriminator now knows two routes:
@@ -7391,6 +7405,8 @@ export const bootstrapWebclient = async (
           host: appShell.root,
           document: doc,
           activeCaller: runsActiveCaller,
+          dismissToolCall: (args) => rpcConn.call('execution.tool_call.dismiss', args),
+          reconnect,
           killCaller: runsKillCaller,
           cancelCaller: runsCancelCaller,
           promoteCaller: runsPromoteCaller,
@@ -8391,6 +8407,28 @@ export const bootstrapWebclient = async (
     options.enableAiModelsPage === false
       ? undefined
       : (args) => rpcConn.call('server.setEmbeddingsSlot', args);
+  // D-262 § B1 — the transcription slot + its language sibling. Same caller
+  // shape as the embeddings slot; a different rpc on the far side.
+  const aiModelsSetTranscriptionSlotCaller: AiModelsEmbeddingsSlotSetCaller | undefined =
+    options.enableAiModelsPage === false
+      ? undefined
+      : (args) => rpcConn.call('server.setTranscriptionSlot', args);
+  const aiModelsSetTranscriptionLanguageCaller:
+    | ((args: { language: string | null }) => Promise<unknown>)
+    | undefined =
+    options.enableAiModelsPage === false
+      ? undefined
+      : (args) => rpcConn.call('server.setTranscriptionLanguage', args);
+  const aiModelsSetTranscriptionDailyRequestsCaller:
+    | ((args: { limit: number | null }) => Promise<unknown>)
+    | undefined =
+    options.enableAiModelsPage === false
+      ? undefined
+      : (args) => rpcConn.call('server.setTranscriptionDailyRequests', args);
+  const aiModelsGetLLMUsageCaller: (() => Promise<never>) | undefined =
+    options.enableAiModelsPage === false
+      ? undefined
+      : () => rpcConn.call('server.getLLMUsage', undefined) as Promise<never>;
   const aiModelsUpsertFreePoolEntryCaller:
     | AiModelsFreePoolEntryUpsertCaller
     | undefined =
@@ -9852,6 +9890,10 @@ export const bootstrapWebclient = async (
           dishesListCaller: automationDishesListCaller,
           schedulesListCaller: automationSchedulesListCaller,
           schedulesCreateCaller: switchWorkTracker.track(createRecipeSchedule),
+          preapprovalPrepareCaller: switchWorkTracker.track(request => rpcConn.call('preapproval.prepare', request)),
+          onPreapprovalPrepared: result => {
+            if (doc?.defaultView) doc.defaultView.location.hash = preapprovalHref(result.proposal_id);
+          },
           schedulesUpdateCaller: switchWorkTracker.track(
             automationSchedulesUpdateCaller,
           ),
@@ -9950,7 +9992,18 @@ export const bootstrapWebclient = async (
       const dataEntityVerificationAddress = parsedDataRoute === null
         ? null
         : parseDataEntityVerificationAddress(parsedDataRoute);
-      return withTrackedServerSwitchWork(bootstrapDataRoute({
+      return withTrackedServerSwitchWork(bootstrapSavedDataRoute({
+        savedViews: {
+          list: () => rpcConn.call('data_views.list', undefined),
+          get: (args) => rpcConn.call('data_views.get', args),
+          create: switchWorkTracker.track((args) => rpcConn.call('data_views.create', args)),
+          update: switchWorkTracker.track((args) => rpcConn.call('data_views.update', args)),
+          rename: switchWorkTracker.track((args) => rpcConn.call('data_views.rename', args)),
+          delete: switchWorkTracker.track((args) => rpcConn.call('data_views.delete', args)),
+        },
+        ...(parsedDataRoute?.segments[0] === 'view'
+          ? { savedViewId: parsedDataRoute.segments[1] ?? '' }
+          : {}),
         root: appShell.contentRoot,
         ...(options.document !== undefined ? { document: options.document } : {}),
         workEntitySourceListCaller: dataWorkEntitySourceListCaller,
@@ -10086,6 +10139,16 @@ export const bootstrapWebclient = async (
       return withTrackedServerSwitchWork(bootstrapAutomationRoute({
         root: appShell.contentRoot,
         ...(options.document !== undefined ? { document: options.document } : {}),
+        preapprovalPrepareCaller: switchWorkTracker.track(request => rpcConn.call('preapproval.prepare', request)),
+        onPreapprovalPrepared: result => {
+          if (doc?.defaultView) doc.defaultView.location.hash = preapprovalHref(result.proposal_id);
+        },
+        preapprovalRemoveCaller: switchWorkTracker.track(
+          (proposalId: string, requestId: string) => removePreapproval(rpcConn.call, proposalId, requestId),
+        ),
+        preapprovalCapabilitiesCaller: switchWorkTracker.track(
+          () => rpcConn.call('preapproval.capabilities'),
+        ),
         schedulesListCaller: automationSchedulesListCaller,
         schedulesUpdateCaller: switchWorkTracker.track(
           automationSchedulesUpdateCaller,
@@ -10340,6 +10403,7 @@ export const bootstrapWebclient = async (
         // one Source can send. No mailbox/read-only/error stays in Chat with a
         // direct Connections handoff rather than opening a dead dialog.
         mailCompose: {
+          drafts: mailDraftCallers,
           listMailInstances: () =>
             rpcConn.call('collection.mail.list', undefined),
           runExecute: (args) =>
@@ -10731,6 +10795,36 @@ export const bootstrapWebclient = async (
                 aiModelsSetEmbeddingsSlotCaller,
               ),
             }
+          : {}),
+        ...(aiModelsSetTranscriptionSlotCaller !== undefined
+          ? {
+              aiModelsSetTranscriptionSlotCaller: switchWorkTracker.track(
+                aiModelsSetTranscriptionSlotCaller,
+              ),
+            }
+          : {}),
+        ...(aiModelsSetTranscriptionLanguageCaller !== undefined
+          ? {
+              aiModelsSetTranscriptionLanguageCaller: switchWorkTracker.track(
+                aiModelsSetTranscriptionLanguageCaller,
+              ),
+            }
+          : {}),
+        ...(aiModelsSetTranscriptionDailyRequestsCaller !== undefined
+          ? {
+              aiModelsSetTranscriptionDailyRequestsCaller: switchWorkTracker.track(
+                aiModelsSetTranscriptionDailyRequestsCaller,
+              ),
+            }
+          : {}),
+        // ⛔ NOT `switchWorkTracker.track(...)`, unlike the setters beside it.
+        // The tracker holds a route change until pending work SETTLES, so a
+        // wrapped call reads as "Saving a Settings change" — and this is a
+        // READ. Wrapping it made loading usage block navigation and announce a
+        // save that was not happening. The `get` callers next to it are
+        // untracked for the same reason.
+        ...(aiModelsGetLLMUsageCaller !== undefined
+          ? { aiModelsGetLLMUsageCaller }
           : {}),
         ...(aiModelsUpsertFreePoolEntryCaller !== undefined
           ? {
@@ -11260,6 +11354,15 @@ export const bootstrapWebclient = async (
         },
       };
     }
+    if (route === 'approvals' && deepLinkSegment('approvals') === 'preapproval') {
+      activeSettingsRoute = null;
+      return withTrackedServerSwitchWork(bootstrapPreapprovalRoute({
+        root: appShell.contentRoot, call: rpcConn.call,
+        ...(options.document !== undefined ? { document: options.document } : {}),
+        ...(deepLinkSegment('approvals', 1) !== undefined ? { proposalId: deepLinkSegment('approvals', 1) } : {}),
+        ...(options.now !== undefined ? { now: options.now } : {}),
+      }));
+    }
     if (
       route === 'approvals'
       && approvalListCaller !== undefined
@@ -11317,6 +11420,7 @@ export const bootstrapWebclient = async (
       activeSettingsRoute = null;
       return bootstrapMailRoute({
         root: appShell.contentRoot,
+        drafts: mailDraftCallers,
         ...(options.document !== undefined ? { document: options.document } : {}),
         listMailInstances: () => rpcConn.call('collection.mail.list', undefined),
         runExecute: (args) =>
@@ -11398,6 +11502,12 @@ export const bootstrapWebclient = async (
         kitchenHistory.navigate(nextAddress, { intent: 'replace' });
         kitchenChrome.setRecipeHref(nextAddress.hash);
       };
+      const kitchenDraftRecovery = draftStashStorage ? {
+        storage: draftStashStorage,
+        key: JSON.stringify([bootProfileId ?? pair.serverUrl, kitchenRecipeId ?? kitchenRecipeHref]),
+        savedKey: (recipeId: string) => JSON.stringify([bootProfileId ?? pair.serverUrl, recipeId]),
+      } : undefined;
+      const simulateCaller = switchWorkTracker.track(createRecipeSimulationCaller(rpcConn.call));
       let editor: ReturnType<typeof mountRecipeEditorRoute> | null = null;
       if (kitchenRecipeSeed?.kind === 'execution_case') {
         // D-219 item 2b — an AI-written draft the Settings panel already
@@ -11409,11 +11519,13 @@ export const bootstrapWebclient = async (
           kitchenRecipeSeed.draft_key,
         );
         editor = mountExecutionCaseDraftRoute({
+          recovery: kitchenDraftRecovery,
           root: kitchenChrome.contentRoot,
           draft: stashed,
           validateCaller: switchWorkTracker.track(
             (args) => rpcConn.call('recipe.validate', args),
           ),
+          simulateCaller,
           saveCaller: switchWorkTracker.track(
             (args) => rpcConn.call('recipe.save', args),
           ),
@@ -11468,12 +11580,14 @@ export const bootstrapWebclient = async (
         });
       } else if (kitchenRecipeSeed !== null) {
         editor = mountFormResponseRecipeSeedRoute({
+          recovery: kitchenDraftRecovery,
           root: kitchenChrome.contentRoot,
           formDefinitionId: kitchenRecipeSeed.form_definition_id,
           listCaller: recipesListCaller,
           validateCaller: switchWorkTracker.track(
             (args) => rpcConn.call('recipe.validate', args),
           ),
+          simulateCaller,
           saveCaller: switchWorkTracker.track(
             (args) => rpcConn.call('recipe.save', args),
           ),
@@ -11482,12 +11596,14 @@ export const bootstrapWebclient = async (
         });
       } else if (kitchenRecipeId !== null) {
         editor = mountRecipeEditorRoute({
+          recovery: kitchenDraftRecovery,
           root: kitchenChrome.contentRoot,
           recipeId: kitchenRecipeId,
           listCaller: recipesListCaller,
           validateCaller: switchWorkTracker.track(
             (args) => rpcConn.call('recipe.validate', args),
           ),
+          simulateCaller,
           saveCaller: switchWorkTracker.track(
             (args) => rpcConn.call('recipe.save', args),
           ),

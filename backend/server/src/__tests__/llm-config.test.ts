@@ -233,32 +233,50 @@ describe('LLMConfigManager — Lever-2 per-slot catalog modes', () => {
   });
 });
 
-describe('LLMConfigManager — pool usage tracking', () => {
-  it('addPoolUsage accumulates and reports today\'s tokens', () => {
-    const mgr = createLLMConfigManager(db);
-    expect(mgr.getPoolUsage('a1')).toBe(0);
-    expect(mgr.addPoolUsage('a1', 250)).toBe(250);
-    expect(mgr.addPoolUsage('a1', 500)).toBe(750);
-    expect(mgr.getPoolUsage('a1')).toBe(750);
-    // other entries are independent
-    expect(mgr.getPoolUsage('a2')).toBe(0);
+describe('LLMConfigManager — pool usage tracking is RETIRED (D-262 follow-on)', () => {
+  it('⛔ no longer exposes the per-entry usage trio, because nothing ever fed it', () => {
+    // `addPoolUsage` / `getPoolUsage` / `isPoolEntryOverCap` persisted
+    // `pool_usage.<entry>.<date>` rows and answered "is this entry over its
+    // cap" — but NOTHING EVER CALLED the writer, in this tree or in any commit
+    // since it was introduced. So the getter always read 0 and the cap check
+    // always answered false.
+    //
+    // 🔑 The danger was the plausible NAME, not the dead code: someone wiring
+    // `addPoolUsage` would have believed they were feeding pool-cap
+    // enforcement, and the real path would have kept working and hidden it.
+    const mgr = createLLMConfigManager(db) as unknown as Record<string, unknown>;
+    expect(mgr.addPoolUsage).toBeUndefined();
+    expect(mgr.getPoolUsage).toBeUndefined();
+    expect(mgr.isPoolEntryOverCap).toBeUndefined();
   });
 
-  it('isPoolEntryOverCap returns true when usage >= cap', () => {
-    const mgr = createLLMConfigManager(db);
-    mgr.addPoolUsage('a1', 999);
-    expect(mgr.isPoolEntryOverCap('a1', 1000)).toBe(false);
-    mgr.addPoolUsage('a1', 2);
-    expect(mgr.isPoolEntryOverCap('a1', 1000)).toBe(true);
+  it('⛔ and leaves no `pool_usage.` rows behind, because the writer never ran', () => {
+    createLLMConfigManager(db);
+    const rows = db
+      .prepare(`SELECT COUNT(*) AS n FROM llm_config WHERE key LIKE 'pool_usage.%'`)
+      .get() as { n: number };
+    expect(rows.n).toBe(0);
   });
 
-  it('isPoolEntryOverCap returns false when cap is undefined or zero', () => {
-    const mgr = createLLMConfigManager(db);
-    mgr.addPoolUsage('a1', 10_000);
-    expect(mgr.isPoolEntryOverCap('a1', undefined)).toBe(false);
-    expect(mgr.isPoolEntryOverCap('a1', 0)).toBe(false);
+  it('🔑 the coverage MOVES: pool caps are enforced by the quota tracker', async () => {
+    // The behaviour the retired trio appeared to provide is real — it just
+    // lives elsewhere, and (since the snapshot became persistent) survives a
+    // restart. Deleting the old tests without pinning this would have removed
+    // the only place the product's actual cap behaviour was asserted here.
+    const { createQuotaTracker } = await import('@recued/llm');
+    const quota = createQuotaTracker();
+    const entry = {
+      id: 'a1', type: 'api' as const, provider: 'openai' as const, model: 'm',
+      api_key: 'k', speed: 'fast' as const, supports_json: true, enabled: true,
+      daily_cap_tokens: 1_000,
+    };
+    expect(quota.statusFor(entry).available).toBe(true);
+    quota.recordUsage('a1', 1_000);
+    expect(quota.statusFor(entry).available).toBe(false);
   });
+});
 
+describe('LLMConfigManager — encryption', () => {
   it('encrypted api_keys survive save/load round-trip', () => {
     const dek = new Uint8Array(randomBytes(32));
     const mgr = createLLMConfigManager(db, { getEncryptionKey: () => dek });
@@ -344,17 +362,32 @@ describe('LLMConfigManager — pool usage tracking', () => {
     expect(mgr.getConfig().slot_1?.api_key).toBe('env-key');
   });
 
-  it('resetUsage prunes stale daily + pool_usage rows but keeps today', () => {
+  it('resetUsage prunes stale daily rows but keeps today', () => {
+    // ⚠ D-262 follow-on — the `pool_usage` half of this went with the retired
+    // trio: nothing can create such a row any more, so asserting it is pruned
+    // asserted the behaviour of a prefix that cannot exist.
     const mgr = createLLMConfigManager(db);
-    // Simulate a stale pool_usage row from yesterday via direct DB write
-    db.prepare('INSERT INTO llm_config (key, value) VALUES (?, ?)').run('pool_usage.a1.2020-01-01', '500');
-    mgr.addPoolUsage('a1', 100);
-    expect(mgr.getPoolUsage('a1')).toBe(100);
+    db.prepare('INSERT INTO llm_config (key, value) VALUES (?, ?)').run('usage.2020-01-01', '500');
+    mgr.addUsage(100);
+    expect(mgr.getUsage()).toBe(100);
     mgr.resetUsage();
-    // Today row preserved; stale row gone
-    expect(mgr.getPoolUsage('a1')).toBe(100);
-    const stale = db.prepare('SELECT value FROM llm_config WHERE key = ?').get('pool_usage.a1.2020-01-01');
+    // Today's total preserved; the stale day gone.
+    expect(mgr.getUsage()).toBe(100);
+    const stale = db.prepare('SELECT value FROM llm_config WHERE key = ?').get('usage.2020-01-01');
     expect(stale).toBeUndefined();
+  });
+
+  it('⚠ resetUsage has NO CALLER, and that hold is now SETTLED, not pending', () => {
+    // The surface it waited on shipped, and reports TODAY ONLY — so nothing
+    // reads a past day's row, and those rows are the only record of past daily
+    // spend there is. Wiring this would trade an irreversible loss of the sole
+    // spend history for one small row per day of growth. The rows stay.
+    //
+    // ⚠ It is NOT a per-slot reset and NOT a counter reset: the live daily
+    // counters clear in QuotaTracker.maybeReset at UTC midnight, chat /
+    // embeddings / transcription alike.
+    const mgr = createLLMConfigManager(db);
+    expect(typeof mgr.resetUsage).toBe('function');
   });
 });
 

@@ -34,6 +34,8 @@ export type {
   ServerConfigValue,
   ServerLlmPrompt,
   ServerLlmProbeDiagnosis,
+  ServerLlmUsageResponse,
+  ServerLlmUsageSource,
   ServerLlmProbeResult,
   ServerLlmPromptSurface,
   ServerLlmMessageRole,

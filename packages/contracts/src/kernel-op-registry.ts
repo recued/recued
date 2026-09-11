@@ -424,6 +424,13 @@ export const KERNEL_OP_REGISTRY: readonly KernelOpEntry[] = [
    *  that door; do not re-tier the op, which would put the double-notification
    *  back on every recipe. */
   op('core.notification.send', 'notification', 'core-notification-send', 'read', 'notification'),
+  // D-261: an inert owner-directed request, with the same no-double-ask risk
+  // classification as notification.send. No approve/set-approved entry exists.
+  op('core.preapproval.request', 'preapproval', 'preapproval-request', 'read', 'notification'),
+  op('core.mail.draft.create', 'mail', 'mail-draft-create', 'write', 'mail'),
+  op('core.mail.draft.read', 'mail', 'mail-draft-read', 'read', 'mail'),
+  op('core.mail.draft.update', 'mail', 'mail-draft-update', 'write', 'mail'),
+  op('core.mail.draft.delete', 'mail', 'mail-draft-delete', 'destructive', 'mail'),
   // A bounded, coalescing hint with a flat pointer/settings envelope to a
   // contract-bound MCP client. The transport adds no query result; the client
   // must call `query_tool` through the ordinary live token/contract gates, and

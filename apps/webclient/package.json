@@ -15,6 +15,7 @@
     "@recued/contracts": "*",
     "@recued/crypto": "*",
     "@recued/renderer": "*",
+    "@recued/transforms": "*",
     "@recued/ui-shared": "*"
   }
 }

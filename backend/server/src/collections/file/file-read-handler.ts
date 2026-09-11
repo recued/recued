@@ -7,6 +7,8 @@ import { parseRemoteFileRecordId } from '../../file-view-resolver.js';
 import type { CollectionRegistry } from '../registry.js';
 import type { FileStorageRef } from './inbound-file-collection.js';
 import { resolveRemoteFileBytes, type RemoteFileReadDeps } from './remote-file-byte-resolver.js';
+import { resolveReviewedFileAccess } from './file-snapshot.js';
+import { assertPreapprovalOrdinaryRun, currentPreapprovalIo } from '../../preapproval-io-context.js';
 
 export const DATA_FILE_READ_INGREDIENT_SLUG = 'data-file-read' as const;
 export const DATA_FILE_RECEIVED_SLUG = 'received' as const;
@@ -83,9 +85,33 @@ const readStorageRef = (
 export const handleFileRead = async (
   deps: FileReadDeps,
   args: { record_id?: unknown },
+  reviewedAccess?: object,
 ): Promise<FileReadResponse> => {
   if (typeof args.record_id !== 'string' || args.record_id.length === 0) {
     throw new RpcError('bad_request', 'file.read: record_id is required', 400);
+  }
+
+  reviewedAccess ??= currentPreapprovalIo()?.fileAccess(args.record_id);
+  if (reviewedAccess) {
+    const access = resolveReviewedFileAccess(reviewedAccess);
+    if (!access || access.snapshot.record_id !== args.record_id) {
+      throw new RpcError('preapproval_stale', 'The file read has no matching private snapshot.', 409);
+    }
+    // This is the same audited byte-egress seam as the ordinary read below.
+    // Authority and the child claim are checked immediately before CAS access.
+    await access.validate();
+    const snapshot = access.snapshot;
+    const bytes = await deps.blobs.get(snapshot.blob_hash);
+    if (!bytes || bytes.length !== snapshot.size_bytes
+      || createHash('sha256').update(bytes).digest('hex') !== snapshot.blob_hash) {
+      throw new RpcError('preapproval_stale', 'The reviewed file bytes are missing or changed.', 409);
+    }
+    await access.validate();
+    await deps.auditLog?.logActivity({ activity_id: '', timestamp: deps.now?.() ?? Date.now(),
+      action: 'file_content_read', target: args.record_id,
+      detail: JSON.stringify({ collection: 'data.file.received', posture: 'reviewed_snapshot',
+        blob_hash: snapshot.blob_hash, mime_type: snapshot.mime_type, size_bytes: bytes.length }) });
+    return { ...snapshot, bytes_b64: bytes.toString('base64') };
   }
 
   // A `file:remote:*` id is a mirrored vendor file (the FileMetaStore posture) —
@@ -102,7 +128,9 @@ export const handleFileRead = async (
         501,
       );
     }
+    assertPreapprovalOrdinaryRun();
     const remote = await resolveRemoteFileBytes(deps.remote, args.record_id);
+    assertPreapprovalOrdinaryRun();
     await deps.auditLog?.logActivity({
       activity_id: '',
       timestamp: deps.now?.() ?? Date.now(),
@@ -160,7 +188,9 @@ export const handleFileRead = async (
     );
   }
 
+  assertPreapprovalOrdinaryRun();
   const bytes = await deps.blobs.get(storageRef.blob_hash);
+  assertPreapprovalOrdinaryRun();
   if (!bytes) {
     throw new RpcError(
       'file_blob_missing',

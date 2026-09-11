@@ -52,7 +52,12 @@ const KEEP_FILES = [
   'lane.ts',
   'prefetch.ts',
   'preflight.ts',
+  // Kitchen's fixture-only deterministic executor reuses the real step core;
+  // its owner RPC and lifecycle live in the server, never in the browser.
+  'recipe-simulation.ts',
   'require-recipe.ts',
+  // Shared in-process checkpoint derivation, including phase and loop state.
+  'resume-from-approval.ts',
   'run-mode.ts',
   'shared-prefetch.ts',
   'step-runner.ts',

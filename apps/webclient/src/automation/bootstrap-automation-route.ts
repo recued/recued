@@ -36,7 +36,12 @@ import type {
   ServerSchedule,
   WatchSourceStatusEntry,
   WatchStatusEntry,
+  PreapprovalExecutionStatus,
+  PreapprovalActivation,
+  PreapprovalCapabilities,
 } from '@recued/contracts';
+import { openPreapprovalActivation } from '../approvals/preapproval-activation.js';
+import { preapprovalHref } from '../approvals/preapproval-route.js';
 import {
   describeCron,
   decodeMcpResourceUri,
@@ -85,6 +90,8 @@ export const AUTOMATION_ROUTE_HEADING_ATTR = 'data-recued-automation-heading';
 export const AUTOMATION_ROUTE_SECTION_ATTR = 'data-recued-automation-section';
 export const AUTOMATION_ROUTE_ROW_ATTR = 'data-recued-automation-row';
 export const AUTOMATION_ROUTE_STATE_ATTR = 'data-recued-automation-state';
+/** D-261 — the list-row marker for a rule whose next run is already approved. */
+export const AUTOMATION_ROUTE_PREAPPROVAL_ATTR = 'data-recued-automation-preapproval';
 export const AUTOMATION_ROUTE_ERROR_ATTR = 'data-recued-automation-error';
 export const AUTOMATION_ROUTE_RETRY_ATTR = 'data-recued-automation-retry';
 export const AUTOMATION_ROUTE_EMPTY_ATTR = 'data-recued-automation-empty';
@@ -261,6 +268,14 @@ export interface BootstrapAutomationRouteOptions {
   triggersDeleteCaller?: TriggersDeleteCaller;
   autoRunListCaller?: AutoRunListCaller;
   autoRunUpdateCaller?: AutoRunUpdateCaller;
+  preapprovalPrepareCaller?: Parameters<typeof openPreapprovalActivation>[0]['prepare'];
+  onPreapprovalPrepared?: Parameters<typeof openPreapprovalActivation>[0]['onPrepared'];
+  /** Remove the approval on an already pre-approved rule, in place. Absent ⇒
+   *  the row still links to the review page, which owns the same action. */
+  preapprovalRemoveCaller?: (proposalId: string, requestId: string) => Promise<void>;
+  /** D-261 §6.2 — what this server can actually pre-approve. Soft: an absent or
+   *  failing caller leaves the offer exactly as it was. */
+  preapprovalCapabilitiesCaller?: () => Promise<PreapprovalCapabilities>;
   watchListCaller?: WatchListCaller;
   watchUpdateCaller?: WatchUpdateCaller;
   watchRunNowCaller?: WatchRunNowCaller;
@@ -510,6 +525,16 @@ const AUTOMATION_ROUTE_STYLES = `
   font-weight: 650;
   font-size: 12px;
   color: var(--fg);
+}
+[${AUTOMATION_ROUTE_PREAPPROVAL_ATTR}] {
+  font-weight: 650;
+  font-size: 12px;
+  color: var(--accent);
+}
+/* Held and in-doubt are the two the owner has to act on, so they carry the
+   same colour as a tripped rule rather than the calm approved one. */
+[${AUTOMATION_ROUTE_PREAPPROVAL_ATTR}][data-attention="yes"] {
+  color: var(--danger);
 }
 [${AUTOMATION_ROUTE_STATE_ATTR}][data-armed="tripped"],
 [${AUTOMATION_ROUTE_HOST_ATTR}] .automation-row-error {
@@ -836,6 +861,37 @@ const SECTION_LABEL: Record<AutomationSectionToken, string> = {
 
 type ArmedState = 'on' | 'off' | 'tripped';
 
+/** D-261 — the list-row pre-approval marker.
+ *
+ *  ⛔ WHY IT EXISTS: an armed rule and an ordinary one rendered IDENTICALLY in
+ *  the list. The only way to learn that a schedule's next run was already
+ *  approved was to open its Details, one rule at a time — so the owner could
+ *  not answer "what will run tonight without asking me?" from this page at all,
+ *  which is the question the page is for.
+ *
+ *  ⚠ THE STATUS IS PART OF THE MARKER, NOT DECORATION. `describeAutomation`
+ *  returns `preapproval` whenever the rule is managed and an execution row
+ *  exists — including non-usable ones — so a terminal or stuck execution
+ *  reaches here too. `held` is the one that matters most: a reviewed run that
+ *  paused on an UNCOVERED call is waiting for an answer the owner does not know
+ *  is owed, which is exactly the state a list marker should surface. */
+const preapprovalBadge = (status: PreapprovalExecutionStatus): string => {
+  const [label, attention]: [string, boolean] = status === 'held'
+    ? ['Pre-approved · needs you', true]
+    : status === 'in_doubt'
+      ? ['Pre-approved · unconfirmed', true]
+      : status === 'running'
+        ? ['Pre-approved · running', false]
+        : status === 'prepared' || status === 'active'
+          ? ['Pre-approved', false]
+          // succeeded / partial / failed / cancelled / expired / invalidated —
+          // the approval is spent or gone; say so rather than implying it still
+          // covers the next run.
+          : [`Pre-approval ${status.replaceAll('_', ' ')}`, false];
+  return `<span ${AUTOMATION_ROUTE_PREAPPROVAL_ATTR} data-status="${e(status)}"`
+    + `${attention ? ' data-attention="yes"' : ''}>${e(label)}</span>`;
+};
+
 const renderRow = (args: {
   section: AutomationSectionKind;
   rule_id: string;
@@ -865,6 +921,9 @@ const renderRow = (args: {
   busy: boolean;
   busyVerb: string | undefined;
   confirmingDelete: boolean;
+  /** D-261 — the armed approval on this rule, if any. Present ⇒ the next run
+   *  needs no answer from the owner. Absent ⇒ the rule asks as it always did. */
+  preapproval?: { execution_status: PreapprovalExecutionStatus } | undefined;
 }): string => {
   const metaSpans = args.meta.map((m) => `<span>${e(m)}</span>`).join('');
   const title = args.titleHref
@@ -894,6 +953,7 @@ const renderRow = (args: {
         <div class="automation-row-detail">${args.detail}</div>
         <div class="automation-row-meta">
           <span ${AUTOMATION_ROUTE_STATE_ATTR} data-armed="${args.armed}">${e(args.stateLabel)}</span>
+          ${args.preapproval ? preapprovalBadge(args.preapproval.execution_status) : ''}
           ${metaSpans}
         </div>
         ${args.error ? `<div class="automation-row-meta"><span class="automation-row-error">${e(args.error)}</span></div>` : ''}
@@ -1114,6 +1174,12 @@ export const bootstrapAutomationRoute = (
    *  distinguishes the initiator from sibling controls that are merely locked. */
   const busyActions = new Map<string, AutomationActionFocus>();
   let deleteConfirmation: AutomationDeleteConfirmation | null = null;
+  let revokeConfirmation: { section: AutomationSectionKind; rule_id: string } | null = null;
+  /** ⛔ NULL MEANS "NOT ANSWERED", NOT "NOTHING SUPPORTED". The gate below is
+   *  monotone: an unknown capability set leaves the offer where the presence of
+   *  `lifecycle_revision` already put it, so a transient rpc failure cannot
+   *  silently withdraw a feature the server does support. */
+  let preapprovalCapabilities: PreapprovalCapabilities | null = null;
   // Carry a focused row mutation's semantic identity through its busy repaint
   // and the authoritative re-list (for example Pause → Pausing… → Resume).
   let pendingActionFocus: AutomationActionFocus | null = null;
@@ -1158,6 +1224,98 @@ export const bootstrapAutomationRoute = (
     deleteConfirmation?.section === section
     && deleteConfirmation.rule_id === rule_id;
 
+  /** D-261 §6.2 — may this server pre-approve THIS kind of activation?
+   *
+   *  ⛔ THE SPEC'S OWN CONTRACT, AND IT WAS NEVER CONSULTED: "Capability presence
+   *  is conditional on the persistent repository, origin resolver, binding
+   *  identities, child-call gates, decision channel and dispatch hooks all being
+   *  wired. Clients retain ordinary Arm/Schedule when unavailable, without a
+   *  false pre-approved label." The server computed that answer on every boot
+   *  and no client ever asked, so the offer was gated on `lifecycle_revision`
+   *  alone — which proves the repository composed, and nothing about what the
+   *  server can actually freeze.
+   *
+   *  ⚠ MONOTONE BY CONSTRUCTION. `null` (unasked, unwired host, failed rpc) keeps
+   *  the prior behaviour; only a real answer can narrow the offer. Today every
+   *  composed server advertises all four kinds, so this withdraws nothing — the
+   *  point is that a server which stops advertising one is now HONOURED rather
+   *  than contradicted by a button that leads to a refusal. */
+  const canPreapprove = (kind: PreapprovalActivation['kind']): boolean =>
+    preapprovalCapabilities === null
+    || preapprovalCapabilities.activation_kinds.includes(kind);
+
+  const confirmingRevokeFor = (
+    section: AutomationSectionKind,
+    rule_id: string,
+  ): boolean =>
+    revokeConfirmation?.section === section
+    && revokeConfirmation.rule_id === rule_id;
+
+  /** The pre-approval controls on an armed rule: review it, or remove it here.
+   *
+   *  Confirmed like Remove and for the same reason — pressing this discards an
+   *  owner decision (the selected members, the reviewed content, the challenge)
+   *  and the only way back is to review the whole execution again. It is not a
+   *  Pause.
+   *
+   *  ⚠ The request id is minted ONCE per row and RETAINED across a failed
+   *  attempt: the repository dedupes revocations on `(request_id,
+   *  responder_key)`, so a fresh id per press would make a lost response into a
+   *  second revocation rather than a replay of the first. */
+  const revokeRequestIds = new Map<string, string>();
+  const revokeRequestIdFor = (section: AutomationSectionKind, rule_id: string): string => {
+    const key = `${section}:${rule_id}`;
+    const existing = revokeRequestIds.get(key);
+    if (existing !== undefined) return existing;
+    const minted = crypto.randomUUID();
+    revokeRequestIds.set(key, minted);
+    return minted;
+  };
+
+  const renderPreapprovalButtons = (
+    section: AutomationSectionKind,
+    rule_id: string,
+    proposal_id: string,
+  ): string =>
+    `<a class="automation-button" href="${e(preapprovalHref(proposal_id))}">Review approval</a>`
+    // The other half of the same rule: a rule-delete confirmation hides this
+    // destructive control, leaving the review LINK (navigation, not a mutation).
+    + (opts.preapprovalRemoveCaller === undefined || confirmingDeleteFor(section, rule_id)
+      ? ''
+      : confirmingRevokeFor(section, rule_id)
+        ? `<button type="button" class="automation-button automation-button--danger"
+            aria-label="Confirm remove pre-approval"
+            ${ACTION_ATTR}="preapproval-remove-confirm:${e(section)}"
+            ${ROW_ID_ATTR}="${e(rule_id)}"${mutationBusyAttrs(section, rule_id, 'preapproval-remove-confirm')}>${
+          busyVerbFor(section, rule_id) === 'preapproval-remove-confirm' ? 'Removing…' : 'Confirm remove approval'}</button>
+          <button type="button" class="automation-button"
+            aria-label="Keep pre-approval"
+            ${ACTION_ATTR}="preapproval-remove-cancel:${e(section)}"
+            ${ROW_ID_ATTR}="${e(rule_id)}"${mutationBusyAttrs(section, rule_id, 'preapproval-remove-cancel')}>Keep</button>`
+        : `<button type="button" class="automation-button automation-button--danger"
+            aria-label="Remove pre-approval"
+            ${ACTION_ATTR}="preapproval-remove:${e(section)}"
+            ${ROW_ID_ATTR}="${e(rule_id)}">Remove pre-approval</button>`);
+
+  /** The armed proposal on a rule, read at press time off the SAME rendered
+   *  rows the owner clicked — never cached alongside the button. */
+  const preapprovalProposalFor = (
+    section: AutomationSectionKind,
+    rule_id: string,
+  ): string | null => {
+    switch (section) {
+      case 'schedule':
+        return schedules.find((row) => row.schedule_id === rule_id)?.preapproval?.proposal_id ?? null;
+      case 'event_trigger':
+        return triggers.find((row) => row.trigger_id === rule_id)?.preapproval?.proposal_id ?? null;
+      case 'auto_run':
+        return autoRun.find((row) => row.recipe_id === rule_id)?.preapproval?.proposal_id ?? null;
+      case 'watch':
+      case 'dish':
+        return null;
+    }
+  };
+
   const automationRuleExists = (
     section: AutomationSectionKind,
     rule_id: string,
@@ -1180,7 +1338,15 @@ export const bootstrapAutomationRoute = (
     section: AutomationSectionKind,
     rule_id: string,
   ): string =>
-    confirmingDeleteFor(section, rule_id)
+    // ⛔ ONE DESTRUCTIVE CHOICE ON SCREEN AT A TIME. Browser-verified 2026-09-06:
+    // with a pre-approval removal armed, this row read
+    // `… Confirm remove approval | Keep | Remove` — and that last button deletes
+    // the whole rule. Two destructive controls, adjacent, near-identical labels,
+    // one of them mid-confirmation. A confirm step exists to focus a decision,
+    // so it hides the other one until it resolves. Symmetric below.
+    confirmingRevokeFor(section, rule_id)
+      ? ''
+      : confirmingDeleteFor(section, rule_id)
       ? `<button type="button" class="automation-button automation-button--danger"
           ${ACTION_ATTR}="delete-confirm:${e(section)}"
           ${ROW_ID_ATTR}="${e(rule_id)}"${mutationBusyAttrs(section, rule_id, 'delete-confirm')}>${busyVerbFor(section, rule_id) === 'delete-confirm' ? 'Removing…' : 'Confirm remove'}</button>
@@ -1343,6 +1509,7 @@ export const bootstrapAutomationRoute = (
   // D-179 — the auto-run config editor (the shared config-editor overlay).
   // Detached on close / route teardown.
   let autoRunConfigHandle: ConfigEditorOverlayHandle | null = null;
+  let preapprovalActivation: ReturnType<typeof openPreapprovalActivation> | null = null;
 
   const canCreate = (
     section: AutomationCreateSectionToken,
@@ -1545,6 +1712,7 @@ export const bootstrapAutomationRoute = (
         busy: busy.has(s.schedule_id),
         busyVerb: busyVerbFor('schedule', s.schedule_id),
         confirmingDelete: confirmingDeleteFor('schedule', s.schedule_id),
+        ...(s.preapproval ? { preapproval: s.preapproval } : {}),
       });
     });
 
@@ -1840,6 +2008,7 @@ export const bootstrapAutomationRoute = (
         busy: busy.has(t.trigger_id),
         busyVerb: busyVerbFor('event_trigger', t.trigger_id),
         confirmingDelete: confirmingDeleteFor('event_trigger', t.trigger_id),
+        ...(t.preapproval ? { preapproval: t.preapproval } : {}),
       });
     });
 
@@ -2029,6 +2198,7 @@ export const bootstrapAutomationRoute = (
             : 'Pause',
         canDelete: false,
         canDetail: true,
+        ...(a.preapproval ? { preapproval: a.preapproval } : {}),
         busy: busy.has(a.recipe_id),
         busyVerb: busyVerbFor('auto_run', a.recipe_id),
         confirmingDelete: false,
@@ -2296,6 +2466,10 @@ export const bootstrapAutomationRoute = (
           ${s.last_error ? `<p class="automation-row-error">${e(s.last_error)}</p>` : ''}
           <div class="automation-row-actions">
             <button type="button" class="automation-button" ${ACTION_ATTR}="toggle:schedule:${!s.enabled ? 'on' : 'off'}" ${ROW_ID_ATTR}="${e(s.schedule_id)}"${mutationBusyAttrs('schedule', s.schedule_id, 'toggle')}>${e(mutationToggleLabel('schedule', s.schedule_id, s.enabled ? 'Pause' : 'Resume', !s.enabled))}</button>
+            ${s.preapproval ? renderPreapprovalButtons('schedule', s.schedule_id, s.preapproval.proposal_id)
+              : opts.preapprovalPrepareCaller && opts.onPreapprovalPrepared && s.lifecycle_revision !== undefined
+                  && canPreapprove('next_schedule')
+                ? `<button type="button" class="automation-button" ${ACTION_ATTR}="preapprove:schedule" ${ROW_ID_ATTR}="${e(s.schedule_id)}">Review next run</button>` : ''}
             ${renderDeleteButtons('schedule', s.schedule_id)}
           </div>`;
       }
@@ -2382,6 +2556,10 @@ export const bootstrapAutomationRoute = (
           ${pollStatusBlock(t)}
           <div class="automation-row-actions">
             <button type="button" class="automation-button" ${ACTION_ATTR}="toggle:event_trigger:${!t.enabled ? 'on' : 'off'}" ${ROW_ID_ATTR}="${e(t.trigger_id)}"${mutationBusyAttrs('event_trigger', t.trigger_id, 'toggle')}>${e(mutationToggleLabel('event_trigger', t.trigger_id, t.enabled ? 'Pause' : 'Resume', !t.enabled))}</button>
+            ${t.preapproval ? renderPreapprovalButtons('event_trigger', t.trigger_id, t.preapproval.proposal_id)
+              : opts.preapprovalPrepareCaller && opts.onPreapprovalPrepared && t.lifecycle_revision !== undefined
+                  && canPreapprove('next_trigger')
+                ? `<button type="button" class="automation-button" ${ACTION_ATTR}="preapprove:event_trigger" ${ROW_ID_ATTR}="${e(t.trigger_id)}">Review next run</button>` : ''}
             ${t.origin === 'recipe' ? '' : renderDeleteButtons('event_trigger', t.trigger_id)}
           </div>`;
       }
@@ -2403,6 +2581,10 @@ export const bootstrapAutomationRoute = (
               ? `<button type="button" class="automation-button" ${ACTION_ATTR}="configure:auto_run" ${ROW_ID_ATTR}="${e(a.recipe_id)}"${mutationBusyAttrs('auto_run', a.recipe_id, 'configure')}>Configure</button>`
               : ''}
             <button type="button" class="automation-button" ${ACTION_ATTR}="toggle:auto_run:${!a.enabled || a.auto_disabled ? 'on' : 'off'}" ${ROW_ID_ATTR}="${e(a.recipe_id)}"${mutationBusyAttrs('auto_run', a.recipe_id, 'toggle')}>${e(mutationToggleLabel('auto_run', a.recipe_id, !a.enabled ? 'Resume' : a.auto_disabled ? 'Re-arm' : 'Pause', !a.enabled || a.auto_disabled))}</button>
+            ${a.preapproval ? renderPreapprovalButtons('auto_run', a.recipe_id, a.preapproval.proposal_id)
+              : opts.preapprovalPrepareCaller && opts.onPreapprovalPrepared && a.lifecycle_revision !== undefined && !a.auto_disabled
+                  && canPreapprove('next_auto_run')
+                ? `<button type="button" class="automation-button" ${ACTION_ATTR}="preapprove:auto_run" ${ROW_ID_ATTR}="${e(a.recipe_id)}">Review next run</button>` : ''}
           </div>`;
       }
     }
@@ -2774,6 +2956,7 @@ export const bootstrapAutomationRoute = (
       dishesResult,
       namesResult,
       authStateResult,
+      capabilitiesResult,
     ] = await Promise.allSettled([
       opts.schedulesListCaller
         ? opts.schedulesListCaller()
@@ -2803,8 +2986,16 @@ export const bootstrapAutomationRoute = (
       opts.authStateCaller
         ? opts.authStateCaller()
         : Promise.resolve({ state: 'unlocked' as const }),
+      // D-261 soft enhancement — absent/failing caller leaves the offer as-is.
+      opts.preapprovalCapabilitiesCaller
+        ? opts.preapprovalCapabilitiesCaller()
+        : Promise.resolve(null),
     ]);
     if (disposed || seq !== loadSeq) return;
+
+    if (capabilitiesResult.status === 'fulfilled' && capabilitiesResult.value !== null) {
+      preapprovalCapabilities = capabilitiesResult.value;
+    }
 
     const next: AutomationLoadErrors = {};
     if (schedulesResult.status === 'fulfilled') {
@@ -2901,6 +3092,7 @@ export const bootstrapAutomationRoute = (
       )
     ) {
       deleteConfirmation = null;
+      revokeConfirmation = null;
     }
     errors = next;
     loading = false;
@@ -3215,6 +3407,7 @@ export const bootstrapAutomationRoute = (
     pendingRecipeEntriesFocus = null;
     addPickerFor = null;
     deleteConfirmation = null;
+    revokeConfirmation = null;
     pendingModalReturnFocus = null;
     sectionAutoPickPending = false;
     syncHash('replace');
@@ -3434,6 +3627,7 @@ export const bootstrapAutomationRoute = (
     } else if (verb === 'delete-cancel') {
       if (!confirmingDeleteFor(section, ruleId)) return;
       deleteConfirmation = null;
+      revokeConfirmation = null;
       render();
       const remove = findActionFocusTarget({
         verb: 'delete',
@@ -3450,6 +3644,52 @@ export const bootstrapAutomationRoute = (
         doc.activeElement === target
           ? { verb, section, rule_id: ruleId }
           : undefined,
+      );
+    } else if (verb === 'preapproval-remove') {
+      if (!automationRuleExists(section, ruleId)) return;
+      revokeConfirmation = { section, rule_id: ruleId };
+      render();
+      const confirm = findActionFocusTarget({
+        verb: 'preapproval-remove-confirm',
+        section,
+        rule_id: ruleId,
+      });
+      confirm?.focus?.({ preventScroll: true });
+      confirm?.scrollIntoView?.({ block: 'nearest' });
+    } else if (verb === 'preapproval-remove-cancel') {
+      if (!confirmingRevokeFor(section, ruleId)) return;
+      revokeConfirmation = null;
+      render();
+      const remove = findActionFocusTarget({
+        verb: 'preapproval-remove',
+        section,
+        rule_id: ruleId,
+      });
+      remove?.focus?.({ preventScroll: true });
+      remove?.scrollIntoView?.({ block: 'nearest' });
+    } else if (verb === 'preapproval-remove-confirm') {
+      if (!confirmingRevokeFor(section, ruleId)) return;
+      const remove = opts.preapprovalRemoveCaller;
+      if (remove === undefined) return;
+      const proposalId = preapprovalProposalFor(section, ruleId);
+      if (proposalId === null) return;
+      const requestId = revokeRequestIdFor(section, ruleId);
+      const action = doc.activeElement === target
+        ? { verb, section, rule_id: ruleId }
+        : undefined;
+      void runMutation(
+        ruleId,
+        section,
+        async () => {
+          await remove(proposalId, requestId);
+          // Kept only until the revocation is known to have landed: a retry
+          // must replay the SAME request, a fresh arm must not.
+          revokeRequestIds.delete(`${section}:${ruleId}`);
+          revokeConfirmation = null;
+        },
+        action,
+        undefined,
+        action,
       );
     } else if (verb === 'rename' && section === 'dish') {
       renamingDishId = ruleId;
@@ -3492,6 +3732,22 @@ export const bootstrapAutomationRoute = (
     } else if (verb === 'configure' && section === 'dish') {
       const d = dishes.find((x) => x.dish_id === ruleId);
       if (d !== undefined) openDishConfigModal(d);
+    } else if (verb === 'preapprove' && (section === 'auto_run' || section === 'event_trigger' || section === 'schedule')) {
+      const entry = section === 'auto_run' ? autoRun.find(a => a.recipe_id === ruleId)
+        : section === 'event_trigger' ? triggers.find(t => t.trigger_id === ruleId) : schedules.find(s => s.schedule_id === ruleId);
+      if (!entry || entry.lifecycle_revision === undefined || entry.preapproval || ('auto_disabled' in entry && entry.auto_disabled)
+        || !opts.preapprovalPrepareCaller || !opts.onPreapprovalPrepared) return;
+      preapprovalActivation?.destroy();
+      preapprovalActivation = openPreapprovalActivation({ document: doc, recipe_id: entry.recipe_id,
+        publisher_id: entry.publisher_id, name: ('recipe_name' in entry ? entry.recipe_name : nameFor(entry.recipe_id)) ?? entry.recipe_id,
+        activation: section === 'auto_run' ? { kind: 'next_auto_run', recipe_id: entry.recipe_id,
+          publisher_id: entry.publisher_id, expected_revision: entry.lifecycle_revision }
+          : section === 'event_trigger' ? { kind: 'next_trigger', trigger_id: ruleId, expected_revision: entry.lifecycle_revision }
+            : { kind: 'next_schedule', schedule_id: ruleId, expected_revision: entry.lifecycle_revision },
+        scheduledFor: 'next_run_at' in entry ? entry.next_run_at : null,
+        prepare: opts.preapprovalPrepareCaller, onPrepared: opts.onPreapprovalPrepared,
+        onClose: () => { preapprovalActivation = null; },
+      });
     } else if (verb === 'configure' && section === 'auto_run') {
       // D-179 — edit config on an already-enabled recipe (no enable-state
       // change); opens the same editor the resume flow uses, in 'edit'.
@@ -3551,6 +3807,7 @@ export const bootstrapAutomationRoute = (
   const hasAutomationInFlightWork = (): boolean =>
     busy.size > 0
     || openModal?.hasInFlightWork() === true
+    || preapprovalActivation?.hasInFlightWork() === true
     || autoRunConfigHandle?.hasInFlightWork() === true;
 
   return {
@@ -3581,6 +3838,8 @@ export const bootstrapAutomationRoute = (
       openModal?.destroy();
       openModal = null;
       closeAutoRunConfigModal();
+      preapprovalActivation?.destroy();
+      preapprovalActivation = null;
       routeRoot.removeEventListener('click', onClick);
       routeRoot.removeEventListener('change', onFilterChange);
       routeRoot.removeEventListener('keydown', onSubnavKeyDown);

@@ -21,7 +21,7 @@
  *  VaultStore-loaded credentials into it.
  */
 
-import { createConnectionAdapter, createConnectionApiHandler, createConnectionMcpHandler, createConnectionNotificationHandler, createIngredientExecutor, createKernelAdapter, executeHTTP, executeMCP, withIngredientCache } from '@recued/ingredients';
+import { IngredientError, createConnectionAdapter, createConnectionApiHandler, createConnectionMcpHandler, createConnectionNotificationHandler, createIngredientExecutor, createKernelAdapter, executeHTTP, executeMCP, withIngredientCache } from '@recued/ingredients';
 import type { ConnectionAdapterDeps, ConnectionAdapterStore, ConnectionApiHandlerDeps, ConnectionAuditEmission, ConnectionMcpHandlerDeps, ConnectionNotificationHandlerDeps, IngredientCacheOptions, IngredientExecutor, Adapter, ResolvedCall } from '@recued/ingredients';
 import { createAdapterRegistry } from '@recued/engine';
 import { createBridgeDomAdapter } from './bridges/dom-adapter.js';
@@ -42,8 +42,47 @@ import type { ActivityAction, AuditLogStore } from '@recued/storage';
 import type { ManifestRegistry } from './manifest-loader.js';
 import { asManifestLoader } from './manifest-loader.js';
 import type { WsServerHandle } from './ws-server.js';
+import { assertPreapprovalOrdinaryRun, currentPreapprovalIo } from './preapproval-io-context.js';
+import { describeProcessBinding } from './process-binding-identity.js';
+import { preapprovalHash } from './preapproval-invocations.js';
+import { buildStdioMcpEnvironment } from './mcp-stdio-spawner.js';
 export { resolveLLMConfigFromEnv } from './llm-env.js';
 export { resolveVaultFromEnv, mergeVault } from './vault-env.js';
+
+const reviewedMcpDeps = (deps: ConnectionMcpHandlerDeps): ConnectionMcpHandlerDeps => ({
+  ...deps,
+  beforeConnect: async call => {
+    await deps.beforeConnect?.(call);
+    assertPreapprovalOrdinaryRun();
+    await currentPreapprovalIo()?.validateProvider('mcp', call);
+  },
+  processIdentity: spec => preapprovalHash([deps.processIdentity?.(spec) ?? null, currentPreapprovalIo()
+    ? describeProcessBinding({ ...spec, env: buildStdioMcpEnvironment(spec.env) }) : null]),
+  beforeRequest: async call => {
+    await deps.beforeRequest?.(call);
+    assertPreapprovalOrdinaryRun();
+    await currentPreapprovalIo()?.beforeProvider('mcp', call);
+  },
+});
+const reviewedApiDeps = (deps: ConnectionApiHandlerDeps): ConnectionApiHandlerDeps => ({
+  ...deps,
+  readFileBytes: async recordId => {
+    const reviewed = currentPreapprovalIo();
+    if (reviewed) {
+      const file = await reviewed.readHttpFile(recordId);
+      return { bytes: Buffer.from(file.bytes_b64, 'base64'), filename: file.filename, mime_type: file.mime_type };
+    }
+    if (!deps.readFileBytes) throw new IngredientError('SERVER_NOT_REACHABLE', 'The upload file reader is unavailable.', {});
+    return deps.readFileBytes(recordId);
+  },
+  beforeRequest: async (call, target) => {
+    await deps.beforeRequest?.(call, target);
+    assertPreapprovalOrdinaryRun();
+    await currentPreapprovalIo()?.beforeProvider('http', call, target);
+  },
+});
+const reviewedHttp: Adapter = call => executeHTTP(call,
+  async () => { assertPreapprovalOrdinaryRun(); await currentPreapprovalIo()?.beforeProvider('http', call); });
 
 /** D-172 P5 / N.8 — the Gateway-gated `file.read` surface, narrowed to what
  *  the ai-* multimodal overload needs (base64 bytes + MIME + name). The
@@ -492,7 +531,7 @@ export const extractTempFileRef = (data: unknown): TempFileRef | null => {
 /** D-172 P5 — map a `file.read` result to a provider-neutral `ContentPart`.
  *  `media_class` follows N.1: image/* → image, audio/* → audio, else
  *  document. */
-const fileToContentPart = (file: { bytes_b64: string; mime_type: string }): ContentPart => {
+export const fileToContentPart = (file: { bytes_b64: string; mime_type: string }): ContentPart => {
   const mime = file.mime_type && file.mime_type.length > 0 ? file.mime_type : 'application/octet-stream';
   const type: ContentPart['type'] = mime.startsWith('image/')
     ? 'image'
@@ -627,10 +666,11 @@ const createLLMAdapter = (
     // too (confined to the run's scratch root) EVEN WITHOUT a wired `fileRead`.
     // Inert (input unchanged) when llm.data is not a file ref — no regression on
     // text calls.
+    const reviewed = currentPreapprovalIo();
     const input = await resolveAiFileRef(
       resolved.slug,
       resolved.input,
-      fileRead,
+      reviewed ? recordId => reviewed.readAiFile(recordId) : fileRead,
       resolved.stepMeta?.run_id,
     );
     return executeLLM(manifest, input, {
@@ -640,6 +680,10 @@ const createLLMAdapter = (
       tabProbe,
       webChatSupported,
       onTokenUsage: emitUsage,
+      ...(reviewed ? { matchContext: () => ({ pinSlot: reviewed.aiSlot() }) } : {}),
+      beforeComplete: async (request: import('@recued/llm').LLMProviderInvocation) => {
+        assertPreapprovalOrdinaryRun(); await reviewed?.beforeAiProvider(resolved, request);
+      },
     });
   };
 };
@@ -673,7 +717,7 @@ export const createServerExecutor = (
   // DOM omitted — server has no browser. Unsupported kinds get
   // INGREDIENT_ADAPTER_ALL_FAILED placeholders from the factory.
   const adapterRegistry = createAdapterRegistry({
-    http: executeHTTP,
+    http: reviewedHttp,
     mcp: executeMCP,
     // D-174 R28 — always wire the AI adapter; it resolves config PER-USE
     // (`resolveLlmConfig`) and surfaces AI_LLM_UNAVAILABLE when nothing is
@@ -744,10 +788,10 @@ export const createServerExecutor = (
           // (clean `INGREDIENT_ADAPTER_ALL_FAILED`).
           handlers: {
             ...(config.connectionApi
-              ? { api: createConnectionApiHandler(config.connectionApi) }
+              ? { api: createConnectionApiHandler(reviewedApiDeps(config.connectionApi)) }
               : {}),
             ...(config.connectionMcp
-              ? { mcp: createConnectionMcpHandler(config.connectionMcp) }
+              ? { mcp: createConnectionMcpHandler(reviewedMcpDeps(config.connectionMcp)) }
               : {}),
             ...(config.connectionNotification
               ? { notification: createConnectionNotificationHandler(config.connectionNotification) }
@@ -808,7 +852,7 @@ export const createBoundExecutor = (
   // `INGREDIENT_ADAPTER_ALL_FAILED` on any shared-* step — even though
   // the non-bound createServerExecutor path works fine.
   const adapterRegistry = createAdapterRegistry({
-    http: executeHTTP,
+    http: reviewedHttp,
     mcp: executeMCP,
     // D-174 R28 — always wire the AI adapter (per-use config resolution); see
     // createServerExecutor for the rationale.
@@ -877,10 +921,10 @@ export const createBoundExecutor = (
           // (clean `INGREDIENT_ADAPTER_ALL_FAILED`).
           handlers: {
             ...(config.connectionApi
-              ? { api: createConnectionApiHandler(config.connectionApi) }
+              ? { api: createConnectionApiHandler(reviewedApiDeps(config.connectionApi)) }
               : {}),
             ...(config.connectionMcp
-              ? { mcp: createConnectionMcpHandler(config.connectionMcp) }
+              ? { mcp: createConnectionMcpHandler(reviewedMcpDeps(config.connectionMcp)) }
               : {}),
             ...(config.connectionNotification
               ? { notification: createConnectionNotificationHandler(config.connectionNotification) }

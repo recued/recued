@@ -14,6 +14,9 @@
  *
  *  Spec: D-139 § A.3, § A.4, § A.5.1, § A.9.5. */
 
+import { sha256Hex } from '@recued/crypto/hash';
+
+import type { EnrichmentScope } from './enrichment-registry.js';
 import type {
   AttachmentMeta,
   Authorship,
@@ -269,6 +272,38 @@ export interface EngagementDedupeCandidateRow {
   resolved_by?: string;
 }
 
+/** D-139 § A.9.2b — the canonical subject match key shared by BOTH sides of
+ *  the mail ↔ CRM-engagement comparison.
+ *
+ *  ⛔ THIS FUNCTION IS THE JOIN. `out_of_band_engagement`'s quadruple fallback
+ *  matches a local mail against a CRM email engagement on
+ *  `(from_email, first recipient, sent_at ±tolerance, subject_hash)`. The
+ *  CRM side stores its hash in `meta.subject_hash` at ingest; the mail side
+ *  computes one at read time. If the two are produced by different
+ *  normalisation, NOTHING EVER MATCHES and every unstamped mail reads as a
+ *  CRM visibility gap — the producer would tell the owner their CRM is
+ *  missing work that is actually in it. Both sides MUST call this; do not
+ *  re-implement it, and do not "improve" the normalisation on one side.
+ *
+ *  ⚠ NORMALISATION IS DELIBERATELY MINIMAL: trim, collapse internal
+ *  whitespace runs, lowercase. It does NOT strip `Re:` / `Fwd:` prefixes.
+ *  The same message logged into a CRM and received in a mailbox carries the
+ *  SAME prefix, so stripping buys nothing on the matching case — while
+ *  collapsing `"Re: Q4 plans"` into `"Q4 plans"` would make two genuinely
+ *  different messages match, and a false match SUPPRESSES a real
+ *  visibility-gap alert. Under-matching is recoverable (the Message-ID path
+ *  usually catches it); over-matching is silent.
+ *
+ *  Empty / absent subject yields `null` rather than the hash of the empty
+ *  string: a row with no subject must not match every other row with no
+ *  subject. */
+export const engagementSubjectHash = (subject: string | null | undefined): string | null => {
+  if (typeof subject !== 'string') return null;
+  const canonical = subject.trim().replace(/\s+/g, ' ').toLowerCase();
+  if (canonical.length === 0) return null;
+  return sha256Hex(canonical);
+};
+
 /** Per-row dedupe-candidate projection — surfaces in
  *  `data.contact.engagements.list` resolver responses for rows with
  *  `dedupe_confidence: 'probable'` (or `'exact'` when multi-candidate
@@ -285,12 +320,16 @@ export interface EngagementDedupeCandidateProjection {
 // Resolver contracts (§ A.5.1)
 // ────────────────────────────────────────────────────────────────
 
-/** D-139 § A.5.1 — `data.contact.<email>.engagements` resolver args. */
-export interface EngagementsResolverArgs {
-  /** Canonical email — `resolveContactIdentity` runs by construction;
-   *  identity-expansion to member set per § A.5.0. Loser-email
-   *  queries transparently return the survivor's full union. */
-  email: string;
+/** D-139 § A.5.1 — the filter surface shared by every engagement
+ *  resolver root. Roots differ ONLY in how they select the engagement
+ *  set (contact identity-expansion vs a CRM record's edges); every
+ *  filter, window, ordering and pagination rule below is root-agnostic
+ *  and is applied by one shared core in `engagement-store.ts`.
+ *
+ *  ⛔ Do not restate a field here on a root's own args interface — the
+ *  two would drift and the second root would quietly stop honouring a
+ *  filter the first added. Extend this instead. */
+export interface EngagementsResolverFilters {
   /** Unix-ms `event_at` lower bound. Default
    *  `now() - ENGAGEMENT_RESOLVER_DEFAULT_WINDOW_MS`. */
   since?: number;
@@ -328,6 +367,46 @@ export interface EngagementsResolverArgs {
   cursor?: string;
   /** Default false; tombstones surface only when explicitly set. */
   include_deleted?: boolean;
+}
+
+/** D-139 § A.5.1 — CONTACT-rooted resolver args
+ *  (`data.contact.<email>.engagements`). Selects engagements through
+ *  `edge_type: 'contact'` edges over the contact's D-138 identity member
+ *  set. */
+export interface EngagementsResolverArgs extends EngagementsResolverFilters {
+  /** Canonical email — `resolveContactIdentity` runs by construction;
+   *  identity-expansion to member set per § A.5.0. Loser-email
+   *  queries transparently return the survivor's full union. */
+  email: string;
+}
+
+/** RECORD-rooted resolver args — the deal / account / contact-record
+ *  sibling of `EngagementsResolverArgs`.
+ *
+ *  Selects engagements through the CRM record's own
+ *  `engagement_edges` rows (`target_kind: 'connection.api'`), which is
+ *  what the D-139 § A.9.1 / § A.9.2b aggregates need: 8 of the 12
+ *  engagement topics are DEAL-scoped and 2 are ACCOUNT-scoped, and the
+ *  contact-rooted resolver cannot reach either — it requires an email
+ *  and expands identity, neither of which a deal has.
+ *
+ *  🔑 `target_id` is the FULL platform-reference id
+ *  (`composePlatformRecordTargetId` — `<vendor>_<entity>_<connection>_<native>`),
+ *  the SAME string the record reconciler writes as the enrichment row's
+ *  `target_id` and the engagement reconciler writes as the edge's
+ *  `target_id`. A producer therefore passes the enrichment target it is
+ *  computing for, verbatim. A partial or native-only id matches nothing
+ *  and returns an empty page. */
+export interface EngagementsForRecordArgs extends EngagementsResolverFilters {
+  /** The enrichment scope of the record being computed for, e.g.
+   *  `connection.api.hubspot.deal`. Resolved to an edge type through the
+   *  vendor registry's `crm_alias` annotation, so a vendor added by a
+   *  pack participates without a code change. A scope whose entity
+   *  carries no `crm_alias` is refused rather than silently returning
+   *  an empty page. */
+  scope: EnrichmentScope;
+  /** Full platform-reference target id of the record. */
+  target_id: string;
 }
 
 /** Resolver response row — per-row dedupe-candidate projection

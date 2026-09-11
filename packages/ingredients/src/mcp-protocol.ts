@@ -75,6 +75,41 @@ export const MCP_CLIENT_CAPABILITIES_META_KEY =
 export const MCP_SERVER_INFO_META_KEY =
   'io.modelcontextprotocol/serverInfo' as const;
 
+export const MCP_SUBSCRIPTION_ID_META_KEY =
+  'io.modelcontextprotocol/subscriptionId' as const;
+
+// ────────────────────────────────────────────────────────────────
+// `subscriptions/listen` — the ONLY server→client channel in 2026-07-28.
+// ────────────────────────────────────────────────────────────────
+
+/** The request that opens a standing feed. Its response does not close. */
+export const MCP_SUBSCRIPTIONS_LISTEN_METHOD = 'subscriptions/listen' as const;
+/** First frame on every honoured feed — the server's own declaration of the
+ *  subset it will send. Nothing else may be trusted as the correlation basis. */
+export const MCP_SUBSCRIPTIONS_ACKNOWLEDGED_METHOD =
+  'notifications/subscriptions/acknowledged' as const;
+export const MCP_TOOLS_LIST_CHANGED_METHOD = 'notifications/tools/list_changed' as const;
+export const MCP_RESOURCES_UPDATED_METHOD = 'notifications/resources/updated' as const;
+
+/** The CLOSED filter vocabulary a client may ask for, and — the same shape —
+ *  the subset a server acknowledges.
+ *
+ *  🔑 BILATERAL BY CONSTRUCTION. Recued is both ends: it subscribes to vendor
+ *  MCP servers (`connection-mcp.ts`) and it serves feeds to MCP clients
+ *  (`mcp-subscriptions.ts`). One shape here means a change to what the
+ *  protocol permits cannot land on one side only.
+ *
+ *  ⛔ AN OMITTED MEMBER MEANS "NOT SUPPORTED", NOT "NOT NOW". The revision
+ *  requires an acknowledgement to reflect what the server agreed to honour and
+ *  to omit what it does not support, which is what makes the ack — rather than
+ *  the request — the correct basis for a receiver's correlation guard. */
+export interface McpAcknowledgedNotifications {
+  toolsListChanged?: boolean;
+  promptsListChanged?: boolean;
+  resourcesListChanged?: boolean;
+  resourceSubscriptions?: string[];
+}
+
 export const MCP_UNSUPPORTED_PROTOCOL_VERSION = -32022;
 export const MCP_MISSING_REQUIRED_CLIENT_CAPABILITY = -32021;
 export const MCP_HEADER_MISMATCH = -32020;

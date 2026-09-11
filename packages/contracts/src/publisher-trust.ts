@@ -21,8 +21,16 @@ export const FIRST_PARTY_PUBLISHER = 'recued-core';
 
 /** Pack capabilities that are not open to every publisher. */
 export type ReservedPackCapability =
-  /** Run before install — the foundation-pack path. */
+  /** A core feature: installed by the server, never listed, not owner-manageable
+   *  — the foundation-pack path. */
   | 'pre_install'
+  /** Ship inside the release artifact. Fails differently from the others: it
+   *  grants no authority at all, it decides what a distribution CARRIES. A
+   *  third-party pack cannot put bytes in Recued's binary, which is a release
+   *  decision rather than a trust one — and the reason it is asked here anyway
+   *  is that the day publisher verification lands, "verified" must not silently
+   *  answer this one too. */
+  | 'bundled'
   /** Declare a connection descriptor: matching, vendor identity, OAuth issuer,
    *  dedup endpoint. NOT the same as declaring a connection HINT, which is open
    *  to every publisher and gated by value admission instead (D-223 § 0). */

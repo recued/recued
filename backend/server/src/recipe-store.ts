@@ -21,6 +21,7 @@ import {
 } from '@recued/recipes';
 import type { StoredRecipe } from './types.js';
 import { getOrCreateRecipeInsight } from './memory-schema.js';
+import { initializePreapprovalLifecycle, mutatePreapprovalResource } from './storage/preapproval-lifecycle.js';
 
 /** A RecipeStore-local authoring disposition. The editable snapshot carries
  * the exact persisted JSON used by `compareAndSaveLocalRecipe`; it is an
@@ -210,6 +211,7 @@ export const createRecipeStore = (
 
   // Ensure recipes table exists when db is provided
   if (db) {
+    initializePreapprovalLifecycle(db);
     db.exec(`
       CREATE TABLE IF NOT EXISTS recipes (
         recipe_id         TEXT NOT NULL PRIMARY KEY,
@@ -279,6 +281,11 @@ export const createRecipeStore = (
    *  question. Mirrors `connectionStore.addOnUpsert`, two lines below the
    *  `setOnMutated` call site. */
   const onMutatedSubscribers: Array<(recipe_id: string) => void> = [];
+  const preapprovalMaterial = (id: string): unknown | null => {
+    const row = db?.prepare('SELECT publisher_id,recipe_json FROM recipes WHERE recipe_id=?')
+      .get(id) as { publisher_id: string; recipe_json: string } | undefined;
+    return row ? { publisher_id: row.publisher_id, definition: JSON.parse(row.recipe_json) as unknown } : null;
+  };
   const fireOnMutated = (recipe_id: string): void => {
     for (const sub of onMutatedSubscribers) {
       try {
@@ -392,62 +399,66 @@ export const createRecipeStore = (
       // SELECT cost is cheap relative to the upsert and the hook
       // (when fired) does an indexed `markStaleByAuthor` over a
       // small subset of `data_enrichment`.
-      const priorRow = db
-        .prepare('SELECT recipe_hash, pack_slug FROM recipes WHERE recipe_id = ?')
-        .get(recipe.recipe_id) as { recipe_hash: string; pack_slug: string | null } | undefined;
-      const isUpgrade = priorRow != null && priorRow.recipe_hash !== hash;
-      // ── D-247 D6 — A PACK-OWNED ROW IS THE PACK'S TO CHANGE ──────────────
-      //
-      // ⛔⛔ THE GUARD IS HERE AND NOT IN THE HANDLERS BECAUSE THIS PAIR HAS
-      // ALREADY DIVERGED TWICE. `recipe.save` refuses a pack-owned WEBHOOK
-      // recipe; the MCP `recued_saveRecipe` tool has no ownership check at all;
-      // `recipe.installBySlug` is a THIRD writer mirroring neither.
-      // `form-contract-gate.ts` records the last divergence in this exact pair.
-      // A fourth handler-level guard is the fifth divergence, already scheduled.
-      //
-      // Without it, a save over a non-webhook pack recipe keeps the recipe_id,
-      // keeps any grant keyed on it, and silently strips `pack_slug` — so the
-      // recipe stops receiving pack updates (a frozen body under a live grant,
-      // with no signal) and D14's uninstall purge clears the grant while the
-      // recipe survives, going dark. Both failures are silent.
-      //
-      // ⚠ SCOPED TO THE TRANSITION, not to "the row is pack-owned": pack install
-      // and bulk install pass an explicit slug (non-null → non-null), a restore
-      // passes `record.pack_slug`, and a new recipe has no prior row. Only the
-      // ownership STRIP is refused.
-      if (priorRow?.pack_slug != null && (pack_slug ?? null) === null) {
-        throw new RecipePackOwnershipError(recipe.recipe_id, priorRow.pack_slug);
-      }
-      // D-145 PA10 follow-on — `pack_slug` is undefined for callers
-      // that don't track pack provenance (legacy non-pack install
-      // paths like mcp-server.ts's recipe upload). Persist as NULL
-      // in that case so the column matches the pre-existing
-      // semantic. The install wrapper in `install-bulk-pack-handler.ts`
-      // always passes an explicit value (string for pack-installed
-      // rows, `record.pack_slug` for restored priors), so this
-      // branch only fires for non-pack callers.
-      const packSlugValue = pack_slug ?? null;
-      db.prepare(`
-        INSERT INTO recipes (recipe_id, publisher_id, version, recipe_hash, recipe_json, source, installed_at, upstream_version, upstream_hash, last_checked_at, pack_slug)
-        VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?)
-        ON CONFLICT (recipe_id) DO UPDATE SET
-          publisher_id = excluded.publisher_id,
-          version = excluded.version,
-          recipe_hash = excluded.recipe_hash,
-          recipe_json = excluded.recipe_json,
-          source = excluded.source,
-          installed_at = excluded.installed_at,
-          pack_slug = excluded.pack_slug
-      `).run(
-        recipe.recipe_id,
-        publisher_id,
-        recipe.version,
-        hash,
-        JSON.stringify(recipe),
-        source,
-        installedAt,
-        packSlugValue,
-      );
+      const isUpgrade = mutatePreapprovalResource(db, 'recipe', recipe.recipe_id,
+        () => preapprovalMaterial(recipe.recipe_id), () => {
+        const priorRow = db
+          .prepare('SELECT recipe_hash, pack_slug FROM recipes WHERE recipe_id = ?')
+          .get(recipe.recipe_id) as { recipe_hash: string; pack_slug: string | null } | undefined;
+        const isUpgrade = priorRow != null && priorRow.recipe_hash !== hash;
+        // ── D-247 D6 — A PACK-OWNED ROW IS THE PACK'S TO CHANGE ──────────────
+        //
+        // ⛔⛔ THE GUARD IS HERE AND NOT IN THE HANDLERS BECAUSE THIS PAIR HAS
+        // ALREADY DIVERGED TWICE. `recipe.save` refuses a pack-owned WEBHOOK
+        // recipe; the MCP `recued_saveRecipe` tool has no ownership check at all;
+        // `recipe.installBySlug` is a THIRD writer mirroring neither.
+        // `form-contract-gate.ts` records the last divergence in this exact pair.
+        // A fourth handler-level guard is the fifth divergence, already scheduled.
+        //
+        // Without it, a save over a non-webhook pack recipe keeps the recipe_id,
+        // keeps any grant keyed on it, and silently strips `pack_slug` — so the
+        // recipe stops receiving pack updates (a frozen body under a live grant,
+        // with no signal) and D14's uninstall purge clears the grant while the
+        // recipe survives, going dark. Both failures are silent.
+        //
+        // ⚠ SCOPED TO THE TRANSITION, not to "the row is pack-owned": pack install
+        // and bulk install pass an explicit slug (non-null → non-null), a restore
+        // passes `record.pack_slug`, and a new recipe has no prior row. Only the
+        // ownership STRIP is refused.
+        if (priorRow?.pack_slug != null && (pack_slug ?? null) === null) {
+          throw new RecipePackOwnershipError(recipe.recipe_id, priorRow.pack_slug);
+        }
+        // D-145 PA10 follow-on — `pack_slug` is undefined for callers
+        // that don't track pack provenance (legacy non-pack install
+        // paths like mcp-server.ts's recipe upload). Persist as NULL
+        // in that case so the column matches the pre-existing
+        // semantic. The install wrapper in `install-bulk-pack-handler.ts`
+        // always passes an explicit value (string for pack-installed
+        // rows, `record.pack_slug` for restored priors), so this
+        // branch only fires for non-pack callers.
+        const packSlugValue = pack_slug ?? null;
+        db.prepare(`
+          INSERT INTO recipes (recipe_id, publisher_id, version, recipe_hash, recipe_json, source, installed_at, upstream_version, upstream_hash, last_checked_at, pack_slug)
+          VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?)
+          ON CONFLICT (recipe_id) DO UPDATE SET
+            publisher_id = excluded.publisher_id,
+            version = excluded.version,
+            recipe_hash = excluded.recipe_hash,
+            recipe_json = excluded.recipe_json,
+            source = excluded.source,
+            installed_at = excluded.installed_at,
+            pack_slug = excluded.pack_slug
+        `).run(
+          recipe.recipe_id,
+          publisher_id,
+          recipe.version,
+          hash,
+          JSON.stringify(recipe),
+          source,
+          installedAt,
+          packSlugValue,
+        );
+        return isUpgrade;
+      });
       if (isUpgrade) fireOnUpgrade(recipe.recipe_id);
       // G6 — roster mutation signal. Fired BEFORE the insight-snapshot
       // block below (which early-returns on over-cap shapes) so the
@@ -486,7 +497,8 @@ export const createRecipeStore = (
       }
       const recipeJson = JSON.stringify(input.recipe);
       const recipeHash = hashRecipe(input.recipe);
-      const result = db.transaction((): LocalRecipeCompareAndSaveResult => {
+      const result = mutatePreapprovalResource(db, 'recipe', input.recipe.recipe_id,
+        () => preapprovalMaterial(input.recipe.recipe_id), (): LocalRecipeCompareAndSaveResult => {
         const row = getFromDb(input.recipe.recipe_id);
         if (!row) return { kind: 'not_found' };
         if (row.pack_slug !== null) return { kind: 'not_editable' };
@@ -520,7 +532,7 @@ export const createRecipeStore = (
           prior_recipe_hash: row.recipe_hash,
           recipe_hash: recipeHash,
         };
-      })();
+      });
       if (result.kind === 'updated') {
         // This path knows the exact JSON changed even if the legacy 32-bit
         // cache hash happens to collide, so both mutation hooks still fire.
@@ -533,7 +545,8 @@ export const createRecipeStore = (
 
     delete(recipe_id) {
       if (!db) return false;
-      const result = db.prepare('DELETE FROM recipes WHERE recipe_id = ?').run(recipe_id);
+      const result = mutatePreapprovalResource(db, 'recipe', recipe_id, () => preapprovalMaterial(recipe_id),
+        () => db.prepare('DELETE FROM recipes WHERE recipe_id = ?').run(recipe_id));
       if (result.changes > 0) fireOnMutated(recipe_id);
       return result.changes > 0;
     },

@@ -98,6 +98,26 @@ export interface BridgeIngredientRef {
  *  Wider-than-allowlist patterns shouldn't be reachable: the server-side
  *  dispatcher only sends commands whose `target_domain_pattern` is a
  *  member of the ingredient's allowlist (server-side fail-fast). */
+/** A main-frame document observed by the paired bridge. Document IDs come
+ * from Chrome, rotate on navigation, and are never supplied by a recipe. */
+export interface BridgeDocumentIdentity {
+  tab_id: number;
+  document_id: string;
+  url: string;
+}
+
+export const BRIDGE_REVIEW_DOCUMENT_LIMIT = 128;
+export const isBridgeDocumentIdentity = (value: unknown): value is BridgeDocumentIdentity => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const row = value as Record<string, unknown>;
+  if (Object.keys(row).some(key => !['tab_id', 'document_id', 'url'].includes(key))
+    || !Number.isSafeInteger(row.tab_id) || (row.tab_id as number) < 0
+    || typeof row.document_id !== 'string' || row.document_id.length < 1 || row.document_id.length > 128
+    || typeof row.url !== 'string' || row.url.length > 8192) return false;
+  try { const url = new URL(row.url); return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password; }
+  catch { return false; }
+};
+
 export interface BridgeCommand {
   /** Server-issued opaque id. Bridge uses for idempotency. */
   command_id: string;
@@ -125,6 +145,9 @@ export interface BridgeCommand {
   /** Server-issued idempotency key. Bridge stores in IndexedDB for
    *  24h and replays prior result on retry. */
   idempotency_key: string;
+  /** Server-narrowed execution target; never grants a browser permission. An
+   * older bridge without this capability cannot be selected for review. */
+  reviewed_document?: BridgeDocumentIdentity;
 }
 
 export const BRIDGE_COMMAND_DEFAULT_TIMEOUT_MS = 30_000;
@@ -359,6 +382,9 @@ export interface BridgeCapabilityProfile {
   alarms_supported: boolean;
   /** Optional user-agent string for diagnostic context. */
   user_agent?: string;
+  /** Private preparation metadata. The server registry removes this inventory
+   * from public presence/context/diagnostic profiles. No page content. */
+  dom_documents?: { version: 1; documents: BridgeDocumentIdentity[] };
 }
 
 /** D-148 § A.3.4 — closed list of fields the bridge persists in

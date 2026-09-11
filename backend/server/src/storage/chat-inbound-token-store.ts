@@ -30,6 +30,8 @@
 
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import type Database from 'better-sqlite3';
+import { initializePreapprovalContractReads, mutatePreapprovalContractQueries, recordPreapprovalContractRead,
+  PREAPPROVAL_MCP_TOKEN_QUERY } from './preapproval-contract-reads.js';
 import {
   isMcpInboundConcurrencyTier,
   MCP_INBOUND_TOKEN_PREFIX,
@@ -321,6 +323,7 @@ export const createChatInboundTokenStore = (
   db: Database.Database,
   options: CreateChatInboundTokenStoreOptions = {},
 ): ChatInboundTokenStore => {
+  initializePreapprovalContractReads(db);
   const authorityChanges = new Set<Promise<void>>();
   const notifyAuthorityChanged = (token_id: string): void => {
     if (!options.onAuthorityChanged) return;
@@ -446,7 +449,7 @@ export const createChatInboundTokenStore = (
       // D-166 P2 token↔contract binding — persist the bound minted contract_id
       // when supplied (absent ⇒ NULL column ⇒ unbound token).
       if (value.contract_id !== undefined) record.contract_id = value.contract_id;
-      insertStmt.run({
+      mutatePreapprovalContractQueries(db, PREAPPROVAL_MCP_TOKEN_QUERY, () => insertStmt.run({
         token_id,
         bearer_hash,
         label: value.label,
@@ -463,13 +466,14 @@ export const createChatInboundTokenStore = (
         chat_mode_json: chatModeToJson(value.chat_mode),
         contract_id: value.contract_id ?? null,
         updated_at: now,
-      });
+      }));
       return { record, bearer_plaintext: bearer };
     },
     getTokenById(token_id) {
       const row = selectByIdStmt.get({ token_id }) as Row | undefined;
-      if (!row) return null;
-      return rowToRecord(row);
+      const record = row ? rowToRecord(row) : null;
+      recordPreapprovalContractRead(db, PREAPPROVAL_MCP_TOKEN_QUERY, [token_id, ...Object.keys(record?.grants ?? {}).sort()], true);
+      return record;
     },
     listTokens() {
       const rows = listStmt.all() as Row[];
@@ -481,31 +485,15 @@ export const createChatInboundTokenStore = (
       // never written. (A present `chat_mode` may be `null` — that clears it.)
       const hasGrants = grants !== undefined;
       const hasChatMode = chat_mode !== undefined;
-      let result: Database.RunResult;
-      if (hasGrants && hasChatMode) {
-        result = updateGrantsAndChatModeStmt.run({
-          token_id,
-          grants_json: grantsToJson(grants),
-          chat_mode_json: chatModeToJson(chat_mode),
-          updated_at: now,
+      const result = mutatePreapprovalContractQueries(db, PREAPPROVAL_MCP_TOKEN_QUERY, () => {
+        if (hasGrants && hasChatMode) return updateGrantsAndChatModeStmt.run({
+          token_id, grants_json: grantsToJson(grants), chat_mode_json: chatModeToJson(chat_mode), updated_at: now,
         });
-      } else if (hasGrants) {
-        result = updateGrantsStmt.run({
-          token_id,
-          grants_json: grantsToJson(grants),
-          updated_at: now,
-        });
-      } else if (hasChatMode) {
-        result = updateChatModeStmt.run({
-          token_id,
-          chat_mode_json: chatModeToJson(chat_mode),
-          updated_at: now,
-        });
-      } else {
-        // Neither — defensive (the rpc handler requires at least one). Touch
-        // updated_at so the row still resolves + the caller can re-render.
-        result = touchStmt.run({ token_id, updated_at: now });
-      }
+        if (hasGrants) return updateGrantsStmt.run({ token_id, grants_json: grantsToJson(grants), updated_at: now });
+        if (hasChatMode) return updateChatModeStmt.run({ token_id, chat_mode_json: chatModeToJson(chat_mode), updated_at: now });
+        // Neither — preserve the existing touch-only semantics.
+        return touchStmt.run({ token_id, updated_at: now });
+      });
       if (result.changes === 0) return null;
       const row = selectByIdStmt.get({ token_id }) as Row | undefined;
       if (!row) return null;
@@ -516,11 +504,11 @@ export const createChatInboundTokenStore = (
       // `contract_id` is already `string | null`; better-sqlite3 binds null to
       // a SQL NULL (unbind) and a string verbatim (bind). The bearer/hash/grants
       // columns are untouched, so the token value is stable across the rebind.
-      const result = updateContractStmt.run({
+      const result = mutatePreapprovalContractQueries(db, PREAPPROVAL_MCP_TOKEN_QUERY, () => updateContractStmt.run({
         token_id,
         contract_id,
         updated_at: now,
-      });
+      }));
       if (result.changes === 0) return null;
       const row = selectByIdStmt.get({ token_id }) as Row | undefined;
       if (!row) return null;
@@ -528,14 +516,15 @@ export const createChatInboundTokenStore = (
       return rowToRecord(row);
     },
     revokeToken({ token_id, now }) {
-      const result = revokeStmt.run({ token_id, revoked_at: now, updated_at: now });
+      const result = mutatePreapprovalContractQueries(db, PREAPPROVAL_MCP_TOKEN_QUERY,
+        () => revokeStmt.run({ token_id, revoked_at: now, updated_at: now }));
       // Notify even on an idempotent/missing revoke so retrying the lifecycle
       // operation also retries cleanup left behind by a prior crash.
       notifyAuthorityChanged(token_id);
       return result.changes > 0;
     },
     deleteToken(token_id) {
-      const result = deleteStmt.run(token_id);
+      const result = mutatePreapprovalContractQueries(db, PREAPPROVAL_MCP_TOKEN_QUERY, () => deleteStmt.run(token_id));
       notifyAuthorityChanged(token_id);
       return result.changes > 0;
     },

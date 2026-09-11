@@ -55,6 +55,7 @@ import {
   AI_MODELS_SLOT_FIELD_ATTR,
   AI_MODELS_SLOT_TEST_ATTR,
   AI_MODELS_SLOT_TEST_RESULT_ATTR,
+  AI_MODELS_PROBE_TRANSCRIPT_ATTR,
   AI_MODELS_SLOT_CLEAR_ATTR,
   AI_MODELS_SLOT_CLEAR_CANCEL_ATTR,
   AI_MODELS_SLOT_CLEAR_CONFIRM_ATTR,
@@ -3020,6 +3021,90 @@ describe('Test connection', () => {
     await flush();
     expect(findByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, 'slot_1')?.textContent)
       .toBe('Test connection');
+    mount.dispose();
+  });
+
+/** ⚠ TWO things the base fixture omits, and BOTH are required. The card is
+   *  gated on `runSetTranscriptionSlot` being wired at all (`renderTranscriptionSlot`
+   *  returns early without it), and the Test button needs a slot in the config to
+   *  probe. Supplying only the config renders nothing and the failure reads as
+   *  "no element" — which says nothing about which half is missing. */
+  const transcriptionFixture = () => ({
+    runGetLLMConfig: vi.fn(async () => ({
+      config: {
+        ...llmConfig(),
+        transcription_slot: { provider: 'openai', model: 'whisper-1', has_key: true },
+      },
+    })),
+    runSetTranscriptionSlot: vi.fn(async () => ({ ok: true as const })),
+  });
+  // ⛔⛔ REVIEW FINDING (2026-09-07). THE SERVER RETURNED THE TRANSCRIPT AND THE
+  // PAGE DROPPED IT. § B7 added the field for one stated reason: a
+  // `transcription_language` the owner did not mean returns fluent NONSENSE
+  // rather than an error, and this is the only surface that can reveal it.
+  // Rendering the verdict and the elapsed time and nothing else defeated the
+  // whole check — "ok, 900 ms" over a slot mis-set to Turkish looks exactly
+  // like one that works. Same "handled but never reaching the surface" shape as
+  // a broadcast kind nobody subscribed to.
+  it('⛔⛔ SHOWS what the transcription probe heard, beside what the clip says', async () => {
+    const runProbeLlmSource = vi.fn(async () => ({
+      ok: true,
+      diagnosis: 'ok' as const,
+      transcript: 'Bu bir transkript mikrofon testidir.',
+      expected_transcript: 'This is a transcript microphone test.',
+      probe_language: 'tr',
+      elapsed_ms: 910,
+    }));
+    const { host, mount } = mountFixture({ runProbeLlmSource, ...transcriptionFixture() });
+    await mount.whenLoaded();
+
+    clickByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, 'transcription_slot');
+    await flush();
+
+    const box = findByAttrValue(host, AI_MODELS_SLOT_TEST_RESULT_ATTR, 'transcription_slot')!;
+    // ⛔ The heard line has to REACH the page. Asserting only `ok` is what let
+    // this ship: the verdict was right and the evidence was discarded.
+    expect(hasText(box, 'Bu bir transkript mikrofon testidir.')).toBe(true);
+    // ⚠ And the expected line beside it — the owner may not read Turkish, which
+    // is exactly the case the field exists for. One line alone is unjudgeable.
+    expect(hasText(box, 'This is a transcript microphone test.')).toBe(true);
+    // The pin that caused it, so the mismatch is traceable to a setting.
+    expect(hasText(box, 'tr')).toBe(true);
+    mount.dispose();
+  });
+
+  it('⚠ says `auto-detect` rather than nothing when no language was pinned', async () => {
+    // Absent is a real answer, not a missing one — and it is a DIFFERENT answer
+    // from any particular language.
+    const runProbeLlmSource = vi.fn(async () => ({
+      ok: true,
+      diagnosis: 'ok' as const,
+      transcript: 'This is a transcript microphone test.',
+      expected_transcript: 'This is a transcript microphone test.',
+      elapsed_ms: 400,
+    }));
+    const { host, mount } = mountFixture({ runProbeLlmSource, ...transcriptionFixture() });
+    await mount.whenLoaded();
+    clickByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, 'transcription_slot');
+    await flush();
+    const box = findByAttrValue(host, AI_MODELS_SLOT_TEST_RESULT_ATTR, 'transcription_slot')!;
+    expect(hasText(box, 'auto-detect')).toBe(true);
+    mount.dispose();
+  });
+
+  it('⛔ renders NO transcript block for a FAILED probe — it learned nothing', async () => {
+    const runProbeLlmSource = vi.fn(async () => ({
+      ok: false,
+      diagnosis: 'auth' as const,
+      detail: 'invalid api key',
+      elapsed_ms: 30,
+    }));
+    const { host, mount } = mountFixture({ runProbeLlmSource, ...transcriptionFixture() });
+    await mount.whenLoaded();
+    clickByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, 'transcription_slot');
+    await flush();
+    const box = findByAttrValue(host, AI_MODELS_SLOT_TEST_RESULT_ATTR, 'transcription_slot')!;
+    expect(findByAttrValue(box, AI_MODELS_PROBE_TRANSCRIPT_ATTR, 'true')).toBeFalsy();
     mount.dispose();
   });
 

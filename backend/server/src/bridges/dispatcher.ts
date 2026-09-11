@@ -55,17 +55,21 @@
 import {
   BRIDGE_COMMAND_DEFAULT_TIMEOUT_MS,
   BRIDGE_COMMAND_MAX_TIMEOUT_MS,
+  isPatternWithinGrantedOrigins,
+  RpcError,
   type AggregateCapacityGap,
   type BridgeAction,
   type BridgeCancelCommand,
   type BridgeCapacityGap,
   type BridgeCommand,
+  type BridgeDocumentIdentity,
   type BridgeErrorCode,
   type BridgeIngredientRef,
   type BridgeResult,
   type BridgeWireEnvelope,
 } from '@recued/contracts';
 import type { AuditLogStore } from '@recued/storage';
+import { assertPreapprovalOrdinaryRun } from '../preapproval-io-context.js';
 import type { BridgeConnectionRecord, BridgeRegistry } from './registry.js';
 
 export interface BridgeSendResult {
@@ -290,7 +294,8 @@ const urlMatchesPattern = (url: string, pattern: string): boolean => {
 };
 
 export interface BridgeDispatcher {
-  dispatch(request: DispatchRequest): Promise<DispatchOutcome>;
+  dispatch(request: DispatchRequest, reviewed?: ReviewedBridgeDispatch): Promise<DispatchOutcome>;
+  describeDocument?(request: DispatchRequest): ReviewedBridgeBinding | null;
   cancel(command_id: string, reason: string): Promise<BridgeSendResult>;
   /** D-169 P0 follow-on — ownership query for inbound `{kind: 'result'}`
    *  frame routing. The wire layer routes result frames by `command_id`
@@ -308,6 +313,17 @@ export interface BridgeDispatcher {
    *  resolve / timeout / send-failure, so the check sees the right
    *  owner during the result's in-flight window. */
   canResolve(command_id: string, client_token_id: string): boolean;
+}
+
+export interface ReviewedBridgeBinding {
+  client_token_id: string;
+  document: BridgeDocumentIdentity;
+}
+/** Passed only by the host's claimed invocation context. It is not an RPC or
+ * a BridgeCommand permission field. Every queue-full retry rechecks it. */
+export interface ReviewedBridgeDispatch {
+  binding: ReviewedBridgeBinding;
+  beforeSend(): Promise<void>;
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -462,6 +478,7 @@ export const createBridgeDispatcher = (options: DispatcherOptions): BridgeDispat
     bridge_client_token_id: string,
     command_template: Omit<BridgeCommand, 'command_id'>,
     timeout_ms: number,
+    beforeSend?: () => Promise<void>,
   ): Promise<SingleBridgeOutcome> => {
     const command_id = generateCommandId();
     const command: BridgeCommand = { ...command_template, command_id };
@@ -470,6 +487,9 @@ export const createBridgeDispatcher = (options: DispatcherOptions): BridgeDispat
     let backoff = initial_backoff_ms;
     while (attempt < max_attempts) {
       attempt++;
+
+      try { if (beforeSend) await beforeSend(); assertPreapprovalOrdinaryRun(); }
+      catch (error) { options.listener.cancelAwait?.(command_id); inflight.delete(command_id); throw error; }
 
       // Register a fresh waiter BEFORE every send. A remote queue_full
       // result consumes the prior slot, and the retry can itself return
@@ -554,7 +574,21 @@ export const createBridgeDispatcher = (options: DispatcherOptions): BridgeDispat
   };
 
   return {
-    async dispatch(request) {
+    describeDocument(request) {
+      const pattern = resolveTargetDomainPattern(request);
+      if (!pattern || !options.registry.documents) return null;
+      const candidates: ReviewedBridgeBinding[] = [];
+      for (const bridge of options.registry.list()) {
+        if (request.preferred_bridge_label && bridge.client_label !== request.preferred_bridge_label) continue;
+        if (!isPatternWithinGrantedOrigins(pattern, bridge.capabilities.granted_origins)) continue;
+        for (const document of options.registry.documents(bridge.client_token_id)) {
+          if (isPatternWithinGrantedOrigins(document.url, [pattern])) candidates.push({ client_token_id: bridge.client_token_id, document });
+        }
+      }
+      // Preparation never selects an arbitrary tab among matching documents.
+      return candidates.length === 1 ? candidates[0]! : null;
+    },
+    async dispatch(request, reviewed) {
       // Resolve the target domain pattern first — a missing /
       // out-of-allowlist pattern short-circuits before any bridge
       // selection (Codex P2 #5 fold; D-169 P0 Slice 2A — was
@@ -579,7 +613,29 @@ export const createBridgeDispatcher = (options: DispatcherOptions): BridgeDispat
         expects_output_keys: request.expects_output_keys,
         timeout_ms,
         idempotency_key: request.idempotency_key,
+        ...(reviewed ? { reviewed_document: structuredClone(reviewed.binding.document) } : {}),
       };
+
+      if (reviewed) {
+        const binding = structuredClone(reviewed.binding);
+        const beforeSend = async () => {
+          await reviewed.beforeSend();
+          const bridge = options.registry.get(binding.client_token_id);
+          if (!bridge || !isPatternWithinGrantedOrigins(target_domain_pattern, bridge.capabilities.granted_origins)
+            || !isPatternWithinGrantedOrigins(binding.document.url, [target_domain_pattern])
+            || (request.preferred_bridge_label && request.preferred_bridge_label !== bridge.client_label)
+            || !options.registry.documents?.(binding.client_token_id).some(document => document.tab_id === binding.document.tab_id
+              && document.document_id === binding.document.document_id && document.url === binding.document.url)) {
+            throw new RpcError('preapproval_stale', 'The reviewed browser document changed or disconnected.', 409);
+          }
+        };
+        const out = await dispatchToBridge(binding.client_token_id, command_template, timeout_ms, beforeSend);
+        if (out.kind === 'send_failed') return { kind: 'capacity_gap', capacity_gap: { kind: 'bridge_online' },
+          reason: 'bridge_online', attempts: out.attempts };
+        if (out.kind === 'timeout') return { kind: 'timeout', command_id: out.command_id, attempts: out.attempts };
+        if (out.result.status === 'ok') await recordSuccess(binding.client_token_id, target_domain_pattern);
+        return { kind: 'completed', result: out.result, bridge_client_token_id: binding.client_token_id, attempts: out.attempts };
+      }
 
       // ──────────────────────────────────────────────────────────
       // Preferred-label strict path — single-bridge passthrough.

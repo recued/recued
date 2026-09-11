@@ -87,6 +87,8 @@ export const KERNEL_DOMAINS: readonly KernelDomain[] = [
   { domain: 'storage', class: 'closed_kind' },
   { domain: 'work-entity', class: 'closed_kind' },
   { domain: 'notification', class: 'closed_kind' },
+  // D-261: grantable owner-review requests. Granting the decision is never an op.
+  { domain: 'preapproval', class: 'closed_kind' },
   { domain: 'mail', class: 'closed_kind' },
   { domain: 'contact', class: 'closed_kind' },
   { domain: 'memory', class: 'closed_kind' },

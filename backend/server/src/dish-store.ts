@@ -14,6 +14,12 @@
 
 import type Database from 'better-sqlite3';
 import type { Dish } from '@recued/contracts';
+import { initializePreapprovalLifecycle, mutatePreapprovalResource } from './storage/preapproval-lifecycle.js';
+
+export const dishPreapprovalMaterial = (dish: Dish): Record<string, unknown> => ({
+  recipe_id: dish.recipe_id, publisher_id: dish.publisher_id, enabled: dish.enabled, config_overlay: dish.config_overlay,
+  group_id: dish.group_id ?? null,
+});
 
 export interface DishStore {
   list(): Dish[];
@@ -47,6 +53,7 @@ export const createDishStore = (
   db: Database.Database,
   options: CreateDishStoreOptions = {},
 ): DishStore => {
+  initializePreapprovalLifecycle(db);
   db.exec(`
     CREATE TABLE IF NOT EXISTS dishes (
       dish_id    TEXT NOT NULL PRIMARY KEY,
@@ -78,6 +85,20 @@ export const createDishStore = (
 
   const rowToDish = (row: { data: string }): Dish =>
     JSON.parse(row.data) as Dish;
+  const material = (id: string): unknown | null => {
+    const row = db.prepare('SELECT data FROM dishes WHERE dish_id=?').get(id) as { data: string } | undefined;
+    return row ? dishPreapprovalMaterial(rowToDish(row)) : null;
+  };
+  const defaultMaterial = (recipeId: string): unknown => {
+    const row = db.prepare('SELECT dish_id FROM dishes WHERE recipe_id=? AND is_default=1')
+      .get(recipeId) as { dish_id: string } | undefined;
+    return { dish_id: row?.dish_id ?? null };
+  };
+  const mutateDefaults = <T>(recipeIds: string[], write: () => T): T => {
+    const [id, ...rest] = [...new Set(recipeIds)];
+    return id === undefined ? write() : mutatePreapprovalResource(db, 'recipe_default_dish', id,
+      () => defaultMaterial(id), () => mutateDefaults(rest, write));
+  };
 
   const priorBytes = (dish_id: string): number => {
     const row = db
@@ -115,24 +136,36 @@ export const createDishStore = (
     },
 
     set(dish) {
-      const serialized = JSON.stringify(dish);
-      const prev = priorBytes(dish.dish_id);
-      db.prepare(`
-        INSERT INTO dishes (dish_id, recipe_id, is_default, group_id, data) VALUES (?, ?, ?, ?, ?)
-        ON CONFLICT (dish_id) DO UPDATE SET
-          recipe_id  = excluded.recipe_id,
-          is_default = excluded.is_default,
-          group_id   = excluded.group_id,
-          data       = excluded.data
-      `).run(dish.dish_id, dish.recipe_id, dish.is_default ? 1 : 0, dish.group_id ?? null, serialized);
-      reportDelta(serialized.length - prev);
+      db.transaction(() => {
+        const prior = db.prepare('SELECT recipe_id FROM dishes WHERE dish_id=?').get(dish.dish_id) as { recipe_id: string } | undefined;
+        mutateDefaults([dish.recipe_id, ...(prior ? [prior.recipe_id] : [])], () =>
+          mutatePreapprovalResource(db, 'dish', dish.dish_id, () => material(dish.dish_id), () => {
+            const serialized = JSON.stringify(dish);
+            const prev = priorBytes(dish.dish_id);
+            db.prepare(`
+              INSERT INTO dishes (dish_id, recipe_id, is_default, group_id, data) VALUES (?, ?, ?, ?, ?)
+              ON CONFLICT (dish_id) DO UPDATE SET
+                recipe_id  = excluded.recipe_id,
+                is_default = excluded.is_default,
+                group_id   = excluded.group_id,
+                data       = excluded.data
+            `).run(dish.dish_id, dish.recipe_id, dish.is_default ? 1 : 0, dish.group_id ?? null, serialized);
+            reportDelta(serialized.length - prev);
+          }));
+      }).immediate();
     },
 
     delete(dish_id) {
-      const prev = priorBytes(dish_id);
-      const result = db.prepare(`DELETE FROM dishes WHERE dish_id = ?`).run(dish_id);
-      if (result.changes > 0 && prev > 0) reportDelta(-prev);
-      return result.changes > 0;
+      return db.transaction(() => {
+        const prior = db.prepare('SELECT recipe_id FROM dishes WHERE dish_id=?').get(dish_id) as { recipe_id: string } | undefined;
+        return mutateDefaults(prior ? [prior.recipe_id] : [], () =>
+          mutatePreapprovalResource(db, 'dish', dish_id, () => material(dish_id), () => {
+            const prev = priorBytes(dish_id);
+            const result = db.prepare(`DELETE FROM dishes WHERE dish_id = ?`).run(dish_id);
+            if (result.changes > 0 && prev > 0) reportDelta(-prev);
+            return result.changes > 0;
+          }));
+      }).immediate();
     },
 
     detachGroup(group_id) {
@@ -149,7 +182,8 @@ export const createDishStore = (
           const dish = JSON.parse(row.data) as Dish;
           delete dish.group_id;
           const serialized = JSON.stringify(dish);
-          update.run(serialized, dish.dish_id);
+          mutatePreapprovalResource(db, 'dish', dish.dish_id, () => material(dish.dish_id),
+            () => update.run(serialized, dish.dish_id));
           delta += serialized.length - row.data.length;
           ids.push(dish.dish_id);
         }

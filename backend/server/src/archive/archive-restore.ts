@@ -95,6 +95,8 @@ import {
   type RecordWriter,
 } from './archive-import.js';
 import { stageRestoreProvenanceMarker } from './restore-provenance.js';
+import { invalidatePreapprovalLineage } from '../storage/preapproval-lineage.js';
+import { createSqlitePreapprovalSettlementParticipant } from '../storage/preapproval-dispatch-participant.js';
 import { restoreBlobScratchPath } from './archive-scratch.js';
 import { fsyncDir, fsyncFile } from '../durable-fs.js';
 import { resolveServerBundlePath } from '../server-bundle-store.js';
@@ -765,7 +767,11 @@ const rotateStagedGatedActionEpoch = async (
       databaseKey,
     });
     db.pragma('busy_timeout = 0');
-    createSqliteGatedActionChangeClock(db).rotateEpoch();
+    const receiptClock = createSqliteGatedActionChangeClock(db);
+    receiptClock.rotateEpoch();
+    if (db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'preapproval_state'").get()) {
+      invalidatePreapprovalLineage(db, createSqlitePreapprovalSettlementParticipant(db, receiptClock));
+    }
     const checkpoint = db.pragma('wal_checkpoint(TRUNCATE)') as
       | Array<{ busy?: number }>
       | { busy?: number };

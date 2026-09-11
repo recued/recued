@@ -192,6 +192,16 @@ const toCalendarListQuery = (query: CollectionListQuery): CalendarListQuery => {
     );
   }
   const out: CalendarListQuery = { order_by: 'start_at', direction: 'desc' };
+  if (query.calendar_window !== undefined) {
+    out.end_after = query.calendar_window.from;
+    out.start_until = query.calendar_window.before;
+    out.direction = 'asc';
+  }
+  if (query.offset !== undefined) out.offset = query.offset;
+  if (query.filters?.is_all_day !== undefined) {
+    if (typeof query.filters.is_all_day !== 'boolean') throw new Error('calendar is_all_day filter must be a boolean');
+    out.is_all_day = query.filters.is_all_day;
+  }
   if (query.limit !== undefined) out.limit = query.limit;
   if (query.modified_since !== undefined) out.modified_since = query.modified_since;
   const calendarId = query.filters?.calendar_id;

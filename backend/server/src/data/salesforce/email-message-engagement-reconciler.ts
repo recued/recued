@@ -21,6 +21,7 @@
  *  § A.3.5, § A.3.6, § A.3.7. */
 
 import {
+  engagementSubjectHash,
   PLATFORM_REFERENCE_BATCH_SIZE,
   SALESFORCE_DEFAULT_RECONCILIATION_CADENCE,
   SALESFORCE_EMAIL_MESSAGE_FIELDS,
@@ -320,6 +321,13 @@ export const projectEmailMessageEngagementRow = (
   if (typeof raw.Subject === 'string' && raw.Subject.length > 0) {
     meta.subject = raw.Subject;
   }
+  // D-139 § A.9.2b — the CRM half of the mail ↔ engagement subject join.
+  // Same field, same function as the HubSpot reconciler: the matcher is
+  // vendor-agnostic, so the key must be too.
+  const subjectHash = engagementSubjectHash(
+    typeof raw.Subject === 'string' ? raw.Subject : null,
+  );
+  if (subjectHash !== null) meta.subject_hash = subjectHash;
   const fromEmail = canonicalizeEmail(
     typeof raw.FromAddress === 'string' ? raw.FromAddress : null,
   );

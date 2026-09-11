@@ -55,6 +55,7 @@ import {
   type SurfaceErrorEntry,
 } from '../shell/rpc-error-copy.js';
 import { serializeShellRoute } from '../shell/route.js';
+import { preapprovalHref, renderPreapprovalAsk } from './preapproval-route.js';
 
 // ════════════════════════════════════════════════════════════════
 // Style payload + stable attribute hooks
@@ -514,6 +515,10 @@ export const bootstrapApprovalsRoute = (
   heading.setAttribute(APPROVALS_ROUTE_HEADING_ATTR, '');
   heading.textContent = 'Approvals';
   header.appendChild(heading);
+  const reviewedExecutionsLink = doc.createElement('a');
+  reviewedExecutionsLink.href = preapprovalHref();
+  reviewedExecutionsLink.textContent = 'Reviewed executions';
+  header.appendChild(reviewedExecutionsLink);
 
   const refreshButton = doc.createElement('button');
   refreshButton.type = 'button';
@@ -817,6 +822,7 @@ export const bootstrapApprovalsRoute = (
   };
 
   const renderAskRow = (ask: ServerPendingAsk): HTMLElement =>
+    renderPreapprovalAsk(doc, ask) ??
     renderAskCard(
       doc,
       ask,

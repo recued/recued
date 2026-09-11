@@ -115,8 +115,13 @@ export const composeEventTriggers = (
   const dispatcher = createEventTriggerDispatcher({
     bus: warehouseBus,
     store,
+    getPreapprovalDriver: () => executeDeps.preapprovalDriver,
     runtime: {
-      runRecipe: async ({ recipe_id, context, dish_id }) => {
+      runRecipe: async ({ recipe_id, context, dish_id, trigger_id, candidate }) => {
+        const driver = executeDeps.preapprovalDriver;
+        // A queued legacy event cannot acquire a newly composed/accepted
+        // reviewed execution. Live rows are reread even without the driver.
+        if ((driver && !candidate) || (!driver && !store.get(trigger_id)?.enabled)) return { skipped: true };
         // D-179 P2 — fire-time dish gate. A disabled (or vanished)
         // standing dish SKIPS the fire silently: the attachment stays
         // armed, the trigger records a clean fire, and no failed-run
@@ -129,7 +134,7 @@ export const composeEventTriggers = (
               `[event-triggers] skipping fire for recipe ${recipe_id}: dish ${dish_id} `
                 + (dish ? 'is disabled' : 'no longer exists'),
             );
-            return;
+            return { skipped: true };
           }
         }
         // The dispatcher built `context.event` with the canonical
@@ -141,7 +146,7 @@ export const composeEventTriggers = (
         }).event;
         const event_kind =
           event?.topic?.join('.') ?? event?.kind ?? 'event_trigger';
-        const result = await handleExecute(executeDeps, {
+        const request: Parameters<typeof handleExecute>[1] = {
           recipe_id,
           trigger_source: 'event_trigger',
           execution_source: {
@@ -159,12 +164,14 @@ export const composeEventTriggers = (
           // (dish → install → defaults), replacing the retired
           // `config_patch` shallow merge.
           ...(dish_id !== null ? { dish_id } : {}),
-        });
+        };
+        const result = driver ? await driver.executeTrigger(request, candidate!) : await handleExecute(executeDeps, request);
+        if (!result) return { skipped: true };
         emitReactiveFire(eventBus, recipe_id);
         // A trigger-gate skip is a successful evaluation, not a
         // failure — only real execution errors feed the dispatcher's
         // 24h error cap.
-        if (!result.success && !result.trigger_skipped) {
+        if (!result.success && !result.trigger_skipped && !result.awaiting_approval && !result.awaiting_peer) {
           const first = result.errors[0] as { message?: string } | undefined;
           throw new Error(first?.message ?? 'execution failed');
         }

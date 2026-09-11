@@ -555,6 +555,16 @@ describe('handleConnectionProbe real health probes', () => {
       if (body.method === 'initialize') {
         return jsonResponse(200, { jsonrpc: '2.0', id: 1, result: { protocolVersion: '2024-11-05' } });
       }
+      // Case 1 — the same probe now also asks what this server PUSHES. A
+      // server that refuses those two is ordinary, not unhealthy, which is what
+      // the `push.reason` assertion below pins.
+      if (body.method === 'resources/list' || body.method === 'subscriptions/listen') {
+        return jsonResponse(404, {
+          jsonrpc: '2.0',
+          id: 9,
+          error: { code: -32601, message: `Method not found: ${String(body.method)}` },
+        });
+      }
       expect(body.method).toBe('tools/list');
       return jsonResponse(200, {
         jsonrpc: '2.0',
@@ -571,7 +581,15 @@ describe('handleConnectionProbe real health probes', () => {
     expect(storedHealth('mcp', name).tools).toEqual(['search', 'write-note']);
     expect(storedHealth('mcp', name).mcp_tool_schemas)
       .toEqual({ search: {}, 'write-note': {} });
-    expect(fetcher).toHaveBeenCalledTimes(1);
+    // ⛔ A server that does not push stays `ok`. The capability is recorded as
+    // an answer — absent `acknowledged`, a reason — never as a health failure.
+    expect(health.status).toBe('ok');
+    expect(health.push).toMatchObject({ reason: 'listen_method_unsupported' });
+    expect(health.push?.acknowledged).toBeUndefined();
+    expect(storedHealth('mcp', name).push?.reason).toBe('listen_method_unsupported');
+    // tools/list + resources/list + subscriptions/listen — the push question
+    // costs two requests on every modern probe, the same posture as `tools`.
+    expect(fetcher).toHaveBeenCalledTimes(3);
   });
 
   it('falls back from HTTP discovery to the validated legacy lifecycle', async () => {
@@ -774,7 +792,8 @@ describe('handleConnectionProbe real health probes', () => {
       status: 'ok',
       tools: ['first-page', 'second-page'],
     });
-    expect(fetcher).toHaveBeenCalledTimes(2);
+    // +2: the modern probe also asks resources/list + subscriptions/listen.
+    expect(fetcher).toHaveBeenCalledTimes(4);
   });
 
   it('probes MCP websocket through the live connector and caches tool names', async () => {
@@ -841,7 +860,8 @@ describe('handleConnectionProbe real health probes', () => {
     const health = await probe('mcp', name, fetcher, { wsConnect });
 
     expect(health).toMatchObject({ status: 'ok', tools: ['legacy-tool'] });
-    expect(fetcher).toHaveBeenCalledTimes(1);
+    // +2: the modern probe also asks resources/list + subscriptions/listen.
+    expect(fetcher).toHaveBeenCalledTimes(3);
     expect(wsConnect).not.toHaveBeenCalled();
   });
 

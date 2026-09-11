@@ -36,7 +36,9 @@ import {
   type RecuedServerSignature,
   type ToolEntry,
 } from '@recued/contracts';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi, beforeAll, afterAll } from 'vitest';
+
+
 
 import {
   createChatOrchestrator,
@@ -130,7 +132,11 @@ const runResolverIndexToolLoop = async (opts: {
   const db = new Database(':memory:');
   try {
     ensureChatSchema(db);
+  // ⛔ Pin the brief OFF via the SETTER production uses — env is boot-critical only
+  // (owner rule). This file's subject is not the brief; the fold would add a
+  // call to the very dispatch/egress counts asserted here.
     const chatStore = createChatStore(db);
+    chatStore.setRollingBriefEnabled(false);
     chatStore.createSession({ id: 'sess-1', now: NOW - 1_000 });
 
     // Install the catalog, then build the EXACT resolver `composeChatOrchestrator`

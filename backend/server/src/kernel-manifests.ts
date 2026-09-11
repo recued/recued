@@ -7,6 +7,47 @@
 import type { IngredientManifest } from '@recued/contracts';
 
 const MANIFESTS = [
+  ...(['create', 'read', 'update', 'delete'] as const).map(action => ({
+    slug: `mail-draft-${action}`, mcp_exposed: true, name: `${action[0]!.toUpperCase()}${action.slice(1)} saved email draft`,
+    description: 'Manage a local saved draft belonging to the caller. This operation cannot send, schedule or approve a message. Updates and deletion require the current draft revision.',
+    author: 'recued', kind: 'storage' as const, version: 1, category: 'data' as const,
+    risk_tier: action === 'read' ? 'read' as const : action === 'delete' ? 'destructive' as const : 'write' as const,
+    tags: ['kernel', 'mail', 'draft'],
+    input: action === 'create' ? { idempotency_key: null, content: null }
+      : action === 'read' ? { draft_id: null }
+      : action === 'update' ? { draft_id: null, expected_revision: null, content: null }
+      : { draft_id: null, expected_revision: null },
+    output: action === 'delete' ? { deleted: 'deleted' } : { draft_id: 'draft_id', incarnation: 'incarnation',
+      revision: 'revision', content: 'content', origin_contract_id: 'origin_contract_id', created_at: 'created_at', updated_at: 'updated_at' },
+  })),
+  {
+    "slug": "preapproval-request",
+    "mcp_exposed": true,
+    "name": "Request future execution approval",
+    "description": "Prepare one concrete future recipe execution or saved mail draft for the owner's review. Returns a proposal reference and status. Only the owner can approve through the protected review surface; this operation cannot approve, send, arm, or schedule by itself.",
+    "author": "recued",
+    "kind": "storage",
+    "version": 1,
+    "category": "action",
+    "risk_tier": "read",
+    "tags": ["kernel", "approval", "schedule"],
+    "input": {
+      "idempotency_key": null,
+      "subject": null,
+      "activation": null,
+      "decision_deadline": null,
+      "dispatch_deadline": null
+    },
+    "output": {
+      "proposal_id": "proposal_id",
+      "revision": "revision",
+      "future_execution_ref": "future_execution_ref",
+      "status": "status",
+      "coverage": "coverage",
+      "eligible_members": "eligible_members",
+      "uncovered_calls": "uncovered_calls"
+    }
+  },
   {
     "slug": "ai-classify",
     "name": "AI Classifier",

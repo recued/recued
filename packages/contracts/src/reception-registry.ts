@@ -23,6 +23,12 @@ import type {
 // result shape (erased at compile time, so no runtime import cycle —
 // `intake-form-template.ts` value-imports `intake-form-config.ts` only).
 import type { IntakeFormTemplate } from './intake-form-template.js';
+// D-220 Slice B — pack-shipped intake templates (type-only; the runtime
+// dependency runs the other way through the manifest validator).
+import type {
+  PackReceptionTemplateListing,
+  PackReceptionTemplateUnavailable,
+} from './pack-intake-form-template.js';
 import type { FormResponseTriggerFormScope } from './recipe-form-fields.js';
 // D-151 — type-only import for the non-intake config templates carried
 // alongside on the same `reception.template.list` result (likewise
@@ -410,6 +416,18 @@ export interface ReceptionTemplateListResult {
    *  skipped server-side, so this may carry fewer than the six closed-list
    *  `RECEPTION_CONFIG_TEMPLATE_REFS`. */
   readonly config_templates: ReadonlyArray<ReceptionConfigTemplate>;
+  /** D-220 Slice B — `intake_form` templates shipped by INSTALLED packs
+   *  (`pack:<publisher>/<slug>/intake/<name>`), read from the rows the pack
+   *  install persisted. A third array rather than a merge, for the same reason
+   *  `config_templates` is: different provenance, different trust. OPTIONAL on
+   *  the wire — a server that predates Slice B omits it, and a client treats
+   *  absence as an empty list, never as an error. */
+  readonly pack_templates?: ReadonlyArray<PackReceptionTemplateListing>;
+  /** D-220 Slice B — stored pack templates the server could not admit at read
+   *  time (a row written under an earlier rule set that a later safety-matrix
+   *  tightening refuses). Reported so the gallery can say so, never silently
+   *  dropped. Optional on the wire like `pack_templates`. */
+  readonly pack_templates_unavailable?: ReadonlyArray<PackReceptionTemplateUnavailable>;
 }
 
 // ────────────────────────────────────────────────────────────────

@@ -36,10 +36,8 @@ const slotStatus = (
   return { available: true };
 };
 
-/** Compute a full snapshot of every configured source's live state. Runs once
- *  per executeLLM call. Pure side-effects: may invoke the tabProbe callback
- *  which can do I/O, but no mutation of config or quota state. */
-export const buildAvailability = async (deps: BuildAvailabilityDeps): Promise<AvailabilitySnapshot> => {
+/** Current local routing state. No provider or tab I/O and no quota mutation. */
+export const describeLLMAvailability = (deps: BuildAvailabilityDeps): AvailabilitySnapshot => {
   const { config, quota, budgetStatus } = deps;
   const pool = config.free_pool ?? [];
 
@@ -80,3 +78,6 @@ const slotOverCutoff = (
   if (budget === undefined || budget <= 0) return false;
   return quota.tokensToday(slotKey) >= budget;
 };
+
+/** Compatibility wrapper for existing async callers. */
+export const buildAvailability = async (deps: BuildAvailabilityDeps): Promise<AvailabilitySnapshot> => describeLLMAvailability(deps);

@@ -226,6 +226,7 @@ export const createScheduler = (config: SchedulerConfig): SchedulerHandle => {
       }
     }
     try {
+      config.store.noteQualifyingOccurrence?.(schedule.schedule_id, `due:${fireAt}`);
       // D-153 P2.C — pass typed `ExecutionSource` so the execute-handler's
       // policy gate evaluates this run against the
       // `(channel: 'schedule', actor: 'system')` matrix cell. Backfill
@@ -357,6 +358,9 @@ export const createScheduler = (config: SchedulerConfig): SchedulerHandle => {
     const tickMinute = startOfMinute(now());
     const nowMs = now();
     const fired: string[] = [];
+    if (config.executeDeps.preapprovalDriver) {
+      fired.push(...await config.executeDeps.preapprovalDriver.tickSchedules(nowMs));
+    }
 
     const schedules = config.store.list();
     for (const listed of schedules) {
@@ -387,6 +391,7 @@ export const createScheduler = (config: SchedulerConfig): SchedulerHandle => {
           continue;
         }
         if (runAt > nowMs) continue;
+        if (config.store.wasPreapprovalOccurrenceConsumed?.(schedule.schedule_id, `due:${runAt}`)) continue;
         if (firingNow.has(schedule.schedule_id)) continue;
         firingNow.add(schedule.schedule_id);
         try {
@@ -409,6 +414,7 @@ export const createScheduler = (config: SchedulerConfig): SchedulerHandle => {
       const matchesNow = cronMatchesAt(parts, new Date(tickMinute));
 
       if (matchesNow) {
+        if (config.store.wasPreapprovalOccurrenceConsumed?.(schedule.schedule_id, `due:${tickMinute}`)) continue;
         // Regular cycle path. Dedupe: if we already fired this minute,
         // skip — handles tick() called more than once per minute
         // (manual trigger, overlapping timers on clock drift). When

@@ -88,6 +88,11 @@
  *  Spec: D-149 § A.9 (Settings UX integration) + § A.20.1
  *  (Launch Wizard) + § A.20.4 (Share Cards) + § A.3 (preview-hash gate). */
 
+// D-220 Slice B — pack-shipped intake templates on the gallery + seed path.
+import type {
+  PackReceptionTemplateListing,
+  PackReceptionTemplateUnavailable,
+} from '@recued/contracts';
 import type {
   IntakeFormConfig,
   IntakeFormTemplate,
@@ -381,6 +386,14 @@ export interface ReceptionPageHostOptions {
    *  route layer returns its `reception.template.list` `config_templates`
    *  cache. Defaults to `() => []` — no config-template sections render. */
   getConfigTemplates?: () => ReadonlyArray<ReceptionConfigTemplate>;
+  /** D-220 Slice B — resolve the intake templates INSTALLED PACKS shipped
+   *  for the standalone templates-browser modal. The route layer returns its
+   *  `reception.template.list` `pack_templates` cache. Defaults to `() => []`
+   *  — no pack section renders. */
+  getPackTemplates?: () => ReadonlyArray<PackReceptionTemplateListing>;
+  /** D-220 Slice B — stored pack templates the server could not admit
+   *  (`pack_templates_unavailable`), surfaced by the gallery as a note. */
+  getPackTemplatesUnavailable?: () => ReadonlyArray<PackReceptionTemplateUnavailable>;
   /** D-151 — resolve a per-kind config seed from a config-template ref for
    *  the "Use template" flow on a non-intake card. The route wraps the
    *  contract's `receptionConfigFromTemplate` over a loaded template + an
@@ -670,6 +683,9 @@ export const mountReceptionPageHost = (
       host: modalHost,
       templates: opts.getTemplates?.() ?? [],
       configTemplates: opts.getConfigTemplates?.() ?? [],
+      // D-220 Slice B — the pack section + its unavailable note.
+      packTemplates: opts.getPackTemplates?.() ?? [],
+      packTemplatesUnavailable: opts.getPackTemplatesUnavailable?.() ?? [],
       now,
       onUseTemplate: (ref: string, kind: ReceptionEndpointKind): void => {
         transitioning = true;

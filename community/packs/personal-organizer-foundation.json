@@ -5,7 +5,7 @@
   "name": "Personal Organizer Foundation",
   "description": "Use Personal Organizer Foundation in Recued for tasks, commitments, projects, and notes. It includes 10 ready-to-run workflows.",
   "version": 4,
-  "pre_install": true,
+  "bundled": true,
   "recipes": [],
   "contents": [
     {
@@ -72,5 +72,5 @@
   "requires": ["install_bulk_pack", "notification_send"],
   "tags": ["pack:personal-organizer", "foundation", "d-145", "tasks", "commitments", "projects", "notes", "calendar", "mail"],
   "service_kind": "workflow",
-  "pack_kind": "foundation_pack"
+  "pack_kind": "recipe_pack"
 }

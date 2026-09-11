@@ -172,12 +172,21 @@ export interface InDoubtAsk {
  *  `correlation_id` (the link keys, I-9) and `dispatched_at` (the
  *  bistemporal `event_at`). It is JSON-serialisable: the block persists
  *  the payload, never a closure (D-158 I-4). */
-export const buildInDoubtAsk = (commit: Commit): InDoubtAsk => {
+export const buildInDoubtAsk = (
+  commit: Commit,
+  /** ⚠ OPTIONAL, AND ITS ABSENCE IS THE OLD SENTENCE. Without it this asks about
+   *  “salesforce-catalog” (salesforce-catalog) — `commit.tool` and
+   *  `commit.ingredient` are BOTH the catalog slug for a catalog dispatch, so
+   *  the owner was asked whether an entire vendor integration completed. With
+   *  the manifest the same commit names the actual operation. */
+  describe?: (commit: Commit) => string | null,
+): InDoubtAsk => {
   const dispatchedIso = new Date(commit.dispatched_at).toISOString();
+  const named = describe?.(commit) ?? null;
   const message: NotificationMessage = {
     title: 'Unconfirmed action',
     text:
-      `Recued dispatched “${commit.tool}” (${commit.ingredient}) at `
+      `Recued dispatched ${named !== null ? `“${named}”` : `“${commit.tool}” (${commit.ingredient})`} at `
       + `${dispatchedIso}, then crashed before the outcome could be `
       + `confirmed. Did it complete?`,
   };
@@ -280,6 +289,8 @@ export interface RaiseInDoubtResult {
 export const raiseInDoubtAsks = async (
   notifier: InDoubtNotifier,
   commits: readonly Commit[],
+  /** Names the operation instead of the catalog slug. Absent ⇒ prior wording. */
+  describe?: (commit: Commit) => string | null,
 ): Promise<RaiseInDoubtResult> => {
   const askIds: string[] = [];
   const skipped: string[] = [];
@@ -289,7 +300,7 @@ export const raiseInDoubtAsks = async (
       skipped.push(commit.commit_id);
       continue;
     }
-    const { message, options, handler } = buildInDoubtAsk(commit);
+    const { message, options, handler } = buildInDoubtAsk(commit, describe);
     try {
       const { ask_id } = await notifier.ask(message, options, handler);
       askIds.push(ask_id);

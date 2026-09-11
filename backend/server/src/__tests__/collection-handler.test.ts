@@ -138,6 +138,22 @@ describe('platform / slug validation', () => {
 // ────────────────────────────────────────────────────────────────
 
 describe('handleCollectionList', () => {
+  it.each([
+    { calendar_window: null }, { calendar_window: { from: 5, before: 5 } },
+    { calendar_window: { from: 10, before: 5 } }, { calendar_window: { from: NaN, before: 5 } },
+    { calendar_window: { from: 1, before: Infinity } }, { calendar_window: { from: 1, before: 5, ignored: true } },
+    { offset: -1 }, { offset: 1.5 }, { offset: '10' },
+    { filters: { is_all_day: 'true' } }, { filters: { is_all_day: 1 } },
+  ])('rejects malformed calendar pagination and time bounds: %j', async (query) => {
+    registry.register(stubCollection('calendar', 'work'));
+    await expect(handleCollectionList(deps, { platform: 'calendar', slug: 'work', ...query })).rejects.toMatchObject({ code: 'bad_request' });
+  });
+
+  it('rejects calendar-only bounds and pagination on other collections', async () => {
+    for (const query of [{ calendar_window: { from: 1, before: 5 } }, { offset: 0 }]) {
+      await expect(handleCollectionList(deps, { platform: 'mail', slug: 'work', ...query })).rejects.toThrow();
+    }
+  });
   beforeEach(() => {
     registry.register(stubCollection('mail', 'work', {
       records: [mkRecord('r1'), mkRecord('r2')],

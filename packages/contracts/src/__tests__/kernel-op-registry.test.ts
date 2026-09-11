@@ -38,10 +38,12 @@ const EXPECTED_DOMAIN_COUNTS: Record<string, number> = {
   // D-239 — + the four write-back ops (9 → 13): mark / flag / move / delete.
   // `data.mail` mutates an EXISTING message for the first time here; the prior
   // nine were reads plus the two send-side verbs, which only ever created.
-  mail: 13,
+  // D-261 — four individually governed durable draft operations.
+  mail: 17,
   contact: 4,
   customer: 1,
   notification: 2,
+  preapproval: 1,
   // D-192 F1 added core.work-entity.commitment.propose (the review-then-
   // approve proposal surface). 2026-07-16 added the NATIVE `core.work-entity.read`
   // verb-op (15 writes → +1 read): the domain's READ half had no grant handle at
@@ -225,10 +227,14 @@ describe('D-182 slice 3a — kernel op registry', () => {
       'core.dom.read|dom|dom-read|read',
       'core.dom.write|dom|dom-write|write',
       'core.mail.body-read|mail|mail-body-read|read',
-      // D-239 — the write-back four. `delete` is the only `destructive` op in
-      // the mail domain; mark / flag / move are internal `write`s that stay
+      // D-239 — the write-back four. `delete` is destructive; D-261 adds
+      // draft deletion with the same risk. Mark / flag / move are writes that stay
       // silent at the owner ceiling and surface under a contract.
       'core.mail.delete|mail|mail-delete|destructive',
+      'core.mail.draft.create|mail|mail-draft-create|write',
+      'core.mail.draft.delete|mail|mail-draft-delete|destructive',
+      'core.mail.draft.read|mail|mail-draft-read|read',
+      'core.mail.draft.update|mail|mail-draft-update|write',
       'core.mail.email.get|mail|email-get|read',
       'core.mail.email.list|mail|email-list|read',
       'core.mail.email.search|mail|email-search|read',
@@ -274,6 +280,7 @@ describe('D-182 slice 3a — kernel op registry', () => {
       // exists on every server rather than only where a pack was added.
       'core.peer.receive-answer|peer|(native)|write',
       'core.peer.receive-ask|peer|(native)|write',
+      'core.preapproval.request|preapproval|preapproval-request|read',
       // ⛔ NATIVE, own domain — the grant handle for `recall.search`. It buys the ROW
       // without touching the WIRE: the tool stays hand-built into the chat registry
       // view, so no door gains it. Adding it to `TIER1_TOOL_NAMES` would have bought

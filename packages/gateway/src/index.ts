@@ -120,6 +120,7 @@ export {
   SAGA_TARGET_COLLECTION,
   SAGA_ASK_OPTIONS,
   detectTornSaga,
+  describeCommitOperation,
   buildSagaAsk,
   createSagaAnswerHandler,
   registerSagaHandler,

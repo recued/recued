@@ -1,4 +1,5 @@
 import { beforeEach, describe, it, expect, vi } from 'vitest';
+import Database from 'better-sqlite3';
 import type { ExecutionContext, ExecutionResult } from '@recued/engine';
 import {
   executionSourceContractId,
@@ -11,6 +12,10 @@ import { createManifestRegistry } from '../manifest-loader.js';
 import { createRecipeStore } from '../recipe-store.js';
 import { InFlightRegistry } from '../execution/in-flight-registry.js';
 import { LaneSemaphore } from '../execution/lane-semaphore.js';
+import { withChatToolCallContext } from '../chat-tool-call-context.js';
+import { createChatStore, ensureChatSchema } from '../storage/chat-store.js';
+import { createChatToolCallStore } from '../storage/chat-tool-call-store.js';
+import { createChatRunSettledSink } from '../chat-run-settled-sink.js';
 
 /** D-166 Slice 4d.3 — the engine `ExecutionContext` gained an `actor`
  *  carrier field, threaded by `handleExecute` from
@@ -209,7 +214,9 @@ describe('D-166 4d.3 — handleExecute threads execution_source.actor onto ctx',
       return successResult();
     });
 
-    await handleExecute({ ...makeDeps(), inFlightRegistry }, {
+    const bind = vi.fn();
+    const durableProgress = vi.fn(() => true);
+    await withChatToolCallContext({ bind, progress: durableProgress }, () => handleExecute({ ...makeDeps(), inFlightRegistry }, {
       recipe_id: RECIPE_ID,
       execution_source: {
         channel: 'user',
@@ -217,9 +224,50 @@ describe('D-166 4d.3 — handleExecute threads execution_source.actor onto ctx',
         user_id: 'u1',
         client_token_id: 'client1',
       },
-    });
+    }));
 
     expect(capturedRunId).toEqual(expect.any(String));
     expect(reportProgress).toHaveBeenCalledWith(capturedRunId, 'provider-event');
+    expect(bind).toHaveBeenCalledExactlyOnceWith(capturedRunId, RECIPE_ID);
+    expect(durableProgress).toHaveBeenCalledWith(capturedRunId, expect.any(Number), false);
+  });
+
+  it('tracks an authorized resume without the originating chat async context', async () => {
+    const db = new Database(':memory:');
+    try {
+      ensureChatSchema(db);
+      const store = createChatStore(db);
+      store.createSession({ id: 'resumed-chat' });
+      const source = { channel: 'chat' as const, actor: 'user_self' as const,
+        user_id: 'owner', chat_session_id: 'resumed-chat', turn_id: 'original-turn' };
+      const signature = { server_kind: 'recued' as const, instance_id: 'test', version: '1' };
+      const old = createChatToolCallStore(db, store.appendMessage, 'old-process');
+      await old.start({ id: 'original-call', session_id: 'resumed-chat', turn_id: 'original-turn',
+        role: 'tool', tool_name: 'recipe.run', content: 'original ask',
+        target_server: 'self', picker_at_send: { display_name: 'self', signature },
+        model_used: { provider: 'recued', model_id: 'tool-call' }, execution_source: source });
+      old.bind('original-call', 'resumed-run');
+      old.hold('original-call');
+      executeRecipeMock.mockImplementationOnce(async (ctx: ExecutionContext) => {
+        expect(ctx.run_id).toBe('resumed-run');
+        expect(store.toolCalls!.get('original-call')?.state).toBe('running');
+        ctx.onProgress?.({ type: 'sequential_step_started', step_id: 'noop', index: 0, total: 1 });
+        expect(store.toolCalls!.get('original-call')?.last_signal_at).toEqual(expect.any(Number));
+        const afterRestart = createChatToolCallStore(db, store.appendMessage, 'next-process');
+        expect(afterRestart.get('original-call')?.state).toBe('interrupted');
+        return successResult();
+      });
+      const response = await handleExecute({ ...makeDeps(), db,
+        inFlightRegistry: new InFlightRegistry(new LaneSemaphore()) },
+      { recipe_id: RECIPE_ID, execution_source: source },
+      { run_id: 'resumed-run', resume_from: { gated_step_id: 'noop', step_state: {} } });
+      expect(executeRecipeMock).toHaveBeenCalledTimes(1);
+      expect(store.toolCalls!.get('original-call')?.state).toBe('interrupted');
+      await createChatRunSettledSink(store, signature, { emit: vi.fn() })({
+        execution_source: source, run_id: 'resumed-run', tool_name: 'recipe.run',
+        result: response, ts: Date.now(),
+      });
+      expect(store.toolCalls!.get('original-call')?.state).toBe('succeeded');
+    } finally { db.close(); }
   });
 });

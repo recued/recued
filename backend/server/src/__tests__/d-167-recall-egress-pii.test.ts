@@ -10,7 +10,11 @@ import {
 } from '@recued/contracts';
 import { piiEgress } from '@recued/gateway';
 import { shouldSeedEntityValue } from '@recued/middleware-prompt-cache';
-import { phoneMatchDigits } from '@recued/transforms';
+import {
+  aliasIdentifierField,
+  phoneMatchDigits,
+  rawLedgerValuesInText,
+} from '@recued/transforms';
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 
@@ -20,7 +24,9 @@ import {
   wrapExecuteAiCallForPii,
   type PiiEgressPlan,
 } from '../chat-pii-egress.js';
+import { briefAsPriorToolCall } from '../chat-rolling-brief.js';
 import type { ExecuteChatAiCall } from '../chat-orchestrator.js';
+import { buildBriefPrompt } from '../chat-rolling-brief.js';
 import {
   createContactKnownValueIndexBuilder,
   RECALL_WITHHELD_MESSAGE,
@@ -1441,5 +1447,350 @@ describe('recall egress — fail CLOSED on a degraded shield (absence is NOT fai
     } finally {
       db.close();
     }
+  });
+});
+
+describe('rolling brief carrying recall-derived content', () => {
+  /** ⛔⛔ THE JOIN NEITHER SUITE COVERS. The recall suite above always drives a
+   *  packet that CARRIES `recall_context`; the rolling-brief suite drives briefs
+   *  with no PII wiring at all. The packet that leaks sits between them: a LATER
+   *  turn that does no recall of its own, carrying a brief whose text holds a
+   *  contact that only ever came from recall. Gate the whole-warehouse index on
+   *  `hasRecallContext` alone and that name reaches the model RAW — the
+   *  cross-session recall leak D-167 closes, reopened through the carry.
+   *
+   *  🔑 WHAT ACTUALLY HOLDS THE PROPERTY IS `hasPriorToolCalls`, NOT the recall
+   *  branch: `briefAsPriorToolCall` ships the brief as a `context.brief` entry in
+   *  `prior_tool_calls`, and `result` is a scanned data field. That is an
+   *  INCIDENTAL join — nothing declares that the brief must ride a scanned field
+   *  — so it is exactly the kind of property that regresses silently. Pin it. */
+  const briefCall = (finding: string): Record<string, unknown> =>
+    briefAsPriorToolCall({
+      intent: 'total the charges',
+      constraints: [],
+      pending: [],
+      findings: [finding],
+      completed: [],
+    }) as unknown as Record<string, unknown>;
+
+  const planWith = (
+    getContactKnownValueIndex: () => RecallResolver | undefined,
+  ): PiiEgressPlan => {
+    const state = new Map<string, unknown>();
+    const middleware = createPiiProtectMiddleware({
+      ledgerStore: piiEgress.createSessionLedgerStore(),
+      resolver: piiEgress.noopFieldPrivacyResolver,
+      getContactKnownValueIndex,
+    });
+    middleware.prompt?.({ session_id: 's', surface: 'chat', state } as never);
+    return readPiiEgressPlan(state as Parameters<typeof readPiiEgressPlan>[0])!;
+  };
+
+  it('aliases a recalled contact carried in the brief when the packet has NO recall_context', async () => {
+    const plan = planWith(() => recallResolver({ names: ['Diego Okafor'] }));
+
+    const { rawPrompt, packet } = await egress(
+      plan,
+      priorPrompt({
+        call: briefCall('The Diego Okafor retainer is 274 units.'),
+        // ⚠ The user never types the name — if they had, the LEDGER scan would
+        //   alias it and the test would pass without the recall index at all.
+        user_message: 'add up the charges',
+      }),
+    );
+
+    // The packet is the shape this test claims: a brief, and no recall field.
+    expect(Array.isArray(packet['prior_tool_calls'])).toBe(true);
+    expect(packet['recall_context']).toBeUndefined();
+    // The contact never reached the model raw.
+    expect(rawPrompt).not.toContain('Diego Okafor');
+  });
+
+  it('builds the whole-warehouse recall index for a brief-only packet', async () => {
+    let builds = 0;
+    const plan = planWith(() => {
+      builds += 1;
+      return recallResolver({ names: ['Diego Okafor'] });
+    });
+
+    await egress(
+      plan,
+      priorPrompt({
+        call: briefCall('The Diego Okafor retainer is 274 units.'),
+        user_message: 'add up the charges',
+      }),
+    );
+
+    // Narrow the gate back to `hasRecallContext` and this is 0.
+    expect(builds).toBe(1);
+  });
+});
+
+describe('prior_tool_calls — args are a RECORD, not recall content', () => {
+  /** ⛔⛔ ONE ENTITY MUST HAVE ONE SURFACE FORM. The whole `prior_tool_calls`
+   *  array used to go through the recall pass, which runs
+   *  `decorateOverlapReveal` on every string leaf — so the model's own echoed
+   *  ARGUMENTS got a coreference tail.
+   *
+   *  🔑 MEASURED (bench 343, run z-343-r4): one packet, one contact, TWO forms —
+   *  `user_message` + `prefetch_context` carried plain `pii.Person1` /
+   *  `m1@d1.invalid`, `prior_tool_calls` carried `pii.Person1.dana.reyes` /
+   *  `m1.dana.reyes@d1.invalid`. The model used the only email form it was ever
+   *  shown; its echoed args returned in a form appearing NOWHERE in what it
+   *  read. The grounding corpus excludes `prior_tool_calls` by design, so that
+   *  identifier is unattributable: refused, re-sent, refused — 9 rounds to a
+   *  timeout.
+   *
+   *  ⛔ AN EMAIL IS EXACT-MATCH. A tail is a harmless hint on a NAME; on an
+   *  ADDRESS one extra character is a different address. The name alias already
+   *  carries the coreference, so the email tail buys nothing and costs exactness.
+   *
+   *  `aliasRecallContextField` already draws this line for the identical shape;
+   *  this pins the same rule for `prior_tool_calls`. */
+  const withPriorCall = (args: unknown, result: unknown) => JSON.stringify({
+    available_tools: [],
+    commitment_context: [],
+    chat_tail: [],
+    // Discloses the NAME, which is what arms overlap-reveal at all.
+    user_message: 'Dana Reyes asked me to audit the rings',
+    prior_tool_calls: [{
+      tool_name: 'memory.write', tier: 1, args, status: 'ok',
+      result, started_at: 0, completed_at: 1,
+    }],
+  });
+
+  it('does NOT put a coreference tail on an echoed tool-call ARG', async () => {
+    const state = new Map<string, unknown>();
+    const middleware = createPiiProtectMiddleware({
+      ledgerStore: piiEgress.createSessionLedgerStore(),
+      resolver: piiEgress.noopFieldPrivacyResolver,
+      getContactKnownValueIndex: () => recallResolver({
+        names: ['Dana Reyes'], emails: ['dana.reyes@northwind.example'],
+      }),
+    });
+    middleware.prompt?.({ session_id: 's', surface: 'chat', state } as never);
+    const plan = readPiiEgressPlan(state as Parameters<typeof readPiiEgressPlan>[0])!;
+
+    const { rawPrompt } = await egress(plan, withPriorCall(
+      { provenance_entity_ids: ['dana.reyes@northwind.example'] },
+      { ok: true },
+    ));
+    const packet = JSON.parse(rawPrompt) as Record<string, unknown>;
+    const argsOut = JSON.stringify(
+      (packet['prior_tool_calls'] as Array<{ args: unknown }>)[0]!.args,
+    );
+
+    // The real address never egresses.
+    expect(argsOut).not.toContain('northwind.example');
+    // ⛔ THE PROPERTY: whatever alias form the arg takes, it carries NO
+    //    disclosed-name tail. Restore the whole-array recall pass and the arg
+    //    comes back as `m1.dana.reyes@d1.invalid` — a form the model never saw.
+    expect(argsOut).not.toMatch(/m\d+\.[a-z.]*dana/i);
+    expect(argsOut).not.toMatch(/pii\.Person\d+\.[a-z]/i);
+  });
+
+  it('keeps ONE surface form for the contact across packet fields', async () => {
+    const state = new Map<string, unknown>();
+    const middleware = createPiiProtectMiddleware({
+      ledgerStore: piiEgress.createSessionLedgerStore(),
+      resolver: piiEgress.noopFieldPrivacyResolver,
+      getContactKnownValueIndex: () => recallResolver({ names: ['Dana Reyes'] }),
+    });
+    middleware.prompt?.({ session_id: 's', surface: 'chat', state } as never);
+    const plan = readPiiEgressPlan(state as Parameters<typeof readPiiEgressPlan>[0])!;
+
+    const { rawPrompt } = await egress(plan, withPriorCall(
+      { note: 'Dana Reyes requested the audit' }, { ok: true },
+    ));
+    // A field-dependent surface form is the defect: the model cannot tell
+    // "same contact rendered twice" from "two different contacts".
+    const plain = (rawPrompt.match(/pii\.Person\d+(?![.\w])/g) ?? []).length;
+    const tailed = (rawPrompt.match(/pii\.Person\d+\.[a-z]/gi) ?? []).length;
+    expect({ tailed_forms_in_args_path: tailed > 0 && plain > 0 }).toEqual(
+      { tailed_forms_in_args_path: false },
+    );
+  });
+});
+
+
+describe('the rolling brief packet is on the alias boundary', () => {
+  /** ⛔⛔⛔ A REAL LEAK, SHIPPED, AND THIS FILE PREDICTED IT. The uniform scan is
+   *  an ENUMERATION — its own note on `execution_precedent` says "a new
+   *  model-bound field is silently absent from it and reaches the provider
+   *  unaliased, WITH NOTHING FAILING." The rolling brief added four such fields
+   *  (`user_request`, `carried_forward`, `tool_results_since`,
+   *  `pending_user_statements`) and none were enumerated.
+   *
+   *  🔑 MEASURED 2026-09-09 over 2,865 outbound packets: 144 (5.0%) carried the
+   *  seed contact's REAL NAME, and every one was a BRIEF packet —
+   *  `carried_forward` 88, `user_request` 70, `tool_results_since` 43. The MAIN
+   *  packet of the same turn carried `pii.Person1` and no raw name, so the
+   *  ledger was live throughout: nothing was mis-aliased, the fields were simply
+   *  never looked at.
+   *
+   *  ⚠ Aliasing is BEST-EFFORT by design ("aliasing may miss, restore may not"),
+   *  so an unenumerated field does not fail — it silently egresses raw. That is
+   *  exactly why this needs a test per field rather than one happy-path case. */
+  const briefPacket = (field: string): string => JSON.stringify({
+    available_tools: [],
+    user_request: field === 'user_request' ? 'Dana Reyes asked for the audit' : 'x',
+    carried_forward: field === 'carried_forward'
+      ? { intent: 'audit', findings: ['Dana Reyes owns the rings'] } : null,
+    tool_results_since: field === 'tool_results_since'
+      ? [{ tool_name: 'work.read', result: { note: 'filed by Dana Reyes' } }] : [],
+    pending_user_statements: field === 'pending_user_statements'
+      ? ['Dana Reyes set the levy'] : [],
+  });
+
+  const planWithContact = () => {
+    const state = new Map<string, unknown>();
+    const middleware = createPiiProtectMiddleware({
+      ledgerStore: piiEgress.createSessionLedgerStore(),
+      resolver: piiEgress.noopFieldPrivacyResolver,
+      getContactKnownValueIndex: () => recallResolver({ names: ['Dana Reyes'] }),
+    });
+    middleware.prompt?.({ session_id: 's', surface: 'chat', state } as never);
+    return readPiiEgressPlan(state as Parameters<typeof readPiiEgressPlan>[0])!;
+  };
+
+  /** ⛔⛔⛔ THE PER-FIELD LOOP BELOW CANNOT CATCH THE FAILURE ITS OWN COMMENT
+   *  DESCRIBES. Its field list is HAND-WRITTEN, so it tests exactly the fields
+   *  someone remembered — while the harm is "a NEW model-bound field is
+   *  silently absent from the enumeration and reaches the provider unaliased,
+   *  WITH NOTHING FAILING". A list maintained by the same person who forgot the
+   *  enumeration is not a guard against forgetting.
+   *
+   *  🔑 SO THIS ONE NAMES NO FIELDS: it fills every USER-ORIGINATED slot of a
+   *  real fold packet with the contact's name and asserts the raw name egresses
+   *  ZERO times. Add a user-text field and forget the enumeration, and this goes
+   *  red without anyone having listed it.
+   *
+   *  ⛔⛔ TWO PACKET FIELDS ARE DELIBERATELY EXCLUDED, AND THE FIRST DRAFT OF
+   *  THIS TEST WRONGLY FLAGGED BOTH — it asserted that EVERY field must be
+   *  alias-scanned, which is false, and reported 2 leaks that were its own
+   *  artifacts:
+   *    · `recall_context` — not model-authored prose but the RECALL RESULTS,
+   *      carried in their own typed shape and aliased by the recall path
+   *      (`aliasEntityPayloadForEgress`), not the uniform scan. The draft
+   *      invented a `{disclosedTexts}` shape production never sends, so it fell
+   *      through unaliased and looked like a leak.
+   *    · `prior_working_unverified` — the MODEL'S OWN planning text from a prior
+   *      turn. The model only ever saw `pii.Person1`, so its output is already
+   *      alias-form; this is the same reason `RecallScanContext` excludes
+   *      assistant text, "it is aliased on egress … treating it as disclosed
+   *      would over-reveal a fragment the user never typed".
+   *  ⇒ the invariant is not "every field is scanned" but "every field carrying
+   *  USER-ORIGINATED text is scanned". A field that can only hold model output
+   *  needs no scan, and asserting otherwise manufactures false leaks. */
+  it('no user-originated field of a full brief packet egresses the raw name', async () => {
+    const NAME = 'Dana Reyes';
+    const full = JSON.stringify({
+      available_tools: [],
+      user_request: `${NAME} asked for the audit`,
+      carried_forward: {
+        intent: `audit for ${NAME}`,
+        constraints: [`${NAME} set the levy at 318`],
+        findings: [`${NAME} owns the rings`],
+        pending: [`ask ${NAME} about ring 09`],
+        completed: [`read ${NAME}'s note`],
+      },
+      tool_results_since: [
+        { tool_name: 'work.read', result: { note: `filed by ${NAME}` } },
+      ],
+      pending_user_statements: [`${NAME} set the levy`],
+    });
+    const plan = planWithContact();
+    aliasIdentifierField(plan.ledger, 'name', NAME);
+    const { rawPrompt } = await egress(plan, full);
+    const leaked = rawPrompt.split(NAME).length - 1;
+    expect(
+      leaked,
+      `raw contact name egressed ${String(leaked)}x — a user-originated field is `
+      + 'missing from `uniformContentScanDataFields`',
+    ).toBe(0);
+  });
+
+  for (const field of [
+    'user_request', 'carried_forward', 'tool_results_since', 'pending_user_statements',
+  ]) {
+    it(`aliases the contact in \`${field}\``, async () => {
+      const plan = planWithContact();
+      // ⚠ SEED THE SESSION LEDGER FIRST, as production does. The brief call is
+      //   never the turn's first packet — the MAIN packet has already aliased
+      //   the contact (from the PREFETCH entity records, which arrive by wrapper
+      //   closure and are not reachable from this helper). The content pass is
+      //   LEDGER-ANCHORED, so with an empty ledger there is nothing to match and
+      //   all four tests fail for a reason unrelated to the enumeration.
+      aliasIdentifierField(plan.ledger, 'name', 'Dana Reyes');
+      const { rawPrompt } = await egress(plan, briefPacket(field));
+      // Drop the field from the enumeration and this goes red — silently, in
+      // production, which is the whole point.
+      expect(rawPrompt).not.toContain('Dana Reyes');
+    });
+  }
+});
+
+
+describe('RAW-VALUE RATCHET — no ledger value may egress unaliased', () => {
+  /** ⛔⛔⛔ THE COMPLEMENT OF THE VOCABULARY CHECK, AND THE ONE THAT CATCHES A
+   *  LEAK. `classifyAliasTokens` asks whether every alias token is one the
+   *  ledger issued — that catches a rewritten surface form. A LEAK EMITS NO
+   *  TOKEN AT ALL, so it is structurally blind to it. This asks the opposite.
+   *
+   *  🔑 It exists because the leak was live: the brief's four packet fields were
+   *  absent from the egress enumeration and 144 of 2,865 corpus packets (5.0%)
+   *  shipped the contact's real name. Aliasing is BEST-EFFORT ("aliasing may
+   *  miss, restore may not"), so nothing threw, logged, or failed.
+   *
+   *  ⇒ DRIVES THE REAL `buildBriefPrompt` RATHER THAN A HAND-WRITTEN SHAPE. A
+   *  test that lists today's fields only ever catches today's gap; the next
+   *  field added to the builder would ship unaliased exactly as these four did.
+   *  Building the packet with the production builder means a new PII-carrying
+   *  field fails HERE, on the day it is added. */
+  it('no ledger value survives a real brief packet', async () => {
+    const state = new Map<string, unknown>();
+    const middleware = createPiiProtectMiddleware({
+      ledgerStore: piiEgress.createSessionLedgerStore(),
+      resolver: piiEgress.noopFieldPrivacyResolver,
+      getContactKnownValueIndex: () => recallResolver({ names: ['Dana Reyes'] }),
+    });
+    middleware.prompt?.({ session_id: 's', surface: 'chat', state } as never);
+    const plan = readPiiEgressPlan(state as Parameters<typeof readPiiEgressPlan>[0])!;
+    // The brief is never a turn's first packet — the main packet has already
+    // aliased the contact into the session ledger from the prefetch records.
+    aliasIdentifierField(plan.ledger, 'name', 'Dana Reyes');
+
+    // PII in EVERY input the builder accepts, so no field is exercised by luck.
+    const prompt = buildBriefPrompt({
+      userMessage: 'Dana Reyes asked me to audit the rings',
+      previous: {
+        intent: 'audit for Dana Reyes',
+        constraints: ['Dana Reyes set the levy at 318'],
+        pending: ['report back to Dana Reyes'],
+        findings: ['Dana Reyes owns the Kestrel rings'],
+        completed: ['emailed Dana Reyes'],
+      },
+      since: [{
+        tool_name: 'work.read', tier: 1, args: { q: 'Dana Reyes' },
+        status: 'ok', result: { note: 'filed by Dana Reyes' },
+        started_at: 0, completed_at: 1,
+      }] as never,
+      earlierUserMessages: ['Dana Reyes set the levy'],
+    });
+
+    const { rawPrompt } = await egress(plan, prompt);
+    const leaked = rawLedgerValuesInText(plan.ledger, rawPrompt);
+    expect({ leaked, raw: rawPrompt.includes('Dana Reyes') })
+      .toEqual({ leaked: [], raw: false });
+  });
+
+  it('⛔ the detector actually fires — it is not vacuously empty', async () => {
+    // The permitting witness. Without this, a detector that always returns []
+    // would make the ratchet above pass forever.
+    const l = piiEgress.createSessionLedgerStore().getOrCreate('s2');
+    aliasIdentifierField(l, 'name', 'Dana Reyes');
+    expect(rawLedgerValuesInText(l, 'a note from Dana Reyes today'))
+      .toEqual(['Dana Reyes']);
+    expect(rawLedgerValuesInText(l, 'a note from pii.Person1 today')).toEqual([]);
   });
 });

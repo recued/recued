@@ -168,6 +168,32 @@ export const RESTORE_GUARD_NON_USER_TABLES: ReadonlySet<string> = new Set<string
   // owner activity remains in `gated_action_receipts`, which is deliberately
   // NOT denylisted and therefore still blocks a destructive pre-pair restore.
   'gated_action_change_sequence',
+  // Boot-created 2026-09-06 by D-261 pre-approval. All four are derived /
+  // process / config bookkeeping, seeded by `composePreapproval` at first open:
+  //   `preapproval_state`             — singleton realm lineage
+  //   `preapproval_limits`            — singleton owner limit overrides (env-derived)
+  //   `preapproval_workers`           — this process's dispatch fence + heartbeat
+  //   `preapproval_resource_identity` — content hashes of automation/recipe material
+  // None holds owner content, so denylisting them removes no user-data signal.
+  //
+  // ⛔ THE THIRD TIME. The two notes above already describe this exact trap —
+  // "a derived-bookkeeping table is the easiest kind to add without thinking
+  // about this guard" (`audit_usage`, 2026-08-05) and "the next such table
+  // walked into it the same way" (`fts_content_format`, 2026-08-26). D-261 added
+  // FOUR at once and the fresh-baseline test went five-red again. A warning
+  // written twice did not stop the third occurrence, because nothing outside
+  // this test connects "I created a table at boot" to "restore onto a fresh
+  // install". The durable fix is upstream of this list, not another paragraph in
+  // it: any new boot-seeded table needs a decision here BEFORE it ships.
+  //
+  // ⚠ ONLY these four. The pre-approval tables that carry owner decisions —
+  // `preapproval_proposals` / `_grants` / `_decisions` / `_executions` /
+  // `_members` and the rest — are empty on a fresh server, stay COUNTED, and
+  // must keep blocking a destructive pre-pair restore.
+  'preapproval_state',
+  'preapproval_limits',
+  'preapproval_workers',
+  'preapproval_resource_identity',
   // 2. SERVER identity / config / networking / system state — populated by
   //    SETUP (identity, hostnames, TLS, exposure, operator config), never by user
   //    activity. Empty on the empty-config fresh-baseline yet non-empty on a

@@ -105,7 +105,7 @@ const deny = (
   detail: string,
 ): ApprovalResumeAuthorityResult => ({ admitted: false, reason, detail });
 
-const llmGatewayTokenId = (source: ExecutionSource): string | null => {
+export const llmGatewayTokenId = (source: ExecutionSource): string | null => {
   if (source.channel !== 'chat' || source.actor !== 'contracted_user') return null;
   const prefix = 'llm_gateway:';
   if (!source.chat_session_id.startsWith(prefix)) return null;
@@ -441,4 +441,3 @@ export const createApprovalResumeAuthorityResolver = (
     }
   },
 });
-

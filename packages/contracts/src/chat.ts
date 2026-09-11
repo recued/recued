@@ -1092,6 +1092,146 @@ export const partitionPriorToolCalls = (
   return { prior, recall };
 };
 
+/** D-213 — the body a recall RECEIPT carries in place of its dropped `result`.
+ *
+ *  ⛔⛔ THIS RECORDS WHAT HAPPENED; IT DOES NOT ADVISE. The receipt used to
+ *  carry a `note` telling the model what to do next, and TWO OF ITS THREE
+ *  CLAUSES WERE FALSE. It said the result "was shown to you at the time" —
+ *  true inside that packet, where the live result rides in `recall_context`,
+ *  but receipts SURVIVE THE FOLD, so after one the claim points at content the
+ *  model can no longer reach. And it said "rephrasing and asking again produces
+ *  another line like this one and nothing more", which is simply wrong: a fresh
+ *  call returns a fresh `recall_context` with the real data. Verified on task
+ *  363 (report 2026-09-08T16-24, turn 8) — the model called
+ *  `recall.search {query:"three charges", sources:["interaction"]}`, the call
+ *  ran `status: ok` with `matches: []`, and the carried receipt described none
+ *  of that.
+ *
+ *  🔑 `match_count` ANSWERS THE OBJECTION THE NOTE EXISTED FOR. The worry was
+ *  that a receipt with no result reads as "this query returned nothing" — a
+ *  false signal when the store may be full. A COUNT settles it either way and
+ *  is strictly more informative than the prose it replaces: `match_count: 0`
+ *  says the QUERY missed (try different terms), `match_count: 12` says the
+ *  query hit and only the CONTENT is unretained (ask again in the turn you need
+ *  it, or read a retaining store).
+ *
+ *  ⚠ THE ANTI-LOOP BOUND IS `RECALL_SEARCH_CALLS_PER_TURN`, NOT COPY. The old
+ *  note's absoluteness is what discouraged the measured rephrase loop
+ *  (2026-09-06 run `15-19-06-591Z`, four rounds deep). It bought that with a
+ *  false claim, and a tool result carrying advice is a PROMPT — it makes the
+ *  tool's output a function of whatever the advice was last tuned to, which
+ *  cannot be benched separately from retrieval. Facts about the result belong
+ *  here; instructions belong in the system prompt, in one versioned place. */
+export const RECALL_RECEIPT_RESULT = { retained: false } as const;
+
+/** Count the rows a recall result carried, across the recall tools' differing
+ *  shapes (`recall.search` → `matches`, `memory.search` → `memories`).
+ *  Returns undefined when no array field is recognised, so an unknown shape
+ *  omits the field rather than asserting a wrong zero. */
+export const recallMatchCount = (result: unknown): number | undefined => {
+  if (result === null || typeof result !== 'object') return undefined;
+  const row = result as Record<string, unknown>;
+  for (const key of ['matches', 'memories', 'items', 'results'] as const) {
+    const value = row[key];
+    if (Array.isArray(value)) return value.length;
+  }
+  return undefined;
+};
+
+/** Is this result already a receipt? A receipt that is re-projected — the
+ *  post-fold survivor path — must not be re-wrapped, and must LOSE its pointer:
+ *  the live result is no longer in the packet to point at. */
+const asReceiptBody = (
+  result: unknown,
+): Record<string, unknown> | undefined => (
+  result !== null
+  && typeof result === 'object'
+  && (result as Record<string, unknown>)['retained'] === false
+    ? { ...(result as Record<string, unknown>) }
+    : undefined
+);
+
+/** Build the receipt body for one recall result.
+ *
+ *  ⛔⛔ THE POINTER IS CONDITIONAL BECAUSE IT IS NOT ALWAYS TRUE. On the first
+ *  projection the live result is moved into this packet's `recall_context`, so
+ *  `result_in: 'recall_context'` is a fact the model can act on — the content
+ *  is RIGHT THERE, aliased, in the same packet. Measured on a live packet:
+ *  `recall_context` 1240 b carrying the full payload while `prior_tool_calls`
+ *  held the receipt beside it.
+ *
+ *  ⛔ BUT A RECEIPT THAT SURVIVES A FOLD IS RE-PROJECTED, and then
+ *  `recall_context` carries RECEIPTS ONLY — verified on report
+ *  2026-09-08 `ac2-noanticalc-2`, 343: post-fold packets alternate
+ *  `live_in_rc=true` and `receipt_in_rc=true, live_in_rc=false`. Pointing at
+ *  `recall_context` in that state sends the model to a field holding another
+ *  copy of this same receipt. So the pointer is DROPPED on re-projection and
+ *  its absence is honest: there is nowhere to point.
+ *
+ *  🔑 `match_count` SURVIVES BOTH, because it stays true either way: it is what
+ *  the query returned when it ran, and that does not change when the content
+ *  leaves the packet. */
+const receiptBody = (result: unknown): Record<string, unknown> => {
+  const prior = asReceiptBody(result);
+  if (prior !== undefined) {
+    delete prior['result_in'];
+    return prior;
+  }
+  const n = recallMatchCount(result);
+  return {
+    ...RECALL_RECEIPT_RESULT,
+    result_in: 'recall_context',
+    ...(n === undefined ? {} : { match_count: n }),
+  };
+};
+
+/** D-213 — reduce a non-retainable recall dispatch to a RECEIPT: its own
+ *  identity (tool name, tier, the model's verbatim `args`, status, timings)
+ *  with the recalled `result` replaced by `RECALL_RECEIPT_RESULT`.
+ *
+ *  ⛔ WHY THE ARGS MAY STAY WHEN THE RESULT MAY NOT. `args` is what the MODEL
+ *  emitted — it is the model's own words, already aliased inbound by the same
+ *  egress pass as every other retained call, so it discloses nothing the model
+ *  was not already holding. `result` is the recalled content itself, the one
+ *  field that carries the owner's data, and it is the only field dropped.
+ *  `detail` is dispatch-side error text, which exists only when there is no
+ *  result to leak.
+ *
+ *  🔑 THE DEFECT THIS CLOSES: removing recall calls from `prior_tool_calls`
+ *  outright left the model unable to observe an action it had taken. It could
+ *  not learn that a query was fruitless, so after a trim it re-derived the same
+ *  plan and re-issued the identical query — in one bench run, the same four
+ *  `memory.search` queries five times over, every one `ok`, none ever visible,
+ *  until the tool-loop cap ended the turn with the work undone. The loop is
+ *  stable precisely because the failing action is invisible to the actor. */
+export const toRecallReceipt = (
+  call: ChatPriorToolCall,
+): ChatPriorToolCall => (
+  // An errored recall dispatch never produced a result, so it has nothing to
+  // drop and its `reason`/`detail` are the whole signal — pass it through. The
+  // substitution applies only where recalled content would otherwise sit.
+  call.status === 'ok'
+    ? { ...call, result: receiptBody(call.result) }
+    : call
+);
+
+/** D-213 — project `prior_tool_calls` for the main-turn packet: every
+ *  non-retainable recall call becomes a receipt, everything else passes through
+ *  untouched, and ORDER IS PRESERVED so the model reads its own dispatch
+ *  history in the sequence it happened.
+ *
+ *  ⚠ This is the composer's projection, NOT the brief's. The rolling brief
+ *  keeps using `partitionPriorToolCalls`, because it receives the full recall
+ *  content in the typed `recall_context` field and must be free to read it. */
+export const withRecallReceipts = (
+  calls: readonly ChatPriorToolCall[],
+): ChatPriorToolCall[] =>
+  calls.map((call) =>
+    NON_RETAINABLE_RECALL_TOOL_NAMES.has(call.tool_name)
+      ? toRecallReceipt(call)
+      : call,
+  );
+
 /** § A.5 — per-source provenance reference (used by scope-search
  *  result rendering + cross-server attribution invariants). */
 export interface ChatProvenanceRef {
@@ -1232,6 +1372,8 @@ export interface ChatMessage {
   };
   model_used: { provider: string; model_id: string };
   tool_calls?: ChatToolCall[];
+  /** Lifecycle of an early-written tool dispatch row. */
+  tool_call?: import('./chat-tool-call.js').ChatToolCallRecord;
   provenance?: ChatProvenanceRef[];
   attachments?: ChatMessageAttachment[];
   /** Durable grounding for a user-requested Data explanation or safe check.
@@ -1376,6 +1518,10 @@ export type ChatRpcMethod =
   | 'chat.session.clear_model_pref'
   | 'chat.default_model_pref.get'
   | 'chat.default_model_pref.set'
+  | 'chat.rolling_brief.get'
+  | 'chat.rolling_brief.set'
+  | 'chat.session.brief.get'
+  | 'chat.session.brief.clear'
   // D-137 W2.2 § A.1.1 — Mary's per-kind catalog scope. Per-pair
   // setting (not per-session); reads via `chat.tool_catalog.get`,
   // writes via `chat.tool_catalog.set` (which emits the
@@ -1476,6 +1622,10 @@ export const CHAT_RPC_METHODS: ReadonlyArray<ChatRpcMethod> = [
   'chat.session.clear_model_pref',
   'chat.default_model_pref.get',
   'chat.default_model_pref.set',
+  'chat.rolling_brief.get',
+  'chat.rolling_brief.set',
+  'chat.session.brief.get',
+  'chat.session.brief.clear',
   'chat.tool_catalog.get',
   'chat.tool_catalog.set',
   'chat.connection_mcp.list',
@@ -1626,6 +1776,8 @@ export type ChatSessionChangedField =
   | 'model_pref'
   | 'title'
   | 'archived'
+  /** A durable tool call changed; refresh its display without starting a turn. */
+  | 'tool_call'
   /** A turn started or ended on this session — `value` is a boolean. The one
    *  field here that is PROCESS state rather than stored state: it is never
    *  read back from a row, and after a server restart every session is idle
@@ -1637,6 +1789,7 @@ export const CHAT_SESSION_CHANGED_FIELDS: ReadonlyArray<ChatSessionChangedField>
   'model_pref',
   'title',
   'archived',
+  'tool_call',
   'busy',
 ] as const;
 
@@ -1864,7 +2017,7 @@ export const TIER1_TOOL_DESCRIPTORS: Readonly<Record<Tier1ToolName, Tier1ToolDes
   'memory.search': {
     name: 'memory.search',
     description:
-      "Recall saved KNOWLEDGE from Mary's memory pool — facts, decisions, preferences, product/domain notes she or you saved with `memory.write`. Its job is CROSS-SESSION recall: knowledge from earlier sessions that the current conversation never carried. Free-text `query` matches the summary AND the full body. Bodies come back inline when they fit a per-call budget; a `truncated` entry gives you its `memory_id` — call again with `memory_id` for the full text. READ `match` BEFORE USING THE RESULTS — it says how well they actually matched: `exact` = every word you searched for is present, treat the top result as the answer; `relaxed` = every meaningful word is present, filler words were dropped, still reliable; `loose` = NO entry contained all your terms and these merely share some, so treat them as candidates to weigh, never as the answer, and tell Mary the match was approximate; `semantic` = NO entry shared any of your words, so these were found by MEANING alone — check the entry is really about what was asked before relying on it, and say you found it by meaning rather than by wording. `top_margin` (0-1) is how far the first result outscores the second: near 1 the leader clearly wins, near 0 they are interchangeable and you must not silently pick one — say they are equally close, or ask. Do NOT call it to re-fetch something already said in THIS conversation: that text is already in front of you, so answer from it directly. It does NOT hold run history (what a recipe did), nor mail/calendar/contact records — use the specific tool for those.",
+      "Recall saved KNOWLEDGE from Mary's memory pool — facts, decisions, preferences, product/domain notes she or you saved with `memory.write`. Its job is CROSS-SESSION recall: knowledge from earlier sessions that the current conversation never carried. Free-text `query` matches the summary AND the full body. Bodies come back inline when they fit a per-call budget; a `truncated` entry gives you its `memory_id` — call again with `memory_id` for the full text. READ `match` BEFORE USING THE RESULTS — it says how well they actually matched: `exact` = every word you searched for is present, treat the top result as the answer; `relaxed` = every meaningful word is present, filler words were dropped, still reliable; `loose` = NO entry contained all your terms and these merely share some, so treat them as candidates to weigh, never as the answer, and tell Mary the match was approximate; `semantic` = NO entry shared any of your words, so these were found by MEANING alone — check the entry is really about what was asked before relying on it, and say you found it by meaning rather than by wording. `top_margin` (0-1) is how far the first result outscores the second: near 1 the leader clearly wins, near 0 they are interchangeable and you must not silently pick one — say they are equally close, or ask. Do NOT call it to re-fetch something already said in THIS conversation — this pool holds saved knowledge, not the transcript. Only the most recent few turns are still in front of you; anything earlier has scrolled out of view but is NOT lost — `recall.search` brings it back. It does NOT hold run history (what a recipe did), nor mail/calendar/contact records — use the specific tool for those.",
     arg_schema: {
       type: 'object',
       properties: {
@@ -1893,7 +2046,7 @@ export const TIER1_TOOL_DESCRIPTORS: Readonly<Record<Tier1ToolName, Tier1ToolDes
   'memory.write': {
     name: 'memory.write',
     description:
-      "Save a durable memory to the user's shared memory pool — a fact, decision, or piece of knowledge worth remembering across sessions. Reach for it when the user says \"remember that …\", or you have derived a fact worth persisting for later recall (readable back via `memory.search`). The entry is transparently attributed to the AI and is visible + reversible in the Memory view. Do NOT use it for transient conversation state (already in front of you) or a one-off answer. ⛔ Do NOT use it for PREFERENCES or any setting with a current value (\"prefers morning meetings\", \"always cc Sam\"): this pool never supersedes an entry, so a later change leaves BOTH stored and recall returns them as equally-ranked contradictions it cannot choose between. Record the durable fact behind a choice if there is one; leave the setting itself to the user. Give a concise `summary` (the recall line) plus, when there is more to it, a longer `body`.",
+      "Save a durable memory to the user's shared memory pool — a fact, decision, or piece of knowledge worth remembering across sessions. Reach for it when the user says \"remember that …\", or you have derived a fact worth persisting for later recall (readable back via `memory.search`). The entry is transparently attributed to the AI and is visible + reversible in the Memory view. ⛔ Everything said in this conversation is ALREADY saved automatically and stays retrievable with `recall.search`, including turns that have scrolled out of view — so \"she only said it here\" or \"it is recorded nowhere else\" is NEVER a reason to save something. Do NOT use it for a fact the user just told you, for transient conversation state, or for a one-off answer. ⛔ Do NOT SAVE any value that can change — a rate, price, levy, surcharge, quota, schedule, deadline, or preference (\"the warehouse levy is N units per pallet\", \"the renewal closes in Q3\", \"prefers morning meetings\", \"always cc Sam\"): this pool never supersedes an entry, so when the value later changes BOTH are stored and recall returns them as equally-ranked contradictions it cannot choose between. Save the EVENT that set a value if there is one (\"the Q3 levy was renegotiated on 2026-08-14\"); leave the setting itself to the user. ⚠ This governs what you SAVE, nothing else — a figure you already hold is yours to use and report as normal. Give a concise `summary` (the recall line) plus, when there is more to it, a longer `body`.",
     arg_schema: {
       type: 'object',
       required: ['summary'],
@@ -1901,7 +2054,7 @@ export const TIER1_TOOL_DESCRIPTORS: Readonly<Record<Tier1ToolName, Tier1ToolDes
         summary: {
           type: 'string',
           description:
-            'REQUIRED — a concise, self-contained statement of the memory (the line shown in the feed + recalled later). E.g. "Prefers morning meetings" or "Acme renewal closes 2026-Q3".',
+            'REQUIRED — a concise, self-contained statement of the memory (the line shown in the feed + recalled later). It must name something that HAPPENED and cannot change, e.g. "The Dublin office moved to Pearse Street in March 2026" or "Acme switched to net-60 terms at the 2026 renegotiation" — never a running value such as a rate, a price, or a renewal date.',
         },
         body: {
           type: 'string',
@@ -2015,7 +2168,7 @@ export const TIER1_TOOL_DESCRIPTORS: Readonly<Record<Tier1ToolName, Tier1ToolDes
   'work.search': {
     name: 'work.search',
     description:
-      "Search Mary's work items — one `kind` per call: `task`, `project`, `note`, `commitment`, or `booking` (a reservation: customer, price, how it ended, and its own date/time in `slot_start_at` / `slot_end_at` — a booking is NOT a calendar event and is never in the calendar) — across every registered Source: Recued's records, synced vendor mirrors, and `read_through` Sources fetched directly on demand without canonical work-entity materialization. Filter with `query` (case-insensitive substring over title + body text) / `source_id` / `done`. Each result `id` is Source-qualified routing metadata: pass it VERBATIM to `work.read` or the matching provider operation; never strip or rewrite its prefix. A mirrored row can also go to a generic `data.<kind>` update/delete; a `live: true` read-through item has no local row, so write it through its matching provider operation. `source_freshness: read_through` means the result was fetched live and was not written to `data_<kind>`; other external freshness states describe poll-synced local mirrors that can trail the vendor. Any `long_text.fidelity: 'preview'` is a bounded excerpt — NEVER present it as the complete body (use `work.read` with `fidelity: 'remote_detail'` for the full text). Set `current: true` only when the user asks for latest/right-now state, `detail: true` only when complete bodies are needed — both trigger bounded targeted reads for mirrored candidates; read-through Sources are already live. If the result carries `narrow`, the query exceeded the read cap: narrow it (or answer from retained local rows disclosing `limitations`), do not re-send unchanged. This tool never invokes an LLM, but it can invoke declared provider read operations.",
+      "Search Mary's work items — one `kind` per call: `task`, `project`, `note`, `commitment`, or `booking` (a reservation: customer, price, how it ended, and its own date/time in `slot_start_at` / `slot_end_at` — a booking is NOT a calendar event and is never in the calendar) — across every registered Source: Recued's records, synced vendor mirrors, and `read_through` Sources fetched directly on demand without canonical work-entity materialization. Filter with `query` (word match over title + body text) / `source_id` / `done`. Each result `id` is Source-qualified routing metadata: pass it VERBATIM to `work.read` or the matching provider operation; never strip or rewrite its prefix. A mirrored row can also go to a generic `data.<kind>` update/delete; a `live: true` read-through item has no local row, so write it through its matching provider operation. `source_freshness: read_through` means the result was fetched live and was not written to `data_<kind>`; other external freshness states describe poll-synced local mirrors that can trail the vendor. `long_text.truncated: true` means the text was CUT to keep the result small, and `omitted_chars` says by how much — decide from that number whether a `work.read` is worth a round-trip (a hundred missing characters usually is not; several thousand usually is). ⛔ `truncated` is independent of `fidelity` and is the one that tells you text is missing: `fidelity: 'complete'` describes where the text CAME FROM (a canonical column rather than a vendor preview lane), NOT that you are holding all of it — a complete-fidelity field can still arrive truncated. `fidelity: 'preview'` is a bounded excerpt from a vendor and is never complete content whatever its length. In both cases `work.read` with `fidelity: 'remote_detail'` is the full text, and in neither case may you present a cut excerpt as the whole body. Set `current: true` only when the user asks for latest/right-now state, `detail: true` only when complete bodies are needed — both trigger bounded targeted reads for mirrored candidates; read-through Sources are already live. If the result carries `narrow`, the query exceeded the read cap: narrow it (or answer from retained local rows disclosing `limitations`), do not re-send unchanged. This tool never invokes an LLM, but it can invoke declared provider read operations.",
     arg_schema: {
       type: 'object',
       properties: {
@@ -2026,7 +2179,13 @@ export const TIER1_TOOL_DESCRIPTORS: Readonly<Record<Tier1ToolName, Tier1ToolDes
         },
         query: {
           type: 'string',
-          description: 'Case-insensitive substring over title and body/description text.',
+          description:
+            'Words to find in the title or body/description. Case-insensitive, and ALL '
+            + 'your words must appear, in any order — plurals and other endings match their '
+            + 'stem, so "weekly reports" finds "Weekly report". Matching is by WHOLE WORD: '
+            + 'a fragment of a word finds nothing (`estrel` does not find `Kestrel`), so pass '
+            + 'real words, or a trailing `*` to match a prefix (`Kestr*`). Omit to list '
+            + 'everything of this kind.',
         },
         source_id: {
           type: 'string',

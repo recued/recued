@@ -1,9 +1,11 @@
+import { fileURLToPath } from 'node:url';
 import { expect, test } from '@playwright/test';
 import { build } from 'esbuild';
 
 const PACK_SLUG = 'mail-tools';
 const PACK_CARD = 'data-recued-discover-card';
 const PACK_SEARCH = 'data-recued-discover-search';
+const PACK_INSTALLED_ONLY = 'data-recued-packs-surface-installed-only';
 const PACK_LIST = 'data-recued-packs-surface-list';
 const PACK_DETAIL = 'data-recued-packs-surface-detail';
 const PACK_BACK = 'data-recued-packs-detail-back';
@@ -16,151 +18,12 @@ const PACK_DIALOG_INSTALL = 'data-recued-packs-dialog-install';
 const PACK_DIALOG_CANCEL = 'data-recued-packs-dialog-cancel';
 const PACK_DIALOG_PERMISSION = 'data-recued-packs-dialog-permission';
 
-const rigEntry = `
-import { bootstrapPacksRoute } from './apps/webclient/src/packs/bootstrap-packs-route.ts';
-
-const manifest = {
-  manifest_version: 1,
-  slug: '${PACK_SLUG}',
-  publisher: 'recued-core',
-  name: 'Mail Tools',
-  description: 'Daily mail workflows.',
-  version: 1,
-  recipes: [{ slug: 'mail-digest', version: 1 }],
-  requires: ['install_bulk_pack', 'read_mail'],
-  tags: ['mail', 'workflow'],
-  service_kind: 'workflow',
-};
-const pack = {
-  slug: manifest.slug,
-  publisher: manifest.publisher,
-  name: manifest.name,
-  description: manifest.description,
-  version: manifest.version,
-  pre_install: false,
-  installed: true,
-  installed_any_version: true,
-  requires: [...manifest.requires],
-  recipe_count: manifest.recipes.length,
-  body_visibility_grant_count: 0,
-  manifest,
-};
-let finishRecipes;
-const listeners = new Map();
-const subscribe = (kind, listener) => {
-  const current = listeners.get(kind) ?? new Set();
-  current.add(listener);
-  listeners.set(kind, current);
-  return () => current.delete(listener);
-};
-const recipes = new Promise((resolve) => {
-  finishRecipes = () => resolve({ recipes: [] });
-});
-let installed = true;
-let installCalls = 0;
-let finishInstall;
-let failInstall;
-const install = new Promise((resolve) => {
-  finishInstall = () => {
-    installed = true;
-    resolve({
-      result: { ok: true, installed: [], rolled_back: [] },
-    });
-  };
-  failInstall = () => resolve({
-    result: {
-      ok: false,
-      installed: [],
-      rolled_back: [],
-      failure: { code: 'permission_denied', message: 'Permission missing.' },
-    },
-  });
-});
-let uninstallCalls = 0;
-let finishUninstall;
-let failUninstall;
-const uninstall = new Promise((resolve) => {
-  finishUninstall = () => {
-    installed = false;
-    resolve({
-      result: {
-        ok: true,
-        removed: { recipes: [], standing_instructions: 0, body_grants: [] },
-      },
-    });
-  };
-  failUninstall = () => resolve({
-    result: {
-      ok: false,
-      removed: { recipes: [], standing_instructions: 0, body_grants: [] },
-      failure: { code: 'not_found', message: 'Pack disappeared.' },
-    },
-  });
-});
-
-let route;
-const mountRoute = (initialPackSlug) => bootstrapPacksRoute({
-  root: document.querySelector('#root'),
-  document,
-  packsListCaller: async () => ({
-    packs: [{
-      ...pack,
-      installed,
-      installed_any_version: installed,
-    }],
-    installed_versions: installed
-      ? [{ slug: pack.slug, version: pack.version }]
-      : [],
-  }),
-  packsInstallCaller: () => {
-    installCalls += 1;
-    return install;
-  },
-  packsUninstallCaller: () => {
-    uninstallCalls += 1;
-    return uninstall;
-  },
-  recipesListCaller: () => recipes,
-  subscribe,
-  ...(initialPackSlug === undefined ? {} : { initialPackSlug }),
-});
-globalThis.__packsFocusRig = {
-  finishRecipes: () => finishRecipes(),
-  finishInstall: () => finishInstall(),
-  failInstall: () => failInstall(),
-  getInstallCalls: () => installCalls,
-  finishUninstall: () => finishUninstall(),
-  failUninstall: () => failUninstall(),
-  getUninstallCalls: () => uninstallCalls,
-  showUninstalled: () => {
-    installed = false;
-    for (const listener of listeners.get('pack_uninstalled') ?? []) {
-      listener({ kind: 'pack_uninstalled' });
-    }
-  },
-  firePackChanged: () => {
-    for (const listener of listeners.get('pack_installed') ?? []) {
-      listener({ kind: 'pack_installed' });
-    }
-  },
-  remountDeepLink: () => {
-    route.dispose();
-    route = mountRoute('${PACK_SLUG}');
-  },
-};
-route = mountRoute();
-`;
-
 let rigScript = '';
 
 test.beforeAll(async () => {
   const result = await build({
-    stdin: {
-      contents: rigEntry,
-      loader: 'ts',
-      resolveDir: process.cwd(),
-      sourcefile: 'packs-focus-rig.ts',
-    },
+    entryPoints: [fileURLToPath(new URL('./harness/packs-focus-rig.ts', import.meta.url))],
+    resolveExtensions: ['.ts', '.tsx', '.mjs', '.js', '.json'],
     bundle: true,
     platform: 'browser',
     format: 'iife',
@@ -250,6 +113,10 @@ test.beforeEach(async ({ page }) => {
 
 test('Packs never paints a stale search response beneath a newer query', async ({ page }) => {
   await expect(page.locator(`[${PACK_CARD}][data-id="${PACK_SLUG}"]`)).toBeVisible();
+  const installedOnly = page.locator(`[${PACK_INSTALLED_ONLY}]`);
+  await expect(installedOnly).toHaveAttribute('aria-pressed', 'true');
+  await installedOnly.click();
+  await expect(installedOnly).toHaveAttribute('aria-pressed', 'false');
   await page.evaluate(() => {
     const originalFetch = globalThis.fetch.bind(globalThis);
     const state = {
@@ -400,6 +267,9 @@ test('Packs preserves the focused card through a live catalog repaint', async ({
 });
 
 test('Packs keeps keyboard ownership when paging reaches the final page', async ({ page }) => {
+  const installedOnly = page.locator(`[${PACK_INSTALLED_ONLY}]`);
+  await expect(installedOnly).toHaveAttribute('aria-pressed', 'true');
+  await installedOnly.click();
   const next = page.getByRole('button', { name: 'Next ›' });
   await expect(next).toBeVisible();
   await next.focus();

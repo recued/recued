@@ -11,6 +11,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   partitionPriorToolCalls,
+  withRecallReceipts,
   type ChatPriorToolCall,
   type ChatTailMessage,
 } from '@recued/contracts';
@@ -54,7 +55,11 @@ interface Packet {
  *  composer did — the byte-identity target. Uses the SAME partition primitive,
  *  so a mismatch can only come from the split surgery, not the partition. */
 const legacyBody = (p: Packet): string => {
-  const { prior, recall } = partitionPriorToolCalls(p.prior_tool_calls ?? []);
+  const { recall } = partitionPriorToolCalls(p.prior_tool_calls ?? []);
+  // D-213 — `prior_tool_calls` carries recall RECEIPTS (the dispatch minus its
+  // recalled result), so the reconstruction uses the same projection. The
+  // invariant under test is the prefix/body split, not the receipt policy.
+  const prior = withRecallReceipts(p.prior_tool_calls ?? []);
   return JSON.stringify({
     available_tools: p.available_tools,
     commitment_context: [] as const,

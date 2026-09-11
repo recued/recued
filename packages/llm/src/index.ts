@@ -76,7 +76,7 @@ export { LLM_PROVIDER_REGISTRY } from './providers/registry.js';
 export type { LlmProviderEntry, ChatAdapterBuildDeps } from './providers/registry.js';
 
 // Availability / match / preflight
-export { buildAvailability } from './availability.js';
+export { buildAvailability, describeLLMAvailability } from './availability.js';
 export type { BuildAvailabilityDeps } from './availability.js';
 export { matchLLM, SPEED_RANK, candidateSlotsForLayer } from './match.js';
 export type { MatchRequest, MatchDeps, MatchFailureDetails, ForceLayer, PinnedSlot } from './match.js';
@@ -84,14 +84,14 @@ export { preflightMatch } from './preflight.js';
 export type { PreflightResult, PreflightStepMeta, PreflightIssue, PreflightDeps } from './preflight.js';
 
 // Executor
-export { executeLLM, deriveRequires, resolveLLMModelId, BATCH_ELEMENT_MEDIA_KEY } from './executor.js';
+export { executeLLM, prepareLLMInput, buildLLMCompletionRequest, describeLLMMatch, deriveRequires, resolveLLMModelId, BATCH_ELEMENT_MEDIA_KEY } from './executor.js';
 // The provider-error classifier. Public because a caller that reacts to a
 // provider failure (the gateway, and any test asserting on one) must be able to
 // produce and recognise the SAME wrapped/truncated message shape the adapters
 // raise — hand-copying that format is how a detector passes its unit test and
 // misses every live rejection.
 export { classifyProviderError } from './adapters/anthropic.js';
-export { completeWithFallbacks } from './executor.js';
+export { completeWithFallbacks, describeInitialLLMProviderRequest } from './executor.js';
 // D-208 follow-on — the wire role is DETECTED, never configured. The gateway's
 // raw direct path calls the adapter itself, so it needs the same seam.
 export {
@@ -119,12 +119,13 @@ export type { EndpointCapabilityNote } from './endpoint-capabilities.js';
 export {
   probeLlmSource,
   probeEmbeddingsSource,
+  probeTranscriptionSource,
   diagnoseProbeFailure,
   LLM_PROBE_TIMEOUT_MS,
 } from './probe.js';
 export type { LlmProbeResult, LlmProbeDiagnosis, ProbeLlmSourceDeps } from './probe.js';
 
-export type { LLMExecutorDeps, MatchContextHook, LLMMatchResolved } from './executor.js';
+export type { LLMProviderInvocation, LLMExecutorDeps, MatchContextHook, LLMMatchResolved } from './executor.js';
 
 // Timeout policy
 export {

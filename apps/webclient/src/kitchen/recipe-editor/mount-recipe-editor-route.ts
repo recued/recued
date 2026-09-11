@@ -27,10 +27,13 @@ import type {
 } from '@recued/contracts';
 import { PRIMITIVE_STYLES } from '@recued/ui-shared/primitives';
 
+import type { DraftRecovery } from './editor-history.js';
+import type { RecipeSimulationCaller } from './recipe-simulation-caller.js';
 import { serializeShellRoute } from '../../shell/route.js';
 import { humanizeRpcError } from '../../shell/rpc-error-copy.js';
 import {
   bootstrapRecipeEditorRoute,
+  RECIPE_EDITOR_ROUTE_ATTR,
   type RecipeEditorRoute,
   type RecipeSaveResult,
   type RecipeWebhookControl,
@@ -83,10 +86,15 @@ export const FORM_RESPONSE_WORKFLOW_TEMPLATE_USE_ATTR =
 const MOUNT_STYLES_MARKER = 'data-recued-recipe-editor-mount-styles';
 const MOUNT_STYLES = `
 [${MOUNT_RECIPE_EDITOR_HOST_ATTR}] {
+  box-sizing: border-box;
   max-width: 1080px;
   margin: 0 auto;
   padding: 24px;
   color: var(--fg);
+}
+[${MOUNT_RECIPE_EDITOR_HOST_ATTR}]:has(> [${RECIPE_EDITOR_ROUTE_ATTR}]) {
+  max-width: 1200px;
+  padding: 0;
 }
 [${MOUNT_RECIPE_EDITOR_STATUS_ATTR}] {
   margin: 0;
@@ -233,6 +241,7 @@ export type RecipeListCaller = () => Promise<{
 }>;
 
 export interface MountRecipeEditorRouteOptions {
+  recovery?: DraftRecovery;
   root: HTMLElement;
   document?: Document;
   /** The recipe to load into the editor (seg 1 of `#kitchen/recipe/<id>`). */
@@ -241,6 +250,7 @@ export interface MountRecipeEditorRouteOptions {
    *  caller (each entry carries `recipe`; there is no `recipe.get`). */
   listCaller: RecipeListCaller;
   validateCaller: (args: { recipe: RecipeDefinition }) => Promise<RecipeValidateResult>;
+  simulateCaller?: RecipeSimulationCaller;
   saveCaller: (args: {
     recipe: RecipeDefinition;
     publisher_id?: string;
@@ -264,6 +274,7 @@ export interface MountRecipeEditorRoute {
 }
 
 export interface MountFormResponseRecipeSeedRouteOptions {
+  recovery?: DraftRecovery;
   root: HTMLElement;
   document?: Document;
   /** Stable form-definition scope. No submission id or answer data belongs in
@@ -276,6 +287,7 @@ export interface MountFormResponseRecipeSeedRouteOptions {
    *  minted, so repeat visits do not hide existing automations. */
   listCaller: RecipeListCaller;
   validateCaller: (args: { recipe: RecipeDefinition }) => Promise<RecipeValidateResult>;
+  simulateCaller?: RecipeSimulationCaller;
   saveCaller: (args: {
     recipe: RecipeDefinition;
     publisher_id?: string;
@@ -420,10 +432,12 @@ export const mountRecipeEditorRoute = (
       }
       clearChildren(host);
       editor = bootstrapRecipeEditorRoute({
+        recovery: options.recovery,
         root: host,
         ...(options.document !== undefined ? { document: options.document } : {}),
         initialRecipe: entry.recipe,
         validateCaller: options.validateCaller,
+        simulateCaller: options.simulateCaller,
         saveCaller: options.saveCaller,
         ...(webhookControl ? { webhookControl } : {}),
         ...(options.onSaved !== undefined ? { onSaved: options.onSaved } : {}),
@@ -526,11 +540,13 @@ export const mountFormResponseRecipeSeedRoute = (
           );
       clearChildren(host);
       editor = bootstrapRecipeEditorRoute({
+        recovery: options.recovery,
         root: host,
         ...(options.document !== undefined ? { document: options.document } : {}),
         initialRecipe,
         initialDirty: true,
         validateCaller: options.validateCaller,
+        simulateCaller: options.simulateCaller,
         saveCaller: options.saveCaller,
         ...(options.onSaved !== undefined ? { onSaved: options.onSaved } : {}),
       });

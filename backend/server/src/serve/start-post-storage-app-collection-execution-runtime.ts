@@ -367,6 +367,7 @@ export const startPostBaseStorageVaultRuntime = async (
             auditLog: storageContext.auditLog,
             commitStore: storageContext.commitStore,
             gatedActionStore: storageContext.gatedActionStore,
+            preapprovalStorage: storageContext.preapprovalStorage,
             fileStack: storageContext.fileStack,
             // D-210 Phase C — so the boot sweep does not re-raise the
             // actionable ask for a notify-mode reception hold that is

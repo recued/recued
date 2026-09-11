@@ -24,6 +24,7 @@ import type { CollectionContext } from './compose-collection-context.js';
 import type { ReceptionInboxFanoutMode } from '@recued/contracts';
 import type { GatedActionStore } from '../gated-action-store.js';
 import type { PreflightBootSweepDeps } from '../preflight-boot-sweep.js';
+import type { PreapprovalStorage } from '../storage/preapproval-storage.js';
 
 export interface StartBootRecoveryAndAdaptersOptions {
   readonly lifecycle: Lifecycle | undefined;
@@ -33,6 +34,7 @@ export interface StartBootRecoveryAndAdaptersOptions {
   readonly auditLog: AuditLogStore | undefined;
   readonly commitStore: CommitStore | undefined;
   readonly gatedActionStore?: GatedActionStore;
+  readonly preapprovalStorage?: Pick<PreapprovalStorage, 'recover'> & Partial<Pick<PreapprovalStorage, 'repository'>>;
   readonly getBatch?: PreflightBootSweepDeps['getBatch'];
   readonly reconcileOpenBatch?: PreflightBootSweepDeps['reconcileOpenBatch'];
   /** Exact peer-delivery journal recovery runs before generic dispatch-claim
@@ -168,8 +170,18 @@ export const startBootRecoveryAndAdapters = async (
       });
     }
 
+    // D-261 owns its receipt, member and pending commit as one transaction.
+    // Run before generic approval replay; never hand its rows to the legacy
+    // receipt/commit sweeps. While the vault is locked the pre-approval
+    // storage gate stays closed; the normal unlock UI remains available.
+    // Other recovery failures must stop boot before any scheduler starts.
+    if (options.preapprovalStorage) {
+      await options.preapprovalStorage.recover();
+    }
+
     if (notificationBlock && checkpointStore && auditLog) {
       await recoverNotificationBlockAtBoot({
+        canPublishReviewedCheckpoint: checkpoint => options.preapprovalStorage?.repository?.canPublishCheckpoint(checkpoint.checkpoint_id) ?? false,
         block: notificationBlock,
         checkpointStore,
         auditLog,

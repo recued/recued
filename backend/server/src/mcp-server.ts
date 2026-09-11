@@ -2932,7 +2932,7 @@ const handleToolCall = async (
         trigger_source: 'mcp',
         execution_source: executionSource,
         contract_snapshot: contractSnapshot,
-      });
+      }, { entry_tool_name: params.name });
       // Project a preflight-HELD ingredient run to its clean agent-facing
       // shape (no bare `success:false` that reads as a silent failure).
       return await textProjectedExecuteResult(result, deps, params.name);
@@ -3010,7 +3010,7 @@ const handleToolCall = async (
       trigger_source: 'mcp',
       execution_source: executionSource,
       contract_snapshot: contractSnapshot,
-    } as ExecuteRequest);
+    } as ExecuteRequest, { entry_tool_name: params.name });
     try {
       if (named) return text(await runOne(connection as string));
       // Unnamed `search` — fan out over the connections the DESCRIPTOR offers,
@@ -3296,7 +3296,7 @@ const handleToolCall = async (
               deps.recordsStore!.isInstalledCatalogOperation(catalogSlug, operationKey),
           });
         }
-        const result = await handleExecute(deps, req);
+        const result = await handleExecute(deps, req, { entry_tool_name: params.name });
         // Project a preflight-HELD run to its clean agent-facing shape (no
         // bare `success:false`, which an MCP agent reads as a silent failure).
         return await textProjectedExecuteResult(result, deps, params.name);

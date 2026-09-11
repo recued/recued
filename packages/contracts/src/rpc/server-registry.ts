@@ -12,6 +12,17 @@
  */
 
 import type { RpcMethodSpec } from './types.js';
+import type { RecipeSimulationRequest, RecipeSimulationResult } from '../recipe-simulation.js';
+import type { MailDraft, MailDraftSummary, MailDraftCreateRequest, MailDraftUpdateRequest, MailDraftDeleteRequest } from '../mail-drafts.js';
+import type {
+  PreparePreapproval, PreapprovalCapabilities, PreapprovalDecisionRequest,
+  PreapprovalDecisionReceipt, PreapprovalInspection, PreapprovalListRequest,
+  PreapprovalResult, PreapprovalReview, PreapprovalRevokeRequest, PreapprovalSelection,
+} from '../preapproval.js';
+import type {
+  SavedDataView, SavedDataViewCreateRequest, SavedDataViewRenameRequest,
+  SavedDataViewDeleteRequest, SavedDataViewUpdateRequest,
+} from '../saved-data-views.js';
 import type { BridgeCapabilityProfile } from '../bridge.js';
 import type { Dish, DishGroup, DishLastRun, DishRunRow } from '../dish.js';
 import type { CacheEntry } from '../cache.js';
@@ -100,6 +111,7 @@ import type {
   CollectionSearchMatch,
   CollectionSearchGroup,
   CollectionSearchQuery,
+  CollectionSourceFreshness,
   FileAdapterType,
   FileCollectionCaps,
 } from '../collections.js';
@@ -467,7 +479,71 @@ export type ServerLlmProbeDiagnosis =
   | 'model_missing'
   | 'rate_limited'
   | 'provider_error'
-  | 'rejected';
+  | 'rejected'
+  /** D-262 § B7 — a transcription probe ran with no sample clip bundled in
+   *  this build, so nothing was sent. ⛔ Deliberately NOT `ok`: reporting
+   *  success for a request that never left the process is how a "verified"
+   *  badge starts lying. It is also not a verdict about the owner's slot. */
+  | 'no_sample';
+
+/** D-262 follow-on — one configured source's spend today.
+ *
+ *  ⛔ THE UNITS DIFFER AND THE SHAPE SAYS SO. Chat slots, the embeddings slot
+ *  and pool entries spend TOKENS; transcription spends REQUESTS, with bytes and
+ *  seconds alongside. Folding them into one number would mean inventing a
+ *  conversion, and every reader would inherit the invention without being able
+ *  to see it. So each figure is reported in the unit it was measured in, and
+ *  `limit_unit` names which one the cap is counted in. */
+export interface ServerLlmUsageSource {
+  id: string;
+  kind: 'chat_slot' | 'embeddings_slot' | 'transcription_slot' | 'pool_entry';
+  /** What the owner calls it in Settings. */
+  label: string;
+  provider?: string;
+  model?: string;
+  /** Tokens spent today. Absent for the transcription source, which does not
+   *  measure in tokens. */
+  tokens_today?: number;
+  /** Transcription calls today — the figure its cap is compared against. */
+  transcription_requests_today?: number;
+  /** Audio bytes today. Exact, but a poor cost proxy alone: the same speech is
+   *  20x larger at 320 kbps than at 16 kbps. */
+  transcription_bytes_today?: number;
+  /** Audio seconds today. ⚠ AN UNDER-COUNT BY CONSTRUCTION — only calls whose
+   *  provider reported a duration are counted, and Gemini reports none. Shown
+   *  for orientation, never as an authority, and the UI must say so. */
+  transcription_seconds_today?: number;
+  /** The cap in force, in `limit_unit`. Absent means unlimited. */
+  limit?: number;
+  limit_unit?: 'tokens' | 'requests';
+  /** Already at or past the cap for today. */
+  over_limit: boolean;
+  /** In a post-429 cooldown. ⚠ A DIFFERENT STATE from over_limit: the provider
+   *  said no, the owner's budget did not. They resolve differently — one waits
+   *  minutes, the other waits for midnight — so they are never merged. */
+  in_cooldown: boolean;
+}
+
+/** D-262 follow-on — what every configured source has spent today.
+ *
+ *  ⛔ EVERY BUDGET IN THIS SYSTEM WAS ENFORCED AND INVISIBLE. A pool entry's
+ *  `daily_cap_tokens`, a slot's `daily_budget_tokens`, the embeddings cutoff
+ *  and the transcription cap all decided whether a call could proceed, and no
+ *  surface anywhere showed the number they decided on. An owner could be
+ *  refused with no way to see why, and could not tell a spent budget from a
+ *  broken key. */
+export interface ServerLlmUsageResponse {
+  /** The UTC day these figures belong to (`YYYY-MM-DD`). Everything resets at
+   *  its midnight — and, since the snapshot is persisted, NOT at a restart. */
+  day: string;
+  sources: ServerLlmUsageSource[];
+  /** The whole server's token spend today, and the global budget if one is
+   *  set. ⚠ A SEPARATE QUESTION from the per-source figures, not their sum:
+   *  it is counted independently and includes calls the per-source counters do
+   *  not attribute. Presenting it as a total would be arithmetic nobody did. */
+  server_tokens_today: number;
+  server_budget_tokens?: number;
+}
 
 export interface ServerLlmProbeResult {
   ok: boolean;
@@ -485,6 +561,29 @@ export interface ServerLlmProbeResult {
    *  returned. A model quietly serving 768-d where the owner expected 1536-d
    *  is a working connection that produces unusable neighbours. */
   dimensions?: number;
+  /** D-262 § B7 — transcription only, and only on success: what the endpoint
+   *  actually heard. Shown, never asserted — models, accents and punctuation
+   *  differ, so an exact match fails on working slots, and showing it is the
+   *  one thing that reveals a `transcription_language` the owner did not mean
+   *  (which returns fluent nonsense rather than an error). */
+  transcript?: string;
+  /** D-262 § B7 — what the bundled clip SAYS, sent alongside `transcript` so
+   *  the surface can show them together.
+   *
+   *  ⛔ THE TRANSCRIPT ALONE DOES NOT ANSWER THE QUESTION IT WAS ADDED FOR. A
+   *  wrong `transcription_language` returns fluent nonsense, and an owner who
+   *  does not read that language cannot tell fluent nonsense from a correct
+   *  result — the one case the field exists to expose is the one where the
+   *  transcript is unreadable to them. Beside the expected line, a mismatch is
+   *  visible without knowing either language.
+   *
+   *  ⚠ Sent, never compared. Models, accents and punctuation differ, so an
+   *  equality check fails on working slots — see `transcript`. */
+  expected_transcript?: string;
+  /** D-262 § B7 — the `transcription_language` the probe actually sent, so a
+   *  surprising transcript can be traced to the pin that caused it. Absent
+   *  means auto-detect, which is a different answer from any language. */
+  probe_language?: string;
   elapsed_ms: number;
 }
 
@@ -546,6 +645,11 @@ export interface ServerSchedule {
   /** One-shot schedules fire once at this absolute Unix-ms timestamp. */
   run_at?: number;
   enabled: boolean;
+  lifecycle_revision?: number;
+  preapproval?: {
+    proposal_id: string; future_execution_ref: string;
+    execution_status: import('../preapproval.js').PreapprovalExecutionStatus;
+  };
   created_at: number;
   last_run_at: number | null;
   next_run_at: number | null;
@@ -746,6 +850,8 @@ export interface ServerRecentNotification {
  *  the live `notification.ask` / `notification.ask_closed` bus frames. */
 export interface ServerPendingAsk {
   ask_id: string;
+  /** Protected future review. Generic notification answers cannot decide it. */
+  owner_review?: { kind: 'preapproval'; proposal_id: string };
   title?: string;
   text: string;
   options: { id: string; label: string }[];
@@ -1064,6 +1170,26 @@ export interface ServerPressureReclaimResult {
 }
 
 export type ServerRpcRegistry = {
+  // D-261 owner control plane. Never exported through the MCP trampoline.
+  'preapproval.capabilities': RpcMethodSpec<void, PreapprovalCapabilities>;
+  'mail.drafts.create': RpcMethodSpec<MailDraftCreateRequest, MailDraft>;
+  'mail.drafts.get': RpcMethodSpec<{ draft_id: string }, MailDraft>;
+  'mail.drafts.list': RpcMethodSpec<{ cursor?: string; limit?: number }, { drafts: MailDraftSummary[]; next_cursor: string | null }>;
+  'mail.drafts.update': RpcMethodSpec<MailDraftUpdateRequest, MailDraft>;
+  'mail.drafts.delete': RpcMethodSpec<MailDraftDeleteRequest, { deleted: true }>;
+  'preapproval.prepare': RpcMethodSpec<PreparePreapproval, PreapprovalResult>;
+  'preapproval.select': RpcMethodSpec<PreapprovalSelection, PreapprovalResult>;
+  'preapproval.review': RpcMethodSpec<{ proposal_id: string }, PreapprovalReview>;
+  'preapproval.decide': RpcMethodSpec<PreapprovalDecisionRequest, PreapprovalDecisionReceipt>;
+  'preapproval.get': RpcMethodSpec<{ proposal_id: string }, PreapprovalInspection>;
+  'preapproval.list': RpcMethodSpec<PreapprovalListRequest, { proposals: PreapprovalInspection[]; next_cursor: string | null }>;
+  'preapproval.revoke': RpcMethodSpec<PreapprovalRevokeRequest, PreapprovalInspection>;
+  'data_views.list': RpcMethodSpec<void, { views: SavedDataView[] }>;
+  'data_views.get': RpcMethodSpec<{ id: string }, { view: SavedDataView | null }>;
+  'data_views.create': RpcMethodSpec<SavedDataViewCreateRequest, { view: SavedDataView }>;
+  'data_views.update': RpcMethodSpec<SavedDataViewUpdateRequest, { view: SavedDataView }>;
+  'data_views.rename': RpcMethodSpec<SavedDataViewRenameRequest, { view: SavedDataView }>;
+  'data_views.delete': RpcMethodSpec<SavedDataViewDeleteRequest, { deleted: boolean }>;
   // ── Cache ───────────────────────────────────────────────────────
   //
   // D-103 dropped `cache.invalidate`. TTL + LRU handle expiry; the prior
@@ -1367,6 +1493,42 @@ export type ServerRpcRegistry = {
     { slot: ServerLLMSlot | null },
     { ok: true }
   >;
+  /** D-262 § B1 — field-level write: replace the dedicated transcription slot
+   *  (or clear it with `null`). Same shape and same reasoning as the embeddings
+   *  slot above — exactly one, never a chat model-select option, so no
+   *  `slot_key` arg. Its `model` carries the TRANSCRIPTION model. */
+  'server.setTranscriptionSlot': RpcMethodSpec<
+    { slot: ServerLLMSlot | null },
+    { ok: true }
+  >;
+  /** D-262 § B6 — the owner's spoken language (ISO-639-1). `null` clears back
+   *  to auto-detect. ⛔ Auto-detect is a MEANINGFUL state and the default;
+   *  nothing may default this from a locale, because a pinned language makes
+   *  the provider render speech INTO it rather than merely hinting. */
+  'server.setTranscriptionLanguage': RpcMethodSpec<
+    { language: string | null },
+    { ok: true }
+  >;
+  /** D-262 § B12.3 — the daily transcription cap, counted in REQUESTS.
+   *
+   *  ⛔ Requests rather than seconds or tokens, and the name says which: the
+   *  multipart endpoints report a duration only in their verbose response
+   *  format and Gemini reports none, so a seconds cap would silently stop
+   *  counting for one provider and read as generous when it was blind.
+   *  `null` clears to unlimited, matching `daily_budget_tokens`.
+   *
+   *  ⚠ Enforcement is PROCESS-LIFETIME. The `QuotaTracker` is built unseeded
+   *  and nothing persists its snapshot, so this cap — like every existing
+   *  `daily_budget_tokens` — resets when the server restarts. Persisting quota
+   *  is its own decision and would change chat budgets too. */
+  'server.setTranscriptionDailyRequests': RpcMethodSpec<
+    { limit: number | null },
+    { ok: true }
+  >;
+  /** D-262 follow-on — what each configured source has spent today, against
+   *  the cap that applies to it. Read-only; owner-only (the whole `server.`
+   *  prefix is local-UI). */
+  'server.getLLMUsage': RpcMethodSpec<void, ServerLlmUsageResponse>;
   /** D-174 R28 — field-level write: add or replace ONE free-pool entry
    *  (matched by `id`), via server-side read-modify-write over the pool
    *  blob so concurrent single-entry edits don't clobber. */
@@ -1438,7 +1600,7 @@ export type ServerRpcRegistry = {
        *  different provider call (`embed`, its own adapter registry, no chat
        *  capability questions), not the chat probe pointed elsewhere. */
       target:
-        | { kind: 'slot'; slot_key: 'slot_1' | 'slot_2' | 'embeddings_slot' }
+        | { kind: 'slot'; slot_key: 'slot_1' | 'slot_2' | 'embeddings_slot' | 'transcription_slot' }
         | { kind: 'pool_entry'; entry_id: string };
       /** Omit to probe what is SAVED; provide to probe an unsaved draft.
        *
@@ -1669,6 +1831,11 @@ export type ServerRpcRegistry = {
   'execution.active': RpcMethodSpec<
     ExecutionActiveRequest,
     ExecutionActiveResponse
+  >;
+  /** Owner acknowledgement only. Never retries or resumes the recorded call. */
+  'execution.tool_call.dismiss': RpcMethodSpec<
+    { session_id: string; message_id: string },
+    { dismissed: boolean }
   >;
   /** D-181 slice 4 — kill a *running* heavy op (SIGKILL a `service`
    *  subprocess / abandon an external-io await). The run terminates in the
@@ -1961,6 +2128,12 @@ export type ServerRpcRegistry = {
     { recipe: RecipeDefinition },
     { ok: boolean; issues: Array<{ path?: string; message: string; severity: string }> }
   >;
+
+  /** Owner Kitchen sample test. Executes only transforms and fixture outputs,
+   * with no live service calls or persistence. The engine stays on the server. */
+  'recipe.simulate': RpcMethodSpec<RecipeSimulationRequest, RecipeSimulationResult>;
+  /** Cancels only a test started on this same paired connection. */
+  'recipe.simulate.cancel': RpcMethodSpec<{ simulation_id: string }, { cancelled: boolean }>;
 
   /** Secret-free state for a standalone Kitchen recipe's selected webhook
    * ingresses. These methods remain off MCP through the reserved `recipe.`
@@ -5245,7 +5418,7 @@ export type ServerRpcRegistry = {
    *  when no adapter matches. */
   'collection.list': RpcMethodSpec<
     CollectionListQuery,
-    { records: CollectionRecord[] }
+    { records: CollectionRecord[]; source_freshness?: CollectionSourceFreshness }
   >;
   /** FTS5 search over `body_inline` for `(platform, slug)`. CAS-stored
    *  records are NOT indexed (documented limit; matches Phase A's
@@ -6127,6 +6300,35 @@ export type ServerRpcRegistry = {
     { source_id: ChatModelSourceId; updated_at: number }
   >;
 
+  // Server-scoped rolling-brief enable. ⛔ SERVER-SCOPED, NOT PER-PAIR:
+  // `runChatTurn` is keyed on `session_id` and holds no peer identity — turns
+  // arrive over MCP and the D-148 P9 inbound channels with no paired client at
+  // all — so a per-pair knob has no defined value on exactly the turns where
+  // carrying context matters most. The gateway path reads the SAME setting, so
+  // an owner cannot turn it "off" and leave it running on the other surface.
+  // Read per turn, so a flip applies from the next turn without a restart.
+  // Default OFF. Per-pair storage only — no cross-cloud sync (D-097 / D-168).
+  'chat.rolling_brief.get': RpcMethodSpec<void, { enabled: boolean }>;
+  'chat.rolling_brief.set': RpcMethodSpec<
+    { enabled: boolean },
+    { enabled: boolean }
+  >;
+
+  /** What the assistant is CARRYING about one conversation, and a way to drop
+   *  it. ⛔ The brief steers every later turn and was invisible: only the fold
+   *  TRAIL reached the transparency stream, never its content. Reading it is
+   *  possible only now that it is durable — a Map that dies with the process
+   *  cannot be shown. ⚠ It is an INTERPRETATION (10% of constraint entries are
+   *  exact substrings of a user message) asserting values at 98.4% accuracy, so
+   *  a surface rendering it owes the reader that framing. `clear` is coarse by
+   *  design — per-entry editing would leave a brief that is neither the model's
+   *  interpretation nor the owner's words. */
+  'chat.session.brief.get': RpcMethodSpec<
+    { session_id: string },
+    { brief: unknown | null }
+  >;
+  'chat.session.brief.clear': RpcMethodSpec<{ session_id: string }, { ok: true }>;
+
   // ── D-137 W2.2 § A.1.1 — Mary's per-kind catalog scope ─────────
   //
   // Per-pair setting (NOT per-session). `get` returns the persisted
@@ -6938,6 +7140,25 @@ export interface TlsDomainUploadErrorDetails {
  *  covers every key in `ServerRpcRegistry`; add a key there and the
  *  compiler requires it here too. */
 export const SERVER_RPC_METHODS = [
+  'preapproval.capabilities',
+  'mail.drafts.create',
+  'mail.drafts.get',
+  'mail.drafts.list',
+  'mail.drafts.update',
+  'mail.drafts.delete',
+  'preapproval.prepare',
+  'preapproval.select',
+  'preapproval.review',
+  'preapproval.decide',
+  'preapproval.get',
+  'preapproval.list',
+  'preapproval.revoke',
+  'data_views.list',
+  'data_views.get',
+  'data_views.create',
+  'data_views.update',
+  'data_views.rename',
+  'data_views.delete',
   'cache.get',
   'cache.put',
   'cache.since',
@@ -6977,6 +7198,10 @@ export const SERVER_RPC_METHODS = [
   'server.setLLMConfig',
   'server.setLLMSlot',
   'server.setEmbeddingsSlot',
+  'server.setTranscriptionSlot',
+  'server.setTranscriptionLanguage',
+  'server.setTranscriptionDailyRequests',
+  'server.getLLMUsage',
   'server.upsertFreePoolEntry',
   'server.removeFreePoolEntry',
   'server.setFreePoolEntryEnabled',
@@ -7026,6 +7251,8 @@ export const SERVER_RPC_METHODS = [
   'recipe.save',
   'recipe.delete',
   'recipe.validate',
+  'recipe.simulate',
+  'recipe.simulate.cancel',
   'recipe.webhook.status',
   'recipe.webhook.arm',
   'recipe.webhook.disarm',
@@ -7336,6 +7563,7 @@ export const SERVER_RPC_METHODS = [
   // three queue/kill mutators). Owner-only; reserved out of MCP via the
   // `execution.` prefix in MCP_RESERVED_RPC_PREFIXES.
   'execution.active',
+  'execution.tool_call.dismiss',
   'execution.kill',
   'execution.cancel',
   'execution.promote',
@@ -7564,6 +7792,10 @@ export const SERVER_RPC_METHODS = [
   'chat.session.clear_model_pref',
   'chat.default_model_pref.get',
   'chat.default_model_pref.set',
+  'chat.rolling_brief.get',
+  'chat.rolling_brief.set',
+  'chat.session.brief.get',
+  'chat.session.brief.clear',
   // D-137 W2.2 § A.1.1 — Mary's per-kind catalog scope.
   'chat.tool_catalog.get',
   'chat.tool_catalog.set',

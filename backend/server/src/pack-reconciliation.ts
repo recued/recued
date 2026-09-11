@@ -34,10 +34,8 @@ import {
   provisionPackCompositionForBulkInstall,
   type ProvisionAuthoredDeps,
 } from './ingredient-authoring/install-composition.js';
-import {
-  findCommunityPackDir,
-  resolveRootBundledPackManifest,
-} from './pack-install-handler.js';
+import { findCommunityPackDir } from './bundled-pack-source.js';
+import { resolveRootBundledPackManifest } from './pack-install-handler.js';
 import { listInstalledPacks } from './pack-inventory.js';
 import { BUNDLED_PACK_RECONCILIATION_TARGETS } from './bundled-pack-reconciliation.generated.js';
 

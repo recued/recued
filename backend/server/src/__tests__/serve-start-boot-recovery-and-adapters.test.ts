@@ -114,6 +114,7 @@ describe('startBootRecoveryAndAdapters', () => {
       bootSigningIdentity: vi.fn(async () => {
         order.push('identity');
       }),
+      preapprovalStorage: { recover: vi.fn(async () => { order.push('preapproval-recover'); return true; }) },
       commitStore: {
         sweepPendingToInDoubt: vi.fn(async () => {
           order.push('sweep');
@@ -137,6 +138,7 @@ describe('startBootRecoveryAndAdapters', () => {
 
     expect(order).toEqual([
       'identity',
+      'preapproval-recover',
       'recover',
       'sweep',
       'warn',
@@ -145,6 +147,7 @@ describe('startBootRecoveryAndAdapters', () => {
       'collection',
     ]);
     expect(bootRecoveryMocks.recoverNotificationBlockAtBoot).toHaveBeenCalledWith({
+      canPublishReviewedCheckpoint: expect.any(Function),
       block: options.notificationBlock,
       checkpointStore: options.checkpointStore,
       auditLog: options.auditLog,
@@ -161,6 +164,15 @@ describe('startBootRecoveryAndAdapters', () => {
       block: options.notificationBlock,
       sweptCommits,
     });
+  });
+
+  it('does not start adapters or replay ordinary answers when pre-approval recovery fails', async () => {
+    const options = makeOptions({
+      preapprovalStorage: { recover: async () => { throw new Error('Broken durable pre-approval receipt'); } },
+    });
+    await expect(startBootRecoveryAndAdapters(options)).rejects.toThrow('Broken durable pre-approval receipt');
+    expect(bootRecoveryMocks.recoverNotificationBlockAtBoot).not.toHaveBeenCalled();
+    expect(options.collection.startCollectionAdapters).not.toHaveBeenCalled();
   });
 
   it('keeps identity and recovery writes behind the lifecycle gate while still starting adapters', async () => {

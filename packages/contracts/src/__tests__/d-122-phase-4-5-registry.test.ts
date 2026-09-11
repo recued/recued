@@ -138,7 +138,16 @@ describe('D-122 Phase 4.5 — enrichment registry contracts', () => {
       expect(def.identity_aggregation).toBe('scenario');
       expect(def.lifecycle_policy).toBe('forward_only');
       expect(def.default_trust_state).toBe('manual');
-      expect(def.default_pool_policy).toBe('free_only');
+      // D-262 § B12.4 — `transcript` moved to the permissive value; `caption`
+      // and `extracted_text` still route through the chat pool and keep
+      // `free_only`. Transcription now reads a DEDICATED slot that
+      // `configForTranscriptionForceLayer` does not strip at any force layer,
+      // so there is no free-vs-BYOK choice left for it to express — and a
+      // default that nothing can satisfy or enforce reads as a control while
+      // being decoration.
+      expect(def.default_pool_policy).toBe(
+        topic === 'transcript' ? 'free_then_byok' : 'free_only',
+      );
     }
   });
 

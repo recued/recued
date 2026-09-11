@@ -1,4 +1,5 @@
 export { executeRecipe } from './execute.js';
+export { simulateRecipe, type RecipeSimulationInput, type RecipeSimulationResult, type SimulatedStep } from './recipe-simulation.js';
 // D-157 Part C — held-action idempotency resolves a recipe's variable defaults
 // the SAME way the engine does (the audit `config_snapshot` carries resolved
 // defaults; the dedup key must match) via the canonical extractor.
@@ -71,6 +72,7 @@ export {
   type AnalyzeStepOptions,
 } from './step-seed.js';
 export { parseAnnotationLinkRef, prefetchSharedRefs } from './shared-prefetch.js';
+export { resumeFromApproval, type InProcessResumeFrom, type PauseToResume } from './resume-from-approval.js';
 export type {
   AnnotationLinkRef,
   SharedKeyResolver,
@@ -110,7 +112,13 @@ export {
 // `connection_gateway` audit row, so the poll stays inside the D-153
 // enforcement boundary.
 export {
+  applyCatalogOverrideTightening,
   catalogOperationUsesDetachedCli,
+  describeCatalogDispatch,
+  catalogInvocationTimeoutMs,
+  normalizeCatalogDispatchInput,
+  describeCatalogAuthority,
   runCatalogOperation,
   resolveCatalogRecordsPath,
 } from './catalog-gateway.js';
+export type { CatalogDispatchDescription } from './catalog-gateway.js';

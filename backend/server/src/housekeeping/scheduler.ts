@@ -33,6 +33,8 @@ import type { HousekeepingConfigStore } from './config-store.js';
 import type { EngineBusySignal } from './engine-busy-signal.js';
 import type { HousekeepingContext, HousekeepingTaskInstance } from './registry.js';
 import type { HousekeepingStateStore } from './state-store.js';
+import type { AiPathAvailability } from './ai-availability.js';
+import { isPoolUnsatisfiable } from './pool-unsatisfiable.js';
 import { isAiPaused, type TrustStore } from './trust-store.js';
 
 // ────────────────────────────────────────────────────────────────
@@ -68,6 +70,29 @@ export interface CreateHousekeepingSchedulerOptions {
    *  the trust gate is short-circuited. Production wires it via
    *  `bin.ts`. */
   trustStore?: TrustStore;
+  /** D-262 follow-on — "is any AI path usable right now", consulted ONCE per
+   *  idle cycle and only when an AI-surface task is in the running.
+   *
+   *  ⛔⛔ WITHOUT IT AN AI PRODUCER WALKS EVERY ROW TO LEARN WHAT ONE PROBE
+   *  KNOWS. `AI_LLM_UNAVAILABLE` at an unforced layer is a RECOVERABLE PER-ROW
+   *  failure by D-136 P6 — right for a transient miss, wrong as the way to
+   *  discover the owner has no key: the row's attempt count climbs and at five
+   *  it is `permanently_failed` with no auto-retry, so fixing the key does not
+   *  revive it.
+   *
+   *  ⚠ The reachable case is narrow and worth stating, because the obvious one
+   *  is NOT reachable: an AI topic can never be idle-eligible out of the box —
+   *  `isEligibleForIdleCycle` demands `trust_state: 'auto'` and
+   *  `assertEnrichmentTrustDefaults` THROWS at boot if an AI-surface topic
+   *  declares that as its default (measured 2026-09-07: 0 of 12 do). So this
+   *  guards the owner who promoted a topic to auto — which follows successful
+   *  manual runs — and whose key was later rotated, revoked or emptied.
+   *
+   *  ⚠ MUST read the same config the EXECUTOR does, or the gate disagrees with
+   *  itself: admitting work the executor cannot serve, or refusing work it
+   *  could. Both now resolve live (`resolveLlmConfig`). Optional so a scheduler
+   *  wired without it behaves exactly as before. */
+  probeAiPath?: () => Promise<AiPathAvailability>;
   /** D-138 P3 — listener fired at the START of each cycle (probe-tick
    *  + Run-Now both route through). Used by the contact-merge cycle
    *  observer to begin its buffer window — A.10 plausibility
@@ -203,7 +228,14 @@ const isTaskDisabled = (
  *      producers ignore the pause window (they have no AI cost). */
 export const isEligibleForIdleCycle = (
   task: HousekeepingTaskInstance,
-  ctx: { ctx: HousekeepingContext; trustStore?: TrustStore; now: number },
+  ctx: {
+    ctx: HousekeepingContext;
+    trustStore?: TrustStore;
+    now: number;
+    /** Probed once per cycle by the caller, never per task — the config cannot
+     *  change mid-cycle and one probe answers for every AI producer. */
+    aiPath?: AiPathAvailability;
+  },
 ): boolean => {
   if (task.meta.kind !== 'enrichment') return task.meta.idle_eligible !== false;
 
@@ -218,6 +250,14 @@ export const isEligibleForIdleCycle = (
   if (trust.trust_state !== 'auto') return false;
 
   if (isAiSurface && isAiPaused(ctx.ctx.db, ctx.now)) return false;
+
+  // ⛔ D-262 follow-on — no usable AI path means SKIP, not "walk the rows and
+  // find out". Both reasons skip, and they are deliberately not collapsed:
+  // `quota_exhausted` clears itself at the daily boundary, while
+  // `no_byok_no_freepool` needs the owner. The distinction is what the
+  // Housekeeping status surface renders, and it is why this takes the probe's
+  // result rather than a boolean.
+  if (isAiSurface && ctx.aiPath !== undefined && !ctx.aiPath.available) return false;
   return true;
 };
 
@@ -232,9 +272,10 @@ export const isEligibleForIdleCycle = (
  *  package boundary (`@recued/llm`), and an `instanceof` that silently stops
  *  matching after a bundling change would restore the auto-disable bug with
  *  nothing failing. */
-const isPoolUnsatisfiable = (e: unknown): boolean =>
-  typeof e === 'object' && e !== null
-  && (e as { code?: unknown }).code === 'AI_LLM_UNAVAILABLE';
+/** ⇒ `isPoolUnsatisfiable` now lives in `./pool-unsatisfiable.js`, SHARED with
+ *  the enrichment producer. It was a private copy here, and widening only this
+ *  end left the producer's per-record catch punishing every row for the same
+ *  condition — see that module's header for what that cost. */
 
 const initialCursor = (): HousekeepingCursor => ({ kind: 'complete' });
 
@@ -388,6 +429,26 @@ export const createHousekeepingScheduler = (
     // cycles run `isEligibleForIdleCycle` (D-132 P2) which resolves
     // per-topic trust state + global pause-AI window so AI calls only
     // happen on user-trusted producers.
+    // D-262 follow-on — one AI-path probe per cycle, and only when it can
+    // change the answer: never on the Run-Now path (the owner has explicitly
+    // confirmed the spend), and never when no AI-surface task is registered.
+    //
+    // ⛔ FAILS OPEN. A probe that throws must not silently disable every AI
+    // producer — that would be a safety default the owner cannot see, reach or
+    // explain, which is a worse failure than the per-row one this prevents.
+    // Undefined means "unknown", and the gate treats unknown as permitted.
+    let aiPath: AiPathAvailability | undefined;
+    if (
+      only_task_id === undefined
+      && opts.probeAiPath !== undefined
+      && ordered.some((t) => t.is_ai_surface === true)
+    ) {
+      try {
+        aiPath = await opts.probeAiPath();
+      } catch {
+        aiPath = undefined;
+      }
+    }
     const tasks = only_task_id
       ? ordered.filter((t) => t.meta.id === only_task_id)
       : ordered.filter((t) =>
@@ -395,6 +456,7 @@ export const createHousekeepingScheduler = (
             ctx: opts.ctx,
             ...(opts.trustStore !== undefined ? { trustStore: opts.trustStore } : {}),
             now: cycle_start,
+            ...(aiPath !== undefined ? { aiPath } : {}),
           }),
         );
 

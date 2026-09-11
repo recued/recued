@@ -351,6 +351,33 @@ const VALUE_SHAPES: Readonly<Record<string, ValueShape>> = {
     },
     required: ['pack_slug', 'version', 'installed_at'],
   },
+  /** D-220 Slice B — one pack-shipped `intake_form` template, persisted at
+   *  install so a marketplace-installed pack's template exists on the server
+   *  exactly as long as the pack does (a deployed server has no `community/`
+   *  tree to scan). `pack_slug` is the AUTHORED slug for every pack kind —
+   *  including a Records pack, whose `installed_pack` row is keyed by its
+   *  generated catalog id — because it is the identity the ref carries and the
+   *  uninstall handler knows. `template` is the validated
+   *  `PackIntakeFormTemplate` body, re-validated at read time. */
+  installed_reception_template_info: {
+    fields: [
+      'pack_slug', 'publisher', 'pack_name', 'pack_version', 'template_ref',
+      'template', 'installed_at',
+    ],
+    types: {
+      pack_slug: 'string',
+      publisher: 'string',
+      pack_name: 'string',
+      pack_version: 'string',
+      template_ref: 'string',
+      template: 'json',
+      installed_at: 'datetime',
+    },
+    required: [
+      'pack_slug', 'publisher', 'pack_name', 'pack_version', 'template_ref',
+      'template', 'installed_at',
+    ],
+  },
   /** D-170 gap #2 — binds a connection to the private/local composition catalog
    *  installed against it. Registered vendors resolve a connection → catalog via
    *  `config.vendor` → CATALOG_VENDOR_SLUGS; a local/private composition catalog has
@@ -955,6 +982,25 @@ const COMPOSITE_KEYS: Readonly<Record<string, CompositeKeySchema>> = {
     segments: ['pack_slug'],
     required: ['pack_slug'],
     value_shape: 'installed_pack_info',
+    applies_to: ['pack_inventory'],
+    merge_precedence: 0,
+    merge_rule: 'override',
+    writeable_by: 'install_planner',
+  },
+  /** D-220 Slice B — pack-shipped intake templates, keyed by the authored pack
+   *  slug, the publisher, and the ref's `<name>` stem (dot-free by grammar, so
+   *  it is a safe key segment where the full `pack:…/…` ref would not be).
+   *  `publisher` is IN the key because the Records substrate allows two packs
+   *  with the same slug from different publishers, and the ref carries the
+   *  publisher — without it, one pack's re-install or uninstall would sweep
+   *  the other's templates. A prefix scan on `[pack_slug]` sweeps every
+   *  publisher's rows for a slug (the generic uninstall, where slugs are
+   *  unique); `[pack_slug, publisher]` sweeps exactly one pack's (the
+   *  writer's replace-clean and the Records uninstall). */
+  installed_reception_template: {
+    segments: ['pack_slug', 'publisher', 'template_name'],
+    required: ['pack_slug', 'publisher', 'template_name'],
+    value_shape: 'installed_reception_template_info',
     applies_to: ['pack_inventory'],
     merge_precedence: 0,
     merge_rule: 'override',

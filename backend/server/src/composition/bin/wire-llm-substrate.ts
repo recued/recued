@@ -42,6 +42,10 @@
  *  executor + probe call instead, so a saved embeddings slot applies
  *  without a restart. */
 
+import {
+  probeAiPathAvailability,
+  type AiPathAvailability,
+} from '../../housekeeping/ai-availability.js';
 import type Database from 'better-sqlite3';
 import {
   type TokenUsage,
@@ -104,15 +108,19 @@ export interface LlmSubstrate {
   llmQuota: QuotaTracker;
   llmAdapterRegistry: ReturnType<typeof createLLMAdapterRegistry>;
   llmEmbeddingsAdapterRegistry: ReturnType<typeof createDefaultEmbeddingsRegistry>;
+  /** D-262 § B7 — the `transcribe()` adapter registry, hoisted onto the
+   *  substrate so the Settings probe reaches the SAME registry the housekeeping
+   *  and chat paths call. Two registries would test one and run the other. */
+  llmTranscriptionAdapterRegistry: ReturnType<typeof createDefaultTranscriptionRegistry>;
   emptyTabProbe: () => Promise<Set<WebChatTab>>;
 }
 
 export const composeLlmSubstrate = (deps: ComposeLlmSubstrateDeps): LlmSubstrate => {
   const { db, keys, envLlmConfig } = deps;
 
-  const llmQuota: QuotaTracker = createQuotaTracker();
   const llmAdapterRegistry = createLLMAdapterRegistry();
   const llmEmbeddingsAdapterRegistry = createDefaultEmbeddingsRegistry();
+  const llmTranscriptionAdapterRegistry = createDefaultTranscriptionRegistry();
   const emptyTabProbe = async (): Promise<Set<WebChatTab>> => new Set();
 
   let llmManager: LLMConfigManager | undefined;
@@ -128,6 +136,15 @@ export const composeLlmSubstrate = (deps: ComposeLlmSubstrateDeps): LlmSubstrate
       ? keys.keyProvider('server-data')
       : undefined;
     llmManager = createLLMConfigManager(db, { envConfig: envLlmConfig, getEncryptionKey: getKey });
+    // D-262 § B5 — the one-time upgrade step, before the first config read so
+    // this boot already sees a derived slot. ⚠ Best-effort: a locked or
+    // read-only store must not stop the server booting, and the marker means a
+    // failed attempt simply retries on the next boot rather than half-applying.
+    try {
+      llmManager.deriveTranscriptionSlotOnce();
+    } catch {
+      /* never block boot on a migration; the marker keeps it retryable */
+    }
     try {
       llmConfig = llmManager.getConfig();
     } catch {
@@ -136,6 +153,33 @@ export const composeLlmSubstrate = (deps: ComposeLlmSubstrateDeps): LlmSubstrate
       llmConfig = envLlmConfig;
     }
   }
+
+  // D-262 follow-on — the quota tracker, built AFTER the config manager so it
+  // can be hydrated from the persisted snapshot and write back through it.
+  //
+  // ⛔ EVERY PER-SOURCE BUDGET USED TO RESET ON RESTART. `statusFor` compares a
+  // pool entry's `daily_cap_tokens`, `slotOverCutoff` compares a slot's
+  // `daily_budget_tokens`, and the embeddings and transcription caps read the
+  // same counters — all of them in memory, seeded empty, with `snapshot()`
+  // called by nobody. A self-hoster restarts on every update, so a daily cap
+  // was clearable by turning it off and on again. That is not a cap.
+  //
+  // ⚠ WRITE-THROUGH ON EVERY CHANGE, deliberately. LLM calls arrive seconds
+  // apart, so a debounce would buy nothing measurable and would lose the last
+  // window on a crash — which is exactly when the counters matter. If it ever
+  // does become hot, the cadence lives here, not in `packages/llm`.
+  const llmQuota: QuotaTracker = createQuotaTracker(
+    (llmManager?.getQuotaSnapshot() ?? undefined) as Parameters<typeof createQuotaTracker>[0],
+    llmManager
+      ? {
+          onChange: (snapshot) => {
+            // Best-effort: a locked or read-only store degrades to the old
+            // reset-on-restart behaviour rather than throwing into a chat turn.
+            try { llmManager?.setQuotaSnapshot(snapshot); } catch { /* degrade */ }
+          },
+        }
+      : {},
+  );
 
   // D-174 R28 Slice C — per-use LIVE config resolver. Mirrors the chat
   // store's `getLlmConfig` (compose-app-context): prefer the manager's live
@@ -182,6 +226,11 @@ export const composeLlmSubstrate = (deps: ComposeLlmSubstrateDeps): LlmSubstrate
     }> => {
       if (!config) return [];
       const out: Array<{ slot: LLMSlot; source: Parameters<typeof manager.setSourceCapability>[0] }> = [];
+      // ⛔ D-262 § B1 — `transcription_slot` is DELIBERATELY ABSENT from this
+      // walk, not forgotten. This drives endpoint-capability detection
+      // (`system_role_ok` / `native_json_ok`), which are questions about a CHAT
+      // completion. Asking them of a Whisper endpoint would probe a surface it
+      // does not have and record the 404 as a capability fact.
       for (const slot_key of ['slot_1', 'slot_2', 'embeddings_slot'] as const) {
         const slot = config[slot_key];
         if (slot) out.push({ slot, source: { kind: 'slot', slot_key } });
@@ -236,6 +285,7 @@ export const composeLlmSubstrate = (deps: ComposeLlmSubstrateDeps): LlmSubstrate
     llmQuota,
     llmAdapterRegistry,
     llmEmbeddingsAdapterRegistry,
+    llmTranscriptionAdapterRegistry,
     emptyTabProbe,
   };
 };
@@ -254,6 +304,17 @@ export interface HousekeepingLlmCallables {
   resolveLLMModelId: HousekeepingResolveModelId;
   embed: HousekeepingEmbedExecute;
   transcribe: HousekeepingTranscribe;
+  /** D-262 follow-on — "is any AI path usable right now", for the scheduler's
+   *  idle-cycle gate. Rides this bundle for the same reason `taskTokenMeter`
+   *  does: it is the one place the scheduler and these callables both reach.
+   *
+   *  ⛔ AND IT MUST BE BUILT HERE, beside the executors, because it has to read
+   *  the SAME config they do. A gate resolving live config while its executor
+   *  read a boot snapshot would admit work the executor cannot serve, or refuse
+   *  work it could — and neither failure names itself. Threading `(config,
+   *  quota)` out to the composer instead would let those two drift apart in a
+   *  file that has no other reason to know about either. */
+  probeAiPath: () => Promise<AiPathAvailability>;
 }
 
 const configForTranscriptionForceLayer = (
@@ -287,8 +348,8 @@ export const composeHousekeepingLlmCallables = (
     emptyTabProbe,
     // D-250 § D — the owner's daily token counter; see `reportOwnerUsage`.
     llmManager,
+    llmTranscriptionAdapterRegistry,
   } = deps.substrate;
-  const llmTranscriptionAdapterRegistry = createDefaultTranscriptionRegistry();
 
   // Housekeeping `llm` callable — closes over the shared `llmConfig`
   // + `llmQuota` so AI-driven producers route through the same
@@ -323,8 +384,17 @@ export const composeHousekeepingLlmCallables = (
     taskTokenMeter.record(tokenUsageToReport(usage));
   };
 
+    // ⛔ D-262 follow-on — LIVE, not the boot snapshot. This was deferred when
+    // the embeddings surface moved (D-174 R28 Slice C) and again when
+    // transcription did; it is closed here because the IDLE-CYCLE GATE now
+    // consults `probeAiPathAvailability`, and a gate that reads live config
+    // while its executor reads a boot snapshot disagrees with itself — the gate
+    // would admit work the executor cannot serve, or refuse work it could.
+    // ⚠ `resolveLlmConfig` falls back to the boot value when the manager is
+    // absent or locked, so a db-less runtime behaves exactly as before.
   const llm: HousekeepingLlmExecute = async (manifest, input) => {
-    if (!llmConfig) {
+    const liveConfig = resolveLlmConfig();
+    if (!liveConfig) {
       throw new LLMError(
         'AI_LLM_UNAVAILABLE',
         'no LLM config configured',
@@ -332,7 +402,7 @@ export const composeHousekeepingLlmCallables = (
       );
     }
     return executeLLM(manifest, input, {
-      config: llmConfig,
+      config: liveConfig,
       adapters: llmAdapterRegistry,
       quota: llmQuota,
       tabProbe: emptyTabProbe,
@@ -347,7 +417,8 @@ export const composeHousekeepingLlmCallables = (
   // `'<provider>:<model>'` so cross-pool PSI invalidation (Groq free pool ↔
   // Anthropic BYOK) has a unique fingerprint per model.
   const llmWithMeta: HousekeepingLlmExecuteWithMeta = async (manifest, input) => {
-    if (!llmConfig) {
+    const liveConfig = resolveLlmConfig();
+    if (!liveConfig) {
       throw new LLMError(
         'AI_LLM_UNAVAILABLE',
         'no LLM config configured',
@@ -356,7 +427,7 @@ export const composeHousekeepingLlmCallables = (
     }
     let model_id = '';
     const result = await executeLLM(manifest, input, {
-      config: llmConfig,
+      config: liveConfig,
       adapters: llmAdapterRegistry,
       quota: llmQuota,
       tabProbe: emptyTabProbe,
@@ -382,9 +453,10 @@ export const composeHousekeepingLlmCallables = (
   // static producer-version hash and the subsequent `executeLLM` call
   // throws AI_LLM_UNAVAILABLE if the call still can't resolve.
   const resolveLLMModelIdCallable: HousekeepingResolveModelId = async (manifest, input) => {
-    if (!llmConfig) return '';
+    const liveConfig = resolveLlmConfig();
+    if (!liveConfig) return '';
     return resolveLLMModelId(manifest, input, {
-      config: llmConfig,
+      config: liveConfig,
       quota: llmQuota,
       tabProbe: emptyTabProbe,
       webChatSupported: false,    });
@@ -427,7 +499,16 @@ export const composeHousekeepingLlmCallables = (
   // filters the captured config before calling the package-level transcriber
   // (which does not accept a forceLayer parameter directly).
   const transcribe: HousekeepingTranscribe = async (request, options) => {
-    if (!llmConfig) {
+    // ⛔ D-262 — LIVE, not the boot snapshot. `transcription_slot` is edited in
+    // Settings and its whole point is being the owner's choice; reading the
+    // captured `llmConfig` meant clearing the slot, rotating the key, changing
+    // the language or lowering the cap had NO EFFECT on background
+    // transcription until a restart — including a call succeeding against a
+    // slot the owner had just deleted. The chat path already resolves per call
+    // (`get config()` in wire-chat-orchestrator) and the embeddings surface
+    // uses this same resolver; transcription was the one that did not.
+    const live = resolveLlmConfig();
+    if (!live) {
       throw new LLMError(
         'AI_LLM_UNAVAILABLE',
         'no LLM config configured',
@@ -435,16 +516,15 @@ export const composeHousekeepingLlmCallables = (
       );
     }
     return transcribeAudio(request, {
-      config: configForTranscriptionForceLayer(llmConfig, options?.force_layer),
+      config: configForTranscriptionForceLayer(live, options?.force_layer),
       adapters: llmTranscriptionAdapterRegistry,
       quota: llmQuota,
-      tabProbe: emptyTabProbe,
-      webChatSupported: false,
     } satisfies TranscribeDeps);
   };
 
   return {
     taskTokenMeter,
+    probeAiPath: () => probeAiPathAvailability(resolveLlmConfig(), llmQuota),
     llm,
     llmWithMeta,
     resolveLLMModelId: resolveLLMModelIdCallable,

@@ -28,6 +28,14 @@ export interface TranscriptionRequest {
   mime_type: string;
   /** Display filename for the multipart upload (OpenAI). */
   filename?: string;
+  /** D-262 § B6 — the owner's spoken language (ISO-639-1), or absent for
+   *  auto-detect.
+   *
+   *  ⛔ A PIN IS NOT A HINT. The provider renders speech INTO this language, so
+   *  a wrong value returns fluent nonsense rather than an error — which is why
+   *  nothing upstream may default it from a locale. Absent is the honest value
+   *  and is what every caller passes until the owner says otherwise. */
+  language?: string;
 }
 
 export interface TranscriptionOptions {
@@ -41,6 +49,15 @@ export interface TranscriptionResult {
   text: string;
   /** Detected source language when the provider reports it. */
   language?: string;
+  /** D-262 § B12.3 — audio seconds, when the provider reports one.
+   *
+   *  ⚠ OFTEN ABSENT, and that is why the daily cap counts REQUESTS rather than
+   *  this. The multipart endpoints return it only in their verbose response
+   *  format, and Gemini's `generateContent` never does. It is read
+   *  opportunistically — nothing changes on the wire to ask for it, because
+   *  switching an endpoint's `response_format` to obtain a metric would risk
+   *  the transcript itself on self-hosted servers we cannot test. */
+  duration_s?: number;
   model_id?: string;
 }
 
@@ -62,12 +79,17 @@ const DEFAULT_GOOGLE_BASE_URL = 'https://generativelanguage.googleapis.com';
 const GOOGLE_API_VERSION = 'v1beta';
 
 /** Provider-default transcription model when the slot/entry omits one. */
+/** D-262 § B4 — ⚠ the ONLY remaining caller is the one-time slot derivation,
+ *  which uses it to pick a model for a source that named none. `transcribe`
+ *  itself never consults it: the transcription slot's own `model` IS the
+ *  transcription model, so a default would only ever override what the owner
+ *  typed. */
 export const defaultTranscriptionModel = (provider: AdapterKey): string | null => {
   switch (provider) {
     case 'openai':
       return 'whisper-1';
     case 'openai-compatible':
-      return 'whisper-large-v3'; // Groq's whisper; override via transcription_model
+      return 'whisper-large-v3'; // Groq's whisper
     case 'google':
       return null; // Gemini uses the chat `model` for generateContent
     default:
@@ -154,6 +176,12 @@ export const createOpenAITranscriptionAdapter = (
     const url = `${baseUrl}/v1/audio/transcriptions`;
     const form = new FormData();
     form.append('model', options.model);
+    // D-262 § B6 — omitted entirely when the owner has not set one, which is
+    // how the endpoint is asked to auto-detect. Sending an empty string here
+    // is NOT the same thing: it is a value, and the API reads it as one.
+    if (request.language !== undefined && request.language.length > 0) {
+      form.append('language', request.language);
+    }
     form.append(
       'file',
       new Blob([request.audio as BlobPart], { type: request.mime_type }),
@@ -164,13 +192,18 @@ export const createOpenAITranscriptionAdapter = (
       url,
       { method: 'POST', headers: { authorization: `Bearer ${slot.api_key}` }, body: form },
       options.timeout_ms,
-    )) as { text?: unknown; language?: unknown };
+    )) as { text?: unknown; language?: unknown; duration?: unknown };
     if (typeof json.text !== 'string') {
       throw new LLMError('AI_RESPONSE_PARSE_FAILED', 'OpenAI transcription response missing text');
     }
     return {
       text: json.text,
       ...(typeof json.language === 'string' ? { language: json.language } : {}),
+      // Present in the verbose response format, and on some compatible servers
+      // by default. Read when offered, never demanded.
+      ...(typeof json.duration === 'number' && json.duration > 0
+        ? { duration_s: json.duration }
+        : {}),
       model_id: options.model,
     };
   },
@@ -190,7 +223,14 @@ export const createGoogleTranscriptionAdapter = (
         {
           role: 'user',
           parts: [
-            { text: 'Transcribe the attached audio verbatim. Output only the transcript text, with no preamble.' },
+            {
+              text: request.language !== undefined && request.language.length > 0
+                // D-262 § B6 — Gemini has no `language` parameter; the pin has
+                // to ride the instruction, which is the same request the
+                // multipart endpoints encode as a form field.
+                ? `Transcribe the attached audio verbatim in ${request.language}. Output only the transcript text, with no preamble.`
+                : 'Transcribe the attached audio verbatim. Output only the transcript text, with no preamble.',
+            },
             { inlineData: { mimeType: request.mime_type, data: toBase64(request.audio) } },
           ],
         },

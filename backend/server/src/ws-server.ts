@@ -89,6 +89,7 @@ import {
 import { makeRecipeListHandlers } from './recipe-list-handler.js';
 import { makeRecipePiiHandlers } from './recipe-pii-handler.js';
 import { makeRecipeSaveHandlers } from './recipe-save-handler.js';
+import { makeRecipeSimulationHandlers } from './recipe-simulation-handler.js';
 import { makeRecipeDeleteHandlers } from './recipe-delete-handler.js';
 import { makeRecipeRunnabilityHandlers } from './recipe-runnability-handler.js';
 import { makeApprovalHandlers, type ApprovalHandlerDeps } from './approval-handler.js';
@@ -417,6 +418,9 @@ import {
   type MigrateDeps,
 } from './migration/auth-migrate-handler.js';
 import { makePrefsHandlers } from './prefs-handler.js';
+import { makeSavedDataViewHandlers } from './saved-data-view-handler.js';
+import { makePreapprovalHandlers, type PreapprovalHandlerDeps } from './preapproval-handler.js';
+import type { SavedDataViewStore } from './saved-data-view-store.js';
 import { makePairHandlers } from './pair-handler.js';
 import { makeAccountBindingHandlers } from './account-binding-handler.js';
 import { makeProConvenienceHandlers } from './pro-convenience-handler.js';
@@ -432,6 +436,7 @@ import { makeConfigHandlers } from './config-schema.js';
 import type {
   AdapterRegistry,
   EmbeddingsAdapterRegistry,
+  TranscriptionAdapterRegistry,
   QuotaTracker,
 } from '@recued/llm';
 import { makeSellerOverviewHandlers } from './seller-overview-handler.js';
@@ -883,6 +888,8 @@ export interface AttachWebSocketOptions {
     adapters: AdapterRegistry;
     quota: QuotaTracker;
     embeddingsAdapters?: EmbeddingsAdapterRegistry;
+    /** D-262 § B7 — transcription is `transcribe`, a third provider call. */
+    transcriptionAdapters?: TranscriptionAdapterRegistry;
   };
   /** Runtime config store (D-103 Phase A). Provides the non-LLM half
    *  of `server.getConfigSchema` / `server.setConfigField` — every
@@ -1366,6 +1373,8 @@ export interface AttachWebSocketOptions {
   formResponseDeps?: FormResponseRpcDeps;
   /** D-221 owner-only `records.*` explorer/lifecycle control plane. */
   recordsRpcDeps?: RecordsRpcDeps;
+  savedDataViewStore?: SavedDataViewStore;
+  preapprovalDeps?: PreapprovalHandlerDeps;
   /** D-174 #22 — `data.timeline` read pair-RPC. Wraps the shared
    *  `handleTimelineRequest` query (third channel alongside MCP +
    *  recipe). Absent → returns `not_configured` (db-less harness or a
@@ -1558,6 +1567,8 @@ const buildWsBinding = (
     workEntityCrudDeps,
     formResponseDeps,
     recordsRpcDeps,
+    savedDataViewStore,
+    preapprovalDeps,
     timelineRpcDeps,
     memoryRpcDeps,
     fileReadRpcDeps,
@@ -1652,6 +1663,13 @@ const buildWsBinding = (
   const executionControlDeps = executeDeps?.inFlightRegistry
     ? {
         registry: executeDeps.inFlightRegistry,
+        ...(chatDeps?.store.toolCalls ? {
+          toolCalls: chatDeps.store.toolCalls,
+          onToolCallReviewed: (session_id: string) => {
+            chatDeps.broadcast?.emit({ kind: 'chat.session_changed', session_id,
+              field: 'tool_call', value: 'reviewed' });
+          },
+        } : {}),
         ...(notificationsDeps?.block
           ? {
               bridgeApprovalLookup: async (clientTokenId: string): Promise<boolean> => {
@@ -1799,6 +1817,7 @@ const buildWsBinding = (
     // Rides the recipe-list deps too (it only needs the writable store —
     // `recipeListDeps.store` is the full `recipeStore`).
     makeRecipeSaveHandlers(recipeSaveDeps ?? recipeListDeps),
+    makeRecipeSimulationHandlers(),
     // D-247 D14.1 — `recipe.delete`. Rides the same writable store, plus the
     // `contract.*` store so the pack-ownership refusal can ask whether the owning
     // pack is still INSTALLED. ⚠ That qualifier is load-bearing: without it a
@@ -2111,6 +2130,8 @@ const buildWsBinding = (
     // D-221 — full-ref Records explorer and lifecycle controls. Every arrow
     // enforces a registered paired client and `records.` is MCP-reserved.
     makeRecordsRpcHandlers(recordsRpcDeps),
+    makeSavedDataViewHandlers(savedDataViewStore),
+    makePreapprovalHandlers(preapprovalDeps),
     // D-174 #22 — `data.timeline` read pair-RPC (Data route drill-down).
     // Third isolated channel wrapping the shared `handleTimelineRequest`
     // (alongside MCP `recued_dataTimeline` + recipe `timeline-read`):

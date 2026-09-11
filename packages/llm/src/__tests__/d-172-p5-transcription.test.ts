@@ -81,73 +81,78 @@ describe('Anthropic transcription adapter', () => {
 });
 
 describe('transcribe() orchestrator', () => {
-  const run = async (config: LLMConfig, fetchJson: unknown) => {
-    const availability = await buildAvailability({ config, quota: createQuotaTracker(), tabProbe: noTabs });
-    return transcribe(
+  // ⚠ D-262 § B1 — REWRITTEN. This block used to pin the `matchLLM` routing:
+  // free-before-BYOK preference for transcription, and a cascade across audio
+  // sources. Both retired with the dedicated slot, and the two cases at the end
+  // now assert their ABSENCE — a retired behaviour that is merely deleted from
+  // a suite comes back the next time someone "restores" the old shape.
+  const run = async (config: LLMConfig, fetchJson: unknown) =>
+    transcribe(
       { audio, mime_type: 'audio/wav', filename: 'v.wav' },
       {
         config,
         adapters: createDefaultTranscriptionRegistry({ fetchImpl: okFetch(fetchJson) as unknown as typeof fetch }),
         quota: createQuotaTracker(),
-        tabProbe: noTabs,
-        preBuiltAvailability: availability,
       },
     );
-  };
 
-  it('routes to an audio-capable slot and returns the transcript', async () => {
+  it('transcribes through the dedicated slot', async () => {
     const config: LLMConfig = {
-      slot_1: { provider: 'openai', model: 'gpt', api_key: 'sk', speed: 'fast', supports_json: true, modalities: { audio: true }, transcription_model: 'whisper-1' },
+      transcription_slot: { provider: 'openai', model: 'whisper-1', api_key: 'sk' },
     };
     const result = await run(config, { text: 'voice note text' });
     expect(result.text).toBe('voice note text');
   });
 
-  it('uses the chat model for a Gemini audio source with no transcription_model', async () => {
+  it('uses a Gemini slot\'s own model, which transcribes itself via generateContent', async () => {
     const config: LLMConfig = {
-      slot_1: { provider: 'google', model: 'gemini-2.5-flash', api_key: 'k', speed: 'fast', supports_json: true, modalities: { audio: true } },
+      transcription_slot: { provider: 'google', model: 'gemini-2.5-flash', api_key: 'k' },
     };
     const result = await run(config, { candidates: [{ content: { parts: [{ text: 'gemini transcript' }] } }] });
     expect(result.text).toBe('gemini transcript');
   });
 
-  it('warns (AI_MODALITY_UNSUPPORTED) when no audio-capable source is configured', async () => {
+  it('⛔ REFUSES with AI_NO_TRANSCRIPTION_SOURCE when no slot is set', async () => {
     const config: LLMConfig = {
-      slot_1: { provider: 'openai', model: 'gpt', api_key: 'sk', speed: 'fast', supports_json: true }, // no audio
+      slot_1: { provider: 'openai', model: 'gpt', api_key: 'sk', speed: 'fast', supports_json: true },
     };
-    await expect(run(config, { text: 'x' })).rejects.toMatchObject({ code: 'AI_MODALITY_UNSUPPORTED' });
+    // ⚠ Was `AI_MODALITY_UNSUPPORTED` ("no audio-capable source"). The two are
+    // now different questions: nothing configured sends the owner to Settings;
+    // a configured provider that cannot hear is the adapter's own refusal.
+    await expect(run(config, { text: 'x' })).rejects.toMatchObject({
+      code: 'AI_NO_TRANSCRIPTION_SOURCE',
+    });
   });
 
-  it('prefers a free audio-capable pool entry over a BYOK audio slot', async () => {
+  it('⛔ RETIRED — does NOT prefer a free pool entry, or consult the pool at all', async () => {
     const config: LLMConfig = {
-      free_pool: [{ id: 'groq', type: 'api', provider: 'openai-compatible', model: 'x', api_key: 'gsk', speed: 'fast', supports_json: true, enabled: true, modalities: { audio: true }, transcription_model: 'whisper-large-v3' }],
-      slot_1: { provider: 'openai', model: 'gpt', api_key: 'sk', speed: 'fast', supports_json: true, modalities: { audio: true }, transcription_model: 'whisper-1' },
+      free_pool: [{ id: 'groq', type: 'api', provider: 'openai-compatible', model: 'x', api_key: 'gsk', speed: 'fast', supports_json: true, enabled: true, modalities: { audio: true } }],
+      slot_1: { provider: 'openai', model: 'gpt', api_key: 'sk', speed: 'fast', supports_json: true, modalities: { audio: true } },
     };
-    const result = await run(config, { text: 'from free pool' });
-    expect(result.text).toBe('from free pool');
+    // Both of these once served transcription, and the free one won. Now
+    // neither is reachable: routing a voice turn through the chat pool is what
+    // let a voice note be served by a model the owner did not pin.
+    await expect(run(config, { text: 'from free pool' })).rejects.toMatchObject({
+      code: 'AI_NO_TRANSCRIPTION_SOURCE',
+    });
   });
 
-  it('cascades to a second audio source on a retryable failure', async () => {
-    // Free pool (openai-compatible) is tried first and 429s; the cascade
-    // rejects it and falls back to the BYOK openai slot, which succeeds.
+  it('⛔ RETIRED — a retryable failure SURFACES; there is nothing to cascade to', async () => {
     const config: LLMConfig = {
-      free_pool: [{ id: 'groq', type: 'api', provider: 'openai-compatible', model: 'x', api_key: 'gsk', speed: 'fast', supports_json: true, enabled: true, modalities: { audio: true }, transcription_model: 'whisper-large-v3' }],
-      slot_1: { provider: 'openai', model: 'gpt', api_key: 'sk', speed: 'fast', supports_json: true, modalities: { audio: true }, transcription_model: 'whisper-1' },
+      transcription_slot: { provider: 'openai-compatible', model: 'whisper-large-v3', api_key: 'gsk' },
+      // Present, audio-capable, and deliberately unreachable: the cascade that
+      // would once have walked here is gone with the pool.
+      slot_1: { provider: 'openai', model: 'gpt', api_key: 'sk', speed: 'fast', supports_json: true, modalities: { audio: true } },
     };
-    const availability = await buildAvailability({ config, quota: createQuotaTracker(), tabProbe: noTabs });
     const adapters: TranscriptionAdapterRegistry = (key) => {
       if (key === 'openai-compatible') {
         return { provider: key, transcribe: async () => { throw new LLMError('AI_LLM_UNAVAILABLE', 'rate limited', { status: 429 }, true); } };
       }
-      if (key === 'openai') {
-        return { provider: key, transcribe: async () => ({ text: 'served by fallback', model_id: 'whisper-1' }) };
-      }
-      throw new LLMError('AI_LLM_UNAVAILABLE', `no adapter for ${key}`);
+      return { provider: key, transcribe: async () => ({ text: 'served by fallback', model_id: 'whisper-1' }) };
     };
-    const result = await transcribe(
+    await expect(transcribe(
       { audio, mime_type: 'audio/wav' },
-      { config, adapters, quota: createQuotaTracker(), tabProbe: noTabs, preBuiltAvailability: availability },
-    );
-    expect(result.text).toBe('served by fallback');
+      { config, adapters, quota: createQuotaTracker() },
+    )).rejects.toMatchObject({ code: 'AI_LLM_UNAVAILABLE' });
   });
 });

@@ -35,6 +35,7 @@ import {
   isChatDataDiagnosisResolutionStatus,
   isChatModelHint,
   isChatModelSourceId,
+  isChatToolCallRecord,
   isTransparencyEventKind,
   renderTransparencyTemplate,
   type ChatMessage,
@@ -525,6 +526,21 @@ export const reduceChatThreadEvent = (
   // Session_changed targets the session record specifically; the
   // session_id discriminator + field discriminator drive the patch.
   if (event.kind === 'chat.session_changed') {
+    if (event.field === 'tool_call') {
+      const call = event.value;
+      if (event.session_id !== state.session?.id || !isChatToolCallRecord(call)
+        || call.session_id !== event.session_id) return state;
+      const index = state.messages.findIndex(message => message.id === call.message_id);
+      const message = state.messages[index];
+      const prior = message?.tool_call;
+      if (!prior || prior.turn_id !== call.turn_id
+          || call.updated_at < prior.updated_at
+          || (['succeeded', 'failed', 'interrupted'].includes(prior.state)
+            && ['running', 'held'].includes(call.state))) return state;
+      const messages = [...state.messages];
+      messages[index] = { ...message!, tool_call: call };
+      return { ...state, messages };
+    }
     return applySessionChanged(state, event);
   }
 

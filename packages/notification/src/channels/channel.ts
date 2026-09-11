@@ -86,7 +86,7 @@ export interface Channel {
 
   /** Deliver a fire-and-forget `notify` to this surface. Collects no
    *  reply. */
-  deliverNotify(message: NotificationMessage): Promise<void>;
+  deliverNotify(message: NotificationMessage, extras?: import('../types.js').PersistedNotifyExtras): Promise<void>;
 
   /** Deliver an interactive `ask` — the surface renders response
    *  affordances keyed on `ask_id`. MUST be idempotent per `ask_id`:

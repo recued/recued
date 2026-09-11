@@ -1,3 +1,6 @@
+import type { PreapprovalErrorCode } from './preapproval.js';
+import type { MailDraftErrorCode } from './mail-drafts.js';
+
 export type ErrorSeverity = 'fatal' | 'error' | 'warn';
 
 export type RecipeErrorCode =
@@ -49,6 +52,9 @@ export type RecipeErrorCode =
    *  so the user can locate the offending step in their recipe
    *  authoring UI. */
   | 'RECIPE_POLICY_DENIED'
+  /** D-261 kernel and execution errors retain their public protocol code. */
+  | PreapprovalErrorCode
+  | MailDraftErrorCode
   // Ingredient
   | 'INGREDIENT_NOT_FOUND'
   | 'INGREDIENT_VERSION_MISMATCH'
@@ -516,6 +522,24 @@ export const ERR: Record<RecipeErrorCode, ErrorSeverity> = {
   CHECKPOINT_STORE_UNAVAILABLE: 'fatal',
   CHECKPOINT_WRITE_FAILED: 'fatal',
   RECIPE_POLICY_DENIED: 'fatal',
+  preapproval_request_policy_conflict: 'error',
+  preapproval_unsupported: 'error',
+  preapproval_no_eligible_members: 'error',
+  preapproval_unresolved: 'error',
+  preapproval_target_mismatch: 'error',
+  preapproval_limit_exceeded: 'error',
+  preapproval_idempotency_conflict: 'error',
+  preapproval_stale: 'error',
+  mail_draft_not_found: 'error',
+  mail_draft_stale: 'error',
+  mail_draft_conflict: 'error',
+  preapproval_expired: 'error',
+  preapproval_cancelled: 'error',
+  preapproval_authority_changed: 'error',
+  preapproval_decision_conflict: 'error',
+  preapproval_invalid_proof: 'error',
+  preapproval_already_claimed: 'error',
+  preapproval_in_doubt: 'error',
   INGREDIENT_NOT_FOUND: 'fatal',
   INGREDIENT_VERSION_MISMATCH: 'error',
   INGREDIENT_SCOPE_INSUFFICIENT: 'error',
@@ -675,9 +699,27 @@ export const ERROR_MESSAGES: Record<RecipeErrorCode, string> = {
   CHECKPOINT_STORE_UNAVAILABLE: 'This recipe needs approval before it can run, but no durable approval storage is configured. Re-run after enabling durable storage.',
   CHECKPOINT_WRITE_FAILED: 'This recipe paused for approval, but the pause could not be saved. Re-run to try again.',
   RECIPE_POLICY_DENIED: 'Recued’s policy gate refused this recipe before it ran. Check the audit log for which steps were denied.',
+  preapproval_request_policy_conflict: 'The request operation itself requires approval. Use the manual review surface or change its approval rule.',
+  preapproval_unsupported: 'The reviewed execution requires a capability that is unavailable on this server.',
+  preapproval_no_eligible_members: 'No complete operation in this execution can be pre-approved. Review the operation permissions and required child calls.',
+  preapproval_unresolved: 'The future execution could not be resolved for review. Save the required inputs and prepare a new review.',
+  preapproval_target_mismatch: 'The requested target differs from the reviewed execution. Prepare a new review.',
+  preapproval_limit_exceeded: 'This pre-approval request exceeds the server limits. Reduce its scope or clear pending requests.',
+  preapproval_idempotency_conflict: 'This request key already belongs to different content. Use a new key for a new execution.',
+  preapproval_stale: 'The reviewed execution changed. Prepare a new review before running it.',
+  mail_draft_not_found: 'The saved draft is unavailable.',
+  mail_draft_stale: 'The saved draft changed. Reload it before saving again.',
+  mail_draft_conflict: 'This draft save request was already used for different content.',
+  preapproval_expired: 'The approval or execution window expired. Prepare a new review with a new time.',
+  preapproval_cancelled: 'This reviewed execution was cancelled. Its unused approval cannot be reused.',
+  preapproval_authority_changed: 'The original requester no longer has the required authority. Review its current grants.',
+  preapproval_decision_conflict: 'This proposal already has a different owner decision. Open its current status.',
+  preapproval_invalid_proof: 'This response cannot establish the owner decision. Open the review in a paired owner surface.',
+  preapproval_already_claimed: 'This execution or operation was already claimed. Open its status before taking further action.',
+  preapproval_in_doubt: 'An operation may have completed. Check the provider and execution receipts before scheduling another attempt.',
   INGREDIENT_NOT_FOUND: 'A required ingredient is missing. Reinstall the recipe so its ingredients reload.',
   INGREDIENT_VERSION_MISMATCH: 'An ingredient changed in a breaking way. Update the recipe to the new version.',
-  INGREDIENT_SCOPE_INSUFFICIENT: 'This ingredient needs broader access than the credential you saved. Check Connections.',
+  INGREDIENT_SCOPE_INSUFFICIENT: 'The extension refused this step — its authority is missing, expired, or does not cover this action. Re-pair the extension; if it still refuses, reinstall the ingredient to re-verify the sites it is allowed to use.',
   INGREDIENT_ENDPOINT_BLOCKED: 'The endpoint this ingredient calls is on the block list. Pick a different ingredient or self-host.',
   INGREDIENT_OUTPUT_VALIDATION_FAILED: 'The service returned data in an unexpected shape. The ingredient author needs to update the parser.',
   INGREDIENT_ADAPTER_ALL_FAILED: 'Every fallback for this ingredient failed. Check the underlying service status.',
@@ -689,7 +731,7 @@ export const ERROR_MESSAGES: Record<RecipeErrorCode, string> = {
   CONNECTION_TIMEOUT: 'The connection timed out. The service may be slow or unreachable.',
   VAULT_KEY_MISSING: 'A required credential is not in your vault. The install dialog will prompt for it.',
   VAULT_CROSS_PUBLISHER: 'A recipe tried to read another publisher’s credential. Recued blocked the read.',
-  OAUTH_EXPIRED: 'Your OAuth token expired. Reconnect the account from Settings.',
+  OAUTH_EXPIRED: 'The provider rejected this credential — it has expired, or it lacks a scope this operation needs. Reconnect from Settings → Connections; if that does not clear it, add the missing scope at the provider first.',
   OAUTH_REVOKED: 'The OAuth grant was revoked at the provider. Reconnect to restore access.',
   TOKEN_REFRESH_FAILED: 'A token refresh failed. Reconnect the account so the recipe can keep running.',
   MCP_TOOL_NOT_FOUND: 'The recipe asked for an MCP tool the server no longer exposes. Re-probe the connection or fix the recipe.',
@@ -858,6 +900,24 @@ export const ERROR_ATTRIBUTION: Record<RecipeErrorCode, ErrorAttribution> = {
   CHECKPOINT_STORE_UNAVAILABLE: 'environment',
   CHECKPOINT_WRITE_FAILED: 'environment',
   RECIPE_POLICY_DENIED: 'owner',
+  preapproval_request_policy_conflict: 'owner',
+  preapproval_unsupported: 'environment',
+  preapproval_no_eligible_members: 'choice',
+  preapproval_unresolved: 'choice',
+  preapproval_target_mismatch: 'choice',
+  preapproval_limit_exceeded: 'choice',
+  preapproval_idempotency_conflict: 'choice',
+  preapproval_stale: 'environment',
+  mail_draft_not_found: 'environment',
+  mail_draft_stale: 'environment',
+  mail_draft_conflict: 'choice',
+  preapproval_expired: 'owner',
+  preapproval_cancelled: 'owner',
+  preapproval_authority_changed: 'owner',
+  preapproval_decision_conflict: 'owner',
+  preapproval_invalid_proof: 'owner',
+  preapproval_already_claimed: 'owner',
+  preapproval_in_doubt: 'owner',
   INGREDIENT_NOT_FOUND: 'choice',
   INGREDIENT_VERSION_MISMATCH: 'choice',
   INGREDIENT_SCOPE_INSUFFICIENT: 'choice',

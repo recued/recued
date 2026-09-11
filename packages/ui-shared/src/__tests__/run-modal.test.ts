@@ -17,6 +17,8 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   CRON_PRESETS,
   type EventTrigger,
+  type PreapprovalResult,
+  type PreparePreapproval,
   type RecipeDefinition,
   type ServerExecuteResponse,
   type ServerRecipeListEntry,
@@ -228,6 +230,35 @@ const makeDoc = (): FakeDoc => {
 
 const wire = (opts: Parameters<typeof wireRunModal>[0]) =>
   wireRunModal({ document: makeDoc() as unknown as Document, ...opts });
+
+describe('D-261 manual preparation', () => {
+  it('retries the exact preparation after a lost reply and never creates or activates a schedule', async () => {
+    const requests: PreparePreapproval[] = [];
+    const result: PreapprovalResult = { proposal_id: 'pap_test', future_execution_ref: 'paf_test', revision: 1,
+      status: 'awaiting_owner', coverage: 'complete', eligible_members: 2, uncovered_calls: 0 };
+    const schedulesCreate = vi.fn(); const onPrepared = vi.fn(); const onClose = vi.fn();
+    const modal = wire({ recipe: recipeEntry(), schedulesList: async () => ({ schedules: [] }), schedulesCreate,
+      preapprovalPrepare: async request => { requests.push(request); if (requests.length === 1) throw new Error('Lost response'); return result; },
+      onPreapprovalPrepared: onPrepared, onClose });
+    modal.setRepeat(false); modal.setRunAtLocal('2030-01-02T09:30'); modal.setConfigText('{"topic":"reviewed"}');
+    await modal.reviewSchedule();
+    expect(modal.getState().schedule_error).toBe('Lost response');
+    await modal.reviewSchedule();
+    expect(requests).toHaveLength(2); expect(requests[1]).toEqual(requests[0]);
+    expect(requests[0]?.subject).toEqual({ kind: 'recipe', recipe_id: 'daily-brief', publisher_id: 'recued-core', config: { topic: 'reviewed' } });
+    expect(requests[0]?.activation).toEqual({ kind: 'one_shot', run_at: new Date('2030-01-02T09:30').getTime(),
+      time_zone: Intl.DateTimeFormat().resolvedOptions().timeZone });
+    expect(onClose).toHaveBeenCalledTimes(1); expect(onPrepared).toHaveBeenCalledWith(result);
+    expect(schedulesCreate).not.toHaveBeenCalled();
+  });
+  it('does not prepare a recurring or invalid-config action', async () => {
+    const prepare = vi.fn(); const modal = wire({ recipe: recipeEntry(), preapprovalPrepare: prepare });
+    await modal.reviewSchedule(); expect(modal.getState().schedule_error).toContain('Run once');
+    modal.setRepeat(false); modal.setRunAtLocal('2030-01-02T09:30'); modal.setConfigText('[]');
+    await modal.reviewSchedule(); expect(modal.getState().schedule_error).toContain('JSON object');
+    expect(prepare).not.toHaveBeenCalled(); modal.destroy();
+  });
+});
 
 // ── model ─────────────────────────────────────────────────────────
 

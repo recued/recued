@@ -54,19 +54,16 @@
  *  Spec: D-145 § PA10 follow-on (Settings → Packs Slice
  *  B uninstall affordance). */
 
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
-import { join, resolve } from 'node:path';
 
 import {
-  parseBulkPackManifest,
   RpcError,
-  type BulkPackManifest,
   type BulkPackUninstallResultLike,
   type HandlerSlice,
   type RunnabilityTransition,
   type ServerRpcRegistry,
 } from '@recued/contracts';
 
+import { isCoreFeaturePack, resolveBundledPackManifest } from './bundled-pack-source.js';
 import type { LocalManifestStore } from './ingredient-authoring/local-manifest-store.js';
 import {
   applyInstallAudienceGrantIds,
@@ -74,6 +71,8 @@ import {
 } from './ingredient-authoring/install-composition.js';
 import type { ManifestRegistry } from './manifest-loader.js';
 import { getInstalledPack, privateByoDropIds, removePackInventory } from './pack-inventory.js';
+// D-220 Slice B — pack-shipped intake templates leave with their pack.
+import { removePackReceptionTemplates } from './pack-reception-templates.js';
 import type { RecipeStore } from './recipe-store.js';
 import type { RecipeRunnabilityBroadcaster } from './recipe-runnability-handler.js';
 import type { McpBodyVisibilityStore } from './storage/mcp-body-visibility-store.js';
@@ -230,47 +229,6 @@ type PacksUninstallArgs = {
   records_purge_confirmation?: string;
 };
 
-/** Default community/packs directory resolution. Mirrors
- *  `pack-list-handler.ts:findCommunityPackDir` exactly so list +
- *  uninstall share the same default + test harnesses passing a custom
- *  dir get parallel behavior. */
-const findCommunityPackDir = (): string => {
-  const projectRoot = resolve(import.meta.dirname ?? __dirname, '..', '..', '..');
-  return join(projectRoot, 'community', 'packs');
-};
-
-/** Locate + parse the bundled manifest matching `pack_slug`. Returns
- *  `null` when no file matches (or every candidate file fails
- *  validation). The scan walks every `*.json` file in the pack dir
- *  rather than constructing a direct path because the file name on
- *  disk doesn't have to match the manifest's `slug` field — `packs.list`
- *  drives row identity off the parsed `slug`, so uninstall must too. */
-const resolveBundledManifest = (
-  packDir: string,
-  pack_slug: string,
-): BulkPackManifest | null => {
-  if (!existsSync(packDir)) return null;
-  for (const file of readdirSync(packDir)) {
-    if (!file.endsWith('.json')) continue;
-    let raw: string;
-    try {
-      raw = readFileSync(join(packDir, file), 'utf-8');
-    } catch {
-      continue;
-    }
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(raw);
-    } catch {
-      continue;
-    }
-    const result = parseBulkPackManifest(parsed);
-    if (!result.ok) continue;
-    if (result.manifest.slug === pack_slug) return result.manifest;
-  }
-  return null;
-};
-
 /** Empty `removed` shape — used by every early-return path so the
  *  rpc surface stays uniform regardless of which step failed first. */
 const emptyRemoved = (): BulkPackUninstallResultLike['removed'] => ({
@@ -304,8 +262,22 @@ export const handlePacksUninstall = async (
     );
   }
 
-  const packDir = deps.packDir ?? findCommunityPackDir();
-  const manifest = resolveBundledManifest(packDir, pack_slug);
+  const manifest = resolveBundledPackManifest(deps.packDir, pack_slug);
+  // 🔑 A CORE FEATURE IS NOT OWNER-MANAGEABLE (owner ruling 2026-09-07). The
+  // roster never lists one, so no UI can reach this — which is exactly why the
+  // refusal lives HERE and not in the panel: "the user cannot manage them" is a
+  // property of the server, not of which buttons a client happens to draw.
+  //
+  // ⚠ It also stops being a lie. Uninstall used to SUCCEED on a foundation pack
+  // and the next boot silently put it back, which the panel had to disclose in a
+  // warning ("uninstalling will undo on next start") — a destructive action
+  // whose only honest description was that it does not last.
+  if (manifest !== null && isCoreFeaturePack(manifest)) {
+    throw new RpcError(
+      'forbidden',
+      `packs.uninstall: ${JSON.stringify(pack_slug)} is a core feature installed and maintained by the server, not a pack you manage`,
+    );
+  }
   // D-221 — Records inventory/capability identity is full-ref-derived rather
   // than public-slug keyed. Resolve it before the legacy slug existence proof,
   // then run the dedicated all-or-nothing data-first coordinator.
@@ -376,6 +348,9 @@ export const handlePacksUninstall = async (
           ? { confirmation: args.records_purge_confirmation }
           : {}),
       });
+      // D-220 Slice B — the pack's shipped intake templates were swept INSIDE the
+      // coordinator's transaction (`uninstallRecordsPackAtomic`), keyed by the
+      // authored slug + publisher; nothing to do here.
       try {
         const version = recordsNamespace.state.state === 'ready'
           ? recordsNamespace.state.version
@@ -730,6 +705,8 @@ export const handlePacksUninstall = async (
         );
         deps.contractStore.transaction(() => {
           removePackInventory(deps.contractStore!, pack_slug);
+          // D-220 Slice B — the pack's shipped intake templates go with it.
+          removePackReceptionTemplates(deps.contractStore!, pack_slug);
           for (const id of localDroppable) localStore.delete(id);
           grantStore.removePackGroups(pack_slug);
           applyInstallAudienceGrantIds(
@@ -751,6 +728,8 @@ export const handlePacksUninstall = async (
       } else {
         deps.contractStore.transaction(() => {
           removePackInventory(deps.contractStore!, pack_slug);
+          // D-220 Slice B — the pack's shipped intake templates go with it.
+          removePackReceptionTemplates(deps.contractStore!, pack_slug);
           grantStore.removePackGroups(pack_slug);
           applyInstallAudienceGrantIds(
             {

@@ -53,6 +53,8 @@ import {
   setComposeSubmitErrorTransition,
   setComposeSubmittingTransition,
   setComposeValuesTransition,
+  parseMailDraftContent,
+  type MailDraft, type MailDraftContent, type ServerRpcRegistry, type PreparePreapproval,
   type MailComposeAttachment,
   type MailComposeState,
   type MailReplyContext,
@@ -128,7 +130,15 @@ export interface MailComposeDeps {
    *  that already looks like an address, reject otherwise — a host with a
    *  contact graph supplies the real resolver. */
   resolveContactEmail?: (ref: string) => string | null;
+  drafts?: MailDraftCallers;
 }
+
+export type MailDraftCallers = {
+  [K in 'create' | 'get' | 'list' | 'update' | 'delete']: (
+    args: ServerRpcRegistry[`mail.drafts.${K}`]['request']
+  ) => Promise<ServerRpcRegistry[`mail.drafts.${K}`]['response']>;
+} & { prepare(request: PreparePreapproval): Promise<import('@recued/contracts').PreapprovalResult>;
+  openReview(proposalId: string): void; changed?(): void };
 
 /** What a dispatch actually achieved. See the header — `held` is the normal
  *  outcome and MUST NOT be reported as sent. */
@@ -139,6 +149,7 @@ export interface MailComposeMount {
   openCreate(): boolean;
   /** Open a compose prefilled from a thread. */
   openReply(context: MailReplyContext): boolean;
+  openSaved(draftId: string): Promise<boolean>;
   /** Current state — exposed for the route's own empty-state decisions. */
   state(): MailComposeState;
   /** Current send-readiness projection. */
@@ -325,6 +336,18 @@ export const mountMailCompose = (
   } = { busyAction: null, error: null, undo: null };
   let outcome: MailComposeSubmitOutcome | null = null;
   let destroyed = false;
+  let saved: MailDraft | null = null;
+  let savedValues = '';
+  let draftStatus = '';
+  let scheduleVisible = false;
+  let scheduleTime = '';
+  let draftBusyLabel: string | undefined;
+  let pendingSave: { signature: string; key: string } | null = null;
+  let pendingSchedule: { signature: string; request: PreparePreapproval } | null = null;
+  const resetSaved = (): void => {
+    saved = null; savedValues = ''; draftStatus = ''; scheduleVisible = false; scheduleTime = '';
+    pendingSave = null; pendingSchedule = null;
+  };
 
   const sendCapable = (): MailSenderSourceOption[] =>
     sources.filter((s) => s.send_capable);
@@ -350,6 +373,8 @@ export const mountMailCompose = (
         canUndo: assistState.undo !== null,
       },
       attachmentBusy,
+      ...(deps.drafts ? { savedDraft: { status: draftStatus, scheduling: scheduleVisible, runAt: scheduleTime,
+        ...(draftBusyLabel ? { busyLabel: draftBusyLabel } : {}) } } : {}),
     });
   };
 
@@ -365,6 +390,8 @@ export const mountMailCompose = (
   const syncFromDom = (): void => {
     const dialog = composeDialog(state);
     if (dialog === null) return;
+    const time = host.querySelector<HTMLInputElement>('[data-mail-draft-time]');
+    if (time) scheduleTime = time.value;
     const read = readFormValues(host);
     const patch: Record<string, unknown> = {};
     for (const key of ['subject', 'body', 'to', 'cc', 'bcc'] as const) {
@@ -372,6 +399,76 @@ export const mountMailCompose = (
     }
     if (Object.keys(patch).length > 0) {
       state = setComposeValuesTransition(state, patch as never);
+    }
+  };
+
+  const draftContent = (): MailDraftContent | null => {
+    const dialog = composeDialog(state); if (!dialog) return null;
+    const result = composeStateToSendPayload(withoutBlankRecipients(dialog.values), {
+      resolveContactEmail, findSenderSource: id => sources.find(source => source.id === id) ?? null,
+    });
+    if (!result.ok) { setState(setComposeErrorsTransition(state, result.errors)); return null; }
+    const extras: Record<string, unknown> = {};
+    for (const key of ['references', 'reply_to', 'reconciliation_id'] as const) {
+      if (saved?.content[key] !== undefined) extras[key] = saved.content[key];
+    }
+    return parseMailDraftContent({ ...extras, ...composePayloadToSendRecipeConfig(result.payload),
+      body_format: saved?.content.body_format ?? 'text' });
+  };
+  const saveDraft = async (schedule: boolean): Promise<void> => {
+    syncFromDom(); const dialog = composeDialog(state);
+    if (!deps.drafts || !dialog || dialog.submitting || attachmentBusy || assistState.busyAction) return;
+    if (schedule && !scheduleVisible) { scheduleVisible = true; render(); return; }
+    const runAt = new Date(scheduleTime).getTime();
+    if (schedule && (!Number.isFinite(runAt) || runAt <= Date.now())) {
+      setState(setComposeSubmitErrorTransition(state, 'Choose a future send time.')); return;
+    }
+    let content: MailDraftContent | null;
+    try { content = draftContent(); } catch (error) { setState(setComposeSubmitErrorTransition(state, humanizeRpcError(error))); return; }
+    if (!content) return;
+    const signature = JSON.stringify(content); const generation = draftGeneration;
+    draftBusyLabel = schedule ? 'Preparing review…' : 'Saving…';
+    setState(setComposeErrorsTransition(state, {})); setState(setComposeSubmittingTransition(state, true));
+    try {
+      if (!saved || JSON.stringify(saved.content) !== signature) {
+        if (!pendingSave || pendingSave.signature !== signature) pendingSave = { signature, key: crypto.randomUUID() };
+        if (!saved) saved = await deps.drafts.create({ idempotency_key: pendingSave.key, content });
+        else {
+          try { saved = await deps.drafts.update({ draft_id: saved.draft_id, expected_revision: saved.revision, content }); }
+          catch (error) {
+            // A lost update response can be reconciled only with this exact
+            // revision and content. A concurrent edit never overwrites the form.
+            const current = await deps.drafts.get({ draft_id: saved.draft_id });
+            if (current.revision !== saved.revision + 1 || JSON.stringify(current.content) !== signature) throw error;
+            saved = current;
+          }
+        }
+      }
+      if (destroyed || generation !== draftGeneration) return;
+      syncFromDom();
+      const current = draftContent();
+      const unchanged = current !== null && JSON.stringify(current) === signature;
+      savedValues = unchanged ? JSON.stringify(composeDialog(state)!.values) : '';
+      draftStatus = unchanged ? 'Draft saved.' : 'Earlier version saved. Save again to keep your latest edits.';
+      deps.drafts.changed?.();
+      if (schedule) {
+        if (!unchanged) throw new Error('The message changed while saving. Review your latest edits before scheduling.');
+        const requestSignature = JSON.stringify([saved.draft_id, saved.revision, runAt]);
+        if (!pendingSchedule || pendingSchedule.signature !== requestSignature) pendingSchedule = { signature: requestSignature, request: {
+          idempotency_key: crypto.randomUUID(), subject: { kind: 'mail_draft', draft_id: saved.draft_id, draft_revision: saved.revision },
+          activation: { kind: 'one_shot', run_at: runAt, time_zone: Intl.DateTimeFormat().resolvedOptions().timeZone },
+          decision_deadline: Math.min(runAt, Date.now() + 86_400_000), dispatch_deadline: runAt + 900_000,
+        } };
+        const pending = await deps.drafts.prepare(pendingSchedule.request);
+        if (destroyed || generation !== draftGeneration) return;
+        state = setComposeSubmittingTransition(state, false); state = closeComposeTransition(state); render();
+        deps.drafts.openReview(pending.proposal_id);
+      }
+    } catch (error) {
+      if (!destroyed && generation === draftGeneration) { syncFromDom(); setState(setComposeSubmitErrorTransition(state, humanizeRpcError(error))); }
+    } finally {
+      draftBusyLabel = undefined;
+      if (!destroyed && generation === draftGeneration) { syncFromDom(); setState(setComposeSubmittingTransition(state, false)); }
     }
   };
 
@@ -400,7 +497,7 @@ export const mountMailCompose = (
     try {
       const response = await deps.runExecute({
         recipe_id: SEND_COMPOSED_MAIL_RECIPE_ID,
-        config: composePayloadToSendRecipeConfig(result.payload),
+        config: saved ? draftContent() ?? composePayloadToSendRecipeConfig(result.payload) : composePayloadToSendRecipeConfig(result.payload),
       });
       if (destroyed || generation !== draftGeneration) return;
       const nextOutcome = mailComposeSubmitOutcomeFromExecuteResponse(response);
@@ -696,6 +793,9 @@ export const mountMailCompose = (
       void submit();
       return;
     }
+    if (action === 'save-mail-draft' || action === 'schedule-mail-draft') {
+      void saveDraft(action === 'schedule-mail-draft'); return;
+    }
     if (action === 'mail-compose-attachment-add') {
       void attach();
       return;
@@ -761,6 +861,7 @@ export const mountMailCompose = (
         || assistState.busyAction !== null
       ) return false;
       draftGeneration += 1;
+      resetSaved();
       retireAttachment();
       resetAssist();
       setState(
@@ -782,10 +883,27 @@ export const mountMailCompose = (
         return false;
       }
       draftGeneration += 1;
+      resetSaved();
       retireAttachment();
       resetAssist();
       setState(openReplyComposeTransition(state, context));
       return true;
+    },
+    async openSaved(draftId) {
+      if (!deps.drafts || composeDialog(state) || attachmentBusy || assistState.busyAction) return false;
+      const generation = ++draftGeneration;
+      try {
+        const draft = await deps.drafts.get({ draft_id: draftId });
+        if (destroyed || generation !== draftGeneration) return false;
+        resetSaved(); saved = draft;
+        state = openCreateComposeTransition(state, { default_sender_source_id: draft.content.sender_mail_instance });
+        state = setComposeValuesTransition(state, { sender_source: draft.content.sender_mail_instance, to: draft.content.to,
+          cc: draft.content.cc as string[] ?? [], bcc: draft.content.bcc as string[] ?? [], subject: draft.content.subject,
+          body: draft.content.body, attachments: draft.content.attachments as string[] ?? [],
+          in_reply_to: draft.content.in_reply_to as string ?? null });
+        savedValues = JSON.stringify(composeDialog(state)!.values); draftStatus = 'Draft saved.'; render();
+        return true;
+      } catch (error) { if (!destroyed) throw error; return false; }
     },
     state: () => state,
     readiness: () => readinessState,
@@ -795,6 +913,7 @@ export const mountMailCompose = (
       const dialog = composeDialog(state);
       if (dialog === null) return false;
       const values = dialog.values;
+      if (saved && JSON.stringify(values) === savedValues) return false;
       return values.subject.trim().length > 0
         || values.body.trim().length > 0
         || values.to.length > 0

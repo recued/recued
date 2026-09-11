@@ -10,6 +10,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type {
   ActiveExecutionEntry,
+  ChatToolCallRecord,
   ExecutionActiveRequest,
   ExecutionActiveResponse,
   ExecutionSource,
@@ -28,6 +29,8 @@ import {
   LIVE_CONTROL_BUBBLE_RUNNING_ROW_ATTR,
   LIVE_CONTROL_BUBBLE_RUN_CONTROL_ATTR,
   LIVE_CONTROL_BUBBLE_TOGGLE_ATTR,
+  LIVE_CONTROL_BUBBLE_TOOL_ROW_ATTR,
+  type MountLiveControlBubbleOptions,
   type LiveControlActiveCaller,
   type LiveControlCancelCaller,
   type LiveControlGrantsListCaller,
@@ -251,6 +254,8 @@ interface MountInit {
   includeGrantsCaller?: boolean;
   /** Full override of the active caller (for soft-fail / per-call scripting). */
   activeCaller?: LiveControlActiveCaller;
+  dismissToolCall?: MountLiveControlBubbleOptions['dismissToolCall'];
+  reconnect?: MountLiveControlBubbleOptions['reconnect'];
   killCaller?: LiveControlKillCaller;
   cancelCaller?: LiveControlCancelCaller;
   promoteCaller?: LiveControlPromoteCaller;
@@ -307,6 +312,8 @@ const mountBubble = (init: MountInit = {}) => {
     promoteCaller,
     grantsRevokeCaller: revokeCaller,
     activeRefreshDebounceMs: 0,
+    ...(init.dismissToolCall ? { dismissToolCall: init.dismissToolCall } : {}),
+    ...(init.reconnect ? { reconnect: init.reconnect } : {}),
     ...(init.now !== undefined ? { now: init.now } : {}),
   });
 
@@ -334,6 +341,67 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+describe('durable tool calls in the live bubble', () => {
+  const call: ChatToolCallRecord = {
+    message_id: 'tool:one', session_id: 'chat-one', turn_id: 'turn-one',
+    tool_name: 'recued/research', run_id: 'run_1', state: 'running',
+    started_at: 1_000, updated_at: 2_000, last_signal_at: 2_000,
+  };
+
+  it('counts a linked live run once, refreshes progress, and replaces its controls after reconnect', async () => {
+    let snapshot: ExecutionActiveResponse = { entries: [runEntry()], lanes: [], tool_calls: [call] };
+    let reconnect!: () => void;
+    const unsubscribe = vi.fn();
+    const h = mountBubble({ activeCaller: async () => snapshot, now: () => 10_000,
+      reconnect: listener => { reconnect = listener; return unsubscribe; },
+      dismissToolCall: async () => ({ dismissed: true }),
+    });
+    await h.mount.whenLoaded();
+    expect(h.toggle()?.textContent).toBe(`${DISC} 1`);
+    h.toggle()!.click();
+    expect(collectByAttr(h.host, LIVE_CONTROL_BUBBLE_TOOL_ROW_ATTR)).toHaveLength(1);
+    expect(collectByAttr(h.host, LIVE_CONTROL_BUBBLE_RUN_CONTROL_ATTR)).toHaveLength(1);
+    snapshot = { ...snapshot, tool_calls: [{ ...call, last_signal_at: 9_000 }] };
+    h.fire('execution', { op: 'progress' });
+    await h.mount.whenLoaded();
+    expect(h.mount.getToolCalls()[0]?.last_signal_at).toBe(9_000);
+
+    snapshot = { entries: [], lanes: [], tool_calls: [{ ...call, state: 'interrupted' }] };
+    reconnect();
+    await h.mount.whenLoaded();
+    const row = collectByAttr(h.host, LIVE_CONTROL_BUBBLE_TOOL_ROW_ATTR)[0]!;
+    expect(row.children.some(child => child.textContent.includes('Interrupted — outcome unconfirmed'))).toBe(true);
+    expect(collectByAttr(h.host, LIVE_CONTROL_BUBBLE_RUN_CONTROL_ATTR)).toHaveLength(0);
+    const controls = row.children.find(child => child.className === 'lc-row-controls')!;
+    expect(controls.children.find(child => child.textContent === 'Open chat')?.getAttribute('href'))
+      .toBe('#chat/session/chat-one');
+    expect(controls.children.find(child => child.textContent === 'Mark reviewed')).toBeDefined();
+    h.mount.dispose();
+    expect(unsubscribe).toHaveBeenCalledOnce();
+  });
+
+  it('loads interrupted work on a fresh page and dismisses it only after an explicit review', async () => {
+    let snapshot: ExecutionActiveResponse = { entries: [], lanes: [], tool_calls: [{ ...call, state: 'interrupted' }] };
+    const dismiss = vi.fn(async () => {
+      snapshot = { entries: [], lanes: [], tool_calls: [] };
+      return { dismissed: true };
+    });
+    const h = mountBubble({ activeCaller: async () => snapshot, dismissToolCall: dismiss });
+    await h.mount.whenLoaded();
+    expect(h.toggle()).not.toBeNull();
+    expect(dismiss).not.toHaveBeenCalled();
+    h.toggle()!.click();
+    const review = collectByAttr(h.host, 'data-recued-tool-call-review')[0]!;
+    review.click();
+    review.click();
+    await tick();
+    expect(dismiss).toHaveBeenCalledExactlyOnceWith({ session_id: 'chat-one', message_id: 'tool:one' });
+    expect(h.toggle()).toBeNull();
+    expect(h.callers.killCaller).not.toHaveBeenCalled();
+    h.mount.dispose();
+  });
+});
+
 describe('live-control bubble — ambient visibility + count', () => {
   it('keeps the narrow panel contained and every action at least 36px', () => {
     const h = mountBubble();
@@ -345,7 +413,7 @@ describe('live-control bubble — ambient visibility + count', () => {
       `[${LIVE_CONTROL_BUBBLE_CLOSE_ATTR}] {\n  display: inline-flex;\n  align-items: center;\n  justify-content: center;\n  width: 36px;\n  height: 36px;`,
     );
     expect(styles).toContain(
-      `[${LIVE_CONTROL_BUBBLE_RUN_CONTROL_ATTR}],\n[${LIVE_CONTROL_BUBBLE_GRANT_CONTROL_ATTR}] {\n  min-width: 36px;\n  min-height: 36px;`,
+      `[${LIVE_CONTROL_BUBBLE_RUN_CONTROL_ATTR}],\n[${LIVE_CONTROL_BUBBLE_GRANT_CONTROL_ATTR}],\n[data-recued-tool-call-review],\n[data-recued-tool-call-link] {\n  min-width: 36px;\n  min-height: 36px;`,
     );
     h.mount.dispose();
   });

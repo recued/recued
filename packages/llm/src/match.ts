@@ -139,7 +139,6 @@ const synthesizeSlotForPoolEntry = (e: FreePoolApiEntry): LLMSlot => ({
   // synthesized slot so the resolved Match retains the capability the
   // executor checks (multimodal) / the transcribe path consumes (A.9).
   ...(e.modalities !== undefined ? { modalities: e.modalities } : {}),
-  ...(e.transcription_model !== undefined ? { transcription_model: e.transcription_model } : {}),
 });
 
 /** Candidate = one eligible source the match could route to. Partitioned

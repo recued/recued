@@ -17,7 +17,7 @@
     "send",
     "foundation"
   ],
-  "pack_kind": "app_pack",
+  "pack_kind": "recipe_pack",
   "contents": [
     {
       "type": "recipe",

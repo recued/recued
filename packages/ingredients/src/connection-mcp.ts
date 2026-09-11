@@ -105,6 +105,7 @@ import {
   selectMcpLegacyInitializeVersion,
   unsupportedMcpResultType,
   withModernMcpRequestMeta,
+  type McpAcknowledgedNotifications,
   type McpImplementationInfo,
   type McpHttpHeaderBinding,
   type RecuedMcpProtocolVersion,
@@ -1122,6 +1123,13 @@ export const probeMcpLegacySseTools = async (
 };
 
 export interface ConnectionMcpHandlerDeps {
+  /** Host validation before credentials/connection setup. Process identity is
+   * also part of a stdio pool key, preventing reuse of a different executable. */
+  beforeConnect?: (call: ResolvedCall) => Promise<void>;
+  processIdentity?: (spec: StdioMcpLaunchSpec) => string;
+  /** Host gate at the tool/resource egress, after asynchronous credentials and
+   * protocol negotiation. A refusal is not a delivery-uncertain result. */
+  beforeRequest?: (call: ResolvedCall) => Promise<void>;
   /** Decrypt at-rest `auth_ciphertext` to a typed `ConnectionAuth`.
    *  Boot site closes over `decodeAuthFromStorage` from
    *  `backend/server/src/connection-handler.ts` + the connection
@@ -1302,7 +1310,7 @@ export const resolveStdioMcpLaunchSpec = (
  *  pattern); rejects a relative-with-slash command (cwd-dependent, ambiguous). */
 const readStdioCommand = (
   row: ConnectionRow,
-  call: ResolvedCall,
+  call: Pick<ResolvedCall, 'slug'>,
 ): StdioMcpLaunchSpec => {
   const fail = (msg: string): never => {
     throw new IngredientError(
@@ -1475,7 +1483,7 @@ type McpOperation =
 const resolveMcpOperation = (
   params: Record<string, unknown>,
   record: ConnectionRow,
-  call: ResolvedCall,
+  call: Pick<ResolvedCall, 'slug'>,
 ): McpOperation => {
   const meta = { slug: call.slug, name: record.name };
   // Tool call — presence of `tool` selects it. Validated exactly as
@@ -1543,6 +1551,32 @@ const wireForOperation = (
     case 'resource_list':
       return { method: 'resources/list', jsonRpcParams: {}, subject: 'resources/list' };
   }
+};
+
+/** The operation and material transport description used by both dispatch and
+ * a future-execution review. This performs no discovery, authentication or I/O.
+ * Health timestamps are observations; cached tool definitions affect dispatch. */
+export const describeConnectionMcpRequest = (
+  record: ConnectionRow, params: Record<string, unknown>, slug: string,
+) => {
+  const call = { slug };
+  const operation = resolveMcpOperation(params, record, call);
+  const health = readHealth(record);
+  if (operation.mode === 'tool' && Array.isArray(health?.tools) && health.tools.length > 0
+    && !health.tools.includes(operation.tool)) {
+    throw new IngredientError('MCP_TOOL_NOT_FOUND',
+      `connection.mcp: tool '${operation.tool}' not in cached tool list for connection '${record.name}' (re-probe to refresh)`,
+      { slug, name: record.name, tool: operation.tool, available: health.tools });
+  }
+  const transport = getTransport(record);
+  const endpoint = transport === 'stdio' ? null : readEndpoint(record, transport);
+  const launch = transport === 'stdio' ? readStdioCommand(record, call) : null;
+  return { operation, ...wireForOperation(operation), transport, endpoint, launch,
+    timeout_ms: resolveTimeoutMs(params.timeout_ms ?? CONNECTION_API_TIMEOUT_MS),
+    protocol_versions: [MCP_MODERN_PROTOCOL_VERSION, MCP_LEGACY_PROTOCOL_VERSION],
+    tool_schema: operation.mode === 'tool' ? health?.mcp_tool_schemas?.[operation.tool] ?? null : null,
+    tool_hashes: [...(health?.tool_hashes ?? [])].sort(),
+  };
 };
 
 let nextRequestId = 1;
@@ -1746,8 +1780,15 @@ export const createConnectionMcpHandler = (
       );
     }
 
+    let session: McpStreamSession;
+    try { session = await openWsSession(record, wsConnect, endpointUrl, d.timeoutMs); }
+    catch (error) {
+      evictIfDead(record.pk);
+      if (error instanceof IngredientError) throw error;
+      throw mapStreamDispatchError(error, record, call, d);
+    }
+    await deps.beforeRequest?.(call);
     try {
-      const session = await openWsSession(record, wsConnect, endpointUrl, d.timeoutMs);
       const reqId = nextRequestId++;
       const envelope = await session.requestMcp(reqId, d.method, d.jsonRpcParams, d.timeoutMs);
       if (envelope.jsonrpc !== '2.0') {
@@ -1830,10 +1871,17 @@ export const createConnectionMcpHandler = (
     const spec = readStdioCommand(record, call);
     // Stable reuse-key: command + args + env. A re-enrollment that changes
     // any of these respawns rather than reusing the stale child.
-    const targetKey = JSON.stringify([spec.command, spec.args, spec.env ?? null]);
+    const targetKey = JSON.stringify([spec.command, spec.args, spec.env ?? null, deps.processIdentity?.(spec) ?? null]);
 
+    let session: McpStreamSession;
+    try { session = await spawnStdioSession(record, spawnStdio, spec, targetKey, d.timeoutMs); }
+    catch (error) {
+      evictIfDead(record.pk);
+      if (error instanceof IngredientError) throw error;
+      throw mapStreamDispatchError(error, record, call, d);
+    }
+    await deps.beforeRequest?.(call);
     try {
-      const session = await spawnStdioSession(record, spawnStdio, spec, targetKey, d.timeoutMs);
       const reqId = nextRequestId++;
       const envelope = await session.requestMcp(reqId, d.method, d.jsonRpcParams, d.timeoutMs);
       if (envelope.jsonrpc !== '2.0') {
@@ -2085,26 +2133,9 @@ export const createConnectionMcpHandler = (
     reapIdleClients();
 
     // ────────────── input validation + op resolution ──────────────
-    const op = resolveMcpOperation(params, record, call);
-    const { method, jsonRpcParams, subject } = wireForOperation(op);
-
-    // ────────────── tool list pre-validation ──────────────
-    // When the connection record has a cached tool list (probe ran +
-    // populated it), validate eagerly so an authoring mistake surfaces
-    // a clean diagnostic instead of a JSON-RPC -32601. Absent cache →
-    // skip; let the server respond with whatever shape it uses. Resource
-    // ops have no equivalent cache gate (the server validates the uri).
-    if (op.mode === 'tool') {
-      const health = readHealth(record);
-      if (Array.isArray(health?.tools) && health.tools.length > 0
-          && !health.tools.includes(op.tool)) {
-        throw new IngredientError(
-          'MCP_TOOL_NOT_FOUND',
-          `connection.mcp: tool '${op.tool}' not in cached tool list for connection '${record.name}' (re-probe to refresh)`,
-          { slug: call.slug, name: record.name, tool: op.tool, available: health.tools },
-        );
-      }
-    }
+    const requestDescription = describeConnectionMcpRequest(record, params, call.slug);
+    const { operation: op, method, jsonRpcParams, subject } = requestDescription;
+    await deps.beforeConnect?.(call);
 
     // ────────────── shared dispatch params (both transports) ──────────────
     // Hoisted above the transport branch so sse + websocket share one
@@ -2121,15 +2152,13 @@ export const createConnectionMcpHandler = (
           ? { subject, resource: op.uri }
           : { subject };
     const isWrite = op.mode === 'tool' && isWriteRiskTier(call.risk_tier);
-    const timeoutMs = resolveTimeoutMs(
-      params.timeout_ms ?? CONNECTION_API_TIMEOUT_MS,
-    );
+    const timeoutMs = requestDescription.timeout_ms;
 
     // ────────────── transport dispatch ──────────────
     const streamParams: StreamDispatchParams = {
       method, jsonRpcParams, subject, subjectMeta, isWrite, timeoutMs,
     };
-    const transport = getTransport(record);
+    const transport = requestDescription.transport;
     if (transport === 'websocket') {
       return await dispatchWebsocket(record, call, ctx, streamParams);
     }
@@ -2202,6 +2231,7 @@ export const createConnectionMcpHandler = (
           { name: record.name },
         );
       }
+      await deps.beforeRequest?.(call);
       try {
         const envelope = await session.requestMcp(
           requestId,
@@ -2283,6 +2313,7 @@ export const createConnectionMcpHandler = (
     const requestBody = JSON.stringify(request);
     const bytesOut = new TextEncoder().encode(requestBody).byteLength;
 
+    await deps.beforeRequest?.(call);
     // ────────────── fetch with timeout ──────────────
     // `timeoutMs`, `subjectMeta`, `isWrite` are hoisted above the
     // transport branch (shared with the websocket path).
@@ -2513,4 +2544,431 @@ export const createConnectionMcpHandler = (
       throw e;
     }
   };
+};
+
+// ────────────────────────────────────────────────────────────────
+// Push capability discovery (2026-07-28 `subscriptions/listen`)
+// ────────────────────────────────────────────────────────────────
+
+/** What a server DECLARED it will push, read off its own acknowledgement. */
+/** Re-exported from `mcp-protocol.ts`, where it moved when Recued gained the
+ *  SERVING side of `subscriptions/listen` — the shape is the protocol's, not
+ *  this client transport's, and both ends must read the same one. */
+export type { McpAcknowledgedNotifications } from './mcp-protocol.js';
+
+/** Why an MCP connection does not push. Every member is an ANSWER, not an
+ *  error: an ordinary MCP server that never implemented `subscriptions/listen`
+ *  reports `listen_method_unsupported` and stays perfectly healthy. */
+export type McpPushUnavailableReason =
+  | 'listen_method_unsupported'
+  | 'listen_not_streamed'
+  | 'listen_no_acknowledgement'
+  | 'listen_error';
+
+export interface McpPushProbeResult {
+  /** Resource URIs the server lists — the candidates worth subscribing to. */
+  resources: string[];
+  /** Present iff the server opened a listen stream and acknowledged a filter.
+   *  ⛔ This is the server's OWN DECLARATION of what it will send, not our
+   *  inference from what it accepted: the revision requires the acknowledgement
+   *  to reflect the subset it agreed to honour, and to omit what it does not
+   *  support. Reading it is the whole probe. */
+  acknowledged?: McpAcknowledgedNotifications;
+  /** Why push is unavailable, when it is. */
+  reason?: McpPushUnavailableReason;
+}
+
+const MCP_PUSH_PROBE_MAX_RESOURCES = 50;
+
+const parseAcknowledgedNotifications = (value: unknown): McpAcknowledgedNotifications | null => {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return null;
+  const row = value as Record<string, unknown>;
+  const uris = Array.isArray(row.resourceSubscriptions)
+    ? row.resourceSubscriptions.filter((u): u is string => typeof u === 'string')
+    : undefined;
+  return {
+    ...(row.toolsListChanged === true ? { toolsListChanged: true } : {}),
+    ...(row.promptsListChanged === true ? { promptsListChanged: true } : {}),
+    ...(row.resourcesListChanged === true ? { resourcesListChanged: true } : {}),
+    ...(uris !== undefined && uris.length > 0 ? { resourceSubscriptions: uris } : {}),
+  };
+};
+
+/** Classify a non-streamed answer to `subscriptions/listen`.
+ *
+ *  ⛔ HTTP STATUS ALONE GETS THIS BACKWARDS IN BOTH DIRECTIONS. A JSON-RPC
+ *  server answers a missing method with HTTP 200 carrying `-32601` — a
+ *  DEFINITIVE refusal that `response.ok` reads as "not streamed", earning the
+ *  fast retry ladder it can never satisfy. And a transient HTTP 503 is not a
+ *  statement about the method at all, yet `!response.ok` read it as
+ *  "unsupported" and sentenced it to the 900s ceiling. So the body decides when
+ *  it can: `-32601` / `-32600` is the method being refused; anything else on a
+ *  non-2xx is transport trouble worth retrying soon. */
+const classifyNonStreamedListen = (
+  status: number,
+  body: string,
+): McpPushUnavailableReason => {
+  let code: unknown;
+  try {
+    code = (JSON.parse(body) as { error?: { code?: unknown } } | null)?.error?.code;
+  } catch {
+    code = undefined;
+  }
+  if (code === -32601 || code === -32600) return 'listen_method_unsupported';
+  if (status === 404 || status === 405 || status === 501) return 'listen_method_unsupported';
+  // A 2xx with no JSON-RPC error is a server that answered without opening a
+  // feed; a 5xx / 429 / 401 is transport or policy trouble, and retrying it
+  // soon is right.
+  return status >= 200 && status < 300 ? 'listen_not_streamed' : 'listen_error';
+};
+
+/** Does this MCP server push, and for what?
+ *
+ *  🔑 ASKED, NOT INFERRED. MCP 2026-07-28 removed the GET stream and protocol
+ *  sessions; the only server→client channel left is `subscriptions/listen`,
+ *  whose response stream stays open. So "does this connection push" is a normal
+ *  request with a normal answer — one round trip at probe time, exactly like the
+ *  `tools/list` beside it — and the server's `notifications/subscriptions/
+ *  acknowledged` frame states the subset it will honour.
+ *
+ *  ⚠ THE STREAM IS OPENED AND IMMEDIATELY CLOSED. A probe must not hold a
+ *  long-lived stream open: it is establishing a capability, not consuming a
+ *  feed. `consumeMcpSse` cancels the reader as soon as the acknowledgement
+ *  arrives, and closing the stream is itself the cancellation signal per the
+ *  transport.
+ *
+ *  ⛔ A SERVER THAT REFUSES THE METHOD IS NOT BROKEN. `-32601` / HTTP 404 means
+ *  legacy-era or simply no push — an ordinary, expected answer that belongs in
+ *  the capability record, never a health failure. Every branch here returns a
+ *  RESULT; nothing throws for an absent capability. */
+export const probeMcpPushSupport = async (
+  fetchImpl: typeof fetch,
+  endpoint: string,
+  headers: Record<string, string>,
+  timeoutMs: number,
+  clientInfo: McpImplementationInfo,
+): Promise<McpPushProbeResult> => {
+  const deadline = Date.now() + Math.max(0, timeoutMs);
+  const remaining = (): number => Math.max(0, deadline - Date.now());
+
+  // ⛔ ONE DEADLINE FOR THE WHOLE PROBE, NOT ONE PER REQUEST'S HEADERS. A
+  // per-request timer cleared when `fetch` resolves bounds only the time to
+  // FIRST BYTE: `response.json()` / `.text()` afterwards is unbounded, so a
+  // server that returns headers instantly and then dribbles a body forever
+  // holds the probe — and the socket — with its deadline already cancelled.
+  // A single controller armed for the caller's budget covers headers AND
+  // bodies for every request the probe makes.
+  const controller = new AbortController();
+  const deadlineTimer = setTimeout(() => { controller.abort(); }, Math.max(0, timeoutMs));
+  try {
+    return await runPushProbe();
+  } finally {
+    clearTimeout(deadlineTimer);
+  }
+
+  async function runPushProbe(): Promise<McpPushProbeResult> {
+  const post = async (
+    method: string,
+    params: Record<string, unknown>,
+  ): Promise<Response | null> => {
+    if (remaining() <= 0) return null;
+    try {
+      return await fetchImpl(endpoint, {
+        method: 'POST',
+        headers: {
+          ...headers,
+          'content-type': 'application/json',
+          ...modernMcpHttpHeaders(method, params),
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: `push-probe-${method}`,
+          method,
+          params: withModernMcpRequestMeta(params, clientInfo),
+        }),
+        signal: controller.signal,
+      });
+    } catch {
+      return null;
+    }
+  };
+
+  // 1 — what is there to subscribe to. A server with no resources can still
+  //     honour list-changed signals, so an empty list is not an exit.
+  const resources: string[] = [];
+  const listed = await post('resources/list', {});
+  if (listed !== null && listed.ok) {
+    try {
+      const body = await listed.json() as { result?: { resources?: unknown } };
+      const rows = Array.isArray(body.result?.resources) ? body.result.resources : [];
+      for (const row of rows) {
+        const uri = (row as { uri?: unknown } | null)?.uri;
+        if (typeof uri === 'string' && resources.length < MCP_PUSH_PROBE_MAX_RESOURCES) {
+          resources.push(uri);
+        }
+      }
+    } catch {
+      // A malformed resources/list is not a push answer; the listen attempt below
+      // still decides the capability.
+    }
+  }
+
+  // 2 — ask for everything we could ever want. The acknowledgement narrows it.
+  const filter = {
+    toolsListChanged: true,
+    resourcesListChanged: true,
+    ...(resources.length > 0 ? { resourceSubscriptions: resources } : {}),
+  };
+  const stream = await post('subscriptions/listen', { notifications: filter });
+  if (stream === null) return { resources, reason: 'listen_error' };
+  if (stream.status === 404 || stream.status === 405) {
+    void stream.body?.cancel();
+    return { resources, reason: 'listen_method_unsupported' };
+  }
+  // ⚠ A caller may hand us a bounded/adapted fetcher whose response is not a
+  // full `Response` (the connection probe's `HttpFetcher` is exactly that in
+  // some harnesses). No headers or no body means no stream to read, which is a
+  // capability answer — never a throw from inside a health probe.
+  const shaped = stream as Response & { headers?: Headers };
+  if (typeof shaped.headers?.get !== 'function' || stream.body === null) {
+    return { resources, reason: 'listen_not_streamed' };
+  }
+  const contentType = (stream.headers.get('content-type') ?? '').toLowerCase();
+  if (!contentType.includes('text/event-stream')) {
+    // A JSON body here is either a JSON-RPC error (method unknown) or a server
+    // that answered the request without opening a feed. Neither pushes.
+    return { resources, reason: classifyNonStreamedListen(stream.status, await stream.text()) };
+  }
+
+  let acknowledged: McpAcknowledgedNotifications | null = null;
+  try {
+    await consumeMcpSse(stream, (event) => {
+      let frame: { method?: unknown; params?: unknown };
+      try {
+        frame = JSON.parse(event.data) as typeof frame;
+      } catch {
+        return false;
+      }
+      if (frame.method !== 'notifications/subscriptions/acknowledged') return false;
+      const params = frame.params as { notifications?: unknown } | null;
+      acknowledged = parseAcknowledgedNotifications(params?.notifications ?? {});
+      return true;
+    });
+  } catch {
+    return { resources, reason: 'listen_error' };
+  }
+  if (acknowledged === null) return { resources, reason: 'listen_no_acknowledgement' };
+  return { resources, acknowledged };
+  }
+};
+
+// ────────────────────────────────────────────────────────────────
+// Case 1 slice B — the standing listen stream.
+// ────────────────────────────────────────────────────────────────
+
+/** A live `subscriptions/listen` stream. */
+export interface McpListenStreamHandle {
+  /** The filter the SERVER acknowledged — its own declaration of what it will
+   *  send, which is the only correct basis for a correlation guard. Present
+   *  because `openMcpListenStream` does not resolve until the acknowledgement
+   *  lands: an unacknowledged stream is not an open subscription. */
+  readonly acknowledged: McpAcknowledgedNotifications;
+  /** Settles when the feed ends for ANY reason — server close, transport
+   *  error, or `close()`. `reason: 'closed'` iff the end was ours; every other
+   *  ending is one the caller may want to re-open after. */
+  readonly ended: Promise<{ reason: 'closed' | 'ended' | 'error'; error?: unknown }>;
+  close(): void;
+}
+
+export type McpListenOpenResult =
+  | { ok: true; handle: McpListenStreamHandle }
+  | { ok: false; reason: McpPushUnavailableReason };
+
+/** Open one standing `subscriptions/listen` feed.
+ *
+ *  🔑 THE FILTER IS SENT ONCE AND ANSWERED ONCE. 2026-07-28 has no verb for
+ *  widening a live subscription, so the acknowledged set is fixed for the life
+ *  of the stream — a caller whose demand changes CLOSES and RE-OPENS. That is
+ *  why the handle exposes `acknowledged` rather than the filter we asked for:
+ *  the server is permitted to honour a subset, and the difference is exactly
+ *  what a correlation guard must be built from.
+ *
+ *  ⚠ UNBOUNDED IN TIME, BOUNDED PER FRAME. `consumeMcpSse`'s cumulative byte
+ *  cap is disabled (`limitTotal: false`) because a feed that runs for a week
+ *  legitimately carries more bytes than any single response may — but the
+ *  PER-EVENT cap stays, so one oversized frame still fails loudly instead of
+ *  growing a buffer without limit.
+ *
+ *  ⛔ THE OPEN HAS A DEADLINE; THE READ DOES NOT. A server that accepts the
+ *  POST and never answers would otherwise hold a slot forever. The timer is
+ *  cleared the moment the acknowledgement arrives — after that, silence is the
+ *  normal state of a subscription and must never be read as failure. */
+export const openMcpListenStream = async (
+  fetchImpl: typeof fetch,
+  endpoint: string,
+  headers: Record<string, string>,
+  filter: McpAcknowledgedNotifications,
+  clientInfo: McpImplementationInfo,
+  openTimeoutMs: number,
+  onResourceUpdated: (uri: string) => void,
+): Promise<McpListenOpenResult> => {
+  const params = { notifications: filter };
+  const controller = new AbortController();
+  const openTimer = setTimeout(() => { controller.abort(); }, Math.max(0, openTimeoutMs));
+  let response: Response;
+  try {
+    response = await fetchImpl(endpoint, {
+      method: 'POST',
+      headers: {
+        ...headers,
+        'content-type': 'application/json',
+        ...modernMcpHttpHeaders('subscriptions/listen', params),
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 'listen',
+        method: 'subscriptions/listen',
+        params: withModernMcpRequestMeta(params, clientInfo),
+      }),
+      signal: controller.signal,
+    });
+  } catch {
+    clearTimeout(openTimer);
+    return { ok: false, reason: 'listen_error' };
+  }
+  if (response.status === 404 || response.status === 405) {
+    clearTimeout(openTimer);
+    void response.body?.cancel();
+    return { ok: false, reason: 'listen_method_unsupported' };
+  }
+  const shaped = response as Response & { headers?: Headers };
+  if (typeof shaped.headers?.get !== 'function' || response.body === null) {
+    clearTimeout(openTimer);
+    return { ok: false, reason: 'listen_not_streamed' };
+  }
+  if (!(response.headers.get('content-type') ?? '').toLowerCase().includes('text/event-stream')) {
+    // ⚠ Read the body BEFORE disarming — the deadline must cover the body too,
+    // or a server that sends headers and then stalls holds this open forever.
+    const body = await response.text().catch(() => '');
+    clearTimeout(openTimer);
+    return { ok: false, reason: classifyNonStreamedListen(response.status, body) };
+  }
+
+  // The reader runs for the life of the feed. `acknowledged` resolves off the
+  // first frame; everything after it is delivered to the caller.
+  let settleAck: (ack: McpAcknowledgedNotifications | null) => void = () => {};
+  const ackArrived = new Promise<McpAcknowledgedNotifications | null>((resolve) => {
+    settleAck = resolve;
+  });
+  let closedByUs = false;
+
+  const ended = (async (): Promise<{ reason: 'closed' | 'ended' | 'error'; error?: unknown }> => {
+    try {
+      await consumeMcpSse(response, (event) => {
+        let frame: { method?: unknown; params?: unknown };
+        try {
+          frame = JSON.parse(event.data) as typeof frame;
+        } catch {
+          // A frame we cannot parse is not a reason to drop a working feed.
+          return false;
+        }
+        if (frame.method === 'notifications/subscriptions/acknowledged') {
+          const p = frame.params as { notifications?: unknown } | null;
+          settleAck(parseAcknowledgedNotifications(p?.notifications ?? {}));
+          return false;
+        }
+        if (frame.method === 'notifications/resources/updated') {
+          const uri = (frame.params as { uri?: unknown } | null)?.uri;
+          if (typeof uri === 'string') onResourceUpdated(uri);
+        }
+        // Never `true`: only `close()` ends this stream from our side.
+        return false;
+      }, false);
+      settleAck(null);
+      return { reason: closedByUs ? 'closed' : 'ended' };
+    } catch (error) {
+      settleAck(null);
+      return closedByUs ? { reason: 'closed' } : { reason: 'error', error };
+    }
+  })();
+
+  const acknowledged = await ackArrived;
+  clearTimeout(openTimer);
+  if (acknowledged === null) {
+    // The feed ended (or failed) before saying what it would send. Nothing was
+    // subscribed, so there is nothing to hand back and nothing to close.
+    controller.abort();
+    return { ok: false, reason: 'listen_no_acknowledgement' };
+  }
+  return {
+    ok: true,
+    handle: {
+      acknowledged,
+      ended,
+      close() {
+        closedByUs = true;
+        controller.abort();
+      },
+    },
+  };
+};
+
+/** How long an open+acknowledge may take before the attempt is abandoned. */
+export const MCP_LISTEN_OPEN_TIMEOUT_MS = 15_000;
+
+/** Bind a listen opener to one connection store row's transport + credential.
+ *
+ *  The three private helpers a dispatch uses to reach an MCP server —
+ *  `getTransport`, `readEndpoint`, `injectAuthHeaders` — stay private; this is
+ *  the one exported way to get a standing feed, so endpoint resolution and auth
+ *  injection cannot drift between the request path and the subscription path.
+ *
+ *  ⛔ HTTP ONLY, AND IT SAYS SO. `subscriptions/listen` is a POST whose response
+ *  stays open, so it exists only on the `sse` (streamable-HTTP) transport. A
+ *  `websocket` or `stdio` connection reports `listen_method_unsupported` —
+ *  an accurate capability answer rather than a transport error, because from
+ *  the caller's side the fact is the same: this connection will not push.
+ *
+ *  ⚠ THE CREDENTIAL IS RESOLVED PER OPEN, INCLUDING EVERY RE-OPEN — so a caller
+ *  whose `decodeAuth` refreshes returns a live token on reconnect. It is NOT
+ *  refreshed for a feed already open: a bearer that expires mid-stream ends the
+ *  feed, and the re-open ladder is what recovers it. That is the honest
+ *  boundary of what a standing stream can do without a renegotiation verb the
+ *  2026-07-28 revision does not have. */
+export const createMcpListenOpener = (
+  deps: Pick<ConnectionMcpHandlerDeps, 'decodeAuth' | 'fetchImpl'>,
+) => async (input: {
+  row: ConnectionRow;
+  uris: string[];
+  onResourceUpdated: (uri: string) => void;
+  openTimeoutMs?: number;
+}): Promise<McpListenOpenResult> => {
+  let transport: McpTransport;
+  try {
+    transport = getTransport(input.row);
+  } catch {
+    return { ok: false, reason: 'listen_method_unsupported' };
+  }
+  if (transport !== 'sse') return { ok: false, reason: 'listen_method_unsupported' };
+
+  let url: URL;
+  const headers: Record<string, string> = {};
+  try {
+    url = new URL(readEndpoint(input.row, transport));
+    injectAuthHeaders(await deps.decodeAuth(input.row), headers, url);
+  } catch {
+    // A malformed endpoint or an undecryptable credential is not a push
+    // answer we can refine — the connection's own health surfaces the cause.
+    return { ok: false, reason: 'listen_error' };
+  }
+
+  return openMcpListenStream(
+    deps.fetchImpl ?? globalThis.fetch,
+    url.toString(),
+    headers,
+    { resourceSubscriptions: input.uris },
+    MCP_CLIENT_INFO,
+    input.openTimeoutMs ?? MCP_LISTEN_OPEN_TIMEOUT_MS,
+    input.onResourceUpdated,
+  );
 };

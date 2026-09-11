@@ -971,6 +971,12 @@ export interface Commit {
    *  dispatched* (which needs a redaction pass for the resolved
    *  secrets) is a Gateway-substrate follow-on. */
   args: Record<string, unknown>;
+  /** D-261 provenance and encrypted-payload reference, never an approval
+   * marker. Its member transaction owns pending/outcome writes together with
+   * the linked receipt. Private normalized args/results stay in that snapshot. */
+  preapproval?: {
+    future_execution_ref: string; grant_id: string; member_id: string; action_ref: string;
+  };
   // ────────────────────────────────────────────────────────────────
   // D-177 P1b — canonical action identity, stamped at canonicalization.
   // Computed from the RESOLVED-minus-vault payload (post-`{{config.*}}`/
@@ -1105,6 +1111,11 @@ export const isCommit = (value: unknown): value is Commit => {
   if (!nonEmpty(v.ingredient)) return false;
   if (!nonEmpty(v.tool)) return false;
   if (!v.args || typeof v.args !== 'object' || Array.isArray(v.args)) return false;
+  if (v.preapproval !== undefined) {
+    if (v.preapproval === null || typeof v.preapproval !== 'object' || Array.isArray(v.preapproval)) return false;
+    const origin = v.preapproval as Record<string, unknown>;
+    if (!['future_execution_ref', 'grant_id', 'member_id', 'action_ref'].every(key => nonEmpty(origin[key]))) return false;
+  }
   // D-177 P1b — stamped action identity (optional; absent on degraded rows).
   if (!optString(v.arg_shape_hash)) return false;
   if (!optString(v.canonical_payload_hash)) return false;

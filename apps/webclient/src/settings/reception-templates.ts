@@ -73,7 +73,13 @@ import {
   type IntakeFormConfigFromTemplateOptions,
   type IntakeFormTargetKind,
   type IntakeFormTemplate,
+  type IntakeFormTemplateBody,
   type IntakeFormTemplateRef,
+  // D-220 Slice B — pack-shipped intake templates: same body, a `pack:` ref,
+  // and provenance the card renders.
+  type PackIntakeFormTemplateRef,
+  type PackReceptionTemplateListing,
+  type PackReceptionTemplateUnavailable,
 } from '@recued/contracts';
 
 import {
@@ -167,7 +173,7 @@ export interface IntakeFormTemplateCardModel {
  *  the collected-fields summary. Honeypot fields are filtered out of the
  *  visitor-meaningful set — they are spam traps, not real collection. */
 const buildCollectedFields = (
-  template: IntakeFormTemplate,
+  template: IntakeFormTemplateBody,
 ): IntakeFormTemplateCollectedFields => {
   const honeypotSet = new Set(template.anti_spam_defaults.honeypot_fields);
   const fields = template.form_definition.fields;
@@ -185,7 +191,7 @@ const buildCollectedFields = (
 
 /** Project a template's `anti_spam_defaults` into the one-lined summary. */
 const buildAntiSpamSummary = (
-  template: IntakeFormTemplate,
+  template: IntakeFormTemplateBody,
   honeypot_field_count: number,
 ): IntakeFormTemplateAntiSpamSummary => {
   const spam = template.anti_spam_defaults;
@@ -206,11 +212,13 @@ const buildAntiSpamSummary = (
   };
 };
 
-/** Project one `IntakeFormTemplate` into a Templates-browser card.
- *  Pure — no I/O. */
-export const buildIntakeFormTemplateCardModel = (
-  template: IntakeFormTemplate,
-): IntakeFormTemplateCardModel => {
+/** The ref-agnostic card projection — D-220 Slice B splits it out so the
+ *  Foundation gallery and the pack gallery project one template body the
+ *  same way and can never drift on what a card says. Generic over the ref
+ *  type so each caller keeps its own closed / `pack:` ref in the model. */
+const projectIntakeFormTemplateCard = <R extends string>(
+  template: IntakeFormTemplateBody & { readonly template_ref: R },
+): Omit<IntakeFormTemplateCardModel, 'template_ref'> & { template_ref: R } => {
   const targetCopy = intakeFormTargetKindCopy(
     template.submission_processing_rule.target_kind,
   );
@@ -234,6 +242,70 @@ export const buildIntakeFormTemplateCardModel = (
     collects_email_label: emailCopy.label,
     collects_email_description: emailCopy.help,
     anti_spam: buildAntiSpamSummary(template, collected.honeypot_field_count),
+  };
+};
+
+/** Project one `IntakeFormTemplate` into a Templates-browser card.
+ *  Pure — no I/O. */
+export const buildIntakeFormTemplateCardModel = (
+  template: IntakeFormTemplate,
+): IntakeFormTemplateCardModel => projectIntakeFormTemplateCard(template);
+
+// ════════════════════════════════════════════════════════════════
+// D-220 Slice B — pack-shipped template cards
+// ════════════════════════════════════════════════════════════════
+
+/** One PACK template card: the intake card under a `pack:` ref, plus the
+ *  provenance the gallery shows so the owner knows whose form this is. */
+export interface PackIntakeFormTemplateCardModel
+  extends Omit<IntakeFormTemplateCardModel, 'template_ref'> {
+  template_ref: PackIntakeFormTemplateRef;
+  pack_slug: string;
+  publisher: string;
+  pack_name: string;
+  pack_version: number;
+  /** "From Job Status Board (v4)" — the card's provenance line. */
+  provenance_label: string;
+}
+
+/** Project one `PackReceptionTemplateListing` into a pack card. Pure. */
+export const buildPackIntakeFormTemplateCardModel = (
+  listing: PackReceptionTemplateListing,
+): PackIntakeFormTemplateCardModel => ({
+  ...projectIntakeFormTemplateCard(listing.template),
+  pack_slug: listing.pack_slug,
+  publisher: listing.publisher,
+  pack_name: listing.pack_name,
+  pack_version: listing.pack_version,
+  provenance_label: `From ${listing.pack_name}${listing.pack_version > 0 ? ` (v${listing.pack_version})` : ''}`,
+});
+
+/** The pack half of the Templates browser. No closed list to check against
+ *  — a pack template exists exactly when its pack is installed — so there is
+ *  no `missing_refs`; what CAN go wrong (a stored row the server no longer
+ *  admits) arrives as `unavailable` and is rendered as a note, not dropped. */
+export interface PackIntakeFormTemplatesBrowserModel {
+  /** Cards in the server's order (pack slug, then ref). Last-wins on a
+   *  duplicate ref, like the Foundation model. */
+  cards: ReadonlyArray<PackIntakeFormTemplateCardModel>;
+  total: number;
+  /** True iff there are no cards. `unavailable` is reported separately. */
+  is_empty: boolean;
+  unavailable: ReadonlyArray<PackReceptionTemplateUnavailable>;
+}
+
+export const buildPackIntakeFormTemplatesBrowserModel = (args: {
+  listings: ReadonlyArray<PackReceptionTemplateListing>;
+  unavailable?: ReadonlyArray<PackReceptionTemplateUnavailable>;
+}): PackIntakeFormTemplatesBrowserModel => {
+  const byRef = new Map<string, PackReceptionTemplateListing>();
+  for (const listing of args.listings) byRef.set(listing.template.template_ref, listing);
+  const cards = [...byRef.values()].map(buildPackIntakeFormTemplateCardModel);
+  return {
+    cards,
+    total: cards.length,
+    is_empty: cards.length === 0,
+    unavailable: args.unavailable ?? [],
   };
 };
 
@@ -358,7 +430,8 @@ export type UseIntakeFormTemplateResult =
  *  module). `opts.form_definition_id` is a machine-generated per-endpoint
  *  id, not user input — not validated here. Pure — no I/O. */
 export const useIntakeFormTemplate = (
-  template: IntakeFormTemplate,
+  // D-220 Slice B — any template body with a string ref: Foundation or pack.
+  template: IntakeFormTemplateBody & { readonly template_ref: string },
   opts: IntakeFormConfigFromTemplateOptions,
 ): UseIntakeFormTemplateResult => {
   const code = validateTemplateDisplayName(opts.display_name);

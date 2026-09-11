@@ -317,22 +317,39 @@ interface ProfileSeedDeps {
  *  → its profile is dropped → deny until granted. The profile is stamped with
  *  `catalogSlug` so the gateway rejects a colliding short key dispatched from a
  *  DIFFERENT catalog (`catalog_mismatch`). */
-const applyConnectionProfile = (
-  deps: ProfileSeedDeps,
+export const deriveConnectionOperationProfile = (
+  deps: Omit<ProfileSeedDeps, 'profileStore'>,
   connectionName: string,
   catalogSlug: string | undefined,
-): void => {
+): ConnectionOperationProfile | null => {
   const allowed_operations = catalogSlug
     ? deriveAllowedOperations(deps.getManifest(catalogSlug), [
         ...(deps.contractGrantStore?.listUserGroups(catalogSlug, connectionName) ?? []),
         ...(deps.contractGrantStore?.listPackOwnedGroups(catalogSlug, connectionName) ?? []),
       ])
     : [];
-  if (!catalogSlug || allowed_operations.length === 0) {
+  return !catalogSlug || allowed_operations.length === 0 ? null : { allowed_operations, catalog_slug: catalogSlug };
+};
+
+const applyConnectionProfile = (deps: ProfileSeedDeps, connectionName: string, catalogSlug: string | undefined): void => {
+  const profile = deriveConnectionOperationProfile(deps, connectionName, catalogSlug);
+  if (!profile) {
     deps.profileStore.delete(connectionName);
     return;
   }
-  deps.profileStore.set(connectionName, { allowed_operations, catalog_slug: catalogSlug });
+  deps.profileStore.set(connectionName, profile);
+};
+
+/** D-261 atomic checks use fresh realm rows, never an observer-populated Map.
+ * The derivation itself is shared with the normal boot/reconcile path above. */
+export const readCurrentConnectionOperationProfile = (
+  deps: Omit<WireCatalogOperationProfilesInput, 'profileStore'>, connectionName: string,
+): ConnectionOperationProfile | null => {
+  const api = deps.connectionStore.get('api', connectionName);
+  if (!api && !deps.connectionStore.list({}).some(row => row.name === connectionName)) return null;
+  const slug = (api ? catalogSlugForConnection(api) : undefined)
+    ?? deps.connectionCatalogBindingStore?.resolveCatalogSlug(connectionName);
+  return deriveConnectionOperationProfile(deps, connectionName, slug);
 };
 
 // D-170 gap #2 live-reconcile — `applyConnectionProfile` is the shared primitive the

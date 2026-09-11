@@ -101,7 +101,32 @@ export type ChatIndexProbe = (
  *  middle. */
 export const CHAT_INDEX_PROBE_ARGS: Readonly<Record<string, Readonly<Record<string, unknown>>>> = {
   'file.search': { scope: 'all' },
+  // `work.search` takes ONE `kind` per call, so each kind is a separate probe
+  // keyed `work.search:<kind>`. `chatIndexProbeTool` maps the key back to the
+  // real tool name for admission + handler lookup.
+  'work.search:task': { kind: 'task' },
+  'work.search:note': { kind: 'note' },
+  'work.search:commitment': { kind: 'commitment' },
+  'work.search:project': { kind: 'project' },
+  'work.search:booking': { kind: 'booking' },
 };
+
+/** The TOOL a probe key dispatches to. Keys may carry a per-call discriminator
+ *  (`work.search:note`); everything before the first `:` is the tool name.
+ *
+ *  ⛔ USED FOR ADMISSION AND HANDLER LOOKUP BOTH. A key reaching `admitTier1`
+ *  or `tier1Handlers` unsplit is not a tool, so it is denied or missing — and
+ *  a denied probe reads exactly like an empty store, which is this feature's
+ *  own measured harm mode. */
+export const chatIndexProbeTool = (probeKey: string): string =>
+  probeKey.split(':')[0] ?? probeKey;
+
+/** How a probe key is NAMED in the line the model reads. The model calls
+ *  `work.search`, never `work.search:note`, so the discriminator is dropped —
+ *  and duplicate names collapse, so a term found in three kinds names the tool
+ *  once rather than reading as three stores. */
+export const chatIndexProbeLabel = (probeKey: string): string =>
+  chatIndexProbeTool(probeKey);
 
 /** How a store answers a CO-OCCURRENCE probe — the index's own "tier 2", the
  *  question "does one store hold ALL of these words?".
@@ -164,6 +189,38 @@ export const CHAT_INDEX_STORES: ReadonlyArray<
   // that appears solely in file CONTENT is invisible here, and no probe of this
   // tool will find it.
   ['file.search', 'files', 'terms'],
+  // ⛔⛔ WORK ENTITIES WERE ABSENT, AND THE INDEX REPORTED A CONFIDENT WRONG
+  //   STORE BECAUSE OF IT. Measured (task 343, run `2026-09-07T12-05-21-166Z`):
+  //   the packet carried `index_context: "ring: memory.search; surcharge:
+  //   memory.search"` while twelve notes titled "Kestrel ring NN" sat in
+  //   `work.search`. The model followed the line — eight `memory.search` calls
+  //   across four rounds in turn 7, never once reaching for the store that had
+  //   the answer — and the turn ended "I can't complete the sum".
+  //
+  //   🔑 A MISSING STORE DOES NOT PRODUCE "UNKNOWN", IT PRODUCES A WRONG
+  //   POINTER. This index reports the stores that HIT; with the holding store
+  //   unprobed, the loosest match among the rest wins and is stated in the same
+  //   grammar as a real find. `memory.search` returned one irrelevant memory at
+  //   `match: 'loose'` and became the answer.
+  //
+  //   ⛔ `'fts'` VERIFIED BY THE TOOL'S PATH, NOT THE STORE'S CAPABILITIES —
+  //   the rule `file.search` above exists to enforce. `work.search` reaches
+  //   `searchIdsByText` -> `toFtsMatch` -> FTS5 `MATCH` (the word-matching index
+  //   shipped 2026-09-05), so it parses a co-occurrence expression correctly.
+  //   Before that change it filtered in JS and would have belonged in `'terms'`.
+  //
+  //   ⚠ ONE `kind` PER CALL, so this is five probes per term, not one: the
+  //   cost per turn goes ~12 -> ~22 concurrent local reads at the observed
+  //   median of 2 terms. They are SQLite reads against `work_entity_fts`, not
+  //   model calls — no tokens, no provider latency — and both probe loops are
+  //   already `Promise.all`. Probing only `note` was considered and refused: it
+  //   would narrow this blind spot while leaving the same failure shape for a
+  //   term that lives in a task, project, commitment or booking.
+  ['work.search:task', 'entities', 'fts'],
+  ['work.search:note', 'entities', 'fts'],
+  ['work.search:commitment', 'entities', 'fts'],
+  ['work.search:project', 'entities', 'fts'],
+  ['work.search:booking', 'entities', 'fts'],
 ];
 
 /** ⛔ BOUNDS ARE THE WHOLE COST STORY. Every turn pays
@@ -505,7 +562,16 @@ export const buildChatIndexContext = async (
           }
         }),
       );
-      const hits = found.filter((x): x is { store: string; n: number } => x !== null);
+      const raw = found.filter((x): x is { store: string; n: number } => x !== null);
+      // Collapse `work.search:*` to one `work.search`, keeping first-hit order.
+      const seenLabel = new Set<string>();
+      const hits: { store: string; n: number }[] = [];
+      for (const h of raw) {
+        const label = chatIndexProbeLabel(h.store);
+        if (seenLabel.has(label)) continue;
+        seenLabel.add(label);
+        hits.push({ store: label, n: h.n });
+      }
       return {
         term,
         stores: hits.map((h) => h.store).slice(0, CHAT_INDEX_MAX_STORES_PER_TERM),
@@ -559,7 +625,23 @@ export const buildChatIndexContext = async (
         }
       }),
     );
-    phraseStores.push(...found.filter((x): x is string => x !== null));
+    // ⛔⛔ LABEL HERE TOO, AND THE COLLAPSE DEPENDS ON IT. `found` carries PROBE
+    //   KEYS (`work.search:note`), while `entry.stores` above already carries
+    //   LABELS — so pushing keys leaks a tool name the model cannot call INTO
+    //   THE LINE, and makes `collapsed.has('work.search')` false, so the
+    //   single-term entries are never dropped.
+    //
+    //   🔑 BOTH FAILURES WERE VISIBLE IN ONE LIVE LINE (task 343, run
+    //   `2026-09-07T13-45-02-144Z`):
+    //     "ring note read checkpoint cost: work.search:note; ring:
+    //      memory.search, work.search; note: memory.search, work.search; ..."
+    //   the phrase names a non-existent tool AND the terms it should have
+    //   collapsed are still listed beside it.
+    for (const key of found) {
+      if (key === null) continue;
+      const label = chatIndexProbeLabel(key);
+      if (!phraseStores.includes(label)) phraseStores.push(label);
+    }
   }
   const collapsed = new Set(phraseStores);
 

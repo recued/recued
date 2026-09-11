@@ -81,15 +81,58 @@ describe('memory.search — match / top_margin agent guidance', () => {
    *
    * Removing the invitation is not enough on its own: "a fact worth
    * persisting" still describes a preference, so the ban has to be explicit. */
-  it('⛔ REFUSES preferences — the pool cannot supersede, so it must not invite state', () => {
+  /** ⛔⛔ 2026-09-10 — THIS PINNED THE WORD "PREFERENCES" AND THAT WAS THE HOLE.
+   *  The rule always read "PREFERENCES **or any setting with a current value**",
+   *  which covers a levy or a rate — but the LABEL and BOTH EXAMPLES were
+   *  preferences, so the model read it as a preference rule and never applied
+   *  it to a figure. Measured over 129 stored `memory.write` calls: **128 (99%)
+   *  store a MOVABLE value** (levy / surcharge / retainer / quarterly rate) and
+   *  **0 store an immutable event**. The catalog was simultaneously forbidding
+   *  the class by rule and TEACHING it by example — `summary`'s own sample was
+   *  "Acme renewal closes 2026-Q3", a date that moves.
+   *  ⇒ the ratchet now pins the GENERAL rule, with preferences as one member,
+   *  and requires a movable-VALUE example so the class cannot narrow back. */
+  it('⛔ REFUSES any value that can change — the pool cannot supersede, so it must not invite state', () => {
     const write = TIER1_TOOL_DESCRIPTORS['memory.write'].description;
-    expect(write).toMatch(/do NOT use it for PREFERENCES/i);
+    expect(write).toMatch(/do NOT SAVE any value that can change/i);
+    /** ⛔⛔ THE RULE MUST GOVERN SAVING AND NOTHING ELSE. A first cut said
+     *  "a figure quoted today is a MOVABLE UNIT that gets recomputed", "never
+     *  the running value itself" and "leave THE VALUE to the user" (widened
+     *  from the original's narrow "leave the SETTING itself to the user").
+     *  None of those is scoped to the save decision, and the model read them
+     *  as licence to distrust a figure it already held: driven under pressure
+     *  it REFUSED a value sitting in its own brief `constraints` —
+     *  "I won't quote a number I can't point to" — where the control answered.
+     *  ⇒ a storage rule that leaks into a USAGE prohibition is worse than the
+     *  pollution it fixes, so the scoping sentence is pinned and the three
+     *  offending phrasings are pinned ABSENT. */
+    expect(write).toMatch(/governs what you SAVE, nothing else/i);
+    expect(write).not.toMatch(/movable unit/i);
+    expect(write).not.toMatch(/never the running value/i);
+    expect(write).not.toMatch(/leave the value to the user/i);
+    // Preferences remain covered — as a MEMBER of the class, not as the class.
+    expect(write).toMatch(/preference/i);
+    // …and a movable FIGURE is named too, which is the 99% case.
+    expect(write).toMatch(/levy|surcharge|\brate\b/i);
     expect(write).toMatch(/never supersedes/i);
     // The reason travels with the rule; a bare prohibition gets rationalised away.
     expect(write).toMatch(/contradiction/i);
     // …and the invitation is genuinely gone, not just counter-balanced.
     expect(write).not.toMatch(/states a lasting preference/i);
     expect(write).not.toMatch(/a fact, decision, preference/i);
+  });
+
+  /** ⛔ THE EXAMPLE IS THE RULE THE MODEL ACTUALLY FOLLOWS. `summary`'s sample
+   *  must name something that HAPPENED; a running value there teaches exactly
+   *  what the description forbids one sentence earlier. */
+  it('⛔ the `summary` example is an EVENT, never a running value', () => {
+    const schema = TIER1_TOOL_DESCRIPTORS['memory.write'].arg_schema as {
+      properties: { summary: { description: string } };
+    };
+    const summary = schema.properties.summary.description;
+    expect(summary).toMatch(/HAPPENED and cannot change/i);
+    expect(summary).not.toMatch(/Acme renewal closes/i);
+    expect(summary).not.toMatch(/Prefers morning meetings/i);
   });
 
   it('directs the agent to read `match` BEFORE using the results', () => {

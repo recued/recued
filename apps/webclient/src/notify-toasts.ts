@@ -15,12 +15,11 @@
  *  bootstrap mounts this once at `options.root` (the same posture as the
  *  reauth banner), independent of `mountedRouteHandle`.
  *
- *  ── Notify input is bus-only; no rpc, no link ───────────────────────────
+ *  ── Notify input is bus-only ──────────────────────────────────────────
  *  The stack consumes each `notification.notify` bus payload DIRECTLY — it's
- *  ephemeral, so there's no `notification.recent` round-trip. The bus frame is
- *  `{ title?, text, cursor }` — it carries NO `link_url`, so a toast renders
- *  title + text + a dismiss control and nothing clickable; a `javascript:`
- *  href risk can't arise here. The public `push` seam lets other durable,
+ *  ephemeral, so there's no `notification.recent` round-trip.
+ *  Optional links accept HTTP(S) or a saved-view route, with every other
+ *  scheme rejected. The public `push` seam lets other durable,
  *  owner-only projections reuse the same accessible presentation without
  *  minting a fake `notification.notify` event.
  *
@@ -50,6 +49,7 @@ export interface NotifyToast {
   title?: string;
   /** Body text. */
   text: string;
+  link_url?: string;
 }
 
 export interface MountNotifyToastsOptions {
@@ -109,6 +109,15 @@ export const NOTIFY_TOASTS_STYLES_MARKER = 'data-recued-notify-toasts-styles';
 
 const DEFAULT_DURATION_MS = 6000;
 const DEFAULT_MAX_VISIBLE = 4;
+
+const safeNotifyLink = (value: unknown): string | undefined => {
+  if (typeof value !== 'string') return undefined;
+  if (/^#data\/view\/view_[a-f0-9-]{36}$/.test(value)) return value;
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' || url.protocol === 'http:' ? url.href : undefined;
+  } catch { return undefined; }
+};
 
 const nonBlankTitle = (title: string | undefined): string | undefined => {
   // `typeof` guard (not `=== undefined`): the runtime subscriber only
@@ -198,6 +207,12 @@ export const mountNotifyToasts = (
     textEl.className = 'notify-toast-text';
     textEl.textContent = t.text;
     body.appendChild(textEl);
+    if (t.link_url) {
+      const link = doc.createElement('a');
+      link.setAttribute('href', t.link_url);
+      link.textContent = 'Open';
+      body.appendChild(link);
+    }
     card.appendChild(body);
 
     const dismiss = doc.createElement('button');
@@ -276,13 +291,14 @@ export const mountNotifyToasts = (
     }
   };
 
-  const push = (title: string | undefined, text: string): void => {
+  const push = (title: string | undefined, text: string, link_url?: string): void => {
     if (disposed) return;
     const id = `toast-${(seq += 1)}`;
     const toast: InternalToast = {
       id,
       ...(title !== undefined ? { title } : {}),
       text,
+      ...(link_url ? { link_url } : {}),
       timer: null,
     };
     // Evict oldest beyond the cap BEFORE appending the new one, cancelling
@@ -322,13 +338,14 @@ export const mountNotifyToasts = (
     // card, wedging this default-on overlay. A non-string title degrades to
     // no-title (via `nonBlankTitle`); guarded here too for clarity.
     if (typeof event.text !== 'string') return;
-    push(typeof event.title === 'string' ? event.title : undefined, event.text);
+    push(typeof event.title === 'string' ? event.title : undefined, event.text, safeNotifyLink(event.link_url));
   });
 
   return {
     getToasts: () => toasts.map((t) => ({
       id: t.id,
       ...(t.title !== undefined ? { title: t.title } : {}),
+      ...(t.link_url ? { link_url: t.link_url } : {}),
       text: t.text,
     })),
     dismiss: (id) => dismiss_(id),
@@ -409,6 +426,17 @@ export const NOTIFY_TOASTS_STYLES = `
   font-size: 12px;
   word-break: break-word;
 }
+[${NOTIFY_TOASTS_HOST_ATTR}] .notify-toast-body a {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  min-height: 36px;
+  color: var(--accent);
+}
+[${NOTIFY_TOASTS_HOST_ATTR}] .notify-toast-body a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
 [${NOTIFY_TOASTS_HOST_ATTR}] .notify-toast-dismiss {
   box-sizing: border-box;
   display: inline-flex;
@@ -435,6 +463,7 @@ export const NOTIFY_TOASTS_STYLES = `
   color: var(--fg);
 }
 @media (max-width: 520px) {
+  [${NOTIFY_TOASTS_HOST_ATTR}] .notify-toast-body a { min-height: 44px; }
   [${NOTIFY_TOASTS_HOST_ATTR}] .notify-toast-dismiss {
     width: 44px;
     height: 44px;

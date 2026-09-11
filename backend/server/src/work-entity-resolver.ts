@@ -79,6 +79,25 @@ export interface WorkEntityResolver {
   /** Read one entity by id. Source-agnostic — any registered Source's
    *  row matches. Returns `null` when no row exists or the row is
    *  tombstoned (the store's `read*` methods exclude tombstones). */
+  /** Text-search one kind through the FTS index, returning VISIBLE entities
+   *  newest-updated first.
+   *
+   *  ⛔ NOT a `listByKind` with a filter. The list reads a bounded window
+   *  (`ORDER BY updated_at DESC LIMIT n`) and would re-impose exactly the
+   *  recency ceiling the index exists to remove — matching in the index reaches
+   *  every row, then this re-reads only the hits. Same tombstone/orphan
+   *  visibility as `readEntity`, applied per hit, so a stale index entry is
+   *  dropped rather than served. */
+  searchByText(kind: WorkEntityKind, query: string, limit: number): WorkEntity[];
+  /** How many VISIBLE records of one kind exist, optionally within one Source.
+   *  Feeds `work.search`'s query-miss hint, which must distinguish "you have no
+   *  notes" from "your query matched none of your notes" — and with matching
+   *  moved into the index there is no pre-filter list left to measure. */
+  countByKind(kind: WorkEntityKind, source_id?: string): number;
+  /** Match arbitrary texts under the index's own rule — see the store's
+   *  `matchTextsByQuery`. The read tool's read-through half runs through this
+   *  so live items and local rows are judged by ONE matcher. */
+  matchTextsByQuery(texts: readonly string[], query: string): number[];
   readEntity(kind: WorkEntityKind, id: string): WorkEntity | null;
   /** Read one mirrored entity by its stable Source-native identity. This is
    *  the lookup half of an AI-facing qualified id; it applies the same
@@ -194,6 +213,28 @@ export const createWorkEntityResolver = (
     return store.listByKind(kind, { ...query, source_id });
   };
 
+  const searchByText: WorkEntityResolver['searchByText'] = (kind, query, limit) => {
+    requireWorkEntityKind(kind);
+    const out: WorkEntity[] = [];
+    for (const id of store.searchIdsByText(kind, query, limit)) {
+      const entity = visibleEntity(store.readByKind(kind, id));
+      if (entity !== null) out.push(entity);
+    }
+    out.sort((a, b) => b.updated_at - a.updated_at);
+    return out;
+  };
+
+  const countByKind: WorkEntityResolver['countByKind'] = (kind, source_id) => {
+    requireWorkEntityKind(kind);
+    // Same default visibility filter the polymorphic list applies (live +
+    // stale_unreachable; tombstoned + orphaned excluded), so the count cannot
+    // claim records the search could never have returned.
+    return store.countByKind(kind, source_id !== undefined ? { source_id } : undefined);
+  };
+
+  const matchTextsByQuery: WorkEntityResolver['matchTextsByQuery'] = (texts, query) =>
+    store.matchTextsByQuery(texts, query);
+
   const readEntity: WorkEntityResolver['readEntity'] = (kind, id) => {
     requireWorkEntityKind(kind);
     // Codex P2 fold — `store.readByKind` (via the per-kind `read*`
@@ -268,6 +309,9 @@ export const createWorkEntityResolver = (
   return {
     listByKind,
     listByKindScoped,
+    searchByText,
+    countByKind,
+    matchTextsByQuery,
     readEntity,
     readEntityBySourceIdentity,
     listSources,

@@ -56,6 +56,30 @@ const mkAssistantMessage = (id: string, session_id: string): ChatMessage => ({
   content: 'final',
 });
 
+describe('durable tool-call updates', () => {
+  it('updates the exact visible call and refuses stale or cross-session revival', () => {
+    const call = { message_id: 'call', session_id: 's', turn_id: 't', tool_name: 'recipe.run',
+      state: 'running' as const, started_at: 1, updated_at: 1 };
+    let state = hydrateThreadFromSnapshot(initialChatThreadState(), {
+      ...mkSession('s'), messages: [{ ...mkUserMessage('call', 's'), role: 'tool', tool_call: call }],
+    });
+    const event = (value: unknown, session_id = 's'): ServerEvent => ({
+      kind: 'chat.session_changed', session_id, field: 'tool_call', value, cursor: 1,
+    });
+    expect(reduceChatThreadEvent(state, event({ ...call, message_id: 'not-loaded' }))).toBe(state);
+    state = reduceChatThreadEvent(state, event({ ...call, last_signal_at: 2, updated_at: 2 }));
+    expect(state.messages[0]?.tool_call?.last_signal_at).toBe(2);
+    expect(reduceChatThreadEvent(state, event({ ...call, updated_at: 3 }, 'other'))).toBe(state);
+    state = reduceChatThreadEvent(state, event({ ...call, state: 'interrupted', updated_at: 3 }));
+    state = reduceChatThreadEvent(state, event({ ...call, updated_at: 4 }));
+    expect(state.messages[0]?.tool_call?.state).toBe('interrupted');
+    state = reduceChatThreadEvent(state, event({ ...call, state: 'succeeded', updated_at: 5 }));
+    expect(state.messages[0]?.tool_call?.state).toBe('succeeded');
+    state = reduceChatThreadEvent(state, event({ ...call, updated_at: 6 }));
+    expect(state.messages[0]?.tool_call?.state).toBe('succeeded');
+  });
+});
+
 describe('isChatThreadEvent', () => {
   it('returns true for the chat-thread kinds', () => {
     const kinds: ServerEvent['kind'][] = [

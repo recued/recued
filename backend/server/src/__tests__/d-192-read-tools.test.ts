@@ -580,13 +580,18 @@ describe('work.search', () => {
     expect('body' in titleRow).toBe(false);
 
     const previewRow = entityById(full, 'search-preview-local-row');
+    // ⚠ UPDATED 2026-09-05 — the LIST clamp is now derived from the result's row
+    // count, not a fixed 280. This is a TWO-ROW result, so its share is well
+    // above the 358-char body and nothing is truncated. The old assertion
+    // (280 chars + `truncated: true`) pinned a constant that punished small
+    // results to protect large ones; `work-entity-list-clamp.test.ts` covers
+    // the derivation, including that a large result still lands on exactly 280.
     expect(previewRow.long_text).toEqual({
       field: 'body',
-      text: longPreview.slice(0, 280),
+      text: longPreview,
       fidelity: 'preview',
-      truncated: true,
     });
-    expect(previewRow.long_text?.text).toHaveLength(280);
+    expect(previewRow.long_text?.truncated).toBeUndefined();
 
     const limited = okResult<SearchResult>(
       await runWorkEntitySearchTool(

@@ -28,6 +28,14 @@ export interface NotificationMessage {
   link_url?: string;
 }
 
+/** Host-only delivery of an already-durable notification. The caller must
+ * persist its notification_fired activity before invoking notify. This is
+ * passed only to the owner's UI adapter, never external channels. */
+export interface PersistedNotifyExtras {
+  persisted_activity_id: string;
+  ui_link_url?: string;
+}
+
 /** D-234 § 234.4e — whether an ask invites a written reason with the answer.
  *  Absent (the common case) ⇒ no note is offered. */
 export type AskNotePrompt = 'optional' | 'required';

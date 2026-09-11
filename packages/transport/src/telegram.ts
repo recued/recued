@@ -81,15 +81,20 @@ const fitTelegram = (text: string): string =>
  *  Trimmed AFTER composition, so the budget covers what actually goes on
  *  the wire — and because the trim keeps both ends, the title survives at
  *  the head and the link at the tail. */
-const composeTelegramText = (msg: {
+const rawTelegramText = (msg: {
   text: string;
   title?: string;
   link_url?: string;
 }): string => {
   const head = msg.title ? `${msg.title}\n\n` : '';
   const tail = msg.link_url ? `\n${msg.link_url}` : '';
-  return fitTelegram(`${head}${msg.text}${tail}`);
+  return `${head}${msg.text}${tail}`;
 };
+const composeTelegramText = (msg: Parameters<typeof rawTelegramText>[0]): string => fitTelegram(rawTelegramText(msg));
+/** A material approval review may never rely on the ordinary middle trim.
+ * Reuse the exact composer/budget the live send path uses. */
+export const telegramMessageFits = (msg: Parameters<typeof rawTelegramText>[0]): boolean =>
+  composeTelegramText(msg) === rawTelegramText(msg);
 
 interface TelegramEnvelope {
   ok?: boolean;

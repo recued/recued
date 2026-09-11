@@ -32,6 +32,7 @@ import {
   type GatewayExecutor,
   type GatewayInner,
 } from '../commit-gateway.js';
+import type { AskHandlerRef, AskOption, NotificationMessage } from '@recued/notification';
 
 const DISPATCHED_AT = 1_700_000_000_000;
 const COMPLETED_AT = 1_700_000_000_125;
@@ -469,6 +470,124 @@ describe('wrapWithCommitGateway', () => {
       completed_at: 640,
       duration_ms: 40,
     });
+  });
+
+  // ── D-157 A.1 step 1, runtime half ────────────────────────────────────────
+  //
+  // The boot sweep was the only wired producer of in-doubt asks, and it reads
+  // `sweepPendingToInDoubt()` — NON-TERMINAL rows only. A dispatch settling
+  // terminal `in_doubt` here was therefore never asked about, while the
+  // torn-saga ask told the owner "you'll be asked about those separately".
+  // These four pin the raise AND the three places it must stay silent.
+  const captureInDoubt = () => {
+    const asks: { handler: AskHandlerRef }[] = [];
+    return {
+      asks,
+      notifier: {
+        ask: async (_m: NotificationMessage, _o: readonly AskOption[], handler: AskHandlerRef) => {
+          asks.push({ handler });
+          return { ask_id: `in-doubt-${asks.length}` };
+        },
+        registerAskHandler: () => {},
+      },
+    };
+  };
+  const uncertain = () => Object.assign(new Error('delivery uncertain'), {
+    code: 'ACTION_DELIVERY_UNCERTAIN',
+  });
+
+  it('raises ONE in-doubt ask for the exact commit that settled in_doubt', async () => {
+    const { asks, notifier } = captureInDoubt();
+    const err = uncertain();
+    const executor = wrapWithCommitGateway(async () => { throw err; }, deps({
+      inDoubtNotifier: notifier,
+      genCommitId: sequence(['commit-raise']),
+      genIdempotencyKey: sequence(['idem-raise']),
+      now: sequence([600, 640]),
+    }));
+
+    await expect(executor('mail.send', { to: 'ada@example.com' })).rejects.toBe(err);
+
+    expect(asks).toHaveLength(1);
+    expect(asks[0]!.handler.payload).toMatchObject({ commit_id: 'commit-raise' });
+  });
+
+  it('stays silent on a plain failure — only ACTION_DELIVERY_UNCERTAIN is uncertain', async () => {
+    const { asks, notifier } = captureInDoubt();
+    const err = new Error('provider rejected the call');
+    const executor = wrapWithCommitGateway(async () => { throw err; }, deps({
+      inDoubtNotifier: notifier,
+      genCommitId: sequence(['commit-failed']),
+      genIdempotencyKey: sequence(['idem-failed']),
+      now: sequence([600, 640]),
+    }));
+
+    await expect(executor('mail.send', { to: 'ada@example.com' })).rejects.toBe(err);
+
+    expect(await store.get('commit-failed')).toMatchObject({ status: 'failed' });
+    expect(asks).toEqual([]);
+  });
+
+  /** ⛔⛔ THE DOUBLE-ASK GUARD, and the reason the raise RE-READS the row
+   *  instead of trusting the status it just computed. `recordOutcomeBestEffort`
+   *  SWALLOWS a failed outcome write on purpose: the row stays non-terminal and
+   *  the next boot's sweep settles it AND asks about it. Raising from the local
+   *  variable would ask twice for one dispatch — once now, once after restart. */
+  it('does not ask when the outcome write was swallowed — the boot sweep still owns that row', async () => {
+    const { asks, notifier } = captureInDoubt();
+    const err = uncertain();
+    const executor = wrapWithCommitGateway(async () => { throw err; }, deps({
+      inDoubtNotifier: notifier,
+      commitStore: { ...store, recordOutcome: async () => { throw new Error('disk full'); } },
+      genCommitId: sequence(['commit-swallowed']),
+      genIdempotencyKey: sequence(['idem-swallowed']),
+      now: sequence([600, 640]),
+    }));
+
+    await expect(executor('mail.send', { to: 'ada@example.com' })).rejects.toBe(err);
+
+    // Non-terminal, exactly as before — which is what the sweep looks for.
+    expect(await store.get('commit-swallowed')).toMatchObject({ status: 'pending' });
+    expect(asks).toEqual([]);
+  });
+
+  /** D-261 owns its member, receipt and commit in one transaction, which is why
+   *  `sweepPendingToInDoubt` skips `preapproval` rows too. A generic ask here
+   *  would let an ordinary answer settle a reviewed effect. */
+  it('does not ask for a pre-approved commit — D-261 reconciles its own members', async () => {
+    const { asks, notifier } = captureInDoubt();
+    const err = uncertain();
+    const executor = wrapWithCommitGateway(async () => { throw err; }, deps({
+      inDoubtNotifier: notifier,
+      commitStore: {
+        ...store,
+        get: async (id: string) => {
+          const row = await store.get(id);
+          return row ? { ...row, preapproval: {
+            future_execution_ref: 'fx-1', grant_id: 'g-1', member_id: 'm-1', action_ref: 'a-1',
+          } } : row;
+        },
+      },
+      genCommitId: sequence(['commit-reviewed']),
+      genIdempotencyKey: sequence(['idem-reviewed']),
+      now: sequence([600, 640]),
+    }));
+
+    await expect(executor('mail.send', { to: 'ada@example.com' })).rejects.toBe(err);
+
+    expect(asks).toEqual([]);
+  });
+
+  it('degrades gracefully with no notifier — the commit is still durably in_doubt', async () => {
+    const err = uncertain();
+    const executor = wrapWithCommitGateway(async () => { throw err; }, deps({
+      genCommitId: sequence(['commit-no-notifier']),
+      genIdempotencyKey: sequence(['idem-no-notifier']),
+      now: sequence([600, 640]),
+    }));
+
+    await expect(executor('mail.send', { to: 'ada@example.com' })).rejects.toBe(err);
+    expect(await store.get('commit-no-notifier')).toMatchObject({ status: 'in_doubt' });
   });
 
   it('terminalizes a provider result observed after run abort as cancelled without output', async () => {

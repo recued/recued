@@ -102,6 +102,9 @@ export interface ComposeIngressRpcContextOptions {
     | 'sharedStoreRef'
     | 'clientTokensRef'
     | 'contactStoreRef'
+    // D-220 Slice B — the contract store the pack install writes shipped intake
+    // templates into; `reception.template.list` reads them back through it.
+    | 'contractStoreRef'
     // D-139 P5 — engagement-evidence resolver bundle for the
     // `recued_contactEngagementsList` MCP read.
     | 'contactEngagementsResolveDepsRef'
@@ -308,6 +311,9 @@ export const composeIngressRpcContext = async (
     intakeRecipePairStore: storage.intakeRecipePairStoreRef,
     recipeStore: storage.recipeStore,
     recordsStore: storage.recordsStore,
+    // D-220 Slice B — the SAME contract store the pack install writes its shipped
+    // intake templates into, so `reception.template.list` reads what install wrote.
+    contractStore: app.contractStoreRef,
     // D-207 slice 1c — the door. `contractDefinitionStore` / `grantEntryStore` are the SAME
     // instances the Gateway reads its verdicts from, so a grant the mint writes is a grant
     // the gate can see. `executeDeps` is what a bound door's recipe actually runs through.

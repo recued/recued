@@ -767,7 +767,20 @@ export const D145_WORK_ENTITY_PRODUCER_TOPICS = [
 export type D145WorkEntityProducerTopic =
   (typeof D145_WORK_ENTITY_PRODUCER_TOPICS)[number];
 
-/** Spec § A.7.2 — engine + reliability producer set (7). */
+/** Spec § A.7.2 — engine + reliability producer set.
+ *
+ *  ⛔ WAS 7; `context_packet_quality` RETIRED 2026-09-10. It was the ONLY
+ *  entry in the whole D-145 PA9 declaration set with no producer — a census
+ *  of the 61 registry topics found 55 produced and 6 not, and of those 6 it
+ *  was the only one carrying a full `EnrichmentDeclaration` rather than being
+ *  a reserved registry id (the deliberate D-122 pattern the other five follow).
+ *
+ *  🔑 A DECLARATION IS A STRONGER CLAIM THAN A RESERVED ID. This one asserted
+ *  `invalidation_triggers`, `benchmark_scenarios`, `sample_floor: 50` and
+ *  `confidence_kind: 'emits_confidence'` — every one of them a statement about
+ *  a producer's behaviour, for a producer that did not exist. Its registry
+ *  entry SURVIVES as a reserved id, which is what its five peers are and what
+ *  it should have been all along. */
 export const D145_ENGINE_RELIABILITY_PRODUCER_TOPICS = [
   'open_loop_pressure',
   'commitment_reliability_band',
@@ -775,7 +788,6 @@ export const D145_ENGINE_RELIABILITY_PRODUCER_TOPICS = [
   'project_next_action_gap',
   'task_duplicate_candidate',
   'source_freshness_degradation',
-  'context_packet_quality',
 ] as const;
 export type D145EngineReliabilityProducerTopic =
   (typeof D145_ENGINE_RELIABILITY_PRODUCER_TOPICS)[number];
@@ -800,12 +812,15 @@ export const isD145ProducerTopic = (raw: unknown): raw is D145ProducerTopic =>
  *  - `commitment_followthrough_score` (PA9.a)
  *  - `task_completion_velocity` (PA9.a)
  *  - `project_velocity` (PA9.a)
- *  - `context_packet_quality` (PA9.b) */
+ *
+ *  ⛔ `context_packet_quality` was the fourth until 2026-09-10. PSI drift
+ *  compares a producer's confidence distribution against its own baseline —
+ *  with no producer there was never a distribution, so the topic could sit in
+ *  this list forever without the drift task ever having anything to score. */
 export const D145_PSI_ELIGIBLE_PRODUCER_TOPICS: ReadonlyArray<D145ProducerTopic> = [
   'commitment_followthrough_score',
   'task_completion_velocity',
   'project_velocity',
-  'context_packet_quality',
 ] as const;
 export const D145_PSI_ELIGIBLE_PRODUCER_TOPIC_SET: ReadonlySet<string> = new Set(
   D145_PSI_ELIGIBLE_PRODUCER_TOPICS,

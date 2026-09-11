@@ -187,14 +187,13 @@ export interface LLMSlot {
    *  surfaces `AI_MODALITY_UNSUPPORTED` (the N.8 warn) rather than silently
    *  dropping the media or auto-rerouting. Absent → text-only. */
   modalities?: Modalities;
-  /** D-172 P5 / A.9 — transcription model identifier for the voice→text
-   *  capability (`transcribe`). Distinct from `model` (chat) and
-   *  `embeddings_model`: OpenAI transcription uses a dedicated model string
-   *  (`whisper-1` / `gpt-4o-transcribe`), Groq uses `whisper-large-v3`.
-   *  Gemini transcribes through `generateContent` with the chat `model`, so
-   *  Gemini slots can leave this empty. When absent the transcription
-   *  adapter falls back to a provider default. */
-  transcription_model?: string;
+  // ⛔ D-262 § B4 — `transcription_model` RETIRED here. It existed so a CHAT
+  // slot could name a second model for `transcribe` to use, which only made
+  // sense while transcription routed through the chat pool. It reads the
+  // dedicated `transcription_slot` now, whose own `model` IS the transcription
+  // model — so a second field on a chat slot could only ever disagree with the
+  // thing actually in use. The one-time derivation still reads the persisted
+  // VALUE (a migration reads the old shape); nothing writes one again.
 }
 
 /** Coordination strategy applied *within* a group of tied candidates (free
@@ -237,10 +236,9 @@ export interface FreePoolApiEntry {
    *  capable entry, warns (never drops/reroutes) when none is. Absent →
    *  text-only. A free Gemini entry is the typical multimodal free source. */
   modalities?: Modalities;
-  /** D-172 P5 / A.9 — transcription model for the voice→text capability.
-   *  Groq-free (`whisper-large-v3`) is the typical free transcription
-   *  source. Absent → provider default. */
-  transcription_model?: string;
+  // ⛔ D-262 § B4 — `transcription_model` RETIRED here too, and for the same
+  // reason: a pool entry named a transcription model only because the pool was
+  // a transcription source. It is not one any more.
 }
 
 export type FreePoolEntry = FreePoolApiEntry;
@@ -270,6 +268,58 @@ export interface LLMConfig {
    *  model — an Anthropic embeddings_slot surfaces unavailable at execute
    *  time via the adapter stub. */
   embeddings_slot?: LLMSlot;
+  /** D-262 § B1 — dedicated transcription source. Same shape and same reasons
+   *  as `embeddings_slot`: a full `LLMSlot` whose `model` field carries the
+   *  TRANSCRIPTION model (`whisper-1`, `whisper-large-v3`, or a Gemini chat
+   *  model, which is its own transcriber), and the ONLY source `transcribe`
+   *  reads.
+   *
+   *  ⛔ Deliberately invisible to the chat match resolver. Transcription is
+   *  never a chat model-select option, and routing a voice turn to a different
+   *  chat model because that one happens to have ears would silently replace
+   *  the model the owner pinned. Fall back on the HEARING, never on the
+   *  ANSWERING — which this shape enforces by construction, since the resolver
+   *  cannot see this slot.
+   *
+   *  ⚠ `base_url` is the whole remote-vs-local answer: a server on a Pi points
+   *  at a remote endpoint, one with a GPU points at a local
+   *  `whisper.cpp` / `faster-whisper`, and both are the same field.
+   *
+   *  Anthropic publishes no transcription endpoint — an Anthropic
+   *  transcription_slot surfaces `AI_MODALITY_UNSUPPORTED` at execute time via
+   *  the adapter stub, exactly as an Anthropic embeddings slot does. */
+  transcription_slot?: LLMSlot;
+  /** D-262 § B6 — the owner's spoken language as an ISO-639-1 code, passed to
+   *  the transcription provider.
+   *
+   *  ⛔ ABSENT MEANS AUTO-DETECT, AND NOTHING SUGGESTS A DEFAULT. Multi-language
+   *  needs differ and there is no standard to recommend, so this is the owner's
+   *  to set or leave empty.
+   *
+   *  ⛔⛔ NEVER DEFAULT IT FROM A LOCALE. A pinned language does not merely hint
+   *  — the provider renders speech INTO that language, so a wrong pin returns
+   *  fluent nonsense rather than an error. A browser locale or the server's
+   *  `LANG` is a guess wearing the costume of a default, and it would degrade
+   *  exactly the multilingual owner it claims to serve.
+   *
+   *  ⚠ A config-level sibling of the slot (like `free_pool_strategy` beside
+   *  `free_pool`), NOT a field on `LLMSlot`: that type is shared with chat, and
+   *  this is a property of how the OWNER SPEAKS rather than of the provider, so
+   *  it must survive swapping providers. */
+  transcription_language?: string;
+  /** D-262 § B12.3 — the most transcription calls allowed in a UTC day.
+   *
+   *  ⛔ REQUESTS, NOT SECONDS OR TOKENS, and the name says so. Providers bill
+   *  by audio seconds — but the multipart endpoints report a duration only in
+   *  their verbose response format and Gemini reports none at all, so a
+   *  seconds cap would silently stop counting for one provider and read as
+   *  generous when it was blind. Requests is the only quantity that is always
+   *  exact, and combined with the upload size cap it bounds spend honestly.
+   *
+   *  ⚠ Absent or non-positive means UNLIMITED, matching `daily_budget_tokens`.
+   *  Recording continues either way: usage is visible before it is capped, and
+   *  a number nobody can see is not a control. */
+  transcription_daily_requests?: number;
   free_pool?: FreePoolEntry[];
   free_pool_strategy?: CoordinationStrategy;
   /** Global user-level fallback for allow_upgrade, used when the recipe omits
@@ -499,7 +549,16 @@ export class LLMError extends Error {
        *  never silently drop, never auto-reroute" surface: NOT retryable (a
        *  cascade re-match would just hit another incapable model — the user
        *  must pick a modality-capable model or remove the media). */
-      | 'AI_MODALITY_UNSUPPORTED',
+      | 'AI_MODALITY_UNSUPPORTED'
+      /** D-262 § B4 — no `transcription_slot` is configured, so there is no
+       *  source to transcribe with.
+       *
+       *  ⚠ DELIBERATELY DISTINCT from `AI_MODALITY_UNSUPPORTED`, which means a
+       *  source exists and cannot hear. "Nothing is set up" and "what you set
+       *  up cannot do this" send a person to two different places, and one
+       *  code for both would send them to the wrong one half the time. Not
+       *  retryable: no cascade can invent a source. */
+      | 'AI_NO_TRANSCRIPTION_SOURCE',
     message: string,
     public details?: Record<string, unknown>,
     retryable = false,

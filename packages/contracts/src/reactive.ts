@@ -170,6 +170,13 @@ export interface AutoRunStatusEntry {
    *  reflects `recipe.auto_run.default_enabled ?? true`. `false` keeps
    *  the recipe out of the scheduler roster entirely. */
   enabled: boolean;
+  /** Material target revision used by owner pre-approval preparation. */
+  lifecycle_revision?: number;
+  /** A reviewed next execution owns the otherwise parked automatic rule. */
+  preapproval?: {
+    proposal_id: string; future_execution_ref: string;
+    execution_status: import('./preapproval.js').PreapprovalExecutionStatus;
+  };
   /** Circuit-breaker auto-disable flag (failure axis). */
   auto_disabled: boolean;
   consecutive_failures: number;

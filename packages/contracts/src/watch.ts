@@ -493,8 +493,17 @@ export const RECEPTION_EVENT_PLATFORM = 'reception';
 
 /** Push-source mechanisms surfaced in the Automation governance list.
  *  Closed list — widen when a new push source is re-slotted under the
- *  bus (dom MutationObserver, mcp inbound, …). */
-export type WatchSourceMechanism = 'webhook' | 'messenger' | 'reception';
+ *  bus (dom MutationObserver, …).
+ *
+ *  `'mcp'` is the MCP `subscriptions/listen` feed (2026-07-28's only
+ *  server→client channel). ⚠ It is the one member that does not EMIT:
+ *  a listen frame says "resource X changed" and carries no content, so
+ *  the source accelerates the mcp-resource poll for that key instead of
+ *  minting a second event path. Its row therefore reports the patterns
+ *  it ACCELERATES, and `last_event_at` is the last frame it accepted —
+ *  the emit itself still belongs to the poll source, which is why a
+ *  recipe sees byte-identical payloads whether push is live or not. */
+export type WatchSourceMechanism = 'webhook' | 'messenger' | 'reception' | 'mcp';
 
 /** One push source's governance row — the `watch.list` `sources` wire
  *  shape (the push twin of `WatchStatusEntry`). Push sources have no

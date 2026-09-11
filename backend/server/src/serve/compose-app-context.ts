@@ -179,7 +179,10 @@ import {
   createEngagementStore,
   type EngagementStore,
 } from '../storage/engagement-store.js';
-import { buildEngagementsResolverDeps } from '../engagement-resolver-deps.js';
+import {
+  buildEngagementsResolverDeps,
+  buildRecordEngagementsDeps,
+} from '../engagement-resolver-deps.js';
 import { createMailUnionTwinResolver } from '../collections/mail/mail-union-twin-resolver.js';
 import type { ContactEngagementsResolveDeps } from '../contact-engagements-rpc-handler.js';
 import { createSharedStore, type SharedStore } from '../storage/shared-store.js';
@@ -1568,10 +1571,29 @@ export const composeAppContext = (
   // coverage). `engagementStoreRef` is only set inside the `if (db)` block,
   // so `db` is re-asserted here for narrowing. The cross-account mail-twin
   // resolver self-skips when no mail accounts exist (CRM-only stays correct).
+  // ⛔ ONE input object feeds BOTH deps builders. The two roots must see the
+  // same db, the same connection roster, the same rate-control store and the
+  // same vendor registry — a record-rooted read whose coverage was composed
+  // from a different enrollment view than the contact-rooted read would
+  // report different sources for the same warehouse.
+  const engagementResolverDepsInput = db && contactStoreRef && connectionStoreRef
+    ? {
+        db,
+        contactStore: contactStoreRef,
+        connectionStore: connectionStoreRef,
+        resolveMailTwins: createMailUnionTwinResolver(db),
+        rateControlStore: engagementRateControlStoreRef,
+        resolveVendorRegistry: () =>
+          liveVendorRegistry(chatLateBound.getExecuteDeps()?.localManifestStore),
+        now: () => Date.now(),
+      }
+    : undefined;
+
   const contactEngagementsResolveDepsRef: ContactEngagementsResolveDeps | undefined =
-    db && engagementStoreRef && contactStoreRef && connectionStoreRef
+    db && engagementStoreRef && contactStoreRef && connectionStoreRef && engagementResolverDepsInput
       ? {
           engagementStore: engagementStoreRef,
+          recordResolverDeps: buildRecordEngagementsDeps(engagementResolverDepsInput),
           resolverDeps: buildEngagementsResolverDeps({
             db,
             contactStore: contactStoreRef,

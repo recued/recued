@@ -31,13 +31,26 @@ import {
   EngagementInvalidError,
   type EngagementStore,
 } from './storage/engagement-store.js';
-import type { EngagementsResolverDepsBuilder } from './engagement-resolver-deps.js';
+import type {
+  EngagementsResolverDepsBuilder,
+  RecordEngagementsDepsBuilder,
+} from './engagement-resolver-deps.js';
 
 /** Shared by the WS-rpc + MCP channels. */
 export interface ContactEngagementsResolveDeps {
-  engagementStore: Pick<EngagementStore, 'resolveEngagementsForContact'>;
+  engagementStore: Pick<
+    EngagementStore,
+    | 'resolveEngagementsForContact'
+    | 'resolveEngagementsForRecord'
+    // D-139 § A.9.2b — the deal-contact join the out-of-band producer walks.
+    | 'listDealCounterpartyContactEmails'
+  >;
   /** Per-call deps builder (`buildEngagementsResolverDeps`). */
   resolverDeps: EngagementsResolverDepsBuilder;
+  /** D-139 slice 3 — the record-root sibling (`buildRecordEngagementsDeps`).
+   *  Bundled here rather than threaded separately so the two roots can
+   *  never be wired against different stores or different coverage inputs. */
+  recordResolverDeps: RecordEngagementsDepsBuilder;
 }
 
 const DEDUPE_ACCEPTANCE_VALUES: ReadonlySet<string> = new Set([

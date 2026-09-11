@@ -681,3 +681,162 @@ describe('D-149 follow-on — mountReceptionRoute: dispose', () => {
     route.dispose();
   });
 });
+
+// ══════════════════════════════════════════════════════════════════
+// D-220 Slice B — pack-shipped intake templates ride the route's
+// `reception.template.list` cache: the gallery shows the pack card, and
+// "Use template" on it resolves a seed from the PACK cache (not the
+// Foundation one) into the authoring form.
+// ══════════════════════════════════════════════════════════════════
+
+const makeClickHost = () => {
+  let html = '';
+  const listeners: Record<string, Set<(event: Event) => void>> = {};
+  const host = {
+    get innerHTML() {
+      return html;
+    },
+    set innerHTML(value: string) {
+      html = value;
+    },
+    addEventListener: (evt: string, fn: (event: Event) => void) => {
+      (listeners[evt] ??= new Set()).add(fn);
+    },
+    removeEventListener: (evt: string, fn: (event: Event) => void) => {
+      listeners[evt]?.delete(fn);
+    },
+    contains: () => true,
+  } as unknown as HTMLElement;
+  const fire = (evt: string, target: unknown): void => {
+    for (const fn of [...(listeners[evt] ?? [])]) {
+      fn({ target, type: evt, preventDefault: () => {} } as unknown as Event);
+    }
+  };
+  return {
+    host,
+    getHtml: () => html,
+    click: (dataset: Record<string, string>) => {
+      const el = { dataset, closest: () => el } as unknown;
+      fire('click', el);
+    },
+  };
+};
+
+const PACK_TEMPLATE_REF = 'pack:recued-core/job-status-board/intake/drop_off';
+
+const mkPackListing = () => ({
+  template: {
+    template_ref: PACK_TEMPLATE_REF,
+    version: '1.0.0',
+    name: 'Job drop-off',
+    description: 'Take in a repair job.',
+    form_definition: {
+      form_definition_id: 'fd_job_status_board_drop_off_v1',
+      fields: [
+        { name: 'item_description', type: 'textarea', label: 'What needs doing?', required: true },
+        { name: 'website', type: 'text', label: 'Website', required: false },
+      ],
+    },
+    required_visitor_fields: { email: 'required' },
+    submission_processing_rule: {
+      target_kind: 'form_response',
+      fields_to_include_in_target: ['item_description'],
+      fields_to_attach_as_metadata: [],
+    },
+    anti_spam_defaults: {
+      honeypot_fields: ['website'],
+      rate_limit_per_ip: 5,
+      require_proof_of_work: false,
+      require_captcha: false,
+    },
+  },
+  pack_slug: 'job-status-board',
+  publisher: 'recued-core',
+  pack_name: 'Job Status Board',
+  pack_version: 4,
+});
+
+describe('D-220 Slice B — mountReceptionRoute: pack templates', () => {
+  it('shows the pack card in the gallery and resolves its seed from the pack cache', async () => {
+    const { shell } = makeFakeShell();
+    const fc = makeFakeConn({
+      'reception.template.list': {
+        templates: [],
+        config_templates: [],
+        pack_templates: [mkPackListing()],
+        pack_templates_unavailable: [],
+      },
+    });
+    const page = makeClickHost();
+    const modal = makeClickHost();
+    const route = mountReceptionRoute({
+      ...baseOpts(shell, fc.conn),
+      pageHost: page.host,
+      modalHost: modal.host,
+    });
+    await flush();
+    await flush();
+    page.click({ action: 'reception-open-templates' });
+    expect(modal.getHtml()).toContain('From your installed packs');
+    expect(modal.getHtml()).toContain(`data-template-ref="${PACK_TEMPLATE_REF}"`);
+    expect(modal.getHtml()).toContain('From Job Status Board (v4)');
+    // "Use template" on the pack card: the route's resolver must find the
+    // `pack:` ref in the PACK cache and seed the authoring form with it.
+    modal.click({ action: 'reception-template-use', templateRef: PACK_TEMPLATE_REF, kind: 'intake_form' });
+    expect(modal.getHtml()).toContain('fd_job_status_board_drop_off_v1');
+    route.dispose();
+  });
+
+  it('tolerates a server that predates pack templates (no pack fields on the wire)', async () => {
+    const { shell } = makeFakeShell();
+    const fc = makeFakeConn({
+      'reception.template.list': { templates: [mkTemplate()], config_templates: [] },
+    });
+    const page = makeClickHost();
+    const modal = makeClickHost();
+    const route = mountReceptionRoute({
+      ...baseOpts(shell, fc.conn),
+      pageHost: page.host,
+      modalHost: modal.host,
+    });
+    await flush();
+    await flush();
+    page.click({ action: 'reception-open-templates' });
+    expect(modal.getHtml()).toContain('Client inquiry');
+    expect(modal.getHtml()).not.toContain('From your installed packs');
+    route.dispose();
+  });
+});
+
+describe('D-220 Slice B (audit) — pack events refresh the template cache', () => {
+  it('re-reads reception.template.list on pack_installed / pack_uninstalled, and stops after dispose', async () => {
+    const { shell } = makeFakeShell();
+    const fc = makeFakeConn({
+      'reception.template.list': { templates: [], config_templates: [], pack_templates: [mkPackListing()] },
+    });
+    const handlers: Record<string, Array<(event: unknown) => void>> = {};
+    let unsubscribed = 0;
+    const subscribe = ((kind: string, fn: (event: unknown) => void) => {
+      (handlers[kind] ??= []).push(fn);
+      return () => { unsubscribed += 1; };
+    }) as unknown as NonNullable<Parameters<typeof mountReceptionRoute>[0]['subscribe']>;
+    const route = mountReceptionRoute({
+      ...baseOpts(shell, fc.conn),
+      subscribe,
+      // Keep the Approvals-badge subscription out of this count.
+      enablePendingAsks: false,
+    });
+    await flush();
+    await flush();
+    expect(templateListCalls(fc)).toBe(1);
+    expect(Object.keys(handlers).sort()).toEqual(['pack_installed', 'pack_uninstalled']);
+    handlers.pack_uninstalled?.forEach((fn) => fn({ kind: 'pack_uninstalled', pack_slug: 'job-status-board' }));
+    await flush();
+    expect(templateListCalls(fc)).toBe(2);
+    handlers.pack_installed?.forEach((fn) => fn({ kind: 'pack_installed', pack_slug: 'job-status-board' }));
+    await flush();
+    expect(templateListCalls(fc)).toBe(3);
+    route.dispose();
+    expect(unsubscribed).toBeGreaterThanOrEqual(2);
+  });
+});

@@ -301,6 +301,7 @@ export type ServerEvent =
       kind: 'notification.notify';
       title?: string;
       text: string;
+      link_url?: string;
       cursor: number;
     }
   | {

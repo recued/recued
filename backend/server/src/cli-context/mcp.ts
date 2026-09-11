@@ -115,6 +115,15 @@ import { composeExecutorConfig } from '../composition/bin/wire-executor-config.j
 import { composeHousekeepingStores } from '../composition/bin/wire-housekeeping-substrate.js';
 import { composeLlmSubstrate } from '../composition/bin/wire-llm-substrate.js';
 import { resolveRealmDbPath } from '../realm-db-path.js';
+import { createPreapprovalStorage } from '../storage/preapproval-storage.js';
+import { composePreapproval } from '../composition/bin/wire-preapproval.js';
+import { preapprovalLimitsFromEnvironment } from '../preapproval-limits.js';
+import { createClientTokenStore } from '../pairing/client-tokens.js';
+import { createScheduleStore } from '../schedule-store.js';
+import { createDishStore } from '../dish-store.js';
+import { createDishGroupStore } from '../dish-group-store.js';
+import { createAutoRunSettingsStore, createCircuitBreakerStore } from '../auto-run-scheduler.js';
+import { createEventTriggersStore } from '../triggers/store.js';
 
 export interface McpProfileOptions {
   args: string[];
@@ -146,7 +155,7 @@ export async function runMcpProfile(options: McpProfileOptions): Promise<void> {
   db.pragma('foreign_keys = ON');
   options.bootTrace?.mark('db-opened');
 
-  const manifests = createManifestRegistry();
+  const manifests = createManifestRegistry(undefined, db);
   const recipeStore = createRecipeStore(undefined, db);
   const recordsStore = createRecordsStore(db);
   const eventBus = createEventBus();
@@ -198,6 +207,9 @@ export async function runMcpProfile(options: McpProfileOptions): Promise<void> {
     });
     await autoUnlockServerVaultFromKeyfile({ keys, keyStore });
   }
+  const preapprovalStorage = createPreapprovalStorage(db, gatedActionChangeClock, keys.keyProvider('vault'),
+    { limits: preapprovalLimitsFromEnvironment(env) });
+  const clientTokens = createClientTokenStore(db);
   const llmSubstrate = composeLlmSubstrate({
     db,
     keys,
@@ -458,6 +470,7 @@ export async function runMcpProfile(options: McpProfileOptions): Promise<void> {
   executorConfigRef = executorConfig;
 
   const executeDepsBundle = composeExecuteDeps({
+    clientTokens,
     // D-234 § 234.3 — the stdio profile resolves its own link from the same env
     // var the serving root uses. Wired here too so a peer-admission ask raised
     // on this path is not silently the one without a "read it here" link.
@@ -538,6 +551,27 @@ export async function runMcpProfile(options: McpProfileOptions): Promise<void> {
       ),
   });
   executeDepsRef = executeDepsBundle.executeDeps;
+
+  // Requests and draft CRUD use the same encrypted realm and original-contract
+  // service as HTTP MCP. Decisions remain on the paired owner surface. This
+  // profile starts no automation/provider loops; the serving owner process
+  // drives accepted schedules. Unavailable binding families stay uncovered.
+  if (executeDepsBundle.notificationBlock && executeDepsBundle.contractDefinitionStore) {
+    const preapproval = composePreapproval({ ownerId: serverInstanceId, storage: preapprovalStorage,
+      sources: { db, recipes: recipeStore, schedules: createScheduleStore(db), dishes: createDishStore(db),
+        groups: createDishGroupStore(db), autoRun: createAutoRunSettingsStore(db), triggers: createEventTriggersStore(db) },
+      circuits: createCircuitBreakerStore(db), execution: executeDepsRef,
+      profiles: { connectionStore, contractGrantStore, getManifest: slug => manifests.get(slug),
+        connectionCatalogBindingStore: createConnectionCatalogBindingStore(contractStore) },
+      clientTokens, definitions: executeDepsBundle.contractDefinitionStore, inboundTokens: chatBundle.inboundTokenStore,
+      notifications: executeDepsBundle.notificationBlock, keys,
+      reviewLink: proposalId => {
+        const base = resolvePublicBaseUrl(env.RECUED_PUBLIC_BASE_URL);
+        return base ? `${base}/#approvals/preapproval/${encodeURIComponent(proposalId)}` : null;
+      },
+    });
+    if (await preapprovalStorage.recover()) await preapproval.outbox.drain();
+  }
 
   options.bootTrace?.mark('dispatch-mcp');
   // ⛔⛔ D-228 slice 1 — THIS SURFACE CARRIES A CONTRACT OR IT CARRIES NOTHING.

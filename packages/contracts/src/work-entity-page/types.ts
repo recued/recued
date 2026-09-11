@@ -19,6 +19,7 @@
  */
 
 import type { SourceKind } from '../source-primitive.js';
+import type { TaskViewFilters } from '../task-data-view.js';
 import type {
   BookingLifecycleState,
   CommitmentLifecycleState,
@@ -218,6 +219,7 @@ export interface WorkEntityListViewProps {
   search_query: string;
   /** Booking-only server-side lifecycle filter. */
   booking_lifecycle_filter?: BookingLifecycleState | 'all';
+  task_filters?: TaskViewFilters;
 }
 
 /** Re-export commonly composed types so consumers grab the full

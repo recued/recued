@@ -12,6 +12,7 @@ export type HousekeepingLlmCallableSubstrate = Pick<
   | 'llmQuota'
   | 'llmAdapterRegistry'
   | 'llmEmbeddingsAdapterRegistry'
+  | 'llmTranscriptionAdapterRegistry'
   | 'emptyTabProbe'
 >;
 

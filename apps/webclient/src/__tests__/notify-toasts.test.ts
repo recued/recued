@@ -276,6 +276,19 @@ const mount = (
 // ════════════════════════════════════════════════════════════════
 
 describe('D-169 P2 Slice 5 notify toasts', () => {
+  it.each([
+    ['#data/view/view_00000000-0000-4000-8000-000000000001', true],
+    ['https://recued.example/#data/view/view_00000000-0000-4000-8000-000000000001', true],
+    ['javascript:alert(1)', false],
+    ['data:text/html,hello', false],
+    ['//untrusted.example', false],
+  ])('renders only safe notification links: %s', (link_url, allowed) => {
+    const h = mount();
+    notifyListener(h.fake)({ ...notifyEvent('A task now matches.'), link_url });
+    expect(findAllByAttr(h.host, 'href')).toHaveLength(allowed ? 1 : 0);
+    if (allowed) expect(findAllByAttr(h.host, 'href')[0]?.getAttribute('href')).toBe(link_url);
+    h.toasts.dispose();
+  });
   it('keeps the dismiss action full-sized with an explicit focus ring', () => {
     expect(NOTIFY_TOASTS_STYLES).toMatch(
       /\.notify-toast-dismiss\s*\{[^}]*width:\s*36px;[^}]*height:\s*36px;/s,

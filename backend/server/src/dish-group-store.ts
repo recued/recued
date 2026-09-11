@@ -13,6 +13,7 @@
 
 import type Database from 'better-sqlite3';
 import type { DishGroup } from '@recued/contracts';
+import { initializePreapprovalLifecycle, mutatePreapprovalResource } from './storage/preapproval-lifecycle.js';
 
 export interface DishGroupStore {
   list(): DishGroup[];
@@ -33,6 +34,7 @@ export const createDishGroupStore = (
   db: Database.Database,
   options: CreateDishGroupStoreOptions = {},
 ): DishGroupStore => {
+  initializePreapprovalLifecycle(db);
   db.exec(`
     CREATE TABLE IF NOT EXISTS dish_groups (
       group_id TEXT NOT NULL PRIMARY KEY,
@@ -52,6 +54,10 @@ export const createDishGroupStore = (
       .get(group_id) as { len: number } | undefined;
     return row?.len ?? 0;
   };
+  const material = (id: string): unknown | null => {
+    const row = db.prepare('SELECT data FROM dish_groups WHERE group_id=?').get(id) as { data: string } | undefined;
+    return row ? { config_overlay: (JSON.parse(row.data) as DishGroup).config_overlay } : null;
+  };
 
   return {
     list() {
@@ -65,20 +71,24 @@ export const createDishGroupStore = (
     },
 
     set(group) {
-      const serialized = JSON.stringify(group);
-      const prev = priorBytes(group.group_id);
-      db.prepare(`
-        INSERT INTO dish_groups (group_id, data) VALUES (?, ?)
-        ON CONFLICT (group_id) DO UPDATE SET data = excluded.data
-      `).run(group.group_id, serialized);
-      reportDelta(serialized.length - prev);
+      mutatePreapprovalResource(db, 'dish_group', group.group_id, () => material(group.group_id), () => {
+        const serialized = JSON.stringify(group);
+        const prev = priorBytes(group.group_id);
+        db.prepare(`
+          INSERT INTO dish_groups (group_id, data) VALUES (?, ?)
+          ON CONFLICT (group_id) DO UPDATE SET data = excluded.data
+        `).run(group.group_id, serialized);
+        reportDelta(serialized.length - prev);
+      });
     },
 
     delete(group_id) {
-      const prev = priorBytes(group_id);
-      const result = db.prepare(`DELETE FROM dish_groups WHERE group_id = ?`).run(group_id);
-      if (result.changes > 0 && prev > 0) reportDelta(-prev);
-      return result.changes > 0;
+      return mutatePreapprovalResource(db, 'dish_group', group_id, () => material(group_id), () => {
+        const prev = priorBytes(group_id);
+        const result = db.prepare(`DELETE FROM dish_groups WHERE group_id = ?`).run(group_id);
+        if (result.changes > 0 && prev > 0) reportDelta(-prev);
+        return result.changes > 0;
+      });
     },
   };
 };

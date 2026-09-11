@@ -15,7 +15,9 @@ const COMMON_FORBIDDEN_FIELD_NAMES = [
   'payment_card',
 ] as const;
 
-const CONTACT_DETAIL_FORBIDDEN_FIELD_NAMES = [
+/** Exported for D-220 Slice B — the pack-template safety matrix reuses this
+ *  list as its forbidden-field-name vocabulary rather than copying it. */
+export const CONTACT_DETAIL_FORBIDDEN_FIELD_NAMES = [
   ...COMMON_FORBIDDEN_FIELD_NAMES,
   'phone',
   'mobile',

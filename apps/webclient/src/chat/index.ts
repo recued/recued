@@ -46,3 +46,10 @@ export {
   projectTransparencyNote,
   type ChatActivityRow,
 } from './activity.js';
+
+export {
+  buildCarriedBriefModel,
+  CARRIED_BRIEF_FIELD_LABELS,
+  type CarriedBriefRenderModel,
+  type CarriedBriefRow,
+} from './carried-brief.js';

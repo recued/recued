@@ -24,6 +24,7 @@ import {
   seedKnownValuesFromContent,
   aliasKnownValuesInContent,
   decorateOverlapReveal,
+  classifyAliasTokens,
   tokenizeForOverlap,
   containsPotentialPiiAliasLiteral,
   derivePiiRestoreAuthority,
@@ -1898,5 +1899,72 @@ describe('D-227 — an email whose local part renders a known name carries that 
     const a = aliasIdentifierField(ledger, 'email', 'sarah.chen@acme.com');
     const b = aliasIdentifierField(ledger, 'email', 'dana.okonkwo@acme.com');
     expect(a.split('@')[1]).toBe(b.split('@')[1]);
+  });
+});
+
+
+describe('the alias VOCABULARY ratchet', () => {
+  /** ⛔⛔ EVERY ALIAS TOKEN IN AN EGRESSED PACKET MUST BE ONE THE LEDGER ISSUED.
+   *  `scanContent` is a substring replace of ledger-known values with NO fresh
+   *  allocation for unanchored spans, so the packet's alias vocabulary is
+   *  EXACTLY the ledger's. A token outside it was minted by something else.
+   *
+   *  🔑 MEASURED (bench 343, z-343-r4): `prior_tool_calls` rendered
+   *  `pii.Person1.dana.reyes` x45 / `m1.dana.reyes@d1.invalid` x44 while
+   *  `user_message` + `prefetch_context` rendered `pii.Person1` x24 /
+   *  `m1@d1.invalid` x13 — one contact, two surface strings, a TOTAL partition
+   *  by field. The LEDGER was perfectly consistent (slots `m1`, `pii.person1`),
+   *  which is why nothing caught it: SLOT consistency is not SURFACE
+   *  consistency, and every existing check was written at the slot level. */
+  const seededLedger = () => {
+    const l = createLedger('s1');
+    const alias = aliasIdentifierField(l, 'email', 'dana.reyes@northwind.example');
+    aliasIdentifierField(l, 'name', 'Dana Reyes');
+    return { l, alias };
+  };
+
+  it('accepts the ledger\'s own aliases, composite email included', () => {
+    const { l, alias } = seededLedger();
+    const r = classifyAliasTokens(l, `Mail ${alias} about pii.Person1.`);
+    expect({ known: r.known.length, decorated: r.decorated, unknown: r.unknown })
+      .toEqual({ known: 2, decorated: [], unknown: [] });
+  });
+
+  it('⛔ FLAGS a base the ledger never issued', () => {
+    // The assertion that matters: nothing legitimate mints this.
+    const { l } = seededLedger();
+    expect(classifyAliasTokens(l, 'see pii.Person7 and m9@d9.invalid').unknown)
+      .toEqual(['pii.Person7', 'm9@d9.invalid']);
+  });
+
+  it('separates a DECORATED token from an unknown one', () => {
+    // Decoration is a declared exception, not a defect — it must be counted
+    // apart from a token minted from nowhere, or the ratchet cannot tell the
+    // legitimate recall case from the bug.
+    const { l, alias } = seededLedger();
+    const decorated = decorateOverlapReveal(
+      l, alias, tokenizeForOverlap('Dana Reyes'),
+    );
+    const r = classifyAliasTokens(l, decorated);
+    expect({ decorated: r.decorated, unknown: r.unknown })
+      .toEqual({ decorated: [decorated], unknown: [] });
+  });
+
+  it('catches the r4 defect: two surface forms for ONE contact', () => {
+    const { l, alias } = seededLedger();
+    const packet = JSON.stringify({
+      user_message: 'pii.Person1 asked for the audit',
+      prefetch_context: [`pii.Person1 (contact, ref: ${alias})`],
+      prior_tool_calls: [{
+        args: { provenance_entity_ids: [
+          decorateOverlapReveal(l, alias, tokenizeForOverlap('Dana Reyes')),
+        ] },
+      }],
+    });
+    const r = classifyAliasTokens(l, packet);
+    // The plain forms are fine; the tailed one in an ECHOED ARG is the finding.
+    expect(r.known.length).toBeGreaterThan(0);
+    expect(r.decorated.length).toBe(1);
+    expect(r.unknown).toEqual([]);
   });
 });

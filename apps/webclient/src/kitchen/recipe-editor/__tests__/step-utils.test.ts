@@ -444,6 +444,13 @@ describe('renameStepIdInRecipe', () => {
     output: { render: [] },
     ...over,
   });
+  it('preserves special JSON property names while rewriting nested values', () => {
+    const payload: unknown = JSON.parse('{"__proto__":{"value":"{{step.read}}"}}');
+    const renamed = renameStepIdInRecipe(mkRecipe({
+      steps: [{ id: 'read', op: 'core.records.create', args: { payload } }],
+    }), 'read', 'fetch');
+    expect(JSON.stringify(renamed.steps[0])).toContain('"__proto__":{"value":"{{step.fetch}}"}');
+  });
 
   it('no-ops when oldId === newId (returns the same reference)', () => {
     const r = mkRecipe();
@@ -492,6 +499,31 @@ describe('renameStepIdInRecipe', () => {
     expect(renamed.output?.render?.[1].source).toBe('step.rated.breakdown');
     expect(renamed.output?.render?.[2].source).toBe('step.other');
     expect(renamed.output?.sidebar).toBeUndefined();
+  });
+
+  it('renames trigger steps and their references across later phases', () => {
+    const r = mkRecipe({
+      auto_run: { interval_ms: 1000 },
+      trigger_steps: [{ id: 'gate', ingredient: 'watch', input: {} }],
+      output: { render: [{ type: 'summary', source: 'trigger.gate.value' }] },
+      steps: [{ id: 'copy', transform: 'coalesce', values: ['{{trigger.gate.value}}', '{{step.gate.value}}'] }],
+    });
+    const renamed = renameStepIdInRecipe(r, 'gate', 'watcher');
+    expect(renamed.trigger_steps?.[0].id).toBe('watcher');
+    expect(renamed.output.render?.[0].source).toBe('trigger.watcher.value');
+    expect(renamed.steps[0]).toMatchObject({ values: ['{{trigger.watcher.value}}', '{{step.watcher.value}}'] });
+    expect(r.trigger_steps?.[0].id).toBe('gate');
+  });
+
+  it('preserves exchange output and rewrites its step references during rename', () => {
+    const r = mkRecipe({
+      steps: [{ id: 'reply', transform: 'coalesce', values: ['value'] }],
+      output: { exchange: { ref: '{{step.reply}}', deliver_to: 'peer.reply', data: { answer: '{{step.reply}}' } } },
+    });
+    const renamed = renameStepIdInRecipe(r, 'reply', 'answer');
+    expect(renamed.output).toEqual({ exchange: {
+      ref: '{{step.answer}}', deliver_to: 'peer.reply', data: { answer: '{{step.answer}}' },
+    } });
   });
 
   it('converts legacy output.sidebar sources to canonical render on edit', () => {

@@ -26,6 +26,16 @@ import {
   TRANSPARENCY_REDACTION_TIERS,
 } from './transparency-stream/redaction.js';
 
+/** D-262 slice 4 — how a reply gets spoken.
+ *
+ *  Mirrors the convention every comparable project landed on (OpenClaw's
+ *  `tts.auto_speak: always | talk_mode_only | never`), with `after_voice`
+ *  standing in for `talk_mode_only`: there is no separate talk mode here, and
+ *  "you spoke, so it speaks back" is the same idea expressed in terms this
+ *  product has. */
+export const VOICE_SPEAK_MODES = ['never', 'after_voice', 'always'] as const;
+export type VoiceSpeakMode = (typeof VOICE_SPEAK_MODES)[number];
+
 export type InstancePrefSpec =
   | {
       type: 'boolean';
@@ -181,6 +191,37 @@ export const INSTANCE_PREFS = {
       'essential lines only, "summary_only" = the § B.8.7 default, ' +
       '"hidden" = everything including silent-by-default engine cues ' +
       '(debug mode). Higher tiers still reach the audit log regardless.',
+  },
+  // ── D-262 slice 4 — voice behaviour ──────────────────────────────
+  //
+  // ⚠ Both are per-PAIR, not per-device, because that is what this namespace
+  // is. A person who wants their phone to speak and their laptop to stay quiet
+  // is asking for a per-device setting, which does not exist here — worth
+  // knowing before someone reports it as a bug.
+  'ui.voice.auto_send': {
+    type: 'boolean',
+    default: true,
+    description:
+      'Send a voice note as soon as it finishes uploading, without waiting ' +
+      'for you to press Send. On by default because that is what a voice ' +
+      'note is on every messaging app: recording it IS sending it. Turn it ' +
+      'off to get the desktop chat behaviour instead, where the note waits ' +
+      'as an attachment so you can add text or change your mind. Typing ' +
+      'anything in the box already suspends auto-send for that turn.',
+  },
+  'ui.voice.speak_replies': {
+    type: 'string',
+    default: 'after_voice',
+    allowed: VOICE_SPEAK_MODES,
+    description:
+      'Read replies aloud using your browser\'s own speech, which runs on ' +
+      'this device — nothing is sent anywhere to synthesise it. ' +
+      '"after_voice" (the default) speaks only when you spoke first, so a ' +
+      'typed conversation stays silent; "always" speaks every reply; ' +
+      '"never" turns it off. Long replies are spoken up to a point and then ' +
+      'stop — the full text is always on screen. Some browsers refuse to ' +
+      'speak without a recent tap, and give no way to detect it, so a silent ' +
+      'reply does not always mean this setting is off.',
   },
 } as const satisfies Record<string, InstancePrefSpec>;
 

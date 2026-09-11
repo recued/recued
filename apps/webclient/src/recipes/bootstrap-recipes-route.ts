@@ -39,6 +39,8 @@ import type {
 } from '@recued/contracts';
 import { NOTIFICATION_CHANNEL_NAMES } from '@recued/contracts';
 import type { ResolvedTableEditDescriptor } from '@recued/contracts';
+import { openPreapprovalActivation } from '../approvals/preapproval-activation.js';
+import { preapprovalHref } from '../approvals/preapproval-route.js';
 import {
   describeCron,
   isResolvedRecordColumnsDescriptor,
@@ -478,6 +480,8 @@ export interface BootstrapRecipesRouteOptions {
   schedulesCreateCaller?: RecipesSchedulesCreateCaller;
   schedulesUpdateCaller?: RecipesSchedulesUpdateCaller;
   schedulesDeleteCaller?: RecipesSchedulesDeleteCaller;
+  preapprovalPrepareCaller?: RunModal.WireRunModalOptions['preapprovalPrepare'];
+  onPreapprovalPrepared?: RunModal.WireRunModalOptions['onPreapprovalPrepared'];
   triggersListCaller?: RecipesTriggersListCaller;
   autoRunListCaller?: RecipesAutoRunListCaller;
   autoRunUpdateCaller?: RecipesAutoRunUpdateCaller;
@@ -2208,6 +2212,7 @@ const renderRecipeDetail = (
   defaultRunMissingPacks: readonly string[] | null,
   resultGridStates: ReadonlyMap<string, OutputTableEditState> = new Map(),
   recordRefPickers = false,
+  canPreapprove = false,
 ): string => {
   const name = recipeDisplayName(entry);
   const triggerKind = deriveTriggerKind(entry);
@@ -2269,6 +2274,11 @@ const renderRecipeDetail = (
             ${RECIPES_ROUTE_ACTION_ATTR}="open-schedule"
             ${RECIPES_ROUTE_RECIPE_ID_ATTR}="${e(entry.recipe_id)}">Schedule</button>` : ''}
           ${autoRunToggle}
+          ${actionKind === 'autorun' && autoRun?.preapproval
+            ? `<a class="recipes-button" href="${e(preapprovalHref(autoRun.preapproval.proposal_id))}">Review approval</a>`
+            : actionKind === 'autorun' && canPreapprove && autoRun?.lifecycle_revision !== undefined && !autoRun.auto_disabled
+              ? `<button type="button" class="recipes-button" ${RECIPES_ROUTE_ACTION_ATTR}="review-auto-run"
+                ${RECIPES_ROUTE_RECIPE_ID_ATTR}="${e(entry.recipe_id)}">Review next run</button>` : ''}
           ${isManual ? '' : `<a class="recipes-button${autoRunToggle === '' ? ' recipes-button--primary' : ''}"
             href="${serializeShellRoute('automation', entry.recipe_id)}"
             ${RECIPES_ROUTE_AUTOMATION_LINK_ATTR}>Manage automation</a>`}
@@ -2473,6 +2483,7 @@ export const bootstrapRecipesRoute = (
   let runModalRecipeId: string | null = null;
   // D-179 — the recipe install-config editor (the shared config overlay).
   let recipeConfigHandle: ConfigEditorOverlayHandle | null = null;
+  let preapprovalActivation: ReturnType<typeof openPreapprovalActivation> | null = null;
   let configBusyRecipeId: string | null = null;
   let configErrors = new Map<string, string>();
   // Read-only automation status (the per-recipe summary line on the detail).
@@ -2520,6 +2531,7 @@ export const bootstrapRecipesRoute = (
     || hasResultGridSaveInFlight()
     || hasResultFilterInFlight()
     || recipeConfigHandle?.hasInFlightWork() === true
+    || preapprovalActivation?.hasInFlightWork() === true
     || childRunModal?.hasInFlightWork() === true;
 
   const recipeAddress = (recipeId: string | null) => recipeId === null
@@ -2779,6 +2791,7 @@ export const bootstrapRecipesRoute = (
         defaultRunMissingPacks,
         resultGridStates,
         resultRecordSearch !== undefined,
+        opts.preapprovalPrepareCaller !== undefined && opts.onPreapprovalPrepared !== undefined,
       );
       resultActions = resultActionRegistry.actions;
       resultFiles = resultActionRegistry.files;
@@ -3708,6 +3721,10 @@ export const bootstrapRecipesRoute = (
       ...(opts.schedulesDeleteCaller !== undefined
         ? { schedulesDelete: opts.schedulesDeleteCaller }
         : {}),
+      ...(opts.preapprovalPrepareCaller !== undefined
+        ? { preapprovalPrepare: opts.preapprovalPrepareCaller,
+            ...(opts.onPreapprovalPrepared !== undefined ? { onPreapprovalPrepared: opts.onPreapprovalPrepared } : {}) }
+        : {}),
       onClose: () => {
         childRunModal = null;
         runModalRecipeId = null;
@@ -3886,6 +3903,20 @@ export const bootstrapRecipesRoute = (
       autoRunBusy = next;
       render();
     }
+  };
+
+  const reviewAutoRun = (recipe_id: string): void => {
+    const entry = recipes.find(row => row.recipe_id === recipe_id);
+    const auto = recipeAutoRun(automationData, recipe_id);
+    if (!entry || !auto || auto.lifecycle_revision === undefined || auto.preapproval || auto.auto_disabled
+      || !opts.preapprovalPrepareCaller || !opts.onPreapprovalPrepared) return;
+    preapprovalActivation?.destroy();
+    preapprovalActivation = openPreapprovalActivation({ document: doc, recipe_id, publisher_id: entry.publisher_id,
+      name: recipeDisplayName(entry), activation: { kind: 'next_auto_run', recipe_id,
+        publisher_id: entry.publisher_id, expected_revision: auto.lifecycle_revision },
+      prepare: opts.preapprovalPrepareCaller, onPrepared: opts.onPreapprovalPrepared,
+      onClose: () => { preapprovalActivation = null; },
+    });
   };
 
   const closeRunModal = (): void => {
@@ -4351,6 +4382,11 @@ export const bootstrapRecipesRoute = (
       }
       return;
     }
+    if (action === 'review-auto-run') {
+      const recipeId = target.getAttribute(RECIPES_ROUTE_RECIPE_ID_ATTR);
+      if (recipeId !== null) reviewAutoRun(recipeId);
+      return;
+    }
     // close-run / confirm-run are owned by the shared RunModal's own event
     // delegation (its Close + Run buttons), not this route's innerHTML.
   };
@@ -4554,6 +4590,8 @@ export const bootstrapRecipesRoute = (
       listPreview = null;
       recipeConfigHandle?.destroy();
       recipeConfigHandle = null;
+      preapprovalActivation?.destroy();
+      preapprovalActivation = null;
       for (const picker of resultGridRefPickers.splice(0)) picker.destroy();
       const urlApi = (doc.defaultView as unknown as {
         URL?: { revokeObjectURL(url: string): void };

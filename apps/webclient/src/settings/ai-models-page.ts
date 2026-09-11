@@ -6,6 +6,7 @@
  */
 
 import { totalRecord } from '@recued/contracts';
+import type { ServerLlmUsageResponse } from '@recued/contracts';
 import { resolveFreePoolDataUse, freePoolDataUseNotice } from '@recued/contracts';
 import {
   CHAT_CATALOG_DELIVERY_MODES,
@@ -35,6 +36,11 @@ import {
   reduceChatDefaultModelPrefChanged,
   type ChatModelDefaultRenderModel,
 } from './chat-model-default.js';
+import {
+  buildChatBehaviourModel,
+  CHAT_CATALOG_MODE_LABELS,
+  type ChatBehaviourRenderModel,
+} from './chat-behaviour.js';
 import {
   buildChatModelSourceOptions,
 } from '../chat/model-routing.js';
@@ -67,6 +73,13 @@ export const AI_MODELS_POOL_REMOVE_CONFIRM_ATTR =
   'data-recued-ai-models-pool-remove-confirm';
 export const AI_MODELS_MODEL_PREF_BUTTON_ATTR =
   'data-recued-ai-models-model-pref';
+/** Global chat behaviour — the rolling-brief toggle and the projected global
+ *  catalog mode. Both are SERVER-WIDE, which is why they live in their own
+ *  section rather than beside a slot. */
+export const AI_MODELS_ROLLING_BRIEF_ATTR =
+  'data-recued-ai-models-rolling-brief';
+export const AI_MODELS_CATALOG_GLOBAL_ATTR =
+  'data-recued-ai-models-catalog-global';
 /** D-174 R28 Slice A — the empty-state "add a source" jump button (Preference
  *  tab with zero configured sources → Providers). */
 export const AI_MODELS_MODEL_PREF_EMPTY_JUMP_ATTR =
@@ -86,8 +99,19 @@ export const AI_MODELS_SLOT_FIELD_ATTR = 'data-recued-ai-models-slot-field';
 export const AI_MODELS_SLOT_TEST_ATTR = 'data-recued-ai-models-slot-test';
 export const AI_MODELS_SLOT_TEST_RESULT_ATTR =
   'data-recued-ai-models-slot-test-result';
+/** D-262 § B7 — the transcription probe's heard/expected pair. Named so a test
+ *  can assert the transcript REACHES the page: the server has always returned
+ *  it and the renderer dropped it, which is invisible to any test that only
+ *  checks the verdict. */
+export const AI_MODELS_PROBE_TRANSCRIPT_ATTR =
+  'data-recued-ai-models-probe-transcript';
 export const AI_MODELS_EMBEDDINGS_FIELD_ATTR =
   'data-recued-ai-models-embeddings-field';
+/** D-262 § B1 — the transcription slot's fields, plus its language input. */
+export const AI_MODELS_TRANSCRIPTION_FIELD_ATTR =
+  'data-recued-ai-models-transcription-field';
+/** D-262 follow-on — today's spend, rendered beside the cap that governs it. */
+export const AI_MODELS_USAGE_ATTR = 'data-recued-ai-models-usage';
 /** Per-source model context-window input. Values are `slot_1`, `slot_2`, or
  *  `free_pool:new` for the API-entry creation form. */
 export const AI_MODELS_CONTEXT_WINDOW_INPUT_ATTR =
@@ -176,7 +200,7 @@ const isAiModelsTab = (value: string | null): value is AiModelsTab =>
 
 type LlmConfigRecord = Record<string, unknown>;
 type LlmSlotKey = 'slot_1' | 'slot_2';
-type ClearableSlotKey = LlmSlotKey | 'embeddings_slot';
+type ClearableSlotKey = LlmSlotKey | 'embeddings_slot' | 'transcription_slot';
 type LlmSlotRecord = Record<string, unknown>;
 type FreePoolEntryRecord = Record<string, unknown>;
 
@@ -190,6 +214,7 @@ const CLEARABLE_SLOT_DISPLAY_NAME: Record<ClearableSlotKey, string> = {
   slot_1: MODEL_SOURCE_DISPLAY_NAME.slot_1,
   slot_2: MODEL_SOURCE_DISPLAY_NAME.slot_2,
   embeddings_slot: 'Embeddings slot',
+  transcription_slot: 'Transcription slot',
 };
 
 interface ByokSlotDraft {
@@ -406,10 +431,23 @@ export interface MountAiModelsPageOptions {
   runGetLLMConfig?: AiModelsLlmConfigGetCaller;
   runSetLLMSlot?: AiModelsLlmSlotSetCaller;
   runSetEmbeddingsSlot?: AiModelsEmbeddingsSlotSetCaller;
+  runSetTranscriptionSlot?: AiModelsEmbeddingsSlotSetCaller;
+  runSetTranscriptionLanguage?: (args: { language: string | null }) => Promise<unknown>;
+  runSetTranscriptionDailyRequests?: (args: { limit: number | null }) => Promise<unknown>;
+  /** D-262 follow-on — today's spend per source. Absent ⇒ no usage lines
+   *  render at all, rather than zeros that would read as "nothing spent". */
+  runGetLLMUsage?: () => Promise<ServerLlmUsageResponse>;
   runUpsertFreePoolEntry?: AiModelsFreePoolEntryUpsertCaller;
   runRemoveFreePoolEntry?: AiModelsFreePoolEntryRemoveCaller;
   runSetFreePoolEntryEnabled?: AiModelsFreePoolEntryEnabledCaller;
   runSetChatCatalogMode?: AiModelsSetChatCatalogModeCaller;
+  /** Global chat behaviour — the server-scoped rolling-brief enable.
+   *  ⛔ SERVER-SCOPED, not per-source: `runChatTurn` holds no peer identity,
+   *  so this changes what EVERY chat turn carries, on every model, including
+   *  turns that arrive with no paired client at all. Absent ⇒ the control
+   *  renders as loading rather than inventing a value. */
+  runGetRollingBrief?: () => Promise<{ enabled: boolean }>;
+  runSetRollingBrief?: (args: { enabled: boolean }) => Promise<{ enabled: boolean }>;
   runProbeLlmSource?: AiModelsProbeSourceCaller;
   runGetLlmPrompts?: AiModelsLlmPromptsGetCaller;
   runSetLlmPrompt?: AiModelsLlmPromptSetCaller;
@@ -426,6 +464,7 @@ export interface MountAiModelsPageOptions {
 export interface AiModelsResolvedState {
   state: AiModelsPageState;
   modelPreference: ChatModelDefaultRenderModel;
+  chatBehaviour: ChatBehaviourRenderModel;
   llmConfig: LlmConfigRecord | null;
   configSchema: ReadonlyArray<ServerConfigField>;
   housekeepingConfig: HousekeepingConfigRow | null;
@@ -469,6 +508,21 @@ export interface AiModelsPageMount {
     base_url?: string;
   }): Promise<void>;
   clearEmbeddingsSlot(): Promise<void>;
+  /** D-262 § B1 — the dedicated transcription source. Its `model` field is the
+   *  TRANSCRIPTION model (`whisper-1`, `whisper-large-v3`, or a Gemini chat
+   *  model, which transcribes itself). Never a chat model-select option. */
+  saveTranscriptionSlot(patch: {
+    provider: string;
+    model: string;
+    api_key?: string;
+    base_url?: string;
+  }): Promise<void>;
+  clearTranscriptionSlot(): Promise<void>;
+  /** D-262 § B6 — `null` clears back to auto-detect, which is the default and
+   *  a meaningful state, not an unset one. */
+  saveTranscriptionLanguage(language: string | null): Promise<void>;
+  /** D-262 § B12.3 — daily cap in REQUESTS. `null` clears to unlimited. */
+  saveTranscriptionDailyRequests(limit: number | null): Promise<void>;
   addFreePoolApiEntry(entry: {
     id: string;
     provider: string;
@@ -538,6 +592,10 @@ const CONTROL_COPY: Readonly<Record<string, { title: string; body: string }>> = 
     title: 'Model preference',
     body: 'Global source every non-overridden chat session inherits.',
   },
+  chat_behaviour: {
+    title: 'Chat behaviour',
+    body: 'Applies to every chat on this server, on every model — including chats started from Slack, Telegram or an external agent.',
+  },
   embeddings: {
     title: 'Embeddings model',
     body: 'A dedicated provider + model for embeddings (semantic search / clustering), used by recipes and housekeeping — never chat. OpenAI-compatible is the common case (e.g. text-embedding-3-small, or a self-hosted endpoint via Base URL); Google works too. Anthropic publishes no embeddings model.',
@@ -597,6 +655,10 @@ const PROBE_VERDICT: Readonly<Record<ServerLlmProbeResult['diagnosis'], string>>
   unreachable: 'Could not reach the endpoint. Check the Base URL, and that the server is running.',
   model_missing: 'The endpoint answered, but does not have that model. Check the Model.',
   rate_limited: 'The key works — the provider is rate-limiting it right now. Try again shortly.',
+  // D-262 § B7 — ⛔ NOT a verdict about the slot. Nothing was sent, so nothing
+  // was learned, and saying "connected" here would be a badge for a request
+  // that never left the process.
+  no_sample: 'This build has no sample audio, so the connection could not be tested. Your settings may still be correct.',
   provider_error: 'The key works — the provider is having trouble. Not your configuration.',
   rejected: 'The endpoint refused the request. See the detail below.',
 };
@@ -706,7 +768,7 @@ const parsePositiveSafeInteger = (value: string): number | undefined => {
 const cloneConfig = (config: LlmConfigRecord | null): LlmConfigRecord => {
   const source = config ?? {};
   const next: LlmConfigRecord = { ...source };
-  for (const key of ['slot_1', 'slot_2', 'embeddings_slot'] as const) {
+  for (const key of ['slot_1', 'slot_2', 'embeddings_slot', 'transcription_slot'] as const) {
     const slot = asRecord(source[key]);
     if (slot) next[key] = { ...slot };
   }
@@ -875,6 +937,17 @@ export const mountAiModelsPage = (
   const recomputeModelPreference = (): void => {
     modelPreference = buildChatModelDefaultModel(modelPrefSnapshot, llmConfig);
   };
+  // Global chat behaviour. The brief snapshot is its own read; the catalog
+  // half is PROJECTED from `llmConfig`, so both recompute together whenever
+  // either input moves.
+  let rollingBriefSnapshot: { enabled: boolean } | null = null;
+  let chatBehaviour: ChatBehaviourRenderModel = buildChatBehaviourModel(
+    rollingBriefSnapshot,
+    llmConfig,
+  );
+  const recomputeChatBehaviour = (): void => {
+    chatBehaviour = buildChatBehaviourModel(rollingBriefSnapshot, llmConfig);
+  };
   let configSchema: ServerConfigField[] = [];
   let housekeepingConfig: HousekeepingConfigRow | null = null;
   let llmPrompts: ServerLlmPrompt[] = [];
@@ -892,6 +965,13 @@ export const mountAiModelsPage = (
   let slotProbePendingKey: string | null = null;
   const slotProbeResults = new Map<string, ServerLlmProbeResult>();
   let embeddingsSlotDraft: EmbeddingsSlotDraft | null = null;
+  let transcriptionSlotDraft: EmbeddingsSlotDraft | null = null;
+  let transcriptionLanguageDraft: string | null = null;
+  let transcriptionCapDraft: string | null = null;
+  /** D-262 follow-on — `null` until the read lands or if it fails. ⛔ A failed
+   *  read renders NOTHING rather than zeros: "0 tokens today" and "we could
+   *  not ask" look identical on screen and mean opposite things. */
+  let llmUsage: ServerLlmUsageResponse | null = null;
   const freePoolAddDraft: FreePoolAddDraft = {
     id: '',
     provider: 'openai-compatible',
@@ -978,6 +1058,7 @@ export const mountAiModelsPage = (
   let modelPreferencePendingId: ChatModelSourceId | null = null;
   let byokSlotSavePendingKey: LlmSlotKey | null = null;
   let embeddingsSlotSavePending = false;
+  let transcriptionSlotSavePending = false;
   let chatSetupError: string | null = null;
   let chatSetupSubmitting = false;
   let chatSetupCompleted = false;
@@ -1174,6 +1255,49 @@ export const mountAiModelsPage = (
     }
   };
 
+  const submitTranscriptionSlotSave = async (
+    patch: Parameters<AiModelsPageMount['saveTranscriptionSlot']>[0],
+  ): Promise<void> => {
+    if (
+      disposed
+      || transcriptionSlotSavePending
+      || slotClearPendingKey !== null
+    ) return;
+    transcriptionSlotSavePending = true;
+    actionError = null;
+    render();
+    try {
+      await api.saveTranscriptionSlot(patch);
+      // ⚠ The siblings ride the SAME press. They are not fields on the slot,
+      // but a person filling in one card should not have to find a second
+      // button to make part of it take effect.
+      if (transcriptionLanguageDraft !== null) {
+        const trimmed = transcriptionLanguageDraft.trim();
+        await api.saveTranscriptionLanguage(trimmed.length > 0 ? trimmed : null);
+        transcriptionLanguageDraft = null;
+      }
+      if (transcriptionCapDraft !== null) {
+        const trimmed = transcriptionCapDraft.trim();
+        const parsed = trimmed.length > 0 ? Number(trimmed) : null;
+        // ⛔ A non-numeric entry clears to unlimited rather than throwing: the
+        // field is optional, and refusing the whole save because a cap was
+        // mistyped would lose the slot edit the person actually came for.
+        await api.saveTranscriptionDailyRequests(
+          parsed !== null && Number.isFinite(parsed) && parsed > 0 ? parsed : null,
+        );
+        transcriptionCapDraft = null;
+      }
+      if (disposed) return;
+      transcriptionSlotSavePending = false;
+      render();
+    } catch (err) {
+      if (disposed) return;
+      transcriptionSlotSavePending = false;
+      actionError = stringifyError(err);
+      render();
+    }
+  };
+
   const submitBudgetSave = async (tokens: number): Promise<void> => {
     if (disposed || budgetSavePending) return;
     budgetSavePending = true;
@@ -1254,6 +1378,68 @@ export const mountAiModelsPage = (
       actionError = stringifyError(err);
       render();
     }
+  };
+
+  /** Global chat behaviour. ⛔ ITS OWN SECTION, NOT A PER-SLOT CONTROL. Both
+   *  settings change what EVERY turn carries on EVERY model, including turns
+   *  with no paired client at all; rendering them beside one slot invites an
+   *  owner to set one and believe they have set all. */
+  const renderChatBehaviour = (parent: HTMLElement): void => {
+    const section = doc.createElement('section');
+    markControl(section, 'chat_behaviour');
+    appendHeading(doc, section, 'h3', CONTROL_COPY.chat_behaviour.title);
+    appendText(doc, section, CONTROL_COPY.chat_behaviour.body);
+
+    if (chatBehaviour.kind === 'loading') {
+      // ⛔ NOT a default-off render: the read may simply not have landed, and
+      //   showing "off" for "unknown" misreports the server.
+      appendText(doc, section, ' Loading chat behaviour.');
+      parent.appendChild(section);
+      return;
+    }
+
+    const brief = chatBehaviour.rolling_brief;
+    appendText(
+      doc,
+      section,
+      brief
+        ? ' Carrying a running brief across turns. Only the last few messages stay in view otherwise, so anything you said that no tool can look up would be lost.'
+        : ' Not carrying a brief. Anything you said that no tool can look up is lost once it scrolls out of the last few messages.',
+    );
+    const briefButton = appendButton(
+      doc,
+      section,
+      rollingBriefPending
+        ? 'Saving…'
+        : brief
+          ? 'Turn off running brief'
+          : 'Turn on running brief',
+      () => {
+        void submitRollingBrief(!brief);
+      },
+      [
+        [AI_MODELS_ROLLING_BRIEF_ATTR, brief ? 'on' : 'off'],
+        ['aria-pressed', brief ? 'true' : 'false'],
+      ],
+    );
+    if (rollingBriefPending) briefButton.setAttribute('aria-busy', 'true');
+
+    const catalog = doc.createElement('p');
+    catalog.setAttribute(AI_MODELS_CATALOG_GLOBAL_ATTR, chatBehaviour.catalog_mode);
+    catalog.textContent = `Tool catalog: ${CHAT_CATALOG_MODE_LABELS[chatBehaviour.catalog_mode]}`;
+    section.appendChild(catalog);
+    if (chatBehaviour.catalog_mode === 'mixed') {
+      // A 'mixed' value is not an error, but it IS the one state an owner
+      // cannot act on without knowing which source differs.
+      appendText(
+        doc,
+        section,
+        ` Per-model overrides differ: ${chatBehaviour.catalog_by_source
+          .map((b) => `${b.source_id} → ${b.mode}`)
+          .join(', ')}. Clear them on Providers to return to one setting.`,
+      );
+    }
+    parent.appendChild(section);
   };
 
   const renderModelPreference = (parent: HTMLElement): void => {
@@ -1431,6 +1617,7 @@ export const mountAiModelsPage = (
     card.className = 'ai-models-slot';
     card.setAttribute(AI_MODELS_CONTROL_ATTR, slotKey);
     appendHeading(doc, card, 'h4', title);
+    renderUsageLine(card, slotKey);
     appendText(
       doc,
       card,
@@ -1658,7 +1845,9 @@ export const mountAiModelsPage = (
       || slotClearPendingKey !== null
       || (slotKey === 'embeddings_slot'
         ? embeddingsSlotSavePending
-        : byokSlotSavePendingKey !== null)
+        : slotKey === 'transcription_slot'
+          ? transcriptionSlotSavePending
+          : byokSlotSavePendingKey !== null)
     ) return;
     slotClearPendingKey = slotKey;
     actionError = null;
@@ -1666,6 +1855,8 @@ export const mountAiModelsPage = (
     try {
       if (slotKey === 'embeddings_slot') {
         await api.clearEmbeddingsSlot();
+      } else if (slotKey === 'transcription_slot') {
+        await api.clearTranscriptionSlot();
       } else {
         await api.clearByokSlot(slotKey);
       }
@@ -1788,6 +1979,7 @@ export const mountAiModelsPage = (
     card.className = 'ai-models-slot';
     card.setAttribute(AI_MODELS_CONTROL_ATTR, 'embeddings_slot');
     appendHeading(doc, card, 'h4', 'Embeddings slot');
+    renderUsageLine(card, 'embeddings_slot');
     appendText(
       doc,
       card,
@@ -1895,6 +2087,209 @@ export const mountAiModelsPage = (
       }),
     );
     parent.appendChild(card);
+  };
+
+  /** D-262 § B1 — the transcription card. Mirrors the embeddings card because
+   *  it IS the same shape: one dedicated source, its `model` field carrying the
+   *  domain model, never a chat model-select option.
+   *
+   *  ⚠ `Base URL` is the load-bearing field here, not an advanced extra: it is
+   *  what lets a server on a Pi point at a remote endpoint and a server with a
+   *  GPU point at a local `whisper.cpp`. */
+  const renderTranscriptionSlot = (parent: HTMLElement): void => {
+    if (!opts.runGetLLMConfig || !opts.runSetTranscriptionSlot) return;
+    const slot = asRecord(llmConfig?.transcription_slot);
+    const clearingThis = slotClearPendingKey === 'transcription_slot';
+    const draft = transcriptionSlotDraft ?? {
+      provider: asString(slot?.provider),
+      model: asString(slot?.model),
+      baseUrl: asString(slot?.base_url),
+      apiKey: '',
+    };
+    const card = doc.createElement('div');
+    card.className = 'ai-models-slot';
+    card.setAttribute(AI_MODELS_CONTROL_ATTR, 'transcription_slot');
+    appendHeading(doc, card, 'h4', 'Transcription slot');
+    renderUsageLine(card, 'transcription_slot');
+    appendText(
+      doc,
+      card,
+      slot
+        ? ` ${asString(slot.provider) || 'provider?'} / ${asString(slot.model) || 'model?'}`
+        : ' Not configured. Voice notes need this — the microphone stays hidden until it is set.',
+    );
+    const provider = appendInput(doc, card, 'Provider', draft.provider, [
+      [AI_MODELS_TRANSCRIPTION_FIELD_ATTR, 'provider'],
+      ['aria-label', 'Transcription slot provider'],
+    ]);
+    const model = appendInput(doc, card, 'Model', draft.model, [
+      ['placeholder', 'e.g. whisper-1, whisper-large-v3'],
+      [AI_MODELS_TRANSCRIPTION_FIELD_ATTR, 'model'],
+      ['aria-label', 'Transcription slot model'],
+    ]);
+    const baseUrl = appendInput(doc, card, 'Base URL', draft.baseUrl, [
+      ['placeholder', 'A local or remote endpoint — both work'],
+      [AI_MODELS_TRANSCRIPTION_FIELD_ATTR, 'base-url'],
+      ['aria-label', 'Transcription slot base URL'],
+    ]);
+    const apiKey = appendInput(doc, card, 'API key', draft.apiKey, [
+      ['placeholder', slot?.has_key === true ? 'Leave blank to keep existing key' : 'Required'],
+      [AI_MODELS_TRANSCRIPTION_FIELD_ATTR, 'api-key'],
+      ['aria-label', 'Transcription slot API key'],
+    ]);
+    apiKey.type = 'password';
+    // D-262 § B6 — ⛔ THE PLACEHOLDER SAYS WHAT EMPTY MEANS rather than filling
+    // in a guess. Defaulting this from the browser locale would be a guess
+    // wearing the costume of a default: a pinned language makes the provider
+    // render speech INTO it, so a wrong value returns fluent nonsense instead
+    // of an error, and it would fail exactly the multilingual owner it claims
+    // to serve.
+    const language = appendInput(
+      doc,
+      card,
+      'Spoken language',
+      transcriptionLanguageDraft ?? asString(llmConfig?.transcription_language),
+      [
+        ['placeholder', 'Leave empty to detect automatically'],
+        [AI_MODELS_TRANSCRIPTION_FIELD_ATTR, 'language'],
+        ['aria-label', 'Transcription spoken language'],
+      ],
+    );
+    // D-262 § B12.3 — the daily cap, in REQUESTS.
+    //
+    // ⛔ The label says "calls a day", not "minutes" or "tokens", because that
+    // is what is counted. Providers bill by audio seconds, but the multipart
+    // endpoints report a duration only in their verbose format and Gemini
+    // reports none — a seconds cap would stop counting for one provider and
+    // read as generous when it was blind. ⚠ Empty means unlimited, and the
+    // placeholder says so rather than showing a number nobody chose.
+    const cap = appendInput(
+      doc,
+      card,
+      'Daily limit (calls a day)',
+      transcriptionCapDraft ?? (
+        typeof llmConfig?.transcription_daily_requests === 'number'
+          ? String(llmConfig.transcription_daily_requests)
+          : ''
+      ),
+      [
+        ['placeholder', 'Leave empty for no limit'],
+        [AI_MODELS_TRANSCRIPTION_FIELD_ATTR, 'daily-requests'],
+        ['aria-label', 'Transcription daily call limit'],
+      ],
+    );
+    const syncDraft = (): void => {
+      transcriptionSlotDraft = {
+        provider: provider.value,
+        model: model.value,
+        baseUrl: baseUrl.value,
+        apiKey: apiKey.value,
+      };
+      transcriptionLanguageDraft = language.value;
+      transcriptionCapDraft = cap.value;
+    };
+    for (const input of [provider, model, baseUrl, apiKey, language, cap]) {
+      input.addEventListener('input', syncDraft);
+      if (transcriptionSlotSavePending || clearingThis) input.readOnly = true;
+    }
+    const save = appendButton(
+      doc,
+      card,
+      transcriptionSlotSavePending ? 'Saving slot…' : 'Save slot',
+      () => {
+        void submitTranscriptionSlotSave({
+          provider: provider.value,
+          model: model.value,
+          ...(apiKey.value.trim().length > 0 ? { api_key: apiKey.value } : {}),
+          base_url: baseUrl.value,
+        });
+      },
+      [
+        [AI_MODELS_SLOT_SAVE_ATTR, 'transcription_slot'],
+        ['aria-label', 'Save Transcription slot'],
+      ],
+    );
+    const clear = appendButton(
+      doc,
+      card,
+      'Clear slot',
+      () => {
+        if (transcriptionSlotSavePending || slotClearPendingKey !== null) return;
+        actionError = null;
+        slotClearDialogKey = 'transcription_slot';
+        slotClearNeedsInitialFocus = true;
+        slotClearNeedsConfirmFocus = false;
+        render();
+      },
+      [
+        [AI_MODELS_SLOT_CLEAR_ATTR, 'transcription_slot'],
+        ['aria-label', 'Clear Transcription slot'],
+      ],
+    );
+    if (transcriptionSlotSavePending || slotClearPendingKey !== null) {
+      save.setAttribute('aria-disabled', 'true');
+      clear.setAttribute('aria-disabled', 'true');
+    }
+    if (transcriptionSlotSavePending) save.setAttribute('aria-busy', 'true');
+    // ⚠ Same button, a THIRD probe on the far side: the server transcribes a
+    // bundled clip through the transcription registry. A chat completion sent
+    // to a Whisper endpoint reports its 404 as a missing model — true, and
+    // useless.
+    renderProbeControls(
+      card,
+      'transcription_slot',
+      'Transcription slot',
+      { kind: 'slot', slot_key: 'transcription_slot' },
+      () => ({
+        provider: provider.value,
+        model: model.value,
+        ...(apiKey.value.trim().length > 0 ? { api_key: apiKey.value } : {}),
+        ...(baseUrl.value.length > 0 ? { base_url: baseUrl.value } : {}),
+      }),
+    );
+    parent.appendChild(card);
+  };
+
+  /** D-262 follow-on — one source's spend today, beside the cap that governs
+   *  it.
+   *
+   *  🔑 BESIDE THE KNOB, NOT ON A SEPARATE PAGE. The number and the limit
+   *  answer one question together — "have I got room" — and splitting them puts
+   *  the feedback on a screen nobody visits while setting the value.
+   *
+   *  ⛔ UNITS ARE NEVER MERGED. Chat spends tokens, transcription spends calls;
+   *  a single "usage" figure would be publishing a conversion nobody performed.
+   *  ⚠ And a COOLDOWN is reported separately from being over budget: the
+   *  provider said no versus the owner's own limit said no, which resolve
+   *  differently — minutes versus midnight. */
+  const renderUsageLine = (parent: HTMLElement, sourceId: string): void => {
+    const row = llmUsage?.sources.find((entry) => entry.id === sourceId);
+    if (!row) return;
+    const parts: string[] = [];
+    if (row.tokens_today !== undefined) {
+      parts.push(row.limit !== undefined
+        ? `${row.tokens_today.toLocaleString()} of ${row.limit.toLocaleString()} tokens today`
+        : `${row.tokens_today.toLocaleString()} tokens today`);
+    }
+    if (row.transcription_requests_today !== undefined) {
+      parts.push(row.limit !== undefined
+        ? `${row.transcription_requests_today} of ${row.limit} calls today`
+        : `${row.transcription_requests_today} calls today`);
+      const seconds = row.transcription_seconds_today ?? 0;
+      // ⚠ "at least" is not hedging — the count is an UNDER-count by
+      // construction, because only providers that report a duration
+      // contribute. Presenting it as a measurement would be a number the
+      // owner could not reconcile with their bill.
+      if (seconds > 0) parts.push(`at least ${Math.round(seconds)}s of audio heard`);
+    }
+    if (row.over_limit) parts.push('limit reached — resets at 00:00 UTC');
+    if (row.in_cooldown) parts.push('the provider is rate-limiting this right now');
+    if (parts.length === 0) return;
+    const line = doc.createElement('p');
+    line.className = 'ai-models-usage';
+    line.setAttribute(AI_MODELS_USAGE_ATTR, sourceId);
+    line.textContent = ` ${parts.join(' · ')}`;
+    parent.appendChild(line);
   };
 
   const renderByok = (parent: HTMLElement): void => {
@@ -2026,6 +2421,46 @@ export const mountAiModelsPage = (
       }
       facts.textContent = parts.join(' · ');
       box.appendChild(facts);
+
+      // ⛔⛔ D-262 § B7 — SHOW WHAT IT HEARD. The server returns `transcript`
+      // for one stated reason: a `transcription_language` the owner did not
+      // mean returns fluent NONSENSE rather than an error, and this is the only
+      // surface that can reveal it. Rendering the verdict and the elapsed time
+      // and dropping the transcript defeated the whole check — a probe that
+      // says "ok, 900 ms" over a slot mis-set to Turkish looks exactly like one
+      // that works.
+      //
+      // ⚠ Shown as a PAIR, never compared. Models, accents and punctuation
+      // differ, so an equality check would fail on working slots — and the
+      // owner cannot judge a language they do not read on its own, which is
+      // precisely the failing case. Side by side, a mismatch is obvious
+      // without reading either line.
+      if (probeResult.transcript !== undefined) {
+        const heard = doc.createElement('dl');
+        heard.className = 'ai-models-probe-transcript';
+        heard.setAttribute(AI_MODELS_PROBE_TRANSCRIPT_ATTR, 'true');
+        const rows: [string, string][] = [];
+        if (probeResult.expected_transcript !== undefined) {
+          rows.push(['Clip says', probeResult.expected_transcript]);
+        }
+        rows.push(['Heard', probeResult.transcript]);
+        rows.push([
+          'Language',
+          probeResult.probe_language !== undefined
+            ? probeResult.probe_language
+            // Absent is a real answer, not a missing one.
+            : 'auto-detect',
+        ]);
+        for (const [label, value] of rows) {
+          const dt = doc.createElement('dt');
+          dt.textContent = label;
+          const dd = doc.createElement('dd');
+          dd.textContent = value;
+          heard.appendChild(dt);
+          heard.appendChild(dd);
+        }
+        box.appendChild(heard);
+      }
     } else if (probeResult.detail !== undefined) {
       const detail = doc.createElement('pre');
       detail.className = 'ai-models-probe-detail';
@@ -2185,6 +2620,9 @@ export const mountAiModelsPage = (
         row,
         `${id || 'entry'}: ${asString(entry.provider) || asString(entry.type)} / ${asString(entry.model) || asString(entry.tab)} (${entry.enabled === false ? 'disabled' : 'enabled'})`,
       );
+      // D-262 follow-on — a pool entry's `daily_cap_tokens` is enforced by the
+      // match resolver; until now nothing showed the number it enforced on.
+      renderUsageLine(row, id);
       // T3-AUD-1 — what this provider's FREE tier does with the owner's data,
       // stated where they choose it rather than left in a vendor's terms page
       // they never opened. Renders for a known provider AND for an unreviewed
@@ -2737,6 +3175,43 @@ export const mountAiModelsPage = (
     if (disposed) return;
     modelPrefSnapshot = next;
     recomputeModelPreference();
+    render();
+  };
+
+  /** Global chat behaviour — write the rolling-brief enable.
+   *
+   *  ⚠ MIRRORS THE CONFIRMED SERVER RESULT, never the optimistic input: the
+   *  server is the authority on the stored value, and echoing the request would
+   *  show a toggle as flipped even if the write were coerced or rejected.
+   *  Same discipline as `persistModelPreference` above. */
+  let rollingBriefPending = false;
+  /** ⚠ Single-flight + surfaces the failure. A toggle that silently swallowed a
+   *  rejected write would leave the UI showing a state the server never took. */
+  const submitRollingBrief = async (enabled: boolean): Promise<void> => {
+    if (rollingBriefPending || !opts.runSetRollingBrief) return;
+    rollingBriefPending = true;
+    actionError = null;
+    render();
+    try {
+      await persistRollingBrief(enabled);
+    } catch (err) {
+      actionError = stringifyError(err);
+    } finally {
+      if (!disposed) {
+        rollingBriefPending = false;
+        render();
+      }
+    }
+  };
+
+  const persistRollingBrief = async (enabled: boolean): Promise<void> => {
+    if (!opts.runSetRollingBrief) {
+      throw new Error('AI / Models: chat.rolling_brief.set caller is not wired');
+    }
+    const next = await opts.runSetRollingBrief({ enabled });
+    if (disposed) return;
+    rollingBriefSnapshot = next;
+    recomputeChatBehaviour();
     render();
   };
 
@@ -3440,9 +3915,11 @@ export const mountAiModelsPage = (
     activateAiTab(aiTab);
 
     renderModelPreference(panels.preference);
+    renderChatBehaviour(panels.preference);
     renderByok(panels.providers);
     renderFreePool(panels.providers);
     renderEmbeddingsSlot(panels.providers);
+    renderTranscriptionSlot(panels.providers);
     renderSlotClearDialog(panels.providers);
     renderPrompts(panels.prompts);
     renderAiPolicy(panels.usage);
@@ -3550,6 +4027,22 @@ export const mountAiModelsPage = (
           }),
       );
     }
+    if (opts.runGetRollingBrief) {
+      tasks.push(
+        opts.runGetRollingBrief()
+          .then((snapshot) => {
+            rollingBriefSnapshot = snapshot;
+          })
+          .catch((err) => {
+            // ⛔ A FAILED READ LEAVES THE SNAPSHOT NULL, so the projection stays
+            //   'loading' and the control renders as unknown. Defaulting to
+            //   `false` here would show the brief as OFF on a server where it is
+            //   ON — the same "0 tokens vs we could not ask" confusion the usage
+            //   read avoids one block below.
+            loadErrors.push(`chat behaviour: ${stringifyError(err)}`);
+          }),
+      );
+    }
     if (opts.runGetLLMConfig) {
       tasks.push(
         opts.runGetLLMConfig()
@@ -3559,6 +4052,17 @@ export const mountAiModelsPage = (
           .catch((err) => {
             loadErrors.push(`LLM config: ${stringifyError(err)}`);
           }),
+      );
+    }
+    if (opts.runGetLLMUsage) {
+      tasks.push(
+        opts.runGetLLMUsage()
+          .then((usage) => { llmUsage = usage; })
+          // ⛔ SOFT, unlike the config read above. A server too old to answer,
+          // or one with no tracker wired, must not put an error banner on a
+          // page that is otherwise working — the usage lines simply do not
+          // render, which is honest: nothing was learned, so nothing is shown.
+          .catch(() => { llmUsage = null; }),
       );
     }
     if (!chatSetupMode && opts.runGetConfigSchema) {
@@ -3588,6 +4092,9 @@ export const mountAiModelsPage = (
     // Both the default snapshot + the LLM config have settled — derive the
     // picker model from BOTH (the options are the configured sources).
     recomputeModelPreference();
+    // Same for global chat behaviour: the brief snapshot AND the LLM config
+    // (whose `catalog_modes` is the catalog half) have both landed by here.
+    recomputeChatBehaviour();
     state = loadErrors.length > 0 ? 'error' : 'ready';
     render();
   };
@@ -3600,6 +4107,7 @@ export const mountAiModelsPage = (
   const commitLocal = (next: LlmConfigRecord): void => {
     llmConfig = cloneConfig(next);
     recomputeModelPreference();
+    recomputeChatBehaviour();
     render();
   };
 
@@ -3607,6 +4115,7 @@ export const mountAiModelsPage = (
     getState: () => ({
       state,
       modelPreference,
+      chatBehaviour,
       llmConfig: llmConfig === null ? null : cloneConfig(llmConfig),
       configSchema: [...configSchema],
       housekeepingConfig,
@@ -3777,6 +4286,83 @@ export const mountAiModelsPage = (
         next.embeddings_slot = null;
       }
       embeddingsSlotDraft = null;
+      commitLocal(next);
+    },
+    saveTranscriptionSlot: async (patch) => {
+      if (!opts.runSetTranscriptionSlot) {
+        throw new Error('AI / Models: server.setTranscriptionSlot caller is not wired');
+      }
+      const current = asRecord(llmConfig?.transcription_slot) ?? {};
+      const carry = { ...current };
+      delete carry.has_key;
+      delete carry.api_key;
+      const nextSlot: LlmSlotRecord = {
+        ...carry,
+        provider: patch.provider.trim(),
+        model: patch.model.trim(),
+        // Blank ⇒ empty string: the server PRESERVES the stored key, which
+        // never crossed the wire in the first place.
+        api_key:
+          patch.api_key !== undefined && patch.api_key.trim().length > 0
+            ? patch.api_key
+            : '',
+      };
+      if (patch.base_url !== undefined) {
+        if (patch.base_url.trim().length > 0) nextSlot.base_url = patch.base_url.trim();
+        else delete nextSlot.base_url;
+      }
+      await opts.runSetTranscriptionSlot({ slot: nextSlot });
+      const keyProvided =
+        patch.api_key !== undefined && patch.api_key.trim().length > 0;
+      const sameContext =
+        asString(current.provider) === nextSlot.provider
+        && asString(current.base_url) === asString(nextSlot.base_url);
+      const localHasKey = keyProvided || (current.has_key === true && sameContext);
+      const next = cloneConfig(llmConfig);
+      if (localHasKey) {
+        const localSlot: LlmSlotRecord = { ...nextSlot };
+        delete localSlot.api_key;
+        localSlot.has_key = true;
+        next.transcription_slot = localSlot;
+      } else {
+        // A blank key with a CHANGED provider/base_url leaves it keyless, and
+        // the server's `loadSlot` drops a keyless slot — so mirror it cleared
+        // rather than showing a card the server does not have.
+        next.transcription_slot = null;
+      }
+      transcriptionSlotDraft = null;
+      commitLocal(next);
+    },
+    clearTranscriptionSlot: async () => {
+      if (!opts.runSetTranscriptionSlot) {
+        throw new Error('AI / Models: server.setTranscriptionSlot caller is not wired');
+      }
+      await opts.runSetTranscriptionSlot({ slot: null });
+      const next = cloneConfig(llmConfig);
+      next.transcription_slot = null;
+      transcriptionSlotDraft = null;
+      commitLocal(next);
+    },
+    saveTranscriptionDailyRequests: async (limit) => {
+      if (!opts.runSetTranscriptionDailyRequests) {
+        throw new Error('AI / Models: server.setTranscriptionDailyRequests caller is not wired');
+      }
+      await opts.runSetTranscriptionDailyRequests({ limit });
+      const next = cloneConfig(llmConfig);
+      if (limit === null || limit <= 0) delete next.transcription_daily_requests;
+      else next.transcription_daily_requests = limit;
+      commitLocal(next);
+    },
+    saveTranscriptionLanguage: async (language) => {
+      if (!opts.runSetTranscriptionLanguage) {
+        throw new Error('AI / Models: server.setTranscriptionLanguage caller is not wired');
+      }
+      await opts.runSetTranscriptionLanguage({ language });
+      const next = cloneConfig(llmConfig);
+      // ⛔ Absent, not empty-string: auto-detect is the ABSENCE of a pin, and an
+      // empty string is a value the provider would try to honour.
+      if (language === null) delete next.transcription_language;
+      else next.transcription_language = language;
       commitLocal(next);
     },
     clearEmbeddingsSlot: async () => {

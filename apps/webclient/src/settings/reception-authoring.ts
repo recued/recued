@@ -1249,6 +1249,11 @@ export interface IntakeFormFormModel {
   readonly template_ref: AuthoringTextField;
   readonly form_definition_id: AuthoringTextField;
   readonly fields: AuthoringRepeaterField<IntakeFormFieldRow>;
+  /** D-220 Slice B (follow-up) — `form_definition.user_only_field_names`: names
+   *  the OWNER fills in after a submission, never shown to visitors. Editable
+   *  here because a template can ship them and a recipe's field contract tells
+   *  them apart from visitor fields (`field_owner_only`). */
+  readonly user_only_field_names: AuthoringRepeaterField<string>;
   /** D-210 A.8 slice 2b step 3 — every option is a real destination; there is
    *  no empty choice, because there is no absent `target_kind`. */
   readonly target_kind: AuthoringSelectField<IntakeFormTargetKind>;
@@ -1427,9 +1432,21 @@ export const buildIntakeFormFormModel = (
         type: f.type,
         label: f.label,
         required: f.required,
-        values: f.values ?? [],
+        // Defensive: a seed (a template, Foundation or pack) may carry `values`
+        // on a non-enum field, which the endpoint validator never inspects;
+        // the row renderer joins this, so it must be an array.
+        values: Array.isArray(f.values) ? f.values : [],
       })),
       min_rows: 1,
+      max_rows: INTAKE_FORM_FIELDS_COUNT_MAX,
+    },
+    user_only_field_names: {
+      control: 'repeater',
+      key: 'form_definition.user_only_field_names',
+      label: 'Owner-only fields',
+      help: 'Optional — field names you fill in after a submission (lowercase, unique, not a visitor field). Never shown to visitors; a recipe reading the form treats them as absent from the visitor side.',
+      rows: fd?.user_only_field_names ?? [],
+      min_rows: 0,
       max_rows: INTAKE_FORM_FIELDS_COUNT_MAX,
     },
     target_kind: {

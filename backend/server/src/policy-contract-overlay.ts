@@ -57,6 +57,7 @@ import {
   isContractActive,
   isStandingContractDefinition,
   READABLE_COLLECTIONS,
+  RpcError,
   scopeRestrictionsFromReadableCollections,
   type ContractDefinition,
   type ContractScopeContext,
@@ -65,6 +66,7 @@ import {
 } from '@recued/contracts';
 
 import { createGrantEntryResolver } from './contract-grant-resolve.js';
+import { issueContractDispatchReservation, isContractActiveForDispatchCheck } from './contract-dispatch-reservation.js';
 import { resolveGrantGoverningContractId } from './grant-governing-contract.js';
 import {
   usesExplicitOnlyGrantDefaults,
@@ -122,6 +124,8 @@ export interface ContractOverlayResolver {
    *  gateway's actual-proceed point (once the call crosses the boundary — success,
    *  failure, or in_doubt) — not on `deny`/`ask`, which never dispatch. */
   recordUse(source: ExecutionSource): void;
+  /** Host-private budget token. A new operation always reserves a fresh use. */
+  reserveDispatchUse?(source: ExecutionSource, ingredientSlug: string, connectionName?: string): object | null;
   /** D-166 P2 / D-196 token↔contract binding — true iff `contract_id` names a
    *  minted contract row whose lifecycle is active and whose kind is valid for a
    *  token-bound door. Ordinary standing contracts and D-196
@@ -337,15 +341,27 @@ export const createContractOverlayResolver = (
       // the active gate was the matching `shouldMeterUse` above. Unbounded contracts no-op.
       deps.definitionStore.recordUse(contract_id);
     },
+    reserveDispatchUse(source, ingredientSlug, connectionName) {
+      const id = executionSourceContractId(source); if (!id) return null;
+      const definition = deps.definitionStore.get(id);
+      if (!definition || !isContractActive(definition, now())) {
+        throw new RpcError('preapproval_authority_changed', 'The original contract has no remaining dispatch authority.', 403);
+      }
+      if (!isStandingContractDefinition(definition) || !contractScopeMatches({ ...definition.scope, operation_ids: [] },
+        { channel: source.channel, actor: source.actor, ingredient_id: ingredientSlug, connection_name: connectionName })) return null;
+      const reserved = deps.definitionStore.reserveDispatchUse?.(id);
+      if (!reserved) throw new RpcError('preapproval_authority_changed', 'The original contract could not reserve this dispatch.', 403);
+      return issueContractDispatchReservation(reserved.before, reserved.after);
+    },
     isContractLive(contract_id): boolean {
       const def = deps.definitionStore.get(contract_id);
       return def !== null
-        && isContractActive(def, now())
+        && isContractActiveForDispatchCheck(def, now())
         && isLiveBoundContractKind(def);
     },
     resolveBoundContractKind(contract_id): LiveBoundContractKind | undefined {
       const def = deps.definitionStore.get(contract_id);
-      if (def === null || !isContractActive(def, now())) return undefined;
+      if (def === null || !isContractActiveForDispatchCheck(def, now())) return undefined;
       return liveBoundContractKind(def);
     },
     standingClosureOperationIds(contract_id): readonly string[] | undefined {

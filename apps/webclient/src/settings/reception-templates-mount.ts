@@ -41,6 +41,9 @@ import {
   isReceptionEndpointKind,
   type IntakeFormTemplate,
   type ReceptionConfigTemplate,
+  // D-220 Slice B — pack-shipped intake templates, listed beside the Foundation set.
+  type PackReceptionTemplateListing,
+  type PackReceptionTemplateUnavailable,
   type ReceptionConfigTemplateKind,
   type ReceptionEndpointKind,
 } from '@recued/contracts';
@@ -57,7 +60,9 @@ import { createActionDispatcher } from '@recued/ui-shared/action-dispatcher';
 
 import {
   buildIntakeFormTemplatesBrowserModel,
+  buildPackIntakeFormTemplatesBrowserModel,
   type IntakeFormTemplateCardModel,
+  type PackIntakeFormTemplateCardModel,
 } from './reception-templates.js';
 import {
   RECEPTION_CONFIG_TEMPLATE_KIND_COPY,
@@ -164,6 +169,43 @@ const renderConfigTemplateCard = (card: ReceptionConfigTemplateCardModel): strin
     </div>
   `;
 
+/** D-220 Slice B — one PACK template card. The intake card plus a provenance
+ *  line ("From <pack> (v<n>)") and a `data-pack-slug` marker. The "Use
+ *  template" button carries the `pack:` ref under the same action + kind as
+ *  a Foundation card, so the host's seed resolver is the one place that
+ *  knows which cache a ref lives in. Every string here is third-party pack
+ *  content and is escaped on the way into markup. */
+const renderPackTemplateCard = (card: PackIntakeFormTemplateCardModel): string => {
+  const fieldLine =
+    card.collected.field_labels.length > 0
+      ? card.collected.field_labels.map((f) => e(f.label)).join(', ')
+      : 'no visitor fields';
+  return `
+    <div class="reception-template-card" ${dataAttrs({ 'template-ref': card.template_ref, 'pack-slug': card.pack_slug })}>
+      <div class="reception-template-card-head">
+        <span class="reception-template-name">${e(card.name)}</span>
+        ${badge({ label: card.target_kind_label, tone: 'accent' })}
+      </div>
+      <p class="reception-template-desc">${e(card.description)}</p>
+      <p class="reception-row-meta">${e(card.provenance_label)}</p>
+      <p class="reception-row-meta">
+        Collects: ${fieldLine}
+        · ${card.collected.required_field_count} required
+        · email ${e(card.collects_email_label.toLowerCase())}
+      </p>
+      <p class="reception-row-meta">Anti-spam: ${e(card.anti_spam.summary_label)}</p>
+      ${button({
+        label: 'Use template',
+        size: 'sm',
+        variant: 'primary',
+        action: 'reception-template-use',
+        data: { 'template-ref': card.template_ref, kind: 'intake_form' },
+        title: `Use the ${card.name} template`,
+      })}
+    </div>
+  `;
+};
+
 /** D-151 P2 — the intent-first "Describe it" section rendered ABOVE the
  *  template cards (the intent-first sibling of the gallery). Rendered only
  *  when `onProposeIntent` is wired; absent ⇒ this returns '' so the AI
@@ -228,9 +270,18 @@ const renderTemplatesBrowser = (
   templates: ReadonlyArray<IntakeFormTemplate>,
   configTemplates: ReadonlyArray<ReceptionConfigTemplate>,
   intentEnabled: boolean,
+  packTemplates: ReadonlyArray<PackReceptionTemplateListing> = [],
+  packTemplatesUnavailable: ReadonlyArray<PackReceptionTemplateUnavailable> = [],
 ): string => {
   const intakeModel = buildIntakeFormTemplatesBrowserModel({ templates });
   const configModel = buildReceptionConfigTemplatesBrowserModel({ templates: configTemplates });
+  // D-220 Slice B — templates INSTALLED PACKS shipped. Their own section,
+  // never merged into the Foundation cards: different provenance, different
+  // trust, and the card says which pack it came from.
+  const packModel = buildPackIntakeFormTemplatesBrowserModel({
+    listings: packTemplates,
+    unavailable: packTemplatesUnavailable,
+  });
 
   // Cards grouped by kind, in canonical order: intake, then each config
   // kind. A config card carries its own `kind`; group on it.
@@ -246,6 +297,15 @@ const renderTemplatesBrowser = (
       'Collect structured submissions from visitors — each lands as a work entity for review.',
       intakeModel.cards.map(renderTemplateCard).join(''),
     ),
+    // D-220 Slice B — rendered only when a pack shipped something; a server
+    // with no pack templates shows no empty pack section.
+    packModel.is_empty
+      ? ''
+      : renderSection(
+          'From your installed packs',
+          'Intake forms a pack ships to match the fields its recipes read. Review and edit before enabling — installing a pack never enables a form.',
+          packModel.cards.map(renderPackTemplateCard).join(''),
+        ),
     renderSection(
       RECEPTION_CONFIG_TEMPLATE_KIND_COPY.scheduling_link.label + 's',
       RECEPTION_CONFIG_TEMPLATE_KIND_COPY.scheduling_link.help,
@@ -268,7 +328,7 @@ const renderTemplatesBrowser = (
     ),
   ].join('');
 
-  const allEmpty = intakeModel.is_empty && configModel.is_empty;
+  const allEmpty = intakeModel.is_empty && configModel.is_empty && packModel.is_empty;
   const body = allEmpty
     ? emptyHint({
         message:
@@ -299,6 +359,18 @@ const renderTemplatesBrowser = (
     configModel.missing_refs.length,
     'Foundation-pack config templates',
   );
+  // D-220 Slice B — a stored pack template the server could not admit (a
+  // matrix tightened after the install) is SAID, not dropped: the honesty
+  // the Foundation `missing_refs` note gives its closed list, for the
+  // persisted model. Refs are third-party strings; `inlineHint` escapes the
+  // whole message on the way into markup, so the text is handed over raw.
+  const packUnavailableNote = packModel.unavailable.length > 0
+    ? inlineHint(
+        `${packModel.unavailable.length} pack template${packModel.unavailable.length === 1 ? '' : 's'} could not be loaded: `
+        + packModel.unavailable.map((u) => `${u.template_ref} (${u.reason})`).join(', ')
+        + '.',
+      )
+    : '';
 
   return `
     <div class="reception-templates-browser">
@@ -321,6 +393,7 @@ const renderTemplatesBrowser = (
       ${intentEnabled ? renderIntentSection() : ''}
       ${intakePartial}
       ${configPartial}
+      ${packUnavailableNote}
       ${body}
     </div>
   `;
@@ -343,6 +416,13 @@ export interface TemplatesBrowserMountOptions {
    *  `reception_page`) from the same `reception.template.list` cache.
    *  Defaults to an empty array (no config-template sections render). */
   configTemplates?: ReadonlyArray<ReceptionConfigTemplate>;
+  /** D-220 Slice B — intake templates INSTALLED PACKS shipped, from the same
+   *  `reception.template.list` cache (`pack_templates`). Defaults to an empty
+   *  array (no pack section renders). */
+  packTemplates?: ReadonlyArray<PackReceptionTemplateListing>;
+  /** D-220 Slice B — stored pack templates the server could not admit
+   *  (`pack_templates_unavailable`); rendered as an inline note. */
+  packTemplatesUnavailable?: ReadonlyArray<PackReceptionTemplateUnavailable>;
   /** Clock seam — accepted for parity with the sibling mounts (the
    *  templates browser carries no relative timestamps today, so it is
    *  unused). Defaults to `Date.now`. */
@@ -405,6 +485,8 @@ export const mountTemplatesBrowser = (
     opts.templates,
     opts.configTemplates ?? [],
     intentEnabled,
+    opts.packTemplates ?? [],
+    opts.packTemplatesUnavailable ?? [],
   );
 
   /** Locate a marked element off the host — null on the DOM-free fake

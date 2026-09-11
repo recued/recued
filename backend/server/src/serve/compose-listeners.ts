@@ -1,4 +1,7 @@
 import { randomBytes } from 'node:crypto';
+import { createSavedDataViewStore } from '../saved-data-view-store.js';
+import { createSavedTaskViewReader } from '../saved-data-view-task-reader.js';
+import { createSavedDataViewAlertRuntime } from '../saved-data-view-alert-runtime.js';
 import { createFormDefinitionReader } from '../form-contract-gate.js';
 import { join, dirname } from 'node:path';
 
@@ -8,6 +11,8 @@ import { createSqliteHandleStateStore } from '../handle/sqlite-store.js';
 import { composeWebhookAndHookListeners } from '../composition/bin/wire-webhook-and-hook-listeners.js';
 import { composeVendorWebhookPort } from '../composition/bin/wire-vendor-webhook-port.js';
 import { composeInboundAnswerDispatcher } from '../composition/bin/wire-inbound-answer-dispatcher.js';
+import { createPreapprovalTelegramIngress } from '../preapproval-telegram-ingress.js';
+import { composePreapproval } from '../composition/bin/wire-preapproval.js';
 import { composeInboundEmailAnswer } from '../composition/bin/wire-inbound-email-answer.js';
 import { materializeMailBody } from '../mail-body-read-handler.js';
 import { composeMessengerTurnIngest } from '../composition/bin/wire-messenger-turn.js';
@@ -265,6 +270,7 @@ export interface ComposeListenersOptions {
     // enrollment (read live; the signing identity boots lazily).
     | 'signingIdentity'
     | 'auditLog'
+    | 'preapprovalStorage'
     // D-175 P5 — account-binding manager backs the `account.*` pair-RPC.
     | 'accountBindingManager'
     // D-175 P8 — Pro convenience provisioner backs `pro_convenience.status`.
@@ -309,6 +315,7 @@ export interface ComposeListenersOptions {
     | 'llmQuota'
     | 'llmAdapterRegistry'
     | 'llmEmbeddingsAdapterRegistry'
+    | 'llmTranscriptionAdapterRegistry'
     | 'emptyTabProbe'
     | 'cacheDeps'
     // D-172 — the CAS root; the messenger media scratch dir is derived as a
@@ -360,6 +367,7 @@ export interface ComposeListenersOptions {
     | 'sellerClaimStoreRef'
     | 'receptionManageCredentialStoreRef'
     | 'chatInboundTokenStoreRef'
+    | 'clientTokensRef'
     | 'contactStoreRef'
     // D-139 P5 — the engagement-evidence resolver bundle backs the
     // `data.contact.engagements.list` pair-RPC (and the MCP read).
@@ -776,6 +784,7 @@ export const composeListeners = async (
     },
   });
   const { messengerDispatchers } = composeInboundAnswerDispatcher({
+    ...(storage.preapprovalStorage ? { preapprovalReview: createPreapprovalTelegramIngress(storage.preapprovalStorage.repository) } : {}),
     ...(execution.notificationBlock ? { block: execution.notificationBlock } : {}),
     // D-192 CORE #6 seam 7 (Group D) — the vendor→RemoteChannel registry, the
     // SAME instances the notification block registered (lock-step). Always an
@@ -1767,6 +1776,35 @@ export const composeListeners = async (
     isVaultUnlocked: app.isVaultUnlocked,
   });
 
+  let refreshPreapprovalAutomations: (() => void | Promise<void>) | undefined;
+  const preapproval = storage.preapprovalStorage && app.clientTokensRef && app.connectionStoreRef
+    && scheduleDeps && dishDeps?.groupStore && rpc.autoRunDeps && eventTriggersBundle
+    && execution.contractDefinitionStore && execution.notificationBlock
+    && execution.executeDeps.opAdmissionGate && execution.executeDeps.approvalResumeAuthority
+    && execution.executeDeps.commitStore && execution.executeDeps.checkpointStore && execution.executeDeps.gatedActionStore
+    ? composePreapproval({ ownerId: storage.serverInstanceId, storage: storage.preapprovalStorage,
+      sources: { db: storage.db, recipes: storage.recipeStore, dishes: dishDeps.store, groups: dishDeps.groupStore,
+        schedules: scheduleDeps.store, autoRun: rpc.autoRunDeps.settingsStore, triggers: eventTriggersBundle.store },
+      circuits: rpc.autoRunDeps.circuitStore, execution: execution.executeDeps,
+      profiles: { connectionStore: app.connectionStoreRef, getManifest: slug => execution.executorConfig.manifests.get(slug),
+        contractGrantStore: app.contractGrantStoreRef, connectionCatalogBindingStore: app.connectionCatalogBindingStoreRef },
+      clientTokens: app.clientTokensRef, definitions: execution.contractDefinitionStore, inboundTokens: app.chatInboundTokenStoreRef,
+      notifications: execution.notificationBlock, keys: app.keys,
+      onActivationChanged: () => refreshPreapprovalAutomations?.(),
+      ...(collection.mailStack && app.cacheBlobs ? { mail: {
+        registry: collection.collectionRegistry, instances: collection.mailStack.instances, blobs: app.cacheBlobs,
+      } } : {}),
+      reviewLink: proposalId => {
+        const base = resolvePublicBaseUrl(process.env.RECUED_PUBLIC_BASE_URL);
+        return base ? `${base}/#approvals/preapproval/${encodeURIComponent(proposalId)}` : null;
+      },
+    }) : undefined;
+  if (preapproval) {
+    if (scheduleDeps) scheduleDeps.preapprovalStatus = preapproval.scheduleStatus;
+    if (eventTriggersBundle) eventTriggersBundle.triggersDeps.preapprovalStatus = preapproval.triggerStatus;
+  }
+  if (preapproval && await storage.preapprovalStorage!.recover()) await preapproval.outbox.drain();
+
   // Poll-manager / G6 — the watch substrate composes on top of the
   // trigger store (its demand source). Demand-changing seams hook
   // recompute below: trigger CRUD (late-bound `onRulesChanged`),
@@ -1786,6 +1824,13 @@ export const composeListeners = async (
     // R21.1 — poll loops disarm while the vault is sealed.
     isVaultUnlocked: app.isVaultUnlocked,
   });
+  refreshPreapprovalAutomations = async () => {
+    eventTriggersBundle?.dispatcher.rebuild();
+    watchBundle?.manager.recompute();
+    await rpc.autoRunDeps?.getHandle()?.refreshRoster();
+    emitAutomationRule(storage.eventBus, 'event_trigger');
+    emitAutomationRule(storage.eventBus, 'auto_run');
+  };
   if (eventTriggersBundle && watchBundle) {
     eventTriggersBundle.triggersDeps.onRulesChanged = () => watchBundle.manager.recompute();
   }
@@ -2427,7 +2472,18 @@ export const composeListeners = async (
     }
   }
 
+  const savedDataViewStore = createSavedDataViewStore(storage.db, {
+    ...(storage.workEntityStoreRef && execution.notificationBlock && storage.auditLog
+      ? { readTasks: createSavedTaskViewReader(storage.workEntityStoreRef) } : {}),
+  });
+  const savedDataViewAlerts = execution.notificationBlock && storage.auditLog && storage.workEntityStoreRef
+    ? createSavedDataViewAlertRuntime({ store: savedDataViewStore.alerts, auditLog: storage.auditLog,
+      notifier: execution.notificationBlock,
+      publicBaseUrl: resolvePublicBaseUrl(process.env.RECUED_PUBLIC_BASE_URL) ?? undefined,
+    }) : undefined;
+
   const serverHandlerSet = createServerHandlerSet({
+    ...(preapproval ? { preapprovalDeps: preapproval.handlers } : {}),
     ...(webclientBundle ? { webclientBundle } : {}),
     executeDeps: execution.executeDeps,
     pairing: storage.pairing,
@@ -2473,7 +2529,9 @@ export const composeListeners = async (
     ...(eventTriggersBundle
       ? { elementWatchDeps: { recipeStore: execution.executeDeps.recipeStore } }
       : {}),
-    ...(rpc.autoRunDeps ? { autoRunDeps: rpc.autoRunDeps } : {}),
+    ...(rpc.autoRunDeps ? { autoRunDeps: { ...rpc.autoRunDeps,
+      ...(preapproval ? { preapprovalStatus: preapproval.autoRunStatus } : {}),
+    } } : {}),
     ...(watchBundle ? { watchDeps: watchBundle.watchDeps } : {}),
     // Scope-B (D-108/D-109) — the live `server.archive.*` runtime,
     // assembled upstream (start-lifecycle-recovery-pre-listener-runtime)
@@ -2508,6 +2566,9 @@ export const composeListeners = async (
       adapters: app.llmAdapterRegistry,
       quota: app.llmQuota,
       embeddingsAdapters: app.llmEmbeddingsAdapterRegistry,
+      // D-262 § B7 — the SAME registry the runtime transcribes with, so the
+      // Test button proves the path that will actually run.
+      transcriptionAdapters: app.llmTranscriptionAdapterRegistry,
     },
     sellerStore: app.sellerStoreRef,
     sellerOrderStore: app.sellerOrderStoreRef,
@@ -3348,6 +3409,7 @@ export const composeListeners = async (
     // D-221 — #data Records uses this owner-pair control plane, never a
     // `data.records.*` resolver or the agent-facing Tier-P executor.
     recordsRpcDeps: { store: storage.recordsStore },
+    savedDataViewStore,
     // D-198 — `memory.*` owner-trusted pair-RPCs (Memory lens). Slice 1
     // `memory.list` reuses the audit store's `listRecent` origin filter; Slice
     // 2 adds the owner-authored `user_memory` store (create/get/update/delete +
@@ -3688,6 +3750,7 @@ export const composeListeners = async (
   // later constructor above throws, no polling timer survives failed startup.
   await messengerIngressSupervisor?.start();
   webhookOutboxRuntime?.start();
+  savedDataViewAlerts?.start();
 
   let closePromise: Promise<void> | undefined;
   const closeServer = (): Promise<void> => {
@@ -3700,6 +3763,7 @@ export const composeListeners = async (
     // slow or failed sibling. Database teardown happens later in lifecycle;
     // report failures only after every network/background branch has drained.
     const drains = [
+      ...(savedDataViewAlerts ? [begin(() => savedDataViewAlerts.stop())] : []),
       ...(webhookOutboxRuntime ? [begin(() => webhookOutboxRuntime.stop())] : []),
       ...(messengerIngressSupervisor
         ? [begin(() => messengerIngressSupervisor.stop())]

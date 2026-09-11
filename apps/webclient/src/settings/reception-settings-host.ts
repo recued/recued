@@ -101,6 +101,11 @@ import {
   type ReceptionPromptKind,
   type ReceptionPromptsHost,
 } from './reception-prompts-host.js';
+// D-220 Slice B — pack-shipped intake templates on the gallery + seed path.
+import type {
+  PackReceptionTemplateListing,
+  PackReceptionTemplateUnavailable,
+} from '@recued/contracts';
 import type { ReceptionPageShell } from './reception-page-shell.js';
 
 // ════════════════════════════════════════════════════════════════
@@ -158,6 +163,13 @@ export interface ReceptionSettingsOptions {
    *  `config_templates` cache so the standalone gallery renders the
    *  scheduling-link + contact-page cards. */
   getConfigTemplates?: () => ReadonlyArray<ReceptionConfigTemplate>;
+  /** Forwarded to `ReceptionPageHostOptions.getPackTemplates` (D-220 Slice
+   *  B). The natural impl returns the route's `reception.template.list`
+   *  `pack_templates` cache so the gallery renders the installed packs' cards. */
+  getPackTemplates?: () => ReadonlyArray<PackReceptionTemplateListing>;
+  /** Forwarded to `ReceptionPageHostOptions.getPackTemplatesUnavailable`
+   *  (D-220 Slice B). */
+  getPackTemplatesUnavailable?: () => ReadonlyArray<PackReceptionTemplateUnavailable>;
   /** Forwarded to `ReceptionPageHostOptions.resolveConfigTemplateSeed`
    *  (D-151). The natural impl wraps `receptionConfigFromTemplate` over a
    *  loaded config template + an empty display name. */
@@ -281,6 +293,13 @@ export const mountReceptionSettings = (
       : {}),
     ...(opts.getConfigTemplates !== undefined
       ? { getConfigTemplates: opts.getConfigTemplates }
+      : {}),
+    // D-220 Slice B — pack-shipped templates + the unavailable note.
+    ...(opts.getPackTemplates !== undefined
+      ? { getPackTemplates: opts.getPackTemplates }
+      : {}),
+    ...(opts.getPackTemplatesUnavailable !== undefined
+      ? { getPackTemplatesUnavailable: opts.getPackTemplatesUnavailable }
       : {}),
     ...(opts.resolveConfigTemplateSeed !== undefined
       ? { resolveConfigTemplateSeed: opts.resolveConfigTemplateSeed }

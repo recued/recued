@@ -362,12 +362,23 @@ describe('composeWatchManager — mcp-resource wiring', () => {
     // Baseline poll via the real adapter — pollNow drives it without the
     // 5s initial-delay timer.
     await manager.pollNow(KEY);
-    expect(calls).toHaveLength(2);
+    // ⚠ ASSERT THE CALLS THIS POLL MAKES, NOT HOW MANY REACHED THE STUB. The
+    // fetch stub is shared with every other thing composed over this connection
+    // — the mcp listen source now opens a `subscriptions/listen` feed on the
+    // same recompute — so a bare `toHaveLength` counts unrelated traffic and
+    // breaks on the next source composed here. Naming the methods says what the
+    // poll path actually did.
+    const rpcMethods = calls
+      .filter((c) => c.body !== undefined)
+      .map((c) => (JSON.parse(c.body!) as { method?: string }).method);
+    expect(rpcMethods).toContain('server/discover');
+    expect(rpcMethods).toContain('resources/read');
     expect(calls[0]!.method).toBe('POST');
     expect(calls[0]!.url).toBe('https://mcp.example/server');
-    const sent = JSON.parse(calls.at(-1)!.body!) as { method: string; params: { uri: string } };
-    expect(sent.method).toBe('resources/read');
-    expect(sent.params.uri).toBe(URI);
+    const read = calls
+      .map((c) => JSON.parse(c.body!) as { method: string; params?: { uri?: string } })
+      .find((r) => r.method === 'resources/read');
+    expect(read?.params?.uri).toBe(URI);
     expect(emitted).toEqual([]); // baseline is silent
 
     // Content change → an `updated` event on the connection.mcp path.

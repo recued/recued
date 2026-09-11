@@ -8,7 +8,9 @@
  *  identities when a real channel-minted source exists.
  */
 
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi, beforeAll, afterAll } from 'vitest';
+
+
 import Database from 'better-sqlite3';
 import {
   createInMemorySessionStore,
@@ -262,7 +264,11 @@ const runMessengerDispatchTurn = async (
   const db = new Database(':memory:');
   try {
     ensureChatSchema(db);
+  // ⛔ Pin the brief OFF via the SETTER production uses — env is boot-critical only
+  // (owner rule). This file's subject is not the brief; the fold would add a
+  // call to the very dispatch/egress counts asserted here.
     const chatStore = createChatStore(db);
+    chatStore.setRollingBriefEnabled(false);
     chatStore.createSession({ id: SESSION, now: NOW - 1_000 });
     const captured: ChatDispatchContext[] = [];
     const orchestrator = createChatOrchestrator({
@@ -327,6 +333,7 @@ const runMessengerPromptCacheTurn = async (opts: {
   try {
     ensureChatSchema(db);
     const chatStore = createChatStore(db);
+    chatStore.setRollingBriefEnabled(false);
     chatStore.createSession({ id: SESSION, now: NOW - 1_000 });
     const executeAiCall = vi.fn<ExecuteChatAiCall>(async () => ({
       body: {
@@ -505,6 +512,7 @@ describe('D-160 P3 dispatch identity through the real orchestrator', () => {
     try {
       ensureChatSchema(db);
       const chatStore = createChatStore(db);
+      chatStore.setRollingBriefEnabled(false);
       chatStore.createSession({ id: SESSION, now: NOW - 1_000 });
       const captured: ChatDispatchContext[] = [];
       const orchestrator = createChatOrchestrator({
@@ -542,6 +550,7 @@ describe('D-160 P3 dispatch identity through the real orchestrator', () => {
     try {
       ensureChatSchema(db);
       const chatStore = createChatStore(db);
+      chatStore.setRollingBriefEnabled(false);
       chatStore.createSession({ id: SESSION, now: NOW - 1_000 });
       const critique = vi.fn<ExecutionCaseProposalCritic['critique']>(
         async () => null,
@@ -579,6 +588,7 @@ describe('D-160 P3 dispatch identity through the real orchestrator', () => {
     try {
       ensureChatSchema(db);
       const chatStore = createChatStore(db);
+      chatStore.setRollingBriefEnabled(false);
       chatStore.createSession({ id: SESSION, now: NOW - 1_000 });
       const verificationContexts: unknown[] = [];
       const baseRegistry = registryWithCapture([]);

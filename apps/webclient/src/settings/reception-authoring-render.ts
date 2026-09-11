@@ -849,6 +849,15 @@ const renderIntakeFormBody = (m: IntakeFormFormModel): string => {
       renderRepeaterField(m.fields, (row, i) =>
         renderIntakeFieldCells(m.fields.key, row, i),
       ),
+      // D-220 Slice B (follow-up) — owner-only field names, editable at last.
+      renderRepeaterField(m.user_only_field_names, (row, i) =>
+        renderStringRowCells(
+          m.user_only_field_names.key,
+          'Owner-only field name',
+          row,
+          i,
+        ),
+      ),
     ]),
     formSection('Submission processing', [
       renderSelectField(m.target_kind),

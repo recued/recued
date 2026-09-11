@@ -290,6 +290,59 @@ describe('D-171 external-door HTTP MCP transport gate matrix', () => {
 
     expect(bundle).toBeUndefined();
   });
+
+  it('composes the `subscriptions/listen` port over the SAME dispatch', async () => {
+    // ⛔ THE `exists ≠ runs` CHECK FOR CASE 2. `mcp-subscriptions.test.ts`
+    // proves the port BEHAVES; only this proves the server ever builds one —
+    // and that it is bound to the door's own dispatch, which is the whole
+    // basis for "authority is re-derived, never re-implemented". A port wired
+    // to some other dispatch would pass every behavioural test and quietly
+    // fingerprint the wrong principal's catalog.
+    // A RESOLVABLE bearer, deliberately: the fixture's default `verifyBearer`
+    // returns null, and the dispatch closure then answers `-32001` without ever
+    // building a dispatcher. That path is itself correct — an unresolvable
+    // bearer yields an error envelope, `toolsOf` reads it as unknown rather
+    // than as an empty catalog, and no spurious change is pushed — but it
+    // proves nothing about the binding, which is what this test is for.
+    const bundle = composeDefined({
+      inboundTokenStore: makeInboundTokenStore(vi.fn(() => makeInboundTokenRecord())),
+    });
+    expect(bundle.mcpHttpDeps.subscriptions).toBeDefined();
+
+    const frames: { method: string }[] = [];
+    const session = await bundle.mcpHttpDeps.subscriptions.open({
+      token: INBOUND_BEARER,
+      filter: { toolsListChanged: true, resourceSubscriptions: ['file:///x'] },
+      subscription_id: 1,
+      send: (frame) => frames.push(frame),
+    });
+    // Acknowledges what this host can serve, omits what it cannot.
+    expect(session.acknowledged).toEqual({ toolsListChanged: true });
+    expect(frames[0]!.method).toBe('notifications/subscriptions/acknowledged');
+
+    // ⛔ AND THE BINDING ITSELF, WHICH THE ASSERTIONS ABOVE DO NOT TOUCH. The
+    // baseline fingerprint must travel THE DOOR'S dispatcher carrying THIS
+    // bearer — that is what makes contract liveness, seller admission and the
+    // per-tool grants checklist apply to a catalog notification. Without this
+    // line, swapping the composer's dispatch for an unrelated stub passes
+    // every test in both suites.
+    await vi.waitFor(() => {
+      expect(lastDispatcher()).toHaveBeenCalledWith(
+        expect.objectContaining({ method: 'tools/list' }),
+        // The composer forwards the RESOLVED principal in `perCallDeps` and
+        // passes the inner dispatcher no bearer — asserted as-is rather than
+        // as what I first assumed.
+        undefined,
+      );
+    });
+    // ⇒ and the per-call deps were built from THIS bearer, which is the half
+    // that actually carries contract liveness and the grants checklist.
+    expect(lastCapturedDeps()).toMatchObject({
+      mcpTokenId: expect.any(String),
+      agentId: `inbound_${INBOUND_TOKEN_ID}`,
+    });
+    session.close();
+  });
 });
 
 describe('D-171 external-door HTTP MCP transport verifier', () => {

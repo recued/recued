@@ -37,6 +37,7 @@
 
 import type Database from 'better-sqlite3';
 import type { EntitySchemaIngredientInput, IngredientManifest } from '@recued/contracts';
+import { initializePreapprovalLifecycle, synchronizePreapprovalIdentity } from '../storage/preapproval-lifecycle.js';
 
 const TABLE = 'local_manifest';
 
@@ -112,6 +113,7 @@ const parseEntitySchemas = (json: string): EntitySchemaIngredientInput[] => {
 
 export const createLocalManifestStore = (db: Database.Database): LocalManifestStore => {
   ensureLocalManifestStoreSchema(db);
+  initializePreapprovalLifecycle(db);
 
   const putStmt = db.prepare(
     `INSERT INTO ${TABLE} (slug, version, manifest_json, entity_schemas_json)
@@ -152,12 +154,16 @@ export const createLocalManifestStore = (db: Database.Database): LocalManifestSt
 
   return {
     put(artifact) {
-      putStmt.run(
-        artifact.manifest.slug,
-        artifact.manifest.version,
-        JSON.stringify(artifact.manifest),
-        JSON.stringify(artifact.entity_schemas),
-      );
+      db.transaction(() => {
+        putStmt.run(
+          artifact.manifest.slug,
+          artifact.manifest.version,
+          JSON.stringify(artifact.manifest),
+          JSON.stringify(artifact.entity_schemas),
+        );
+        const current = getCurrentStmt.get(artifact.manifest.slug) as ManifestRow;
+        synchronizePreapprovalIdentity(db, 'installed_manifest', artifact.manifest.slug, parseManifest(current.manifest_json));
+      }).immediate();
     },
     getManifest(slug, version) {
       const row = version === undefined
@@ -178,7 +184,11 @@ export const createLocalManifestStore = (db: Database.Database): LocalManifestSt
       return (slugsStmt.all() as Array<{ slug: string }>).map((r) => r.slug);
     },
     delete(slug) {
-      return deleteStmt.run(slug).changes > 0;
+      return db.transaction(() => {
+        const removed = deleteStmt.run(slug).changes > 0;
+        if (removed) synchronizePreapprovalIdentity(db, 'installed_manifest', slug, null);
+        return removed;
+      }).immediate();
     },
   };
 };

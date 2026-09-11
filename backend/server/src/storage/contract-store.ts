@@ -30,6 +30,8 @@
  *  write-validator live in `packages/contracts/src/contract-schema.ts`. */
 
 import type Database from 'better-sqlite3';
+import { initializePreapprovalContractReads, mutatePreapprovalContractQueries, recordPreapprovalContractRead } from './preapproval-contract-reads.js';
+import { encodeContractSegmentKey as encodeSegKey, decodeContractSegmentKey as decodeSegKey } from './contract-key.js';
 import {
   composeRows,
   D165_CONTRACT_SCHEMA,
@@ -143,10 +145,6 @@ export class ContractWriteLoosensError extends Error {
 // ── seg_key codec ───────────────────────────────────────────────
 // `.` is the delimiter; `%` is the escape introducer. Escape `%` first so the
 // inverse (undo `.` then undo `%`) is unambiguous.
-const escapeSegment = (s: string): string => s.replace(/%/g, '%25').replace(/\./g, '%2E');
-const unescapeSegment = (s: string): string => s.replace(/%2E/g, '.').replace(/%25/g, '%');
-const encodeSegKey = (segments: readonly string[]): string => segments.map(escapeSegment).join('.');
-const decodeSegKey = (segKey: string): string[] => segKey.split('.').map(unescapeSegment);
 // Prefix-scan bounds. The delimiter is `.` (0x2E) and `/` (0x2F) is the next
 // byte, so `[prefix + '.', prefix + '/')` is exactly the half-open range of keys
 // that continue past `prefix` at a segment boundary (`deal` never bleeds into
@@ -185,6 +183,7 @@ export const createContractStore = (
   opts?: CreateContractStoreOptions,
 ): ContractStore => {
   ensureContractStoreSchema(db);
+  initializePreapprovalContractReads(db);
   const registry = opts?.registry ?? D165_CONTRACT_SCHEMA;
   const now = opts?.now ?? (() => Date.now());
 
@@ -300,9 +299,9 @@ export const createContractStore = (
       // write a shape the write path would have rejected.
       const issues = validateContractWrite(registry, scope, segments, value);
       if (issues.length > 0) throw new ContractWriteInvalidError(scope, segments, issues);
-      const info = putIfAbsentStmt.run(
+      const info = mutatePreapprovalContractQueries(db, scope, () => putIfAbsentStmt.run(
         scope, encodeSegKey(segments), JSON.stringify(value), now(),
-      );
+      ));
       return info.changes > 0;
     },
     put(scope, segments, value) {
@@ -312,28 +311,30 @@ export const createContractStore = (
       if (ck.merge_rule === 'tightening_only') {
         enforceTightening(scope, ck, segments, value as Record<string, unknown>);
       }
-      rawPut(scope, segments, value);
+      mutatePreapprovalContractQueries(db, scope, () => rawPut(scope, segments, value));
     },
 
     get(scope, segments) {
+      recordPreapprovalContractRead(db, scope, segments, true);
       const row = getStmt.get(scope, encodeSegKey(segments)) as DbRow | undefined;
       return row ? decode(scope, row) : null;
     },
 
     scan(scope, prefixSegments) {
+      recordPreapprovalContractRead(db, scope, prefixSegments ?? [], false);
       return scanRows(scope, prefixSegments);
     },
 
     delete(scope, segments) {
-      return deleteStmt.run(scope, encodeSegKey(segments)).changes > 0;
+      return mutatePreapprovalContractQueries(db, scope, () => deleteStmt.run(scope, encodeSegKey(segments)).changes > 0);
     },
 
     deleteByPrefix(scope, prefixSegments) {
       const prefix = encodeSegKey(prefixSegments ?? []);
-      const res =
+      const res = mutatePreapprovalContractQueries(db, scope, () =>
         prefix === ''
           ? deleteScopeStmt.run(scope)
-          : deletePrefixStmt.run(scope, prefix, prefixLowerBound(prefix), prefixUpperBound(prefix));
+          : deletePrefixStmt.run(scope, prefix, prefixLowerBound(prefix), prefixUpperBound(prefix)));
       return res.changes;
     },
 
@@ -376,4 +377,3 @@ export const createContractScanFn = (store: ContractStore): ScanFn => {
       value: row.value as Record<string, unknown>,
     }));
 };
-

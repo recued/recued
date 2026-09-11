@@ -104,6 +104,11 @@ export interface CollectionListQuery {
    *  `modified_at` tracks re-syncs + local edits. Combines with
    *  `since` via AND when both are present. */
   modified_since?: number;
+  /** Calendar-only event overlap window: start_at < before and end_at > from.
+   * Uses event time, not warehouse arrival time; includes ongoing events. */
+  calendar_window?: { from: number; before: number };
+  /** Calendar-only pagination, applied after filters with stable event ordering. */
+  offset?: number;
   /** Max records returned. Server clamps to an internal ceiling
    *  (typically 500) when omitted or above the ceiling. */
   limit?: number;

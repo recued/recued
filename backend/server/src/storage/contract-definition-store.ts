@@ -436,6 +436,8 @@ export interface ContractDefinitionStore {
    *  definition, or `null` if `contract_id` is absent. Does NOT check expiry /
    *  revocation — the use-resolution slice gates on `isContractActive` first. */
   recordUse(contract_id: string): ContractDefinition | null;
+  /** Atomic admission and reservation for a deferred in-flight attempt. */
+  reserveDispatchUse?(contract_id: string): { before: ContractDefinition; after: ContractDefinition } | null;
   /** Revoke the contract: stamp `revoked_at = now()` + `revocation_reason`.
    *  Idempotent — a re-revoke leaves the FIRST revocation's `revoked_at` / reason
    *  intact (a revoked contract is already inert). Returns the resulting
@@ -772,6 +774,17 @@ export const createContractDefinitionStore = (
         });
     },
 
+    reserveDispatchUse(contract_id) {
+      let reservation: { before: ContractDefinition; after: ContractDefinition } | null = null;
+      store.transaction(() => {
+        const before = read(contract_id);
+        if (!before || !isContractActive(before, now()) || !isStandingContractDefinition(before)) return;
+        const after = typeof before.uses_remaining === 'number' ? { ...before, uses_remaining: before.uses_remaining - 1 } : before;
+        if (after !== before) store.put(CONTRACT_DEFINITION_SCOPE, [contract_id], after);
+        reservation = { before, after };
+      });
+      return reservation;
+    },
     recordUse(contract_id) {
       const def = read(contract_id);
       if (!def) return null;

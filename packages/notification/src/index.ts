@@ -26,8 +26,11 @@
  *  Spec: D-158 § N.1-N.9 / A.1-A.9 / P0.
  */
 
-import { CHANNEL_ROLES } from '@recued/contracts';
+import { CHANNEL_ROLES, RpcError } from '@recued/contracts';
+import { installProtectedAskHost, isProtectedAskKind, requireProtectedAskCreation } from './protected-asks.js';
+export { createProtectedAskController, type ProtectedAskController, type ProtectedAskAuthority } from './protected-asks.js';
 import { ASK_BODY_MAX, ASK_NOTE_MAX } from './types.js';
+import type { PersistedNotifyExtras } from './types.js';
 import { HANDLED_ASK_RETENTION_MS as ASK_LOAD_WINDOW_MS } from './ask-store.js';
 import type { AskStore, NewPendingAsk } from './ask-store.js';
 import {
@@ -262,6 +265,7 @@ export interface NotificationBlock {
   notify(
     message: NotificationMessage,
     channels?: ChannelSelector,
+    extras?: PersistedNotifyExtras,
   ): Promise<void>;
 
   /** Interactive. Mints a durable `ask_id`, persists the pending ask
@@ -681,12 +685,13 @@ export const createNotificationBlock = (
      *  rather than read off the ask row because this helper also serves the BOOT
      *  RE-DELIVERY path, where the row is the only source. */
     extras?: AskExtras,
+    protectedAsk = false,
   ): Promise<void> => {
     for (const channel of targets) {
       try {
         await channel.deliverAsk(
           ask_id,
-          withAnswerLink(channel, ask_id, message),
+          protectedAsk ? message : withAnswerLink(channel, ask_id, message),
           options,
           channelAskExtras(extras),
         );
@@ -735,13 +740,14 @@ export const createNotificationBlock = (
     }
   };
 
-  return {
-    async notify(message, channels) {
+  const block: NotificationBlock = {
+    async notify(message, channels, extras) {
       const { channels: targets, bridgeNotify } =
         await resolveNotifyChannels(channels);
       for (const channel of targets) {
         try {
-          await channel.deliverNotify(message);
+          if (channel.name === 'ui' && extras) await channel.deliverNotify(message, extras);
+          else await channel.deliverNotify(message);
         } catch {
           // best-effort — `notify` collects no reply and never throws.
         }
@@ -768,6 +774,9 @@ export const createNotificationBlock = (
       }
       const ask_id = reservedAskId ?? mint();
       return serializer.run(ask_id, async () => {
+        const protectedAuthority = await requireProtectedAskCreation(block, handler, ask_id);
+        const eligibleChannels = (channels: readonly Channel[]) => protectedAuthority
+          ? channels.filter(channel => protectedAuthority.canDeliverTo(channel)) : channels;
         const existing = await store.get(ask_id);
         if (existing !== null) {
           const same = reservedAskId !== undefined
@@ -795,17 +804,21 @@ export const createNotificationBlock = (
           // retry the persisted target set. Channels reconcile by ask_id.
           if (extras?.on_persisted !== undefined && existing.status === 'open') {
             await fanOutAsk(
-              channelsForAsk(existing),
+              eligibleChannels(channelsForAsk(existing)),
               existing.ask_id,
               existing.message,
               existing.options,
               extras,
+              isProtectedAskKind(handler.kind),
             );
           }
           return { ask_id };
         }
-        const { deliver, passiveNotify, bridgeAsk, bridgePassiveNotify } =
-          await resolveAskChannels(channels);
+        const resolved = await resolveAskChannels(channels);
+        const deliver = eligibleChannels(resolved.deliver);
+        const { passiveNotify, bridgePassiveNotify } = resolved;
+        const bridgeAsk = protectedAuthority && bridgeChannel && !protectedAuthority.canDeliverTo(bridgeChannel)
+          ? 0 : resolved.bridgeAsk;
         const fresh: NewPendingAsk = {
           ask_id,
           message,
@@ -844,7 +857,7 @@ export const createNotificationBlock = (
       // `firePassiveNotify`) does not.
         await store.create(fresh);
         await extras?.on_persisted?.(ask_id);
-        await fanOutAsk(deliver, ask_id, message, options, extras);
+        await fanOutAsk(deliver, ask_id, message, options, extras, isProtectedAskKind(handler.kind));
       // D-163 N.3 / I-3 — passive notify to notify-only channels so
       // the user learns approval is pending on those surfaces (e.g.
       // OS notification via Bridge). Best-effort per channel; a
@@ -890,6 +903,7 @@ export const createNotificationBlock = (
     },
 
     registerAskHandler(kind, handler) {
+      if (isProtectedAskKind(kind)) throw new RpcError('preapproval_invalid_proof', 'A protected review has no generic answer handler.', 403);
       registry.register(kind, handler);
     },
 
@@ -902,6 +916,7 @@ export const createNotificationBlock = (
       await serializer.run(ask_id, async () => {
         const ask = await store.get(ask_id);
         if (ask === null || ask.status !== 'open') return;
+        if (isProtectedAskKind(ask.handler_kind)) throw new RpcError('preapproval_invalid_proof', 'Cancel the pre-approval action through its owner control.', 403);
         outcome = await store.cancel(ask_id);
         if (outcome === 'cancelled') {
           // Resolve the now-stale prompt on every delivered surface —
@@ -922,6 +937,7 @@ export const createNotificationBlock = (
         // Unknown ask, or one already past `open` — first answer won;
         // every later reply is a no-op (I-6).
         if (ask === null || ask.status !== 'open') return;
+        if (isProtectedAskKind(ask.handler_kind)) throw new RpcError('preapproval_invalid_proof', 'Complete this review through its verified owner decision.', 403);
         // A reply carrying an option the ask never offered is not a
         // valid answer.
         if (selectAskOption(ask, reply.option) === undefined) return;
@@ -1024,6 +1040,7 @@ export const createNotificationBlock = (
         await serializer.run(ask.ask_id, async () => {
           const current = await store.get(ask.ask_id);
           if (current === null || current.status !== 'open') return;
+          if (isProtectedAskKind(current.handler_kind)) return;
           try {
             await deps.prepareRecoveredAsk?.(current);
           } catch (error) {
@@ -1068,6 +1085,7 @@ export const createNotificationBlock = (
           if (current === null
             || current.status !== 'answered'
             || current.answer === undefined) return;
+          if (isProtectedAskKind(current.handler_kind)) return;
           await closeOnAllChannels(current);
           try {
             await dispatchAnswer({ registry, store, ask: current });
@@ -1153,4 +1171,32 @@ export const createNotificationBlock = (
       return settings.setBridgeMode(bridge_id, patch);
     },
   };
+  installProtectedAskHost(block, {
+    project: (askId, kind, authority) => serializer.run(askId, async () => {
+      const ask = await store.get(askId);
+      if (!ask || ask.handler_kind !== kind) throw new RpcError('preapproval_invalid_proof', 'This is not the bound review prompt.', 403);
+      await authority.validatePrompt(askId, ask.handler_payload);
+      const projection = await authority.resolveProjection(ask);
+      if (!projection) return 'pending';
+      if (projection.kind === 'stopped') {
+        if (ask.status === 'open') await store.cancel(askId);
+        else if (ask.status !== 'handled' || ask.answer !== undefined) throw new RpcError('preapproval_stale', 'The review already records a different terminal decision.', 409);
+      } else {
+        if (!projection.decision_id || !selectAskOption(ask, projection.answer.option)) {
+          throw new RpcError('preapproval_invalid_proof', 'The stored decision does not belong to this review.', 403);
+        }
+        if (ask.status === 'open') await store.recordAnswer(askId, projection.answer, projection.via);
+        else if (!['answered', 'handled'].includes(ask.status)
+          || JSON.stringify(ask.answer) !== JSON.stringify(projection.answer) || ask.answered_via !== projection.via) {
+          throw new RpcError('preapproval_stale', 'The review already records a different terminal decision.', 409);
+        }
+        if (ask.status !== 'handled') await store.markHandled(askId);
+      }
+      // The D-261 outbox owns activity projection. Never call a generic
+      // notification handler: the durable owner decision already happened.
+      await closeOnAllChannels(ask);
+      return 'settled';
+    }),
+  });
+  return block;
 };

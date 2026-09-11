@@ -10,6 +10,16 @@
 
 import type Database from 'better-sqlite3';
 import type { EventTrigger, EventTriggerOrigin } from '@recued/contracts';
+import {
+  assertPreapprovalLegacyEnable, initializePreapprovalLifecycle, mutatePreapprovalResource,
+  notePreapprovalOwnerMutation, preapprovalLogicalEnabled,
+} from '../storage/preapproval-lifecycle.js';
+
+export const triggerPreapprovalMaterial = (row: EventTrigger): Record<string, unknown> => ({
+  recipe_id: row.recipe_id, publisher_id: row.publisher_id, pattern: row.pattern,
+  enabled: row.enabled, dish_id: row.dish_id ?? null, watch_interval_ms: row.watch_interval_ms ?? null,
+  filter: row.filter ?? null, fields: row.fields ?? null, origin: row.origin ?? 'user',
+});
 
 const TABLE = 'event_triggers';
 
@@ -142,6 +152,7 @@ const rowToTrigger = (row: Row): EventTrigger => {
 };
 
 export const createEventTriggersStore = (db: Database.Database): EventTriggersStore => {
+  initializePreapprovalLifecycle(db);
   db.exec(`
     CREATE TABLE IF NOT EXISTS ${TABLE} (
       trigger_id     TEXT PRIMARY KEY,
@@ -205,78 +216,97 @@ export const createEventTriggersStore = (db: Database.Database): EventTriggersSt
   const selectEnabled = db.prepare(`SELECT * FROM ${TABLE} WHERE enabled = 1 ORDER BY created_at ASC`);
   const deleteOne = db.prepare(`DELETE FROM ${TABLE} WHERE trigger_id = ?`);
   const countStmt = db.prepare<[], { n: number }>(`SELECT COUNT(*) as n FROM ${TABLE}`);
+  const material = (id: string): Record<string, unknown> | null => {
+    const row = selectOne.get(id) as Row | undefined;
+    if (!row) return null;
+    const trigger = rowToTrigger(row);
+    return triggerPreapprovalMaterial({ ...trigger, enabled: preapprovalLogicalEnabled(db, 'next_trigger', id, trigger.enabled) });
+  };
 
   return {
     create(row) {
-      const filterJson = serializeFilter(row.filter);
-      const fieldsJson = serializeFields(row.fields);
-      insertStmt.run(
-        row.trigger_id,
-        row.recipe_id,
-        row.publisher_id,
-        row.pattern,
-        row.enabled ? 1 : 0,
-        row.created_at,
-        row.dish_id ?? null,
-        row.watch_interval_ms ?? null,
-        row.origin ?? 'user',
-        filterJson,
-        fieldsJson,
-      );
-      return {
-        trigger_id: row.trigger_id,
-        recipe_id: row.recipe_id,
-        publisher_id: row.publisher_id,
-        pattern: row.pattern,
-        enabled: row.enabled,
-        created_at: row.created_at,
-        last_fired_at: null,
-        last_error: null,
-        ...(row.dish_id != null && row.dish_id.length > 0 ? { dish_id: row.dish_id } : {}),
-        ...(row.watch_interval_ms != null ? { watch_interval_ms: row.watch_interval_ms } : {}),
-        origin: row.origin ?? 'user',
-        ...(filterJson !== null ? { filter: row.filter as Record<string, unknown> } : {}),
-        ...(fieldsJson !== null ? { fields: row.fields as string[] } : {}),
-      };
+      return mutatePreapprovalResource(db, 'next_trigger', row.trigger_id, () => material(row.trigger_id), () => {
+        assertPreapprovalLegacyEnable(db, 'next_trigger', row.trigger_id, row.enabled);
+        const filterJson = serializeFilter(row.filter);
+        const fieldsJson = serializeFields(row.fields);
+        insertStmt.run(
+          row.trigger_id,
+          row.recipe_id,
+          row.publisher_id,
+          row.pattern,
+          row.enabled ? 1 : 0,
+          row.created_at,
+          row.dish_id ?? null,
+          row.watch_interval_ms ?? null,
+          row.origin ?? 'user',
+          filterJson,
+          fieldsJson,
+        );
+        const result: EventTrigger = {
+          trigger_id: row.trigger_id,
+          recipe_id: row.recipe_id,
+          publisher_id: row.publisher_id,
+          pattern: row.pattern,
+          enabled: row.enabled,
+          created_at: row.created_at,
+          last_fired_at: null,
+          last_error: null,
+          ...(row.dish_id != null && row.dish_id.length > 0 ? { dish_id: row.dish_id } : {}),
+          ...(row.watch_interval_ms != null ? { watch_interval_ms: row.watch_interval_ms } : {}),
+          origin: row.origin ?? 'user',
+          ...(filterJson !== null ? { filter: row.filter as Record<string, unknown> } : {}),
+          ...(fieldsJson !== null ? { fields: row.fields as string[] } : {}),
+        };
+        return result;
+      });
     },
 
     update(trigger_id, patch) {
-      const existing = selectOne.get(trigger_id) as Row | undefined;
-      if (!existing) return null;
-      const next: Row = { ...existing };
-      if (patch.enabled !== undefined) next.enabled = patch.enabled ? 1 : 0;
-      if (patch.pattern !== undefined) next.pattern = patch.pattern;
-      if (patch.dish_id !== undefined) next.dish_id = patch.dish_id;
-      if (patch.watch_interval_ms !== undefined) {
-        next.watch_interval_ms = patch.watch_interval_ms;
-      }
-      if (patch.last_fired_at !== undefined) next.last_fired_at = patch.last_fired_at;
-      if (patch.last_error !== undefined) next.last_error = patch.last_error;
+      return mutatePreapprovalResource(db, 'next_trigger', trigger_id, () => material(trigger_id), () => {
+        assertPreapprovalLegacyEnable(db, 'next_trigger', trigger_id, patch.enabled === true);
+        if (patch.enabled !== undefined || patch.pattern !== undefined || patch.dish_id !== undefined || patch.watch_interval_ms !== undefined) {
+          notePreapprovalOwnerMutation(db, 'next_trigger', trigger_id);
+        }
+        const existing = selectOne.get(trigger_id) as Row | undefined;
+        if (!existing) return null;
+        const next: Row = { ...existing };
+        if (patch.enabled !== undefined) next.enabled = patch.enabled ? 1 : 0;
+        if (patch.pattern !== undefined) next.pattern = patch.pattern;
+        if (patch.dish_id !== undefined) next.dish_id = patch.dish_id;
+        if (patch.watch_interval_ms !== undefined) {
+          next.watch_interval_ms = patch.watch_interval_ms;
+        }
+        if (patch.last_fired_at !== undefined) next.last_fired_at = patch.last_fired_at;
+        if (patch.last_error !== undefined) next.last_error = patch.last_error;
 
-      db.prepare(
-        `UPDATE ${TABLE} SET
-           pattern = ?,
-           enabled = ?,
-           dish_id = ?,
-           watch_interval_ms = ?,
-           last_fired_at = ?,
-           last_error = ?
-         WHERE trigger_id = ?`,
-      ).run(
-        next.pattern,
-        next.enabled,
-        next.dish_id,
-        next.watch_interval_ms,
-        next.last_fired_at,
-        next.last_error,
-        trigger_id,
-      );
-      return rowToTrigger(next);
+        db.prepare(
+          `UPDATE ${TABLE} SET
+             pattern = ?,
+             enabled = ?,
+             dish_id = ?,
+             watch_interval_ms = ?,
+             last_fired_at = ?,
+             last_error = ?
+           WHERE trigger_id = ?`,
+        ).run(
+          next.pattern,
+          next.enabled,
+          next.dish_id,
+          next.watch_interval_ms,
+          next.last_fired_at,
+          next.last_error,
+          trigger_id,
+        );
+        return rowToTrigger(next);
+      });
     },
 
     remove(trigger_id) {
-      const res = deleteOne.run(trigger_id);
-      return res.changes > 0;
+      return mutatePreapprovalResource(db, 'next_trigger', trigger_id, () => material(trigger_id), () => {
+        notePreapprovalOwnerMutation(db, 'next_trigger', trigger_id);
+        const res = deleteOne.run(trigger_id);
+        return res.changes > 0;
+      });
     },
 
     get(trigger_id) {

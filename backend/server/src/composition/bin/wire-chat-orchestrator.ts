@@ -42,8 +42,8 @@ import {
 } from '@recued/llm';
 import { resolveChatInputTokenBudget } from '../../chat-context-budget.js';
 import type { PreflightRunSettled } from '../../preflight-resumer.js';
-import { renderToolRow, buildPriorToolPointers } from '../../chat-orchestrator.js';
-import { planRunSettledRow } from '../../chat-run-settled-sink.js';
+import { buildPriorToolPointers } from '../../chat-orchestrator.js';
+import { createChatRunSettledSink } from '../../chat-run-settled-sink.js';
 import {
   CHAT_MESSAGE_RECALL_ELIGIBILITY,
   deriveChatMessageRecallEligibility,
@@ -189,6 +189,7 @@ import {
   chatIndexSessionRowsEnabled,
   CHAT_INDEX_TOO_COMMON_CAP,
   CHAT_INDEX_PROBE_ARGS,
+  chatIndexProbeTool,
 } from '../../chat-index-context.js';
 import {
   RECALL_SEARCH_TOOL_NAME,
@@ -1144,6 +1145,7 @@ export const composeChatOrchestrator = (
   const executeChatAiCall: ExecuteChatAiCall = async (
     manifest,
     input,
+    opts,
   ) => {
     // D-174 R28 — resolve config PER-USE (a live db read; getLlmConfig falls
     // back to the boot snapshot internally) so a slot saved mid-session routes
@@ -1169,13 +1171,15 @@ export const composeChatOrchestrator = (
       tabProbe: emptyTabProbe,
       webChatSupported: false,
       onTokenUsage: captureUsage,
+      // Opt-in only; absent leaves `resolveLLMTimeoutMs` at its no-timer default.
+      ...(opts?.timeout_ms !== undefined ? { timeout_ms: opts.timeout_ms } : {}),
     });
     return {
       body,
       ...(captured ? { usage: tokenUsageToReport(captured) } : {}),
     };
   };
-  const messengerVoiceTranscription = llmConfig
+  const voiceTranscription = llmConfig
     ? {
         readFile: async (record_id: string) => {
           const dataFileRead = getExecutorConfig()?.kernelDispatchers?.dataFileRead;
@@ -1192,8 +1196,6 @@ export const composeChatOrchestrator = (
           get config() { return getLlmConfig() ?? llmConfig; },
           adapters: createDefaultTranscriptionRegistry(),
           quota: llmQuota,
-          tabProbe: emptyTabProbe,
-          webChatSupported: false,
         } satisfies TranscribeDeps,
       }
     : undefined;
@@ -1313,7 +1315,10 @@ export const composeChatOrchestrator = (
       visibleItemIds: readonly string[],
     ) =>
       buildChatIndexContext(userMessage, ctx, async (store, term, probeCtx) => {
-        if (!admitTier1(store, probeCtx)) {
+        // A probe key may carry a per-call discriminator (`work.search:note`);
+        // admission and handler lookup both need the bare tool name.
+        const probeTool = chatIndexProbeTool(store);
+        if (!admitTier1(probeTool, probeCtx)) {
           return { ok: false as const, reason: 'channel_denied' as const };
         }
         // ⛔ recall.search is NOT in `tier1Handlers` — it is grafted on by
@@ -1349,7 +1354,7 @@ export const composeChatOrchestrator = (
         //    uishable from an empty store, so the index silently dropped the one
         //    store that held the answer. This is the same source the orchestrator
         //    registers for the real turn, not a widened one.
-        if (store === RECALL_SEARCH_TOOL_NAME) {
+        if (probeTool === RECALL_SEARCH_TOOL_NAME) {
           const scratch = new Map<string, unknown>();
           if (probeCtx.execution_source !== undefined) {
             registerRecallTurnSource(scratch, probeCtx.execution_source);
@@ -1377,7 +1382,7 @@ export const composeChatOrchestrator = (
             { ...probeCtx, turn_state: scratch },
           );
         }
-        const handler = chatToolRegistryInputs.tier1Handlers[store];
+        const handler = chatToolRegistryInputs.tier1Handlers[probeTool];
         if (handler === undefined) return { ok: false, reason: 'not_implemented' };
         // cap + 1 so `hasHit` can tell "some matches" from "too many to mean
         // anything here" — the per-owner replacement for a static word list.
@@ -1523,7 +1528,7 @@ export const composeChatOrchestrator = (
     // with `LLMConfig` / adapters / quota / tab probe + token-usage
     // capture.
     executeAiCall: executeChatAiCall,
-    ...(messengerVoiceTranscription ? { messengerVoiceTranscription } : {}),
+    ...(voiceTranscription ? { voiceTranscription } : {}),
     planApprovalStore: planApprovalStoreShared,
     // D-160 O-5 (light slice) — the live middleware registry + the
     // existing per-pair source the orchestrator feeds to the
@@ -2141,51 +2146,8 @@ export const composeChatOrchestrator = (
 
   return {
     chatStore,
-    // ⛔⛔ THE RESULT HALF OF A PAIRED TOOL CALL, written when the run SETTLES
-    //   rather than when the turn that asked for it ended. The dispatch row was
-    //   written at T1 carrying the ask; this is T2. Without it the pair only
-    //   ever has one half for a held run, and `recall.search` can find "I asked
-    //   to email Pat" with no outcome forever.
-    //
-    // ⛔ THE ORIGINATING SOURCE DECIDES THE CORPUS, not the approver's. The
-    //   resumer recovers `execution_source` off the paused audit anchor
-    //   precisely so a resume runs under the authority that ASKED — and a row
-    //   written under whoever clicked approve would land in the wrong corpus,
-    //   which for a door is a cross-tenant write.
-    //
-    // ⚠ Owner corpus only, matching the dispatch half. A door's tool results
-    //   are not written at all (see `chat-orchestrator.ts`), so writing the
-    //   settle half for one would mint an unpaired orphan in a corpus that has
-    //   no first half.
-    runSettledSink: (settled: PreflightRunSettled): void => {
-      const plan = planRunSettledRow(settled);
-      if (plan === null) return;
-      // ⚠ Fire-and-forget with a swallowed rejection: the run has ALREADY
-      //   completed and its outcome is already durable in the audit trail. A
-      //   recall row is searchability, not the record — failing the settle over
-      //   one would trade a finished run for an index entry.
-      void chatStore.appendMessage({
-        id: `settle:${plan.pair_id}`,
-        session_id: plan.session_id,
-        role: 'tool',
-        content: renderToolRow(plan.tool_name, undefined, plan.result),
-        // ⚠ The routing fields describe a MODEL CALL, and a settle is not one.
-        //   They are required by `appendMessage` and carry no meaning here; the
-        //   row's meaning is its content, its `pair_id` and its `ts`.
-        target_server: 'self',
-        picker_at_send: { display_name: 'self', signature: selfSignature },
-        model_used: { provider: 'recued', model_id: 'run-settled' },
-        execution_source: plan.execution_source,
-        ts: plan.ts,
-        // ⛔ The ORIGINATING turn, so the pair stays together under a
-        //   turn-scoped recall. Without it the ask is in window and its answer
-        //   is not.
-        ...(plan.turn_id !== null ? { turn_id: plan.turn_id } : {}),
-        pair_id: plan.pair_id,
-      }).catch((err: unknown) => {
-        console.error('[chat] run-settled tool row append failed', err);
-      });
-    },
+    // Source-scoped late outcomes for previously held owner-chat calls.
+    runSettledSink: createChatRunSettledSink(chatStore, selfSignature, broadcast),
     toolCatalogStore,
     connectionMcpStore,
     inboundTokenStore,

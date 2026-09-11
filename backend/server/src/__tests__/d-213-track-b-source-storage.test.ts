@@ -280,7 +280,7 @@ describe('D-213 Track B — split encrypted source storage', () => {
     });
   });
 
-  it('permits pending lifecycle only for an owner-authenticated user row', async () => {
+  it('rejects a pending source lifecycle on an assistant row', async () => {
     await expect(store.appendMessage({
       id: 'invalid-pending',
       session_id: 'current',
@@ -292,7 +292,7 @@ describe('D-213 Track B — split encrypted source storage', () => {
       execution_source: OWNER,
       source_lifecycle: 'pending',
     })).rejects.toThrow(
-      'pending source requires an owner-authenticated user row',
+      'pending source requires an owner-authenticated user or tool-result row',
     );
   });
 

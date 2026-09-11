@@ -962,3 +962,94 @@ describe('makeConfigHandlers — llm_gateway config through the whole-blob wire'
     });
   });
 });
+
+// ── the transcription probe ────────────────────────────────────────
+//
+// ⛔⛔ REVIEW FINDING (2026-09-07). THE RULE WAS WRITTEN AT THIS HANDLER'S HEAD
+// AND THE NEWEST BRANCH DID NOT FOLLOW IT: "an unmetered probe behind a button
+// is a hole in the daily budget". The chat path keeps it via `onUsage`; the
+// transcription branch reaches its adapter directly, so it recorded nothing and
+// checked no cap. Two presses at the daily limit spent two real provider calls,
+// moved no counter, and left the usage surface under-reporting by exactly the
+// calls the owner had just made — the surface is least accurate right when they
+// are looking at it.
+describe('makeConfigHandlers — the transcription probe is metered and capped', () => {
+  // ⚠ `Record<string, unknown>` like `SLOT` above: the rpc arg is a
+  // `ServerLLMSlot`, which carries an index signature `LLMSlot` does not.
+  const TSLOT: Record<string, unknown> = {
+    provider: 'openai', model: 'whisper-1', api_key: 'sk-t',
+  };
+
+  const transcriptionProbeDeps = () => {
+    const calls: number[] = [];
+    const recorded: { bytes: number }[] = [];
+    let requestsToday = 0;
+    const deps = {
+      transcriptionAdapters: ((key: string) => ({
+        provider: key,
+        transcribe: async () => {
+          calls.push(1);
+          return { text: 'This is a transcript microphone test.' };
+        },
+      })) as never,
+      adapters: (() => undefined) as never,
+      embeddingsAdapters: (() => undefined) as never,
+      quota: {
+        registerRequest: () => {},
+        recordUsage: () => {},
+        transcriptionRequestsToday: () => requestsToday,
+        recordTranscriptionUsage: (_id: string, u: { bytes: number }) => {
+          requestsToday += 1;
+          recorded.push(u);
+        },
+      } as never,
+    };
+    return { deps, calls, recorded, spend: (n: number) => { requestsToday = n; } };
+  };
+
+  it('⛔ RECORDS the call — a probe spends the owner\'s budget like anything else', async () => {
+    const llmManager = createLLMConfigManager(db);
+    const { deps, calls, recorded } = transcriptionProbeDeps();
+    const h = handlersFor(llmManager, deps);
+    await h['server.setTranscriptionSlot']({ slot: TSLOT }, undefined as never);
+
+    const result = await h['server.probeLlmSource'](
+      { target: { kind: 'slot', slot_key: 'transcription_slot' } }, undefined as never);
+
+    expect(result.ok).toBe(true);
+    expect(calls).toHaveLength(1);
+    // Requests AND bytes — the two quantities that are always exact.
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0]!.bytes).toBeGreaterThan(0);
+  });
+
+  it('⛔⛔ REFUSES at the daily cap, and does NOT reach the provider', async () => {
+    const llmManager = createLLMConfigManager(db);
+    const { deps, calls, spend } = transcriptionProbeDeps();
+    const h = handlersFor(llmManager, deps);
+    await h['server.setTranscriptionSlot']({ slot: TSLOT }, undefined as never);
+    await h['server.setTranscriptionDailyRequests']({ limit: 2 }, undefined as never);
+    spend(2);
+
+    const result = await h['server.probeLlmSource'](
+      { target: { kind: 'slot', slot_key: 'transcription_slot' } }, undefined as never);
+
+    expect(result.ok).toBe(false);
+    // ⛔ The call must not have happened. A cap enforced only on the way out
+    // lets through exactly the request it exists to prevent.
+    expect(calls).toHaveLength(0);
+    expect(String(result.detail)).toContain('daily limit');
+  });
+
+  it('⚠ an absent cap is unlimited, matching every other budget field', async () => {
+    const llmManager = createLLMConfigManager(db);
+    const { deps, calls } = transcriptionProbeDeps();
+    const h = handlersFor(llmManager, deps);
+    await h['server.setTranscriptionSlot']({ slot: TSLOT }, undefined as never);
+    for (let i = 0; i < 3; i += 1) {
+      await h['server.probeLlmSource'](
+        { target: { kind: 'slot', slot_key: 'transcription_slot' } }, undefined as never);
+    }
+    expect(calls).toHaveLength(3);
+  });
+});

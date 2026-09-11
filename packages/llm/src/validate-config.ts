@@ -165,12 +165,10 @@ const parseSlot = (v: unknown, field: string): LLMSlot | null => {
   if (v.modalities !== undefined) {
     out.modalities = parseModalities(v.modalities, `${field}.modalities`);
   }
-  if (v.transcription_model !== undefined) {
-    if (!isString(v.transcription_model)) {
-      throw new LLMConfigValidationError(`${field}.transcription_model`, 'must be a string');
-    }
-    out.transcription_model = v.transcription_model;
-  }
+  // ⛔ D-262 § B4 — `transcription_model` RETIRED. Deliberately not rejected:
+  // these parsers build their output field by field, so an imported config or
+  // a stored blob that still carries one has it DROPPED rather than refused. A
+  // retired field should stop taking effect, not start breaking imports.
   return out;
 };
 
@@ -235,12 +233,7 @@ const parseApiEntry = (v: Record<string, unknown>, field: string): FreePoolApiEn
   if (v.modalities !== undefined) {
     out.modalities = parseModalities(v.modalities, `${field}.modalities`);
   }
-  if (v.transcription_model !== undefined) {
-    if (!isString(v.transcription_model)) {
-      throw new LLMConfigValidationError(`${field}.transcription_model`, 'must be a string');
-    }
-    out.transcription_model = v.transcription_model;
-  }
+  // ⛔ D-262 § B4 — retired; dropped rather than refused (see the slot parser).
   return out;
 };
 
@@ -306,6 +299,45 @@ export const parseLLMConfig = (raw: unknown): LLMConfig => {
     const v = parseSlot(raw.embeddings_slot, 'embeddings_slot');
     if (v !== null) out.embeddings_slot = v;
     else (out as Record<string, unknown>).embeddings_slot = null;
+  }
+  // D-262 § B1 — dedicated transcription source, same shape and same reasons
+  // as the embeddings slot above (its `model` carries the transcription model);
+  // `null` clears it. Kept out of slot_1/slot_2 so the chat match resolver never
+  // sees it: a voice turn must never silently replace the pinned chat model.
+  if (raw.transcription_slot !== undefined) {
+    const v = parseSlot(raw.transcription_slot, 'transcription_slot');
+    if (v !== null) out.transcription_slot = v;
+    else (out as Record<string, unknown>).transcription_slot = null;
+  }
+  // D-262 § B6 — the owner's spoken language. ⛔ Absent is auto-detect and is a
+  // MEANINGFUL value, so `null` clears rather than defaults. Validated as a
+  // non-empty string only: the ISO-639-1 list a provider accepts is the
+  // provider's business, and rejecting an unfamiliar code here would make this
+  // validator the thing that has to track them.
+  if (raw.transcription_language !== undefined) {
+    if (raw.transcription_language === null) {
+      (out as Record<string, unknown>).transcription_language = null;
+    } else if (!isString(raw.transcription_language) || raw.transcription_language.trim().length === 0) {
+      throw new LLMConfigValidationError('transcription_language',
+        'must be a non-empty string (omit it for auto-detect)');
+    } else {
+      out.transcription_language = raw.transcription_language.trim();
+    }
+  }
+  // D-262 § B12.3 — the daily transcription cap, in REQUESTS. `null` clears it
+  // back to unlimited, matching `daily_budget_tokens`' absent-is-unlimited rule.
+  if (raw.transcription_daily_requests !== undefined) {
+    if (raw.transcription_daily_requests === null) {
+      (out as Record<string, unknown>).transcription_daily_requests = null;
+    } else if (
+      !isFiniteNumber(raw.transcription_daily_requests)
+      || raw.transcription_daily_requests < 0
+    ) {
+      throw new LLMConfigValidationError('transcription_daily_requests',
+        'must be a non-negative number (omit it for unlimited)');
+    } else {
+      out.transcription_daily_requests = raw.transcription_daily_requests;
+    }
   }
   if (raw.free_pool !== undefined) {
     if (!Array.isArray(raw.free_pool)) {

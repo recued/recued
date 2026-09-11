@@ -228,13 +228,36 @@ const requireCollection = (
 
 export const handleCollectionList = async (
   deps: CollectionHandlerDeps,
-  args: { platform?: unknown; slug?: unknown; filters?: unknown; since?: unknown; until?: unknown; limit?: unknown },
+  args: { platform?: unknown; slug?: unknown; filters?: unknown; since?: unknown; until?: unknown; limit?: unknown; calendar_window?: unknown; offset?: unknown },
 ): Promise<{ records: CollectionRecord[]; source_freshness: CollectionSourceFreshness }> => {
   const platform = requirePlatform(args.platform);
   const slug = requireSlug(args.slug);
   const collection = requireCollection(deps, platform, slug);
   const query: CollectionListQuery = { platform, slug };
+  if (args.calendar_window !== undefined) {
+    const window = args.calendar_window;
+    if (platform !== 'calendar' || window === null || typeof window !== 'object'
+      || Array.isArray(window) || !('from' in window) || !('before' in window)
+      || Object.keys(window).length !== 2
+      || typeof window.from !== 'number' || !Number.isSafeInteger(window.from) || Math.abs(window.from) > 8.64e15
+      || typeof window.before !== 'number' || !Number.isSafeInteger(window.before) || Math.abs(window.before) > 8.64e15
+      || window.from >= window.before) {
+      throw new RpcError('bad_request', 'calendar_window requires calendar event bounds { from, before } in unix-ms', 400);
+    }
+    query.calendar_window = { from: window.from, before: window.before };
+  }
+  if (args.offset !== undefined) {
+    if (platform !== 'calendar' || typeof args.offset !== 'number'
+      || !Number.isSafeInteger(args.offset) || args.offset < 0) {
+      throw new RpcError('bad_request', 'offset must be a non-negative integer for a calendar list', 400);
+    }
+    query.offset = args.offset;
+  }
   if (args.filters && typeof args.filters === 'object' && !Array.isArray(args.filters)) {
+    if (platform === 'calendar' && 'is_all_day' in args.filters
+      && typeof args.filters.is_all_day !== 'boolean') {
+      throw new RpcError('bad_request', 'calendar is_all_day filter must be a boolean', 400);
+    }
     query.filters = args.filters as Record<string, unknown>;
   } else if (args.filters !== undefined) {
     throw new RpcError('bad_request', 'filters must be an object', 400);

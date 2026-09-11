@@ -5,18 +5,27 @@ import {
   isRef,
   resolveDeep,
   resolveValue,
+  preapprovalStepPath,
   SLOT_CANCELLED_ERROR_CODE,
+  isPreflightRequiredSignal,
+  isPeerAnswerRequiredSignal,
 } from '@recued/contracts';
 import type { ExecutionContext, StepLog } from './types.js';
 import { requireRecipe } from './require-recipe.js';
 import { evaluateCondition } from './condition.js';
 import { fireProgress } from './execute.js';
-import { resolveCatalogConnection, trackContextSize } from './step-runner.js';
+import { mergeArgOverrides, resolveCatalogConnection, trackContextSize } from './step-runner.js';
 import { runCatalogOperation } from './catalog-gateway.js';
 import { setNamespaceValue } from './store-safety.js';
 import { invokeGoverned } from './lane.js';
 
 const MAX_CONCURRENT = 20;
+export class PrefetchPause extends Error {
+  constructor(readonly step_id: string, readonly signal: unknown, readonly logs: StepLog[]) {
+    super('Prefetch requires a durable owner or peer decision.');
+  }
+}
+const isHold = (error: unknown): boolean => isPreflightRequiredSignal(error) || isPeerAnswerRequiredSignal(error);
 
 /** Run prefetch steps in parallel, batched by concurrency limit.
  *
@@ -35,7 +44,9 @@ export const runPrefetch = async (ctx: ExecutionContext): Promise<StepLog[]> => 
   // e.g. a connection-agnostic op-step recipe whose only fetch is a `steps` op).
   // The validator permits it absent, so the engine must too: default to `[]`
   // rather than dereferencing `undefined.length`.
-  const steps = requireRecipe(ctx).prefetch_steps ?? [];
+  const completed = new Set(ctx.resumeFrom?.execution_phase === 'prefetch' ? ctx.resumeFrom.prefetch_completed ?? [] : []);
+  const steps = (requireRecipe(ctx).prefetch_steps ?? []).filter(step => !completed.has(step.id));
+  ctx.prefetchCompleted = [...completed];
   const total = steps.length;
   const declarationOrder = steps.map((s) => s.id);
 
@@ -76,6 +87,7 @@ export const runPrefetch = async (ctx: ExecutionContext): Promise<StepLog[]> => 
   for (let i = 0; i < steps.length; i += MAX_CONCURRENT) {
     const batchStart = i;
     const batch = steps.slice(i, i + MAX_CONCURRENT);
+    const pauses: Array<{ index: number; step_id: string; signal: unknown }> = [];
 
     // Launch all batch promises simultaneously with a per-promise
     // arrival hook so progress fires as each resolves.
@@ -84,19 +96,22 @@ export const runPrefetch = async (ctx: ExecutionContext): Promise<StepLog[]> => 
         const index = batchStart + j;
         return executePrefetchStep(ps, ctx)
           .then(
-            (log) => { logs[index] = log; },
-            (reason) => { logs[index] = makeErrorLog(ps, ctx, reason); },
+            (log) => { logs[index] = log; if (!log.error) completed.add(ps.id); },
+            (reason) => {
+              if (isHold(reason)) pauses.push({ index, step_id: ps.id, signal: reason });
+              else logs[index] = makeErrorLog(ps, ctx, reason);
+            },
           )
           .then(() => {
-            const log = logs[index]!;
+            const log = logs[index];
             arrived++;
             fireProgress(ctx, {
               type: 'prefetch_arrived',
               step_id: ps.id,
               index: arrived,
               total,
-              error: log.error,
-              skipped: log.skipped,
+              error: log?.error ?? null,
+              skipped: log?.skipped ?? false,
             });
             pending.delete(ps.id);
             // Only advance focus if the step that just arrived was the
@@ -105,6 +120,15 @@ export const runPrefetch = async (ctx: ExecutionContext): Promise<StepLog[]> => 
           });
       }),
     );
+    ctx.prefetchCompleted = [...completed];
+    if (pauses.length) {
+      const finished = logs.filter((log): log is StepLog => log !== undefined);
+      // A completed failure is terminal; approval cannot fix it. Otherwise
+      // wait for the whole parallel batch before snapshotting its successes.
+      if (finished.some(log => log.error)) return finished;
+      const paused = pauses.sort((a, b) => a.index - b.index)[0]!;
+      throw new PrefetchPause(paused.step_id, paused.signal, finished);
+    }
   }
 
   return logs as StepLog[];
@@ -156,13 +180,22 @@ const executePrefetchStep = async (
     } else {
       input = (rawInput as Record<string, unknown>) ?? {};
     }
-    const stepOptions = ps.cache !== undefined ? { cache: ps.cache } : undefined;
-    // Prefetch doesn't hit approvals (read-tier by construction), but we
-    // thread the step identity (and originating recipe id, D-127 follow-on)
-    // so cache + dispatch middleware see a uniform envelope and
-    // downstream kernel storage adapters can attribute audit rows.
+    const stepOptions = ctx.preapprovalAddressing ? { cache: 'fresh' as const }
+      : ps.cache !== undefined ? { cache: ps.cache } : undefined;
+    // Read-tier calls may still require approval (for example an always rule).
+    // The resumed decision stays on this exact prefetch occurrence.
     const recipe = requireRecipe(ctx);
     const stepMeta: StepMeta = { step_id: id };
+    if (ctx.resumeFrom?.execution_phase === 'prefetch' && ctx.resumeFrom.gated_step_id === id) {
+      stepMeta.preflight_admitted = true;
+      if (ctx.resumeFrom.approved_target) stepMeta.preflight_approved_target = ctx.resumeFrom.approved_target;
+      if (ctx.resumeFrom.session_grant) stepMeta.preflight_session_grant = ctx.resumeFrom.session_grant;
+      if (ctx.resumeFrom.batch_claim) stepMeta.preflight_batch_claim = ctx.resumeFrom.batch_claim;
+    }
+    if (ctx.governing_recipe_grant !== undefined) stepMeta.governing_recipe_grant = ctx.governing_recipe_grant;
+    if (ctx.entry_tool_name !== undefined) stepMeta.entry_tool_name = ctx.entry_tool_name;
+    if (ctx.preapprovalAddressing) stepMeta.invocation_path = preapprovalStepPath(
+      ctx.preapprovalAddressing.recipe_path, 'prefetch', id, ctx.preapprovalAddressing.iteration_indices);
     if (recipe.recipe_id.length > 0) stepMeta.recipe_id = recipe.recipe_id;
     // D-181 slice 4 — run id for the cli executor's kill-handle registration.
     if (ctx.run_id !== undefined && ctx.run_id.length > 0) stepMeta.run_id = ctx.run_id;
@@ -202,6 +235,9 @@ const executePrefetchStep = async (
         `Ingredient '${ingredientSlug}' version ${requestedVersion} not found in registry`,
       );
     }
+    if (ctx.resumeFrom?.execution_phase === 'prefetch' && ctx.resumeFrom.gated_step_id === id && ctx.resumeFrom.arg_overrides) {
+      input = mergeArgOverrides(input.args === undefined ? input : { ...input, args: resolveDeep(input.args, ctx.stores) }, ctx.resumeFrom.arg_overrides);
+    }
     if (isCatalogForm(manifest) && manifest) {
       // Resolve the op's `args` payload refs BEFORE the gateway reads it (the
       // gateway reads `input.args` raw — refs are a dispatch-layer concern; mirror
@@ -228,6 +264,7 @@ const executePrefetchStep = async (
     trackContextSize(ctx, result);
     return { id, type: 'prefetch', skipped: false, result, error: null, duration_ms: Date.now() - start };
   } catch (e) {
+    if (isHold(e)) throw e;
     setNamespaceValue(ctx.stores.step as Record<string, unknown>, id, null);
     if (ps.optional) {
       return { id, type: 'prefetch', skipped: false, result: null, error: null, duration_ms: Date.now() - start };

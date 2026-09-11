@@ -57,10 +57,20 @@ import {
 } from '../index.js';
 
 describe('D-145 PA9 — closed-list shape discipline', () => {
-  it('D145_PRODUCER_TOPICS enumerates exactly 15 producers (8 work-entity + 7 engine + reliability)', () => {
-    expect(D145_PRODUCER_TOPICS).toHaveLength(15);
+  it('D145_PRODUCER_TOPICS enumerates exactly 14 producers (8 work-entity + 6 engine + reliability)', () => {
+    // ⛔ WAS 15 / 7 until 2026-09-10, when `context_packet_quality` was
+    // retired from the declaration set. It was the only entry here with no
+    // producer: a census of the 61 registry topics found 55 produced, and of
+    // the 6 that were not, five are reserved registry ids (the deliberate
+    // D-122 pattern) while this one carried a full `EnrichmentDeclaration`.
+    //
+    // 🔑 A declaration asserts `invalidation_triggers`, `benchmark_scenarios`,
+    // a `sample_floor` and `emits_confidence` — all statements about a
+    // producer's behaviour. Making them about a producer that does not exist
+    // is what this ratchet's count was quietly protecting.
+    expect(D145_PRODUCER_TOPICS).toHaveLength(14);
     expect(D145_WORK_ENTITY_PRODUCER_TOPICS).toHaveLength(8);
-    expect(D145_ENGINE_RELIABILITY_PRODUCER_TOPICS).toHaveLength(7);
+    expect(D145_ENGINE_RELIABILITY_PRODUCER_TOPICS).toHaveLength(6);
     expect([...D145_PRODUCER_TOPICS].sort()).toEqual([
       ...D145_WORK_ENTITY_PRODUCER_TOPICS,
       ...D145_ENGINE_RELIABILITY_PRODUCER_TOPICS,
@@ -76,13 +86,16 @@ describe('D-145 PA9 — closed-list shape discipline', () => {
     expect(isD145ProducerTopic('purpose')).toBe(false); // pre-D-145 topic
   });
 
-  it('D145_PSI_ELIGIBLE_PRODUCER_TOPICS enumerates exactly 4 producers (3 + 1 narrowing per § A.7.2)', () => {
-    expect(D145_PSI_ELIGIBLE_PRODUCER_TOPICS).toHaveLength(4);
+  it('D145_PSI_ELIGIBLE_PRODUCER_TOPICS enumerates exactly 3 producers per § A.7.2', () => {
+    // ⛔ WAS 4. PSI drift compares a producer's confidence distribution
+    // against its own baseline — with no producer there was never a
+    // distribution, so `context_packet_quality` could sit in this list
+    // indefinitely without the drift task ever having anything to score.
+    expect(D145_PSI_ELIGIBLE_PRODUCER_TOPICS).toHaveLength(3);
     expect([...D145_PSI_ELIGIBLE_PRODUCER_TOPICS].sort()).toEqual([
       'commitment_followthrough_score',
       'task_completion_velocity',
       'project_velocity',
-      'context_packet_quality',
     ].sort());
   });
 

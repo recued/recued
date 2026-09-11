@@ -395,6 +395,8 @@ const NO_GOVERNED_COLLECTION_SLUGS: ReadonlySet<string> = new Set([
   'core-notification-send',
   'core-notification-recipe-callback',
   'schedule-recipe',
+  // D-261 persists an inert owner-review proposal, not a data.preapproval collection.
+  'preapproval-request',
   'exchange-status',
   'csv-columns',
   'csv-filter',

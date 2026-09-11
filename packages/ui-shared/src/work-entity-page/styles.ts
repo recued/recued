@@ -131,6 +131,7 @@ export const WORK_ENTITY_PAGE_STYLES = `
 .work-entity-list-search {
   min-width: 0;
   display: flex;
+  flex-wrap: wrap;
   gap: 10px;
   align-items: end;
 }
@@ -149,6 +150,10 @@ export const WORK_ENTITY_PAGE_STYLES = `
   background: var(--rx-input-bg, var(--surface));
   color: var(--rx-fg, var(--fg));
   font: inherit;
+}
+.work-entity-task-filters .work-entity-list-filter {
+  min-height: 36px;
+  max-width: 100%;
 }
 
 .work-entity-list {

@@ -93,6 +93,7 @@ export interface MailComposeDialogProps {
   /** The host is resolving an attachment choice. Sending and AI rewriting stay
    * locked until the chosen ids are reflected in the draft. */
   attachmentBusy?: boolean;
+  savedDraft?: { status: string; scheduling: boolean; runAt: string; busyLabel?: string };
 }
 
 const dialogTitle = (mode: MailComposeDialogState['mode']): string =>
@@ -118,7 +119,7 @@ export const renderMailComposeDialog = (
     || assistBusy
     || attachmentBusy;
   const submittingAttr = submitDisabled ? ' disabled' : '';
-  const submitLabel = props.state.submitting === true ? 'Sending…' : 'Send';
+  const submitLabel = props.state.submitting === true ? props.savedDraft?.busyLabel ?? 'Sending…' : 'Send';
   const submitError = props.state.submit_error
     ? `<div class="mail-compose-submit-error" role="alert">${e(props.state.submit_error)}</div>`
     : '';
@@ -161,7 +162,12 @@ export const renderMailComposeDialog = (
               submitting: props.state.submitting || assistBusy || attachmentBusy,
             })}
             ${submitError}
+            ${props.savedDraft ? `<p role="status" data-mail-draft-status>${e(props.savedDraft.status)}</p>
+              ${props.savedDraft.scheduling ? `<label>Send at <input type="datetime-local" data-mail-draft-time value="${e(props.savedDraft.runAt)}"${submittingAttr}></label>
+                <p>You will review the complete message and timing before approving the scheduled send.</p>` : ''}` : ''}
             <footer class="mail-compose-actions">
+              ${props.savedDraft ? `<button type="button" data-action="save-mail-draft"${submittingAttr}>Save draft</button>
+                <button type="button" data-action="schedule-mail-draft"${submittingAttr}>${props.savedDraft.scheduling ? 'Review scheduled send' : 'Schedule…'}</button>` : ''}
               <button
                 type="button"
                 class="mail-compose-cancel"

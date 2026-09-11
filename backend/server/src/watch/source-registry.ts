@@ -2,7 +2,8 @@
  *
  *  The push half of the WatchSource model (design § 2): push sources
  *  keep their own inbound plumbing (a webhook receiver, the vendor
- *  webhook port, the reception path handler) and share exactly two
+ *  webhook port, the reception path handler, an mcp listen feed) and
+ *  share exactly two
  *  obligations — emit canonical change events on the ONE warehouse bus,
  *  and be VISIBLE in the one Automation governance surface. This
  *  registry is the visibility half: each source registers a status
@@ -29,6 +30,11 @@ export const webhookSourceKey = (vendor: string, connection_name: string): strin
 export const messengerSourceKey = (vendor: string): string => ['messenger', vendor].join('/');
 export const receptionSourceKey = (endpoint_kind: string): string =>
   ['reception', endpoint_kind].join('/');
+/** One row per mcp connection holding a live `subscriptions/listen` feed —
+ *  the feed is per CONNECTION, not per resource (one stream carries every
+ *  subscribed uri), so the key names the connection alone. */
+export const mcpListenSourceKey = (connection_name: string): string =>
+  ['mcp', connection_name].join('/');
 
 export interface WatchSourceProvider {
   /** Current governance rows for this source. Called per `watch.list`;
@@ -43,7 +49,8 @@ export interface WatchSourceRegistry {
    *  recomposition (or a second test in the same worker reaching the
    *  process-default instance) swaps the provider in place instead of
    *  accumulating duplicates (codex MEDIUM fold). One id per
-   *  mechanism's wire site: 'webhook' / 'messenger' / 'reception'. */
+   *  mechanism's wire site: 'webhook' / 'messenger' / 'reception' /
+   *  'mcp-listen'. */
   register(provider_id: string, provider: WatchSourceProvider): void;
   /** Record an emit onto the bus for `source_key` — decorates the
    *  matching row's `last_event_at` on subsequent `list()` calls, and

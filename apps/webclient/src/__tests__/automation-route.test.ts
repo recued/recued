@@ -30,6 +30,7 @@ import {
   AUTOMATION_ROUTE_HOST_ATTR,
   AUTOMATION_ROUTE_ORIGIN_FILTER_ATTR,
   AUTOMATION_ROUTE_POLL_ATTR,
+  AUTOMATION_ROUTE_PREAPPROVAL_ATTR,
   AUTOMATION_ROUTE_RETRY_ATTR,
   AUTOMATION_ROUTE_ROW_ATTR,
   AUTOMATION_ROUTE_SECTION_ATTR,
@@ -1443,5 +1444,203 @@ describe('Automation route — create path', () => {
     retry.resolve({ recipes: [recipeEntry()] });
     await flush();
     expect(rig.host.innerHTML).not.toContain(AUTOMATION_ROUTE_ADD_ERROR_ATTR);
+  });
+});
+
+// ── D-261 — removing an approval from the rule it was armed on ──────────────
+//
+// Before this, a pre-approved rule offered only a LINK to the review page, so
+// undoing an approval meant navigating away from the surface that armed it.
+
+const preapproved = { proposal_id: 'pap_1', future_execution_ref: 'fx_1',
+  execution_status: 'active' as const };
+
+// ── D-261 §6.2 — the client asks what the server can actually pre-approve ────
+//
+// The server computed this on every boot and no client ever asked, so the offer
+// was gated on `lifecycle_revision` alone — which proves the repository composed
+// and nothing about what can be frozen.
+describe('Automation route — activation-kind capability gate', () => {
+  const armable = (over: Partial<BootstrapAutomationRouteOptions> = {}) => mountRoute({
+    initialSection: 'schedules',
+    schedulesListCaller: async () => ({
+      schedules: [{ ...schedule(), lifecycle_revision: 3 }],
+    }) as never,
+    preapprovalPrepareCaller: (async () => ({})) as never,
+    onPreapprovalPrepared: () => {},
+    ...over,
+  });
+  const caps = (kinds: string[]) => async () => ({
+    protocol_version: 1, activation_kinds: kinds, bindings: [],
+    child_calls: [], decision_channels: ['webclient'], limits: {},
+  }) as never;
+
+  it('offers the review when the server advertises that activation kind', async () => {
+    const rig = armable({ preapprovalCapabilitiesCaller: caps(['next_schedule', 'next_auto_run']) });
+    await rig.route.whenLoaded();
+    // The offer lives on the rule's DETAIL view. Without opening it the
+    // NEGATIVE case below would pass for the wrong reason.
+    clickAction(rig.host, 'detail:schedule', 'sch_1');
+    expect(rig.host.innerHTML).toContain('Review next run');
+  });
+
+  /** ⛔ THE POINT. A server that cannot freeze this kind used to get a button
+   *  that led straight to a refusal. */
+  it('withdraws the offer when the server does not advertise it', async () => {
+    const rig = armable({ preapprovalCapabilitiesCaller: caps(['next_auto_run']) });
+    await rig.route.whenLoaded();
+    // The offer lives on the rule's DETAIL view. Without opening it the
+    // NEGATIVE case below would pass for the wrong reason.
+    clickAction(rig.host, 'detail:schedule', 'sch_1');
+    expect(rig.host.innerHTML).not.toContain('Review next run');
+  });
+
+  /** ⚠ MONOTONE: an unanswered capability set must not withdraw a feature the
+   *  server does support — a transient rpc failure is not a capability answer. */
+  it('keeps the prior behaviour when the capability call fails', async () => {
+    const rig = armable({ preapprovalCapabilitiesCaller: async () => { throw new Error('offline'); } });
+    await rig.route.whenLoaded();
+    // The offer lives on the rule's DETAIL view. Without opening it the
+    // NEGATIVE case below would pass for the wrong reason.
+    clickAction(rig.host, 'detail:schedule', 'sch_1');
+    expect(rig.host.innerHTML).toContain('Review next run');
+  });
+
+  it('keeps the prior behaviour when the host wires no capability caller', async () => {
+    const rig = armable();
+    await rig.route.whenLoaded();
+    // The offer lives on the rule's DETAIL view. Without opening it the
+    // NEGATIVE case below would pass for the wrong reason.
+    clickAction(rig.host, 'detail:schedule', 'sch_1');
+    expect(rig.host.innerHTML).toContain('Review next run');
+  });
+});
+
+describe('Automation route — pre-approved marker on the list row', () => {
+  const listed = (execution_status: string) => mountRoute({
+    initialSection: 'schedules',
+    schedulesListCaller: async () => ({
+      schedules: [{ ...schedule(), lifecycle_revision: 3,
+        preapproval: { ...preapproved, execution_status } }],
+    }) as never,
+  });
+
+  it('marks an armed rule in the list, so "what runs tonight without asking me" is answerable here', async () => {
+    const rig = listed('active');
+    await rig.route.whenLoaded();
+    expect(rig.host.innerHTML).toContain(AUTOMATION_ROUTE_PREAPPROVAL_ATTR);
+    expect(rig.host.innerHTML).toContain('Pre-approved');
+  });
+
+  it('leaves an ordinary rule unmarked', async () => {
+    const rig = mountRoute({ initialSection: 'schedules' });
+    await rig.route.whenLoaded();
+    expect(rig.host.innerHTML).not.toContain(AUTOMATION_ROUTE_PREAPPROVAL_ATTR);
+  });
+
+  /** ⛔ THE ONE THE MARKER IS REALLY FOR. A reviewed run that paused on an
+   *  UNCOVERED call is waiting for an answer the owner does not know is owed —
+   *  the schedule looks armed and on, and nothing is moving. */
+  it('flags a held run for attention rather than reading as calmly approved', async () => {
+    const rig = listed('held');
+    await rig.route.whenLoaded();
+    expect(rig.host.innerHTML).toContain('Pre-approved · needs you');
+    expect(rig.host.innerHTML).toMatch(/data-recued-automation-preapproval[^>]*data-attention="yes"/);
+  });
+
+  it('flags an unconfirmed run the same way', async () => {
+    const rig = listed('in_doubt');
+    await rig.route.whenLoaded();
+    expect(rig.host.innerHTML).toContain('Pre-approved · unconfirmed');
+    expect(rig.host.innerHTML).toMatch(/data-recued-automation-preapproval[^>]*data-attention="yes"/);
+  });
+
+  /** A spent approval must not keep claiming it covers the next run. */
+  it('says a terminal approval is over, not that it still covers the next run', async () => {
+    const rig = listed('expired');
+    await rig.route.whenLoaded();
+    expect(rig.host.innerHTML).toContain('Pre-approval expired');
+    expect(rig.host.innerHTML).not.toMatch(/>Pre-approved</);
+  });
+});
+
+describe('Automation route — remove pre-approval', () => {
+  const armed = (overrides: Partial<BootstrapAutomationRouteOptions> = {}) =>
+    mountRoute({
+      initialSection: 'schedules',
+      schedulesListCaller: async () => ({
+        schedules: [{ ...schedule(), lifecycle_revision: 3, preapproval: preapproved }],
+      }),
+      ...overrides,
+    });
+
+  it('offers Remove pre-approval on an armed rule, and only after confirming does it revoke', async () => {
+    const remove = vi.fn(async (_proposalId: string, _requestId: string) => {});
+    const rig = armed({ preapprovalRemoveCaller: remove });
+    await rig.route.whenLoaded();
+
+    // ⚠ The pre-approval controls live on the rule's DETAIL view, not the list
+    // row — that is where `Review approval` already was, and putting Remove
+    // anywhere else would split one decision across two surfaces.
+    clickAction(rig.host, 'detail:schedule', 'sch_1');
+
+    // The review link stays — removing is the second, destructive option.
+    expect(rig.host.innerHTML).toContain('Review approval');
+    expect(rig.host.innerHTML).toContain('Remove pre-approval');
+
+    // ⛔ ONE PRESS IS NOT A REVOCATION. It only arms the confirm, exactly like
+    // the row's own Remove. An owner who mis-clicks loses nothing.
+    clickAction(rig.host, 'preapproval-remove:schedule', 'sch_1');
+    expect(remove).not.toHaveBeenCalled();
+    expect(rig.host.innerHTML).toContain('Confirm remove approval');
+
+    clickAction(rig.host, 'preapproval-remove-confirm:schedule', 'sch_1');
+    await flush();
+    expect(remove).toHaveBeenCalledTimes(1);
+    expect(remove.mock.calls[0]![0]).toBe('pap_1');
+  });
+
+  it('Keep backs out without revoking', async () => {
+    const remove = vi.fn(async (_proposalId: string, _requestId: string) => {});
+    const rig = armed({ preapprovalRemoveCaller: remove });
+    await rig.route.whenLoaded();
+    clickAction(rig.host, 'detail:schedule', 'sch_1');
+
+    clickAction(rig.host, 'preapproval-remove:schedule', 'sch_1');
+    clickAction(rig.host, 'preapproval-remove-cancel:schedule', 'sch_1');
+    expect(remove).not.toHaveBeenCalled();
+    expect(rig.host.innerHTML).toContain('Remove pre-approval');
+    expect(rig.host.innerHTML).not.toContain('Confirm remove approval');
+  });
+
+  /** ⚠ The repository dedupes revocations on `(request_id, responder_key)` and
+   *  REFUSES a reused key carrying different input. So a retry after a lost
+   *  response must replay the SAME id — a fresh uuid per press would turn one
+   *  owner intent into two revocation attempts. */
+  it('replays the same request id when the first attempt fails', async () => {
+    const remove = vi.fn(async (_proposalId: string, _requestId: string) => { throw new Error('connection lost'); });
+    const rig = armed({ preapprovalRemoveCaller: remove });
+    await rig.route.whenLoaded();
+    clickAction(rig.host, 'detail:schedule', 'sch_1');
+
+    clickAction(rig.host, 'preapproval-remove:schedule', 'sch_1');
+    clickAction(rig.host, 'preapproval-remove-confirm:schedule', 'sch_1');
+    await rig.route.whenLoaded(); await flush(); await rig.route.whenLoaded();
+
+    clickAction(rig.host, 'preapproval-remove:schedule', 'sch_1');
+    clickAction(rig.host, 'preapproval-remove-confirm:schedule', 'sch_1');
+    await rig.route.whenLoaded(); await flush(); await rig.route.whenLoaded();
+
+    expect(remove).toHaveBeenCalledTimes(2);
+    expect(remove.mock.calls[1]![1]).toBe(remove.mock.calls[0]![1]);
+  });
+
+  /** Absent caller ⇒ the row degrades to what it was: review-page only. */
+  it('renders no remove button when the host wires no caller', async () => {
+    const rig = armed();
+    await rig.route.whenLoaded();
+    clickAction(rig.host, 'detail:schedule', 'sch_1');
+    expect(rig.host.innerHTML).toContain('Review approval');
+    expect(rig.host.innerHTML).not.toContain('Remove pre-approval');
   });
 });

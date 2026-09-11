@@ -56,6 +56,7 @@
  *  from `backend/server/src/bridges/dispatcher.ts` (`ce5bb9a3`). */
 
 import { createHash } from 'node:crypto';
+import { currentPreapprovalIo } from '../preapproval-io-context.js';
 
 import type {
   BridgeAction,
@@ -206,6 +207,45 @@ interface PerEntryOutcome {
   outputs: Record<string, unknown> | undefined;
 }
 
+/** Pure request builder shared by actual dispatch and D-261 preparation. */
+export const describeBridgeDomCall = (
+  manifest: IngredientManifest, resolved: Pick<ResolvedCall, 'slug' | 'input' | 'output'>,
+) => {
+  // core.dom.{read,write}: arg-driven — synthesize the allowlist + entries from
+  // the op args (no manifest selector map). Otherwise derive them from the DOM
+  // ingredient's manifest `output` map as before. `callInput` is what
+  // `buildArgsForEntry` / `buildIdempotencyKey` read: the synthetic
+  // `{ [CORE_DOM_VALUE_FIELD]: value }` for a core.dom write, else the resolved
+  // step input.
+  let domain_allowlist: string[];
+  let entries: DomEntry[];
+  let callInput: Record<string, unknown>;
+  if (isCoreDomSlug(resolved.slug)) {
+    const built = buildCoreDomCall(resolved.slug, resolved.input);
+    domain_allowlist = built.domain_allowlist;
+    entries = built.entries;
+    callInput = built.input;
+  } else {
+    domain_allowlist = extractDomainAllowlist(resolved.output);
+    if (domain_allowlist.length === 0) {
+      throw new IngredientError(
+        'DOM_PAGE_NOT_MATCHING',
+        `DOM ingredient '${resolved.slug}' declares no trigger URL patterns — bridge dispatch needs at least one`,
+        { slug: resolved.slug },
+      );
+    }
+    entries = collectEntries(resolved.output);
+    callInput = resolved.input;
+  }
+
+  const ingredient = buildIngredientRef(manifest, domain_allowlist);
+  return { ingredient, callInput, entries: entries.map(entry => {
+    const action = classifyEntryAction(entry);
+    return { entry, action, args: buildArgsForEntry(entry, action, callInput, resolved.slug),
+      expects_output_keys: expectsKeysForAction(action) };
+  }) };
+};
+
 /** Build the bridge-runner adapter. Returns an `Adapter` that the
  *  engine's adapter registry installs at the `dom` slot. */
 export const createBridgeDomAdapter = (
@@ -234,40 +274,7 @@ export const createBridgeDomAdapter = (
       );
     }
 
-    // core.dom.{read,write}: arg-driven — synthesize the allowlist + entries from
-    // the op args (no manifest selector map). Otherwise derive them from the DOM
-    // ingredient's manifest `output` map as before. `callInput` is what
-    // `buildArgsForEntry` / `buildIdempotencyKey` read: the synthetic
-    // `{ [CORE_DOM_VALUE_FIELD]: value }` for a core.dom write, else the resolved
-    // step input.
-    let domain_allowlist: string[];
-    let entries: DomEntry[];
-    let callInput: Record<string, unknown>;
-    if (isCoreDomSlug(resolved.slug)) {
-      const built = buildCoreDomCall(resolved.slug, resolved.input);
-      domain_allowlist = built.domain_allowlist;
-      entries = built.entries;
-      callInput = built.input;
-    } else {
-      domain_allowlist = extractDomainAllowlist(resolved.output);
-      if (domain_allowlist.length === 0) {
-        throw new IngredientError(
-          'DOM_PAGE_NOT_MATCHING',
-          `DOM ingredient '${resolved.slug}' declares no trigger URL patterns — bridge dispatch needs at least one`,
-          { slug: resolved.slug },
-        );
-      }
-
-      entries = collectEntries(resolved.output);
-      if (entries.length === 0) {
-        // Trigger-only manifest with no actionable entries — nothing to
-        // dispatch. Empty success matches `executeDOM`'s no-op return.
-        return {};
-      }
-      callInput = resolved.input;
-    }
-
-    const ingredient = buildIngredientRef(manifest, domain_allowlist);
+    const { ingredient, callInput, entries } = describeBridgeDomCall(manifest, resolved);
     const recipe_run_id = buildRecipeRunId(resolved);
     const step_id = resolved.stepMeta?.step_id ?? resolved.slug;
 
@@ -275,18 +282,14 @@ export const createBridgeDomAdapter = (
     // per command; the recipe-level output map can encode many. Each
     // entry gets its own dispatch + its own bridge idempotency cell.
     const outcomes: PerEntryOutcome[] = [];
-    for (const entry of entries) {
-      const action = classifyEntryAction(entry);
-      const args = buildArgsForEntry(entry, action, callInput, resolved.slug);
+    for (const { entry, action, args, expects_output_keys } of entries) {
       const idempotency_key = buildIdempotencyKey({
         recipe_run_id,
         step_id,
         slug: resolved.slug,
         entry,
-        input: callInput,
+        input: currentPreapprovalIo() ? { ...callInput, __reviewed_invocation_path: resolved.stepMeta?.invocation_path } : callInput,
       });
-      const expects_output_keys = expectsKeysForAction(action);
-
       const request: DispatchRequest = {
         recipe_run_id,
         step_id,
@@ -300,7 +303,9 @@ export const createBridgeDomAdapter = (
           : {}),
       };
 
-      const outcome = await dispatcher.dispatch(request);
+      const scope = currentPreapprovalIo();
+      const reviewed = scope ? await scope.prepareDomCommand(resolved, request, entry.index - 1) : undefined;
+      const outcome = await dispatcher.dispatch(request, reviewed);
       const outputs = translateDispatchOutcome(outcome, resolved.slug, entry);
       outcomes.push({ entry, action, outputs });
     }
@@ -493,6 +498,10 @@ const buildIngredientRef = (
  *  `command_id` (a per-dispatch random) so colliding run_id strings
  *  across concurrent step retries can't cross-talk on cancel. */
 const buildRecipeRunId = (resolved: ResolvedCall): string => {
+  if (currentPreapprovalIo()) {
+    if (!resolved.stepMeta?.run_id) throw new IngredientError('DOM_WRITE_FAILED', 'The reviewed DOM call has no actual run id.');
+    return resolved.stepMeta.run_id;
+  }
   const recipe_id = resolved.stepMeta?.recipe_id ?? 'dom';
   const step_id = resolved.stepMeta?.step_id ?? resolved.slug;
   return `${recipe_id}:${step_id}`;

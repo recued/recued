@@ -52,3 +52,4 @@ export {
   composePayloadToSendRecipeConfig,
   SEND_COMPOSED_MAIL_RECIPE_ID,
 } from './dispatch.js';
+export { normalizeMailSend, type NormalizedMailSend } from './normalize.js';

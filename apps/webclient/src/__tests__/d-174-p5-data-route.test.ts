@@ -16,6 +16,8 @@ import type {
   WorkEntityKind,
 } from '@recued/contracts';
 import { FILE_VENDOR_DECLARATIONS, WORK_ENTITY_KINDS } from '@recued/contracts';
+import { bootstrapSavedDataRoute } from '../data/saved-data-route.js';
+import { reconcileRecoveryContext } from '../shell/recovery-return-reconciliation.js';
 import {
   SEARCH_INPUT_ATTR,
   SEARCH_OPEN_RECORD_ACTION,
@@ -137,6 +139,7 @@ interface FakeEl {
   parent: FakeEl | null;
   listeners: Map<string, Array<(ev: Event) => void>>;
   readonly firstChild: FakeEl | null;
+  querySelector(selector: string): FakeEl | null;
   setAttribute(k: string, v: string): void;
   getAttribute(k: string): string | null;
   hasAttribute(k: string): boolean;
@@ -170,6 +173,7 @@ const makeFakeEl = (tag: string): FakeEl => {
     get firstChild() {
       return el.children[0] ?? null;
     },
+    querySelector: () => null,
     setAttribute(k, v) {
       el.attrs.set(k, v);
     },
@@ -542,6 +546,7 @@ const makeSubscribe = () => {
 };
 
 const mountRoute = (overrides: {
+  savedView?: BootstrapDataRouteOptions['savedView'];
   /** Universal search — opt-in, so the bare rig exercises the unwired notice. */
   collectionSearchAllCaller?: DataCollectionSearchAllCaller;
   universalSearchDebounceMs?: number;
@@ -630,6 +635,7 @@ const mountRoute = (overrides: {
   liveRefreshDebounceMs?: number;
   contactSearchDebounceMs?: number;
   bookingSearchDebounceMs?: number;
+  taskSearchDebounceMs?: number;
 } = {}) => {
   const doc = makeFakeDocument();
   if (overrides.replaceState !== undefined) {
@@ -841,6 +847,7 @@ const mountRoute = (overrides: {
       : {}),
     ...(overrides.fileReadCaller !== undefined ? { fileReadCaller: overrides.fileReadCaller } : {}),
     ...(overrides.initialTab !== undefined ? { initialTab: overrides.initialTab } : {}),
+    ...(overrides.savedView !== undefined ? { savedView: overrides.savedView } : {}),
     ...(overrides.initialCollectionSlug !== undefined
       ? { initialCollectionSlug: overrides.initialCollectionSlug }
       : {}),
@@ -871,6 +878,7 @@ const mountRoute = (overrides: {
       : {}),
     contactSearchDebounceMs: overrides.contactSearchDebounceMs ?? 0,
     bookingSearchDebounceMs: overrides.bookingSearchDebounceMs ?? 0,
+    taskSearchDebounceMs: overrides.taskSearchDebounceMs ?? 0,
     // D-205 #2b — opt-in, so the bare rig has NO merge callers and the
     // no-entry-point-when-unwired invariant is the default state under test.
     ...(overrides.contactMergeListCaller !== undefined
@@ -940,6 +948,256 @@ const mountRoute = (overrides: {
     mirrorSearchCaller,
   };
 };
+
+describe('Today route refresh ownership', () => {
+  it('paints the current read and coalesces source changes into one follow-up', async () => {
+    const { subscribe, listeners } = makeSubscribe();
+    const releases: Array<() => void> = [];
+    const list = vi.fn<DataWorkEntityListCaller>(async ({ kind }) => {
+      if (kind !== 'task') return { entities: [], total: 0 };
+      await new Promise<void>((resolve) => { releases.push(resolve); });
+      return { entities: [taskEntity({ due_at: NOW + 100 })], total: 1 };
+    });
+    const rig = mountRoute({ initialTab: 'today', now: () => NOW, subscribe, liveRefreshDebounceMs: 0,
+      workEntityListCaller: list, collectionListInstancesCaller: async () => ({ instances: [] }) });
+    const first = rig.route.whenLoaded();
+    for (let i = 0; i < 5; i++) listeners.get('warehouse')!({ kind: 'warehouse' });
+    expect(releases).toHaveLength(1);
+    releases[0]!();
+    await first;
+    expect(rig.root.children[0]!.innerHTML).toContain('Call Sam');
+    expect(releases).toHaveLength(2);
+    expect(rig.route.getRecoveryContextFreshness()).toBe('unavailable');
+    releases[1]!();
+    await rig.route.whenLoaded();
+    expect(releases).toHaveLength(2);
+    expect(rig.route.getRecoveryContextFreshness()).toBe('current');
+    rig.route.dispose();
+  });
+
+  it('keeps recovery pending for the current read and reports partial failures as unavailable', async () => {
+    let release!: () => void;
+    let mode: 'ready' | 'held' | 'failed' = 'ready';
+    const list: DataWorkEntityListCaller = async ({ kind }) => {
+      if (kind !== 'task') return { entities: [], total: 0 };
+      if (mode === 'failed') throw new Error('Tasks unavailable');
+      if (mode === 'held') await new Promise<void>((resolve) => { release = resolve; });
+      return { entities: [taskEntity({ due_at: NOW + 100 })], total: 1 };
+    };
+    const rig = mountRoute({ initialTab: 'today', now: () => NOW,
+      workEntityListCaller: list, collectionListInstancesCaller: async () => ({ instances: [] }) });
+    await rig.route.whenLoaded();
+    expect(rig.route.currentView()).toEqual({ tab: 'today' });
+    expect(rig.route.getRecoveryContextFreshness()).toBe('current');
+    mode = 'held';
+    rig.route.refresh();
+    let settled = false;
+    const refreshed = rig.route.whenLoaded().then(() => { settled = true; });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    expect(rig.route.getRecoveryContextFreshness()).toBe('unavailable');
+    release();
+    await refreshed;
+    expect(rig.route.getRecoveryContextFreshness()).toBe('current');
+    mode = 'failed';
+    rig.route.refresh();
+    await rig.route.whenLoaded();
+    expect(rig.route.getRecoveryContextFreshness()).toBe('unavailable');
+    expect(rig.root.children[0]!.innerHTML).toContain('Results below may be incomplete');
+    rig.route.dispose();
+  });
+
+  it('does not let a superseded Today read restore old rows after a newer refresh', async () => {
+    let release!: () => void;
+    let mode: 'ready' | 'held' | 'empty' = 'ready';
+    const list: DataWorkEntityListCaller = async ({ kind }) => {
+      if (kind !== 'task' || mode === 'empty') return { entities: [], total: 0 };
+      if (mode === 'held') await new Promise<void>((resolve) => { release = resolve; });
+      return { entities: [taskEntity({ due_at: NOW + 100 })], total: 1 };
+    };
+    const rig = mountRoute({ initialTab: 'today', now: () => NOW,
+      workEntityListCaller: list, collectionListInstancesCaller: async () => ({ instances: [] }) });
+    await rig.route.whenLoaded();
+    expect(rig.root.children[0]!.innerHTML).toContain('Call Sam');
+    mode = 'held';
+    rig.route.refresh();
+    const retired = rig.route.whenLoaded();
+    mode = 'empty';
+    rig.route.refresh();
+    await rig.route.whenLoaded();
+    release();
+    await retired;
+    expect(rig.root.children[0]!.innerHTML).not.toContain('Call Sam');
+    expect(rig.route.getRecoveryContextFreshness()).toBe('current');
+    rig.route.dispose();
+  });
+});
+
+describe('saved Data view hydration', () => {
+  const saved = (definition: NonNullable<BootstrapDataRouteOptions['savedView']>['definition']) => ({
+    id: 'view_00000000-0000-4000-8000-000000000001', name: 'My view', definition,
+    revision: 1, created_at: 1, updated_at: 1,
+  });
+
+  it('keeps recovery pending until the refreshed Data read settles and reports its result', async () => {
+    const doc = makeFakeDocument();
+    let finish!: () => void;
+    const contactListCaller = vi.fn<DataContactListCaller>()
+      .mockResolvedValueOnce({ contacts: [], total: 0 })
+      .mockImplementationOnce(() => new Promise((resolve) => { finish = () => resolve({ contacts: [], total: 0 }); }))
+      .mockRejectedValueOnce(new Error('Contacts unavailable'));
+    const route = bootstrapSavedDataRoute({
+      root: makeFakeEl('div') as unknown as HTMLElement, document: doc as unknown as Document,
+      initialTab: 'contact', contactListCaller,
+      savedViews: {
+        list: async () => ({ views: [] }), get: async () => ({ view: null }),
+        create: async () => { throw new Error('Unexpected write'); },
+        update: async () => { throw new Error('Unexpected write'); },
+        rename: async () => { throw new Error('Unexpected write'); },
+        delete: async () => { throw new Error('Unexpected write'); },
+      },
+    });
+    await route.whenLoaded();
+    route.refresh();
+    let settled = false;
+    const check = reconcileRecoveryContext(route).then((result) => { settled = true; return result; });
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    expect(contactListCaller).toHaveBeenCalledTimes(2);
+    expect(settled).toBe(false);
+    finish();
+    expect(await check).toBe('current');
+    route.refresh();
+    expect(await reconcileRecoveryContext(route)).toBe('unavailable');
+    route.dispose();
+  });
+
+  it('applies a saved contact query to the first read and fetches current rows again on refresh', async () => {
+    const rig = mountRoute({ initialTab: 'contact', savedView: saved({ tab: 'contact', query: 'Sam' }) });
+    await rig.route.whenLoaded();
+    expect(rig.contactListCaller).toHaveBeenCalledWith({ limit: 100, name_contains: 'Sam', with_rollups: true });
+    expect(rig.route.currentView()).toEqual({ tab: 'contact', query: 'Sam' });
+    rig.route.refresh();
+    await rig.route.whenLoaded();
+    expect(rig.contactListCaller).toHaveBeenCalledTimes(2);
+    expect(rig.contactListCaller).toHaveBeenLastCalledWith({ limit: 100, name_contains: 'Sam', with_rollups: true });
+    rig.route.dispose();
+  });
+
+  it('runs a saved universal search without requiring another keystroke', async () => {
+    const search = vi.fn<DataCollectionSearchAllCaller>(async () => ({ groups: [] }));
+    const rig = mountRoute({ initialTab: 'search', savedView: saved({ tab: 'search', query: 'Acme' }), collectionSearchAllCaller: search });
+    await rig.route.whenLoaded();
+    expect(search).toHaveBeenCalledWith(expect.objectContaining({ query: 'Acme' }));
+    expect(rig.route.currentView()).toEqual({ tab: 'search', query: 'Acme' });
+    rig.route.dispose();
+  });
+
+  it('restores booking Source, text, and lifecycle together before pagination', async () => {
+    const definition = { tab: 'booking', query: 'Acme', source_id: 'recued.booking', booking_lifecycle: 'confirmed' } as const;
+    const rig = mountRoute({ initialTab: 'booking', savedView: saved(definition) });
+    await rig.route.whenLoaded();
+    expect(rig.workEntityListCaller).toHaveBeenCalledWith({ kind: 'booking', limit: 100,
+      source_id: 'recued.booking', search: 'Acme', booking_lifecycle_states: ['confirmed'] });
+    expect(rig.route.currentView()).toEqual(definition);
+    rig.route.dispose();
+  });
+
+  it('does not broaden a disconnected work Source into All Sources', async () => {
+    const definition = { tab: 'task', query: 'Call', source_id: 'disconnected', booking_lifecycle: 'all' } as const;
+    const rig = mountRoute({ initialTab: 'task', savedView: saved(definition) });
+    await rig.route.whenLoaded();
+    expect(rig.workEntityListCaller).not.toHaveBeenCalled();
+    expect(rig.route.getLoadErrors().work_entities).toContain('no longer available');
+    expect(rig.route.currentView()).toEqual(definition);
+    rig.route.dispose();
+  });
+
+  it('keeps a saved task date window across pages and recalculates it on tomorrow’s refresh', async () => {
+    const definition = { tab: 'task', query: 'invoice', source_id: 'recued.task', booking_lifecycle: 'all',
+      task_filters: { completion: 'open', due: 'today', sort: 'due_asc' } } as const;
+    let now = new Date(2026, 8, 7, 23, 59).getTime();
+    const start = new Date(2026, 8, 7).getTime();
+    const tomorrow = new Date(2026, 8, 8).getTime();
+    const workEntityListCaller = vi.fn<DataWorkEntityListCaller>(async (args) => ({
+      entities: [taskEntity({ id: `page-${args.offset ?? 0}` })], total: 3,
+    }));
+    const rig = mountRoute({ initialTab: 'task', savedView: saved(definition), workEntityListCaller, now: () => now });
+    await rig.route.whenLoaded();
+    const expected = { kind: 'task', source_id: 'recued.task', search: 'invoice', limit: 100,
+      task_filter: { completion: 'open', sort: 'due_asc', due: { kind: 'range', from: start, before: tomorrow } } };
+    expect(workEntityListCaller).toHaveBeenLastCalledWith(expected);
+    expect(rig.route.currentView()).toEqual(definition);
+    now = new Date(2026, 8, 8, 0, 1).getTime();
+    emitClick(rig.root.children[0]!, 'load-more-work-entities');
+    await rig.route.whenLoaded();
+    expect(workEntityListCaller).toHaveBeenLastCalledWith({ ...expected, offset: 1 });
+    rig.route.refresh();
+    await rig.route.whenLoaded();
+    expect(workEntityListCaller).toHaveBeenLastCalledWith({ ...expected,
+      task_filter: { completion: 'open', sort: 'due_asc', due: {
+        kind: 'range', from: tomorrow, before: new Date(2026, 8, 9).getTime(),
+      } } });
+    rig.route.detachSavedView();
+    expect(rig.route.currentView()).toEqual(definition);
+    rig.route.dispose();
+  });
+
+  it('captures changed task filters without changing the stored view or accepting an unsupported value', async () => {
+    const definition = { tab: 'task', query: '', source_id: null, booking_lifecycle: 'all' } as const;
+    const rig = mountRoute({ initialTab: 'task', savedView: saved(definition), now: () => 1000 });
+    await rig.route.whenLoaded();
+    for (const [field, value] of [['completion', 'open'], ['due', 'overdue'], ['sort', 'due_asc']]) {
+      emitChange(rig.root.children[0]!, { value: value!,
+        getAttribute: (attr) => attr === 'data-action' ? `filter-task-${field}` : null });
+      await rig.route.whenLoaded();
+    }
+    const current = { ...definition, task_filters: { completion: 'open', due: 'overdue', sort: 'due_asc' } };
+    expect(rig.route.currentView()).toEqual(current);
+    expect(rig.workEntityListCaller).toHaveBeenLastCalledWith({ kind: 'task', limit: 100,
+      task_filter: { completion: 'open', sort: 'due_asc', due: { kind: 'overdue', before: 1000 } } });
+    emitChange(rig.root.children[0]!, { value: 'future',
+      getAttribute: (attr) => attr === 'data-action' ? 'filter-task-due' : null });
+    expect(rig.route.currentView()).toEqual(current);
+    expect(definition).not.toHaveProperty('task_filters');
+    rig.route.dispose();
+  });
+
+  it('keeps a missing saved mail account pinned through refresh even when another account is the only one', async () => {
+    const list = vi.fn<NonNullable<BootstrapDataRouteOptions['collectionListCaller']>>(async () => ({ records: [] }));
+    const rig = mountRoute({ initialTab: 'mail', savedView: saved({ tab: 'mail', collection_slug: 'missing' }),
+      collectionListInstancesCaller: async () => ({ instances: [{ platform: 'mail', slug: 'other', count: 1,
+        adapter_type: 'imap', caps: { read: 'yes', write: 'no', delete: 'no', watch: 'poll', mirror: 'required', auth: 'none', path_style: 'uri' },
+        auth_state: 'healthy', last_synced_at: null }] }),
+      collectionListCaller: list });
+    await rig.route.whenLoaded();
+    rig.route.refresh(); await rig.route.whenLoaded();
+    expect(list).not.toHaveBeenCalled();
+    expect(rig.root.children[0]!.innerHTML).toContain('no longer available');
+    rig.route.dispose();
+  });
+
+  it('retains a changed mail source after it disappears, without restoring the original saved source', async () => {
+    const instance = (slug: string) => ({ platform: 'mail' as const, slug, adapter_type: 'imap',
+      caps: { read: 'yes', write: 'no', delete: 'no', watch: 'poll', mirror: 'required', auth: 'none', path_style: 'uri' } as const,
+      auth_state: 'healthy' as const, last_synced_at: null });
+    let instances = [instance('original'), instance('changed')];
+    const list = vi.fn<NonNullable<BootstrapDataRouteOptions['collectionListCaller']>>(async () => ({ records: [] }));
+    const rig = mountRoute({ initialTab: 'mail', savedView: saved({ tab: 'mail', collection_slug: 'original' }),
+      collectionListInstancesCaller: async () => ({ instances }), collectionListCaller: list });
+    await rig.route.whenLoaded();
+    emitClick(rig.root.children[0]!, COLLECTION_SELECT_INSTANCE_ACTION, { [COLLECTION_INSTANCE_SLUG_ATTR]: 'changed' });
+    await vi.waitFor(() => expect(list).toHaveBeenLastCalledWith({ platform: 'mail', slug: 'changed', limit: 100 }));
+    instances = [instance('original')];
+    list.mockClear();
+    for (let i = 0; i < 2; i++) {
+      rig.route.refresh(); await rig.route.whenLoaded();
+      expect(list).not.toHaveBeenCalled();
+      expect(rig.route.currentView()).toEqual({ tab: 'mail', collection_slug: 'changed' });
+      expect(rig.route.getRecoveryContextFreshness()).toBe('unavailable');
+    }
+    rig.route.dispose();
+  });
+});
 
 describe('D-174 P5 Data route', () => {
   it('mounts #data as one back-office surface with own-it and mirror tabs', async () => {
@@ -2396,6 +2654,7 @@ describe('D-174 P5 Data route', () => {
     expect(rig.workEntityListCaller).toHaveBeenCalledWith({
       kind: 'task',
       limit: 100,
+      task_filter: { completion: 'all', sort: 'default', due: { kind: 'all' } },
     });
     expect(rig.root.children[0]?.innerHTML).toContain('work-entity-page');
     expect(rig.root.children[0]?.innerHTML).toContain('Call Sam');
@@ -2702,14 +2961,44 @@ describe('D-174 P5 Data route', () => {
     rig.route.dispose();
   });
 
-  it('filters work-entity rows when the list search input changes', async () => {
-    const workEntityListCaller = vi.fn<DataWorkEntityListCaller>(async () => ({
-      entities: [
-        taskEntity({ id: 'task-call', title: 'Call Sam' }),
-        taskEntity({ id: 'task-budget', title: 'Draft budget' }),
-      ],
-      total: 2,
-    }));
+  it('coalesces task typing and refuses an older search response during the next debounce', async () => {
+    vi.useFakeTimers();
+    let rig: ReturnType<typeof mountRoute> | undefined;
+    try {
+      let finishOld!: (value: Awaited<ReturnType<DataWorkEntityListCaller>>) => void;
+      const workEntityListCaller = vi.fn<DataWorkEntityListCaller>()
+        .mockResolvedValueOnce({ entities: [], total: 0 })
+        .mockImplementationOnce(() => new Promise((resolve) => { finishOld = resolve; }))
+        .mockResolvedValueOnce({ entities: [taskEntity({ id: 'new-result', title: 'Current match' })], total: 1 });
+      rig = mountRoute({ initialTab: 'task', workEntityListCaller, taskSearchDebounceMs: 180 });
+      await rig.route.whenLoaded();
+      const search = (value: string) => emitInput(rig!.root.children[0]!, { value, hasAttribute: () => false,
+        getAttribute: (attr) => attr === 'data-action' ? 'search-work-entities' : attr === 'data-kind' ? 'task' : null });
+      for (const value of ['a', 'ac', 'acme']) search(value);
+      expect(workEntityListCaller).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(180);
+      expect(workEntityListCaller).toHaveBeenCalledTimes(2);
+      search('new');
+      finishOld({ entities: [taskEntity({ id: 'old-result', title: 'Obsolete match' })], total: 1 });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(rig.root.children[0]!.innerHTML).not.toContain('Obsolete match');
+      await vi.advanceTimersByTimeAsync(180);
+      await rig.route.whenLoaded();
+      expect(workEntityListCaller).toHaveBeenCalledTimes(3);
+      expect(workEntityListCaller.mock.lastCall?.[0].search).toBe('new');
+      expect(rig.root.children[0]!.innerHTML).toContain('Current match');
+      expect(rig.root.children[0]!.innerHTML).not.toContain('Obsolete match');
+    } finally {
+      rig?.route.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it('renders the server’s filtered task result after the list search changes', async () => {
+    const workEntityListCaller = vi.fn<DataWorkEntityListCaller>()
+      .mockResolvedValueOnce({ entities: [taskEntity({ id: 'task-call', title: 'Call Sam' }),
+        taskEntity({ id: 'task-budget', title: 'Draft budget' })], total: 2 })
+      .mockResolvedValueOnce({ entities: [taskEntity({ id: 'task-budget', title: 'Draft budget' })], total: 1 });
     const rig = mountRoute({ workEntityListCaller });
     await rig.route.whenLoaded();
 
@@ -2728,6 +3017,9 @@ describe('D-174 P5 Data route', () => {
     });
 
     expect(rig.route.workEntityState().search_query).toBe('budget');
+    await rig.route.whenLoaded();
+    expect(workEntityListCaller).toHaveBeenLastCalledWith({ kind: 'task', limit: 100, search: 'budget',
+      task_filter: { completion: 'all', sort: 'default', due: { kind: 'all' } } });
     expect(rig.root.children[0]?.innerHTML).not.toContain('Call Sam');
     expect(rig.root.children[0]?.innerHTML).toContain('Draft budget');
 
@@ -5790,15 +6082,15 @@ describe('D-174 P5 Data route — R18 work-entity load-more pagination', () => {
     rig.route.dispose();
   });
 
-  it('keeps the footer under a search so a match past the first page can be loaded', async () => {
+  it('replaces a paged task list with the complete search result without requiring Load more', async () => {
     const workEntityListCaller = pagedTaskCaller(5);
     const rig = mountRoute({ workEntityListCaller });
     await rig.route.whenLoaded();
     await rig.route.selectTab('task'); // loaded [Task 0, Task 1] of 5
 
-    // Search for a row NOT in the loaded page — the client filter hides every
-    // row, but the footer stays (its "N of M loaded" count is honest and Load
-    // more is how you reach the match).
+    workEntityListCaller.mockResolvedValueOnce({
+      entities: [taskEntity({ id: 'task-3', title: 'Task 3' })], total: 1,
+    });
     emitInput(rig.root.children[0]!, {
       value: 'Task 3',
       hasAttribute: () => false,
@@ -5810,17 +6102,11 @@ describe('D-174 P5 Data route — R18 work-entity load-more pagination', () => {
             : null,
     });
     expect(rig.route.workEntityState().search_query).toBe('Task 3');
-    let html = rig.root.children[0]?.innerHTML ?? '';
-    expect(html).toContain(DATA_ROUTE_WORK_ENTITY_LOAD_MORE_ATTR);
-    // The `task-3` ROW isn't loaded yet (assert the row id, not the title —
-    // 'Task 3' also appears as the search input's value).
-    expect(html).not.toContain('data-entity-id="task-3"');
-
-    // Load more (search still active) → task-3 arrives → the client search now
-    // surfaces it.
-    emitClick(rig.root.children[0]!, 'load-more-work-entities');
     await rig.route.whenLoaded();
-    html = rig.root.children[0]?.innerHTML ?? '';
+    const html = rig.root.children[0]?.innerHTML ?? '';
+    expect(workEntityListCaller).toHaveBeenLastCalledWith({ kind: 'task', limit: 100, search: 'Task 3',
+      task_filter: { completion: 'all', sort: 'default', due: { kind: 'all' } } });
+    expect(html).not.toContain(DATA_ROUTE_WORK_ENTITY_LOAD_MORE_ATTR);
     expect(html).toContain('data-entity-id="task-3"');
 
     rig.route.dispose();

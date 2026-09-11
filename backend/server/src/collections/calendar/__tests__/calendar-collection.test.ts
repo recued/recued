@@ -18,6 +18,10 @@ import {
   type WarehouseEventBus,
 } from '@recued/warehouse-events';
 import type { CalendarCollectionHealth, CanonicalEvent } from '@recued/contracts';
+import { handleCollectionList } from '../../collection-handler.js';
+import { createCollectionRegistry } from '../../registry.js';
+import { loadToday } from '../../../../../../apps/webclient/src/data/today-view.js';
+import { canonicalizeGcalEvent } from '../gcal-provider.js';
 
 import { createBlobStore, type BlobStore } from '../../../storage/blob-store.js';
 import {
@@ -454,6 +458,79 @@ describe('CalendarCollection — verified write-back hooks', () => {
 });
 
 describe('CalendarCollection — generic collection.list / collection.get (D-198)', () => {
+  it.each([
+    ['America/Los_Angeles', '2026-09-08T21:00:00-07:00'],
+    ['Asia/Tokyo', '2026-09-08T01:00:00+09:00'],
+    ['America/Los_Angeles', '2026-03-08T12:00:00-07:00'],
+    ['America/Los_Angeles', '2026-11-01T12:00:00-08:00'],
+  ])('keeps provider all-day dates through storage, RPC filtering, and Today in %s at %s', async (zone, clock) => {
+    const previous = process.env.TZ;
+    process.env.TZ = zone;
+    try {
+      const now = Date.parse(clock);
+      const date = new Date(now);
+      const encodedToday = Date.UTC(date.getFullYear(), date.getMonth(), date.getDate());
+      const dayString = (offset: number): string => new Date(encodedToday + offset * 86_400_000).toISOString().slice(0, 10);
+      for (const [id, start, end] of [
+        ['ended', -1, 0], ['today', 0, 1], ['multi-day', -1, 2], ['tomorrow', 1, 2], ['last-day', 6, 7], ['beyond', 7, 8],
+      ] as const) {
+        await h.collection.applyVerifiedUpsert({ event: canonicalizeGcalEvent({ id, summary: id,
+          start: { date: dayString(start) }, end: { date: dayString(end) },
+        }, 'cal-1'), description_bytes: 0 });
+      }
+      await h.collection.applyVerifiedUpsert({ event: baseEvent({ source_id: 'timed', summary: 'timed',
+        start_at: now + 3_600_000, end_at: now + 7_200_000,
+      }), description_bytes: 0 });
+      const registry = createCollectionRegistry();
+      registry.register(h.collection);
+      const snapshot = await loadToday({
+        workEntityListCaller: async () => ({ entities: [], total: 0 }),
+        workEntitySourceListCaller: async () => ({ sources: [] }),
+        collectionListInstancesCaller: async () => ({ instances: [{
+          platform: 'calendar', slug: 'work', adapter_type: 'gcal', auth_state: 'healthy', last_synced_at: now,
+          caps: { read: 'yes', list_calendars: 'yes', create_event: 'yes', update_event: 'yes', delete_event: 'yes',
+            rsvp: 'yes', search: 'local', watch: 'poll', auth: 'oauth', recurrence: 'server' },
+        }] }),
+        collectionListCaller: (args) => handleCollectionList({ registry }, args),
+      }, now);
+      expect(snapshot.issues).toEqual([]);
+      expect(snapshot.items.filter((item) => item.group === 'today').map((item) => item.title)).toEqual(['multi-day', 'today', 'timed']);
+      expect(snapshot.items.filter((item) => item.group === 'next').map((item) => item.title)).toEqual(['tomorrow', 'last-day']);
+      const today = snapshot.items.find((item) => item.title === 'today')!;
+      expect(new Date(today.when).getHours()).toBe(0);
+      expect(new Date(today.when).getDate()).toBe(date.getDate());
+      expect(today.allDay).toBe(true);
+      expect(today.ongoing).toBe(true);
+    } finally {
+      if (previous === undefined) delete process.env.TZ;
+      else process.env.TZ = previous;
+    }
+  });
+
+  it('pages an event overlap window through the RPC handler before applying the calendar cap', async () => {
+    const registry = createCollectionRegistry();
+    registry.register(h.collection);
+    for (let index = 0; index < 605; index++) {
+      const start = index < 104 ? 2_000 : 20_000;
+      await h.collection.applyVerifiedUpsert({ event: baseEvent({
+        source_id: `event-${index}`, start_at: start, end_at: start + 1_000,
+      }), description_bytes: 0 });
+    }
+    for (const [id, start, end] of [['ongoing', 1_000, 2_100], ['ended', 1_000, 2_000], ['boundary', 3_000, 4_000]] as const) {
+      await h.collection.applyVerifiedUpsert({ event: baseEvent({ source_id: id, start_at: start, end_at: end }), description_bytes: 0 });
+    }
+    const query = { platform: 'calendar', slug: 'work', calendar_window: { from: 2_000, before: 3_000 }, limit: 100 };
+    const first = await handleCollectionList({ registry }, query);
+    const second = await handleCollectionList({ registry }, { ...query, offset: 100 });
+    const rows = [...first.records, ...second.records];
+    expect(first.records).toHaveLength(100);
+    expect(second.records).toHaveLength(5);
+    expect(rows[0]?.source_id).toBe('ongoing');
+    expect(new Set(rows.map((row) => row.record_id)).size).toBe(105);
+    expect(rows.some((row) => row.source_id === 'ended' || row.source_id === 'boundary')).toBe(false);
+    expect(first.source_freshness).toBeDefined();
+    expect((await handleCollectionList({ registry }, { ...query, offset: 200 })).records).toEqual([]);
+  });
   beforeEach(() => { h = newHarness(); });
 
   it('list() projects warehouse events into CollectionRecords with display hot-fields', async () => {

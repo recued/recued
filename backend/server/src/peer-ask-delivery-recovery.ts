@@ -37,6 +37,7 @@ export type PeerAskDeliveryOutcome =
     };
 
 export interface PeerAskDeliveryRecoveryDeps {
+  readonly canPublishReviewedCheckpoint?: (checkpoint: Checkpoint) => boolean;
   readonly outbox: PeerAskOutboxStore;
   readonly auditLog: Pick<AuditLogStore, 'get' | 'append'>;
   readonly checkpoints: {
@@ -503,6 +504,9 @@ export const recoverPeerAskDelivery = async (
       return { kind: 'not_ready' };
     }
 
+    if (exact.checkpoint.preapproval_execution_ref && !deps.canPublishReviewedCheckpoint?.(exact.checkpoint)) {
+      return { kind: 'not_ready' };
+    }
     const outcome = await deps.deliver(row, exact.anchor);
     if (outcome.kind === 'in_doubt') return { kind: 'deferred', outcome };
 
@@ -652,10 +656,12 @@ export const journalOwnsInterruptedPeerDispatch = async (
     action_ref: string;
     run_id: string;
     gated_step_id: string;
-    current_checkpoint_id: string;
+    current_checkpoint_id?: string;
+    origin?: 'held_checkpoint' | 'preapproval_member';
   },
   deps: PeerDispatchJournalDeps,
 ): Promise<boolean> => {
+  if (action.origin === 'preapproval_member' || action.current_checkpoint_id === undefined) return false;
   const matches = deps.outbox.listDeliveries().filter((candidate) =>
     candidate.action_ref === action.action_ref
       && candidate.run_id === action.run_id

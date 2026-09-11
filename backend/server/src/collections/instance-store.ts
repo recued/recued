@@ -27,6 +27,7 @@
  */
 
 import type Database from 'better-sqlite3';
+import { initializePreapprovalLifecycle, synchronizePreapprovalIdentity } from '../storage/preapproval-lifecycle.js';
 import type {
   CollectionAuthState,
   CollectionCaps,
@@ -34,6 +35,11 @@ import type {
 } from '@recued/contracts';
 
 const TABLE = 'collection_instances';
+
+export const collectionInstancePreapprovalMaterial = (row: Pick<CollectionInstanceRecord,
+  'adapter_type' | 'config' | 'caps' | 'auth_state'>): unknown => ({
+  adapter_type: row.adapter_type, config: row.config, caps: row.caps, auth_state: row.auth_state,
+});
 
 const SCHEMA = `
   CREATE TABLE IF NOT EXISTS ${TABLE} (
@@ -271,35 +277,42 @@ export const createInstanceStore = (
      WHERE platform = @platform AND slug = @slug
   `);
 
+  initializePreapprovalLifecycle(db);
+  const synchronize = (platform: CollectionPlatform, slug: string, row: CollectionInstanceRecord | null) =>
+    synchronizePreapprovalIdentity(db, 'collection_instance', `${platform}:${slug}`,
+      row ? collectionInstancePreapprovalMaterial(row) : null);
   return {
     upsert(record) {
-      const ts = now();
-      const existing = getStmt.get(record.platform, record.slug) as
-        | { created_at: number }
-        | undefined;
-      const created_at = existing ? existing.created_at : ts;
-      upsertStmt.run({
-        platform: record.platform,
-        slug: record.slug,
-        adapter_type: record.adapter_type,
-        config_json: JSON.stringify(record.config ?? {}),
-        caps_json: JSON.stringify(record.caps),
-        auth_state: record.auth_state,
-        last_synced_at: record.last_synced_at,
-        created_at,
-        updated_at: ts,
-      });
-      // Re-read so the returned record reflects the persisted
-      // backfill_complete (preserved on update, DEFAULT 0 on insert) —
-      // the caller's input deliberately omits the column.
-      const stored = this.get(record.platform, record.slug);
-      if (!stored) {
-        // Should be unreachable — we just wrote the row.
-        throw new Error(
-          `instance-store.upsert: row vanished after write: ${record.platform}/${record.slug}`,
-        );
-      }
-      return stored;
+      return db.transaction(() => {
+        const ts = now();
+        const existing = getStmt.get(record.platform, record.slug) as
+          | { created_at: number }
+          | undefined;
+        const created_at = existing ? existing.created_at : ts;
+        upsertStmt.run({
+          platform: record.platform,
+          slug: record.slug,
+          adapter_type: record.adapter_type,
+          config_json: JSON.stringify(record.config ?? {}),
+          caps_json: JSON.stringify(record.caps),
+          auth_state: record.auth_state,
+          last_synced_at: record.last_synced_at,
+          created_at,
+          updated_at: ts,
+        });
+        // Re-read so the returned record reflects the persisted
+        // backfill_complete (preserved on update, DEFAULT 0 on insert) —
+        // the caller's input deliberately omits the column.
+        const stored = this.get(record.platform, record.slug);
+        if (!stored) {
+          // Should be unreachable — we just wrote the row.
+          throw new Error(
+            `instance-store.upsert: row vanished after write: ${record.platform}/${record.slug}`,
+          );
+        }
+        synchronize(record.platform, record.slug, stored);
+        return stored;
+      }).immediate();
     },
     get(platform, slug) {
       const row = getStmt.get(platform, slug) as Parameters<typeof parseRow>[0] | undefined;
@@ -312,31 +325,38 @@ export const createInstanceStore = (
       return rows.map(parseRow);
     },
     delete(platform, slug) {
-      const res = deleteStmt.run(platform, slug);
-      return res.changes > 0;
+      return db.transaction(() => {
+        synchronize(platform, slug, null);
+        const res = deleteStmt.run(platform, slug);
+        return res.changes > 0;
+      }).immediate();
     },
     updateAuthState(platform, slug, patch) {
-      const ts = now();
-      const res = updateAuthStmt.run({
-        platform,
-        slug,
-        auth_state: patch.auth_state,
-        last_synced_at: patch.last_synced_at ?? null,
-        updated_at: ts,
-      });
-      if (res.changes === 0) return null;
-      return this.get(platform, slug);
+      return db.transaction(() => {
+        const ts = now();
+        const res = updateAuthStmt.run({
+          platform,
+          slug,
+          auth_state: patch.auth_state,
+          last_synced_at: patch.last_synced_at ?? null,
+          updated_at: ts,
+        });
+        if (res.changes === 0) return null;
+        const stored = this.get(platform, slug); synchronize(platform, slug, stored); return stored;
+      }).immediate();
     },
     updateCaps(platform, slug, caps) {
-      const ts = now();
-      const res = updateCapsStmt.run({
-        platform,
-        slug,
-        caps_json: JSON.stringify(caps),
-        updated_at: ts,
-      });
-      if (res.changes === 0) return null;
-      return this.get(platform, slug);
+      return db.transaction(() => {
+        const ts = now();
+        const res = updateCapsStmt.run({
+          platform,
+          slug,
+          caps_json: JSON.stringify(caps),
+          updated_at: ts,
+        });
+        if (res.changes === 0) return null;
+        const stored = this.get(platform, slug); synchronize(platform, slug, stored); return stored;
+      }).immediate();
     },
     markBackfillComplete(platform, slug) {
       const ts = now();

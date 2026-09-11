@@ -1819,6 +1819,128 @@ const ALIAS_SURFACE_CI =
 const isEmailCompositeToken = (token: string): boolean =>
   token.includes('@') && /\.invalid$/i.test(token);
 
+/** ⛔⛔ THE VOCABULARY RATCHET — every alias token in an egressed packet must be
+ *  one the LEDGER issued.
+ *
+ *  🔑 WHY THIS IS ASSERTABLE AT ALL. `scanContent` is a substring replace of
+ *  ledger-known real values: longest-first, boundary-matched, with ONE anchored
+ *  allocation exception, and explicitly "NO fresh allocation for unanchored
+ *  spans / unknown spans pass through unchanged". So the alias vocabulary of an
+ *  egressed packet is EXACTLY the ledger's. Any alias-shaped token outside it
+ *  was minted by something OTHER than the content pass.
+ *
+ *  🔑 MEASURED (bench 343, run z-343-r4). `prior_tool_calls` was passed whole to
+ *  the recall pass, so `decorateOverlapReveal` rewrote every string leaf:
+ *  `pii.Person1` (13 in `prefetch_context`, 11 in `user_message`) rendered as
+ *  `pii.Person1.dana.reyes` (45) and `m1@d1.invalid` as
+ *  `m1.dana.reyes@d1.invalid` (44) — a TOTAL partition by field, 0 plain forms
+ *  in that field. One contact, two surface strings, and for an EMAIL one extra
+ *  character is a different address. The ledger was perfectly consistent
+ *  throughout (two slots: `m1`, `pii.person1`), which is why nothing caught it:
+ *  SLOT consistency is not SURFACE consistency, and every check was written at
+ *  the slot level.
+ *
+ *  ⇒ Classifies each token three ways rather than pass/fail, because the middle
+ *  case is a DECLARED exception and not a defect:
+ *    · `known`     — exactly a ledger alias (or its composite/sibling form)
+ *    · `decorated` — a ledger base carrying an overlap-reveal tail. Legitimate
+ *                    for RECALL CONTENT; a defect on a record the model echoes.
+ *                    Measured: 77% of tails sit beside the same base elsewhere
+ *                    in the packet, so the ledger already carried the
+ *                    coreference and the tail bought nothing.
+ *    · `unknown`   — a base the ledger never issued. Nothing legitimate produces
+ *                    this; it is the assertion that matters. */
+export interface AliasVocabularyReport {
+  readonly known: readonly string[];
+  readonly decorated: readonly string[];
+  readonly unknown: readonly string[];
+}
+
+/** ⛔⛔⛔ THE COMPLEMENT OF THE VOCABULARY RATCHET — raw ledger values that
+ *  survived aliasing and would egress to the provider.
+ *
+ *  🔑 WHY BOTH ARE NEEDED. `classifyAliasTokens` asks "is every alias token one
+ *  the ledger issued" — it catches MINTING (a rewritten surface form). A LEAK
+ *  produces no alias token at all, so that check is structurally silent on it.
+ *  This asks the opposite question: "did any real value get through unaliased".
+ *
+ *  🔑 MEASURED 2026-09-09 — the leak this exists for was live. The rolling
+ *  brief sends its own packet shape (`user_request`, `carried_forward`,
+ *  `tool_results_since`, `pending_user_statements` — then named
+ *  `earlier_user_statements`), none of which were in the
+ *  egress enumeration, so none was ever aliased: 144 of 2,865 outbound packets
+ *  (5.0%) carried the seed contact's REAL NAME. The ledger was correct
+ *  throughout — the fields were simply never looked at.
+ *
+ *  ⛔ ALIASING IS BEST-EFFORT BY DESIGN ("aliasing may miss, restore may not"),
+ *  so an unenumerated field does not throw, log, or fail — it silently ships.
+ *  "No error" therefore carries NO information, and only an explicit scan for
+ *  the raw value can tell a covered field from an uncovered one.
+ *
+ *  ⚠ GUARDS MIRROR `scanContent`, and for its reasons: a bare ALL-DIGIT value
+ *  is indistinguishable from an unrelated number, and a very short value
+ *  collides with ordinary prose. Over-reporting here would be as useless as
+ *  under-reporting — a ratchet nobody trusts gets muted. */
+export const rawLedgerValuesInText = (
+  ledger: Ledger,
+  text: string,
+): string[] => {
+  if (typeof text !== 'string' || text.length === 0) return [];
+  const found = new Set<string>();
+  for (const entry of ledger.byKindRealValue.values()) {
+    const real = entry.real_value;
+    // Too short to distinguish from prose; all-digit is the `scanContent`
+    // false-identity hazard (an invoice number is not a postcode).
+    if (typeof real !== 'string' || real.length < 4) continue;
+    if (/^\d+$/.test(real)) continue;
+    const boundary = new RegExp(
+      `(?<![A-Za-z0-9])${real.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![A-Za-z0-9])`,
+      'iu',
+    );
+    if (boundary.test(text)) found.add(real);
+  }
+  return [...found];
+};
+
+export const classifyAliasTokens = (
+  ledger: Ledger,
+  text: string,
+): AliasVocabularyReport => {
+  const known: string[] = [];
+  const decorated: string[] = [];
+  const unknown: string[] = [];
+  if (typeof text !== 'string' || text.length === 0) {
+    return { known, decorated, unknown };
+  }
+  const vocab = new Set<string>();
+  for (const entry of ledger.byKindBaseAlias.values()) {
+    vocab.add(entry.alias_value.toLowerCase());
+  }
+  for (const entry of ledger.byKindRealValue.values()) {
+    vocab.add(entry.alias_value.toLowerCase());
+  }
+  const inVocab = (base: string): boolean => {
+    if (vocab.has(base.toLowerCase())) return true;
+    // The email COMPOSITE is `m<N>@d<M>.invalid` — neither half is itself the
+    // whole alias, so check the parts against the same vocabulary.
+    const at = base.indexOf('@');
+    if (at <= 0) return false;
+    return vocab.has(base.slice(0, at).toLowerCase())
+      && vocab.has(base.slice(at + 1).toLowerCase());
+  };
+  for (const raw of text.match(ALIAS_TOKEN_PATTERN) ?? []) {
+    const at = raw.indexOf('@');
+    const localOrWhole = at > 0 ? raw.slice(0, at) : raw;
+    const strippedLocal = stripAliasSuffix(localOrWhole);
+    const base = at > 0 ? `${strippedLocal}${raw.slice(at)}` : strippedLocal;
+    const tailed = strippedLocal !== localOrWhole;
+    if (!inVocab(base)) unknown.push(raw);
+    else if (tailed) decorated.push(raw);
+    else known.push(raw);
+  }
+  return { known, decorated, unknown };
+};
+
 export const ledgerKindForAlias = (token: string): LedgerKind | undefined => {
   if (typeof token !== 'string' || !ALIAS_SURFACE_CI.test(token)) return undefined;
   if (isEmailCompositeToken(token)) return 'email_local';

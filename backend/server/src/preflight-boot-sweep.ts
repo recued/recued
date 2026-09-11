@@ -143,6 +143,7 @@ interface UnresolvedPreflightAsk {
 }
 
 export interface PreflightBootSweepDeps {
+  readonly canPublishReviewedCheckpoint?: (checkpoint: Checkpoint) => boolean;
   readonly checkpointStore: CheckpointStore;
   readonly auditLog: AuditLogStore;
   readonly notifier: PreflightNotifier;
@@ -312,6 +313,8 @@ export const sweepAwaitingCheckpoints = async (
 
   for (const checkpoint of checkpoints) {
     result.inspected++;
+    if (checkpoint.preapproval_nested_wait || (checkpoint.preapproval_execution_ref
+      && !deps.canPublishReviewedCheckpoint?.(checkpoint))) continue;
     // D-182 §8 — a recipe-LESS raw-op hold has no recipe-run `AuditEntry`, so
     // recover it against the notification block's durable ask rows. This
     // closes both crash windows around the original hold sequence:

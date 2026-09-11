@@ -25,6 +25,7 @@
 import {
   workEntityNavSpec,
   type BookingLifecycleState,
+  type TaskViewFilters,
   type FormDefinition,
   type SourceDropdownOption,
   type WorkEntityListRow,
@@ -64,6 +65,7 @@ export interface WorkEntityPageProps {
   footer_html?: string;
   /** Booking-only server-side lifecycle filter echoed into the list control. */
   booking_lifecycle_filter?: BookingLifecycleState | 'all';
+  task_filters?: TaskViewFilters;
   /** Exact row whose edit detail is loading. It remains focusable while busy. */
   opening_entity_id?: string;
   /** Forwarded to an open dialog when user dismissal needs confirmation. */
@@ -108,6 +110,7 @@ export const renderWorkEntityPage = (props: WorkEntityPageProps): string => {
     show_source_label: showSourceLabel,
     empty_state_copy: spec.empty_state_copy,
     search_query: state.search_query,
+    ...(props.task_filters !== undefined ? { task_filters: props.task_filters } : {}),
     ...(state.kind === 'booking'
       ? { booking_lifecycle_filter: props.booking_lifecycle_filter ?? 'all' }
       : {}),

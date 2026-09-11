@@ -54,6 +54,21 @@ const mkAdapters = (): {
 const mkLoader = (table: Record<string, IngredientManifest>): ManifestLoader =>
   async (slug) => table[slug] ?? null;
 
+describe('catalog operation risk at transport dispatch', () => {
+  it('uses the resolved risk only for a trusted catalog surface', async () => {
+    const received: string[] = [];
+    const execute = createIngredientExecutor({
+      manifestLoader: mkLoader({ catalog: mkManifest({ slug: 'catalog', kind: 'connection' }) }),
+      adapterRegistry: { connection: async call => { received.push(call.risk_tier); return {}; } },
+    });
+    await execute('catalog', {}, {}, undefined,
+      { step_id: 'write', surface_dispatch: true, surface_operation_key: 'write', surface_risk_tier: 'write' });
+    await execute('catalog', {}, {}, undefined,
+      { step_id: 'plain', surface_operation_key: 'write', surface_risk_tier: 'write' });
+    expect(received).toEqual(['write', 'read']);
+  });
+});
+
 // ────────────────────────────────────────────────────────────────
 // resolveDispatchSlot — D-126 P2.2 kind-based routing decisions
 // ────────────────────────────────────────────────────────────────
@@ -97,9 +112,12 @@ describe('resolveDispatchSlot (D-126 P2.2)', () => {
       .toBe('connection');
   });
 
-  it('keeps kernel priority for every other kind (D-125 P3.1 carve-out is narrow)', () => {
-    // Sanity — the carve-out fires only on `kind === 'connection'`, not
-    // on any other kind a kernel manifest might declare.
+  it('routes bundled DOM operations through the actual DOM adapter', () => {
+    expect(resolveDispatchSlot(mkManifest({ slug: 'dom-write', author: 'recued', kind: 'dom' }))).toBe('dom');
+    expect(resolveDispatchSlot(mkManifest({ slug: 'dom-read', author: 'recued', kind: 'dom' }))).toBe('dom');
+  });
+
+  it('keeps kernel priority for the remaining kernel-backed kinds', () => {
     expect(resolveDispatchSlot(mkManifest({ author: 'recued', kind: 'http' }))).toBe('kernel');
     expect(resolveDispatchSlot(mkManifest({ author: 'recued', kind: 'storage' }))).toBe('kernel');
     expect(resolveDispatchSlot(mkManifest({ author: 'recued', kind: 'service' }))).toBe('kernel');

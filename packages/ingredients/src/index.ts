@@ -1,7 +1,7 @@
 export type { IngredientExecutor, ManifestLoader, ResolvedCall } from './types.js';
 export { IngredientError } from './types.js';
 export { executeMCP, type MCPInput } from './mcp.js';
-export { executeHTTP } from './http.js';
+export { executeHTTP, describeHttpRequest } from './http.js';
 export { executeDOM, type DOMContext, type DOMWriteResult } from './dom.js';
 export { createChatAdapter, type ChatAdapterDeps, type ChatConfig, type ChatAuditEntry } from './chat.js';
 export { matchUrlPattern } from './url-match.js';
@@ -23,6 +23,7 @@ export { withIngredientCache, type IngredientCacheOptions } from './cache.js';
 export {
   createIngredientExecutor,
   mergeManifestStepInput,
+  mergeManifestStepOutput,
   resolveDispatchSlot,
   type Adapter,
   type DispatchSlot,
@@ -55,6 +56,8 @@ export {
 } from './connection.js';
 export {
   createConnectionApiHandler,
+  describeConnectionApiRequest, describeConnectionApiUpload,
+  buildConnectionApiBody,
   refreshOAuth2,
   refreshOAuth2WithMetadata,
   exchangeOAuth2ClientCredentials,
@@ -67,6 +70,7 @@ export {
 } from './connection-api.js';
 export {
   createConnectionMcpHandler,
+  describeConnectionMcpRequest,
   type ConnectionMcpHandlerDeps,
   type McpStreamHandle,
   type WsClientHandle,
@@ -75,6 +79,15 @@ export {
   type StdioSpawn,
   type McpStreamProbeResult,
   probeMcpLegacySseTools,
+  probeMcpPushSupport,
+  type McpPushProbeResult,
+  type McpPushUnavailableReason,
+  type McpAcknowledgedNotifications,
+  openMcpListenStream,
+  createMcpListenOpener,
+  MCP_LISTEN_OPEN_TIMEOUT_MS,
+  type McpListenStreamHandle,
+  type McpListenOpenResult,
   probeMcpStreamTools,
   readMcpHttpEnvelope,
   MCP_TOOL_LIST_PROBE_MAX_PAGES,

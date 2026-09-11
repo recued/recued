@@ -343,9 +343,23 @@ describe('D-139 P5 — registry invariants across both AI-surface canaries', () 
     expect(ENRICHMENT_REGISTRY.engagement_sentiment_trend.policy).toBe('aggregate');
     expect(ENRICHMENT_REGISTRY.next_best_action.policy).toBe('aggregate');
   });
-  it('both topics carry producer_kind = reactive', () => {
-    expect(ENRICHMENT_REGISTRY.engagement_sentiment_trend.producer_kind).toBe('reactive');
-    expect(ENRICHMENT_REGISTRY.next_best_action.producer_kind).toBe('reactive');
+  it('both topics carry producer_kind = housekeeping, and STILL default to manual trust', () => {
+    // ⛔ WAS `'reactive'` until slice 4 (2026-09-10). Both are now produced by
+    // registered housekeeping tasks (`RECORD_AI_TASKS`). The flip is what
+    // makes them REACHABLE: `housekeeping.task.run_now` refuses an
+    // unregistered task, Settings → Housekeeping renders its Run-policy
+    // control per registered task, and `maybeBumpManualRun` only counts a
+    // Run-Now for a registered AI-surface enrichment task — so under
+    // `'reactive'` the `'manual'` default could never be promoted by any
+    // route the owner could reach.
+    expect(ENRICHMENT_REGISTRY.engagement_sentiment_trend.producer_kind).toBe('housekeeping');
+    expect(ENRICHMENT_REGISTRY.next_best_action.producer_kind).toBe('housekeeping');
+
+    // 🔑 THE SAFETY DEFAULT IS UNCHANGED, and that pairing is the point of
+    // the assertion: registering an AI producer must not silently opt the
+    // owner into token spend. Reachable is not the same as on.
+    expect(ENRICHMENT_REGISTRY.engagement_sentiment_trend.default_trust_state).toBe('manual');
+    expect(ENRICHMENT_REGISTRY.next_best_action.default_trust_state).toBe('manual');
   });
   it('both topics tagged department:sales', () => {
     expect(ENRICHMENT_REGISTRY.engagement_sentiment_trend.tags).toContain('department:sales');

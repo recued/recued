@@ -162,6 +162,27 @@ const stripOutcomeFields = (row: Commit): void => {
   delete row.detail;
 };
 
+/** Shared canonical rows for both the async store and synchronous realm
+ * transaction participants. Neither helper performs a storage write. */
+export const canonicalPendingCommit = (input: PendingCommitInput): Commit => {
+  const row: Commit = { ...input, status: 'pending' };
+  stripOutcomeFields(row);
+  return row;
+};
+
+export const commitWithOutcome = (existing: Commit, outcome: CommitOutcome): Commit => {
+  if (isTerminalCommitStatus(existing.status)) {
+    throw new Error(`CommitStore: commit_id "${existing.commit_id}" is already terminal `
+      + `(${existing.status}); outcome capture is once-only`);
+  }
+  const updated: Commit = { ...existing, status: outcome.status, completed_at: outcome.completed_at,
+    duration_ms: outcome.completed_at - existing.dispatched_at };
+  if (outcome.output !== undefined) updated.output = outcome.output;
+  if (outcome.cached === true) updated.cached = true;
+  if (outcome.detail !== undefined) updated.detail = outcome.detail;
+  return updated;
+};
+
 /** Build a `CommitStore` over a backing `Collection<Commit>`. The
  *  collection is keyed by `commit_id` — pass an in-memory collection in
  *  tests, a SQLite collection on the server. */
@@ -198,14 +219,14 @@ export const createCommitStore = (
 
   return {
     async writePending(commit) {
+      if (commit.preapproval !== undefined) throw new Error('A pre-approved commit must be created in its member transaction.');
       if (await backing.has(commit.commit_id)) {
         throw new Error(
           `CommitStore: commit_id "${commit.commit_id}" already written `
             + `(pending-write is once-only per commit)`,
         );
       }
-      const row: Commit = { ...commit, status: 'pending' };
-      stripOutcomeFields(row);
+      const row = canonicalPendingCommit(commit);
       await backing.set(commit.commit_id, row);
     },
 
@@ -214,33 +235,23 @@ export const createCommitStore = (
       if (!existing) {
         throw new Error(`CommitStore: commit_id "${commit_id}" not found`);
       }
-      if (isTerminalCommitStatus(existing.status)) {
-        throw new Error(
-          `CommitStore: commit_id "${commit_id}" is already terminal `
-            + `(${existing.status}); outcome capture is once-only`,
-        );
+      if (existing.preapproval !== undefined) {
+        throw new Error('A pre-approved commit must settle in its member transaction.');
       }
-      const updated: Commit = {
-        ...existing,
-        status: outcome.status,
-        completed_at: outcome.completed_at,
-        duration_ms: outcome.completed_at - existing.dispatched_at,
-      };
       // Conditional — a tool that returned no value leaves `output`
       // absent rather than explicitly `undefined`; `cached` is set only
       // on a real cache hit, `detail` only when the call carries extra
       // facets (matches the conditional-spread convention used across
       // the audit substrate).
-      if (outcome.output !== undefined) updated.output = outcome.output;
-      if (outcome.cached === true) updated.cached = true;
-      if (outcome.detail !== undefined) updated.detail = outcome.detail;
+      const updated = commitWithOutcome(existing, outcome);
       await backing.set(commit_id, updated);
     },
 
     async sweepPendingToInDoubt() {
       const all = await backing.list();
       const stranded = all
-        .filter((c) => !isTerminalCommitStatus(c.status))
+        // D-261 recovery owns its member, receipt and commit atomically.
+        .filter((c) => c.preapproval === undefined && !isTerminalCommitStatus(c.status))
         .sort(byDispatchedAsc);
       const swept: Commit[] = [];
       for (const c of stranded) {

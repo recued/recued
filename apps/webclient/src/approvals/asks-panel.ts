@@ -57,6 +57,7 @@ import type { ServerPendingAsk } from '@recued/contracts';
 
 import type { BroadcastSubscriber } from '../realtime/subscriber.js';
 import { humanizeRpcError } from '../shell/rpc-error-copy.js';
+import { renderPreapprovalAsk } from './preapproval-route.js';
 
 // ════════════════════════════════════════════════════════════════
 // Caller seams + handle
@@ -261,6 +262,7 @@ export const mountAsksPanel = (
         // The shared card (I-12). `ServerPendingAsk` satisfies its
         // structural `AskCardModel` ({ ask_id, title?, text, options }).
         root.appendChild(
+          renderPreapprovalAsk(doc, ask) ??
           renderAskCard(doc, ask, {
             onAnswer: (optionId, note) => submitFromCard(ask.ask_id, optionId, note),
           }),

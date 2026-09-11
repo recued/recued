@@ -133,6 +133,18 @@ export interface ExecuteRequest {
  *  builder — a misbehaving dispatcher cannot accidentally overwrite an
  *  unrelated run's audit row by setting these fields. */
 export interface InternalExecuteOverrides {
+  /** D-261 opaque host-issued run handle. The private runtime WeakMap must
+   * recognize it; a serialized future/grant id carries no execution authority. */
+  preapproval_run?: object;
+  /** Host-issued, unclaimed automatic-run poll. It confers no approval until
+   * the ordinary trigger phase qualifies and the runtime claims this run. */
+  preapproval_candidate?: object;
+  /** Ordinary automatic polls advance their durable qualifying sequence at
+   * the same phase boundary. Only the owned driver installs this callback. */
+  after_auto_run_qualification?: () => void;
+  auto_run_qualification?: import('@recued/contracts').Checkpoint['auto_run_qualification'];
+  /** Authenticated external tool entry, never accepted from ExecuteRequest. */
+  entry_tool_name?: string;
   /** D-221 watcher causality minted only by the durable Records outbox
    * runner. It never appears on ExecuteRequest, so recipe/client args cannot
    * reset a root, depth, or watcher identity. */
@@ -175,6 +187,9 @@ export interface InternalExecuteOverrides {
   resume_from?: {
     gated_step_id: string;
     step_state: Record<string, unknown>;
+    execution_phase?: 'trigger' | 'prefetch' | 'sequential';
+    trigger_state?: Record<string, unknown>;
+    prefetch_completed?: string[];
     foreach_progress?: ForeachCheckpointProgress;
     /** Host-recorded amplification bound for the approved dispatch. A
      * resumed foreach may spend this authority on only its current item; the

@@ -1,6 +1,8 @@
 import type { Condition } from './conditions.js';
 import type { PreflightApprovedTarget } from './checkpoint.js';
 import type { Actor, ExecutionSource } from './commits.js';
+import type { PreapprovalInvocationPath } from './preapproval.js';
+import type { RiskTier } from './ingredient.js';
 
 export type StepType = 'transform' | 'ingredient' | 'guard' | 'unknown';
 
@@ -30,6 +32,14 @@ export interface StepOptions {
  *  fields. Middleware that doesn't care (cache, dispatch) forwards it
  *  unchanged. */
 export interface StepMeta {
+  /** Actual external tool chosen at the authenticated host entry point. */
+  entry_tool_name?: string;
+  /** Exact recipe grant selected by host admission, retained for a deferred
+   * request raised inside that recipe. Never copied from a recipe field. */
+  governing_recipe_grant?: string;
+  /** D-261 structural occurrence, populated only from host engine context.
+   * This is an address, never an approval marker or a dispatch permit. */
+  invocation_path?: PreapprovalInvocationPath;
   /** The recipe step's `id` field. Threaded so approval pending records
    *  carry the originating step_id. */
   step_id: string;
@@ -226,6 +236,11 @@ export interface StepMeta {
    *  unreachable at the commit boundary. Absent on every non-catalog
    *  dispatch. */
   surface_operation_key?: string;
+  /** Resolved operation risk, set only by the catalog gateway. Transport
+   * adapters must classify uncertain delivery using the operation's risk,
+   * including policy tightening, instead of the catalog wrapper's read tier.
+   * Honored only alongside surface_dispatch; never copied from recipe JSON. */
+  surface_risk_tier?: RiskTier;
   /** D-201 Slice 6B3 — engine-private pre-injection wire input for a catalog
    * surface whose final provider dispatch contains trusted sensitive values.
    * The commit Gateway uses this value for admission, action identity, usage,

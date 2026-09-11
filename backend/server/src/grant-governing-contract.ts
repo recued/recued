@@ -40,7 +40,6 @@
 
 import {
   executionSourceContractId,
-  isContractActive,
   isReservedOwnerContractId,
   isStandingContractDefinition,
   OWNER_CONTRACT_ID,
@@ -49,6 +48,7 @@ import {
 } from '@recued/contracts';
 
 import type { ContractDefinitionStore } from './storage/contract-definition-store.js';
+import { isContractActiveForDispatchCheck } from './contract-dispatch-reservation.js';
 
 /** The channels on which an `actor: 'user_self'` dispatch is the OWNER's own AI (and
  *  therefore gated by the owner contract). `chat` = the webclient assistant; `messenger`
@@ -92,7 +92,7 @@ export const gateStandingContractId = (
   const def = definitionStore.get(id);
   if (
     def &&
-    isContractActive(def, now()) &&
+    isContractActiveForDispatchCheck(def, now()) &&
     isStandingContractDefinition(def)
   ) {
     return id;
@@ -115,7 +115,7 @@ export const gateGrantGoverningContractId = (
   const def = definitionStore.get(id);
   if (
     def
-    && isContractActive(def, now())
+    && isContractActiveForDispatchCheck(def, now())
     && (isStandingContractDefinition(def) || def.grant_kind === 'customer_instance')
   ) {
     return id;

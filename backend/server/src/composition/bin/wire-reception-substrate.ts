@@ -101,6 +101,9 @@ import type { ReceptionRecipeRunner } from '../../reception-recipe-runner.js';
 import type { OpResolver } from '../../derive-recipe-capability.js';
 import type { ContractDefinitionStore } from '../../storage/contract-definition-store.js';
 import type { ContractGrantEntryStore } from '../../storage/contract-grant-entry-store.js';
+// D-220 Slice B — pack-shipped intake templates, read from the contract store.
+import type { ContractStore } from '../../storage/contract-store.js';
+import { listInstalledPackReceptionTemplates } from '../../pack-reception-templates.js';
 import type { DishStore } from '../../dish-store.js';
 // D-210 Appendix B — the on-the-go `/reception/manage` reschedule door.
 import type { ReceptionManageCredentialStore } from '../../storage/reception-manage-credential-store.js';
@@ -233,6 +236,11 @@ export interface ComposeReceptionSubstrateDeps {
    *  that would need one, instead of saving a pair whose form hard-denies every submit. */
   readonly contractDefinitionStore?: ContractDefinitionStore | undefined;
   readonly grantEntryStore?: ContractGrantEntryStore | undefined;
+  /** D-220 Slice B — the contract store the pack install wrote its shipped
+   *  intake templates into (`installed_reception_template` rows).
+   *  `reception.template.list` reads them through it. Absent ⇒ the list carries
+   *  empty pack arrays. */
+  readonly contractStore?: ContractStore | undefined;
   /** The engine handle the gated runner dispatches through. Present ⇒ a bound door's recipe
    *  actually RUNS on a public submit; absent (boot phase) ⇒ the pair keeps whatever path
    *  owned it before. */
@@ -910,11 +918,18 @@ export const composeReceptionSubstrate = async (
     };
   }
 
+  // D-220 Slice B — pack-shipped intake templates are read from the SAME contract
+  // store the pack install wrote them into. A local alias so the closure holds a
+  // stable reference, not the wider optional binding.
+  const packTemplateStore = deps.contractStore;
   const receptionRpcDeps: ReceptionRpcDeps = {
     ...receptionRpcDepsBase,
     // D-207 slice 1c — what `intake_recipe_pair.bind` mints the door with. Omitted ⇒ bind
     // refuses (`not_configured`) any recipe that needs one.
     ...(doorBindDeps ? { getDoorBindDeps: () => doorBindDeps } : {}),
+    ...(packTemplateStore
+      ? { listPackReceptionTemplates: () => listInstalledPackReceptionTemplates(packTemplateStore) }
+      : {}),
   };
 
   const receptionPortDeps: ReceptionPortHandlerDeps = {

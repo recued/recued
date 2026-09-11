@@ -30,6 +30,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { parseBrief } from './chat-rolling-brief.js';
 import {
   CHAT_MODEL_ROUTING_LAYER_SET,
   CHAT_MODEL_SOURCE_ID_SET,
@@ -294,6 +295,10 @@ type ChatMethods =
   | 'chat.session.clear_model_pref'
   | 'chat.default_model_pref.get'
   | 'chat.default_model_pref.set'
+  | 'chat.rolling_brief.get'
+  | 'chat.rolling_brief.set'
+  | 'chat.session.brief.get'
+  | 'chat.session.brief.clear'
   | 'chat.tool_catalog.get'
   | 'chat.tool_catalog.set'
   | 'chat.connection_mcp.list'
@@ -1751,6 +1756,112 @@ export const handleSetDefaultModelPref = (
   return persisted;
 };
 
+/** Read the server-scoped rolling-brief enable. */
+export const handleGetRollingBrief = (
+  deps: ChatRpcDeps,
+): { enabled: boolean } => ({ enabled: deps.store.getRollingBriefEnabled() });
+
+/** Turn the rolling brief on or off for this server.
+ *
+ *  ⛔ SERVER-SCOPED, NOT PER-PAIR. `runChatTurn` is keyed on `session_id` and
+ *  holds no peer identity — turns arrive over MCP and the D-148 P9 inbound
+ *  channels with no paired client at all — so there is no per-pair value to
+ *  resolve on exactly the turns where carrying context matters most. The
+ *  gateway path reads the SAME setting for the same reason.
+ *
+ *  ⚠ NO BROADCAST, DELIBERATELY. `chat.default_model_pref.set` emits one
+ *  because paired clients repaint a badge on every inherited session; this has
+ *  no live UI consumer yet, and a broadcast kind no client NAMES is dead on the
+ *  wire (a handler for `chat.data_diagnosis_resolved` sat unsubscribed for 2½
+ *  weeks). Add the kind to the client subscription lists in the same change
+ *  that adds the Settings control, not before.
+ *
+ *  ⚠ The read is per-turn, so a flip here applies from the NEXT turn on every
+ *  session — it does not retroactively brief sessions already in flight, and it
+ *  does not require a restart. */
+export const handleSetRollingBrief = (
+  deps: ChatRpcDeps,
+  args: { enabled: unknown },
+): { enabled: boolean } => {
+  const safe = ensureRecordArgs('chat.rolling_brief.set', args);
+  if (typeof safe.enabled !== 'boolean') {
+    throw new RpcError(
+      'bad_request',
+      'chat.rolling_brief.set: enabled must be a boolean',
+      400,
+    );
+  }
+  const enabled = deps.store.setRollingBriefEnabled(safe.enabled);
+  void safeLogActivity(
+    deps.auditLog,
+    'chat_rolling_brief_set',
+    'chat_rolling_brief',
+    JSON.stringify({ enabled }),
+  );
+  return { enabled };
+};
+
+/** Read what the assistant is CARRYING about one conversation.
+ *
+ *  ⛔⛔ THE BRIEF STEERS EVERY LATER TURN AND THE OWNER COULD NOT SEE IT. Only
+ *  the fold TRAIL reaches the transparency stream (`decisions: [...]`) — that
+ *  folds happened, never what they kept. `memory.write` entries already meet
+ *  this bar ("transparently attributed to the AI and visible + reversible in
+ *  the Memory view") and the brief holds strictly more influential content: it
+ *  is in the packet of every subsequent turn.
+ *
+ *  🔑 ONLY POSSIBLE NOW THAT IT IS DURABLE. A module-level Map that dies with
+ *  the process cannot be shown to anyone; a row can.
+ *
+ *  ⚠ IT IS AN INTERPRETATION, NOT A RECORD, and the surface must say so.
+ *  Measured over 386 constraint entries: 10% are exact substrings of a user
+ *  message, 66% near-copies, 25% reworded. And it asserts values at 98.4%
+ *  accuracy — roughly 1 in 60 carried values is wrong, propagated faithfully
+ *  into every later turn. Displaying it without that framing would lend a wrong
+ *  value the credibility of being shown. */
+export const handleGetSessionBrief = async (
+  deps: ChatRpcDeps,
+  args: { session_id: string },
+): Promise<{ brief: unknown | null; }> => {
+  const safe = ensureRecordArgs('chat.session.brief.get', args);
+  if (typeof safe.session_id !== 'string' || safe.session_id.length === 0) {
+    throw new RpcError('bad_request', 'chat.session.brief.get: session_id is required', 400);
+  }
+  const json = await deps.store.readSessionBrief(safe.session_id);
+  if (json === null) return { brief: null };
+  // ⛔ VALIDATE BEFORE IT LEAVES THE SERVER. A row that no longer parses as a
+  //   brief reads as ABSENT rather than shipping an unknown shape to a client
+  //   that would have to guess at it.
+  try { return { brief: parseBrief(JSON.parse(json)) }; } catch { return { brief: null }; }
+};
+
+/** Drop what the assistant is carrying for one conversation.
+ *
+ *  🔑 THE "REVERSIBLE" HALF, AND IT IS COARSE ON PURPOSE. Clearing loses the
+ *  whole carry, not one wrong entry — but the alternative to a coarse control
+ *  is no control, and the facts a cleared brief held are still in the
+ *  transcript, which `recall.search` reads. An owner who spots a stale figure
+ *  can drop the carry and let the next fold rebuild it from the source.
+ *
+ *  ⚠ Per-entry editing is deliberately NOT here: a brief the owner has hand-
+ *  edited is no longer the model's interpretation OR the owner's words, and
+ *  nothing downstream would know which entries to trust. */
+export const handleClearSessionBrief = (
+  deps: ChatRpcDeps,
+  args: { session_id: string },
+): { ok: true } => {
+  const safe = ensureRecordArgs('chat.session.brief.clear', args);
+  if (typeof safe.session_id !== 'string' || safe.session_id.length === 0) {
+    throw new RpcError('bad_request', 'chat.session.brief.clear: session_id is required', 400);
+  }
+  deps.store.deleteSessionBrief(safe.session_id);
+  void safeLogActivity(
+    deps.auditLog, 'chat_session_brief_cleared', 'chat_session_brief',
+    JSON.stringify({ session_id: safe.session_id }),
+  );
+  return { ok: true };
+};
+
 /** D-137 W2.2 § A.1.1 — Mary's per-kind catalog scope read. Returns
  *  the persisted shape (or the substrate default at first boot). The
  *  store hides corrupted rows behind a default fall-through so the
@@ -2769,6 +2880,10 @@ export const makeChatHandlers = (
       'chat.session.clear_model_pref',
       'chat.default_model_pref.get',
       'chat.default_model_pref.set',
+      'chat.rolling_brief.get',
+      'chat.rolling_brief.set',
+      'chat.session.brief.get',
+      'chat.session.brief.clear',
       'chat.tool_catalog.get',
       'chat.tool_catalog.set',
       'chat.connection_mcp.list',
@@ -2839,6 +2954,13 @@ export const makeChatHandlers = (
         handleClearModelPref(deps, args as { session_id: string }),
       'chat.default_model_pref.get': async () =>
         handleGetDefaultModelPref(deps),
+      'chat.rolling_brief.get': async () => handleGetRollingBrief(deps),
+      'chat.rolling_brief.set': async (args: unknown) =>
+        handleSetRollingBrief(deps, args as { enabled: unknown }),
+      'chat.session.brief.get': async (args: unknown) =>
+        handleGetSessionBrief(deps, args as { session_id: string }),
+      'chat.session.brief.clear': async (args: unknown) =>
+        handleClearSessionBrief(deps, args as { session_id: string }),
       'chat.default_model_pref.set': async (args) =>
         handleSetDefaultModelPref(deps, args as { source_id: string }),
       'chat.tool_catalog.get': async () => handleToolCatalogGet(deps),

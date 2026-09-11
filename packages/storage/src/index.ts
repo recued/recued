@@ -93,6 +93,8 @@ export {
 // the sole writer and wires this into the engine.
 export {
   createCommitStore,
+  canonicalPendingCommit,
+  commitWithOutcome,
   type CommitStore,
   type PendingCommitInput,
   type CommitOutcome,

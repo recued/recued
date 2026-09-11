@@ -85,6 +85,19 @@ const createFakeChatStore = (): ChatStore & {
     getDefaultModelPref: () => ({ layer: 'byok', updated_at: 0 }),
     getDefaultModelSourceId: () => ({ source_id: null, updated_at: 0 }),
     setDefaultModelSourceId: (source_id) => ({ source_id, updated_at: 0 }),
+    // Global chat-behaviour setting. ⚠ OFF in the double: these adapters do not
+    // fold, and inheriting the server's default-ON would spend a brief call
+    // inside tests whose subject is channel adaptation.
+    getRollingBriefEnabled: () => false,
+    setRollingBriefEnabled: (enabled: boolean) => enabled,
+    // ⚠ SECOND TIME THIS DOUBLE WENT STALE IN ONE SESSION — first when
+    //   `ChatStore` grew the rolling-brief ENABLE, now when it grew the brief's
+    //   durable storage. The stub's note above predicts exactly this, and the
+    //   recurrence is the point: a structural double tracks an interface only as
+    //   well as someone remembers to, and only `typecheck:tests` says otherwise.
+    readSessionBrief: async () => null,
+    writeSessionBrief: async () => undefined,
+    deleteSessionBrief: () => undefined,
     setTitle: () => false,
     setArchived: () => false,
     bumpSessionLastActiveAt: () => false,

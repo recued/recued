@@ -47,8 +47,8 @@
  *  (D-097 / D-168), never appears in user-facing chat.
  */
 
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
-import { basename, join, resolve } from 'node:path';
+import { readFileSync } from 'node:fs';
+import { basename } from 'node:path';
 
 import {
   BULK_INSTALL_PACK_VERSION,
@@ -73,37 +73,15 @@ import {
   resolvePackOpStepRecipes,
   type ProvisionAuthoredDeps,
 } from './ingredient-authoring/install-composition.js';
-import { BUNDLED_FOUNDATION_PACKS } from './bundled-foundation.generated.js';
+import {
+  findCommunityPackDir,
+  parseEmbeddedFoundationManifests,
+  walkJsonFiles,
+} from './bundled-pack-source.js';
 import { installBulkPackOnServer } from './install-bulk-pack-handler.js';
 import type { McpBodyVisibilityStore } from './storage/mcp-body-visibility-store.js';
 import { createManifestRegistry, type ManifestRegistry } from './manifest-loader.js';
 import type { RecipeStore } from './recipe-store.js';
-
-/** Default community/packs directory resolution. Mirrors
- *  `recipe-store.ts:findCommunityDir`'s convention so test harnesses
- *  passing a custom community dir get the same shape regardless of
- *  which substrate's loader runs first. */
-const findCommunityPackDir = (): string => {
-  const projectRoot = resolve(import.meta.dirname ?? __dirname, '..', '..', '..');
-  return join(projectRoot, 'community', 'packs');
-};
-
-/** Recursively collect every `*.json` under `dir` — matches the
- *  `packs.install` handler's `walkJsonFiles` so the boot pre-install scan and
- *  the rpc install resolver agree on the bundled root. First-party packs nest
- *  one level under a publisher dir (`community/packs/recued-core/*.json`, the
- *  reception core-packs); a non-recursive scan would silently miss them, which
- *  is exactly why a pre_install composition pack must be reachable here. */
-const walkJsonFiles = (dir: string): string[] => {
-  if (!existsSync(dir)) return [];
-  const out: string[] = [];
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    const full = join(dir, entry.name);
-    if (entry.isDirectory()) out.push(...walkJsonFiles(full));
-    else if (entry.isFile() && entry.name.endsWith('.json')) out.push(full);
-  }
-  return out;
-};
 
 /** Outcome of one pack's pre-install attempt. Surfaces back through the
  *  boot wire so test harnesses + future boot-debug surfaces can render
@@ -169,8 +147,15 @@ export interface PreInstallFoundationPacksInput {
   mcpBodyVisibilityStore?: McpBodyVisibilityStore;
   /** Override the default community/packs directory. Tests pass a
    *  scratch dir; production callers leave undefined to use the
-   *  bundled location. */
+   *  bundled location. ⚠ An explicit dir also turns the embedded-manifest
+   *  union OFF — a pinned fixture is the corpus. */
   packDir?: string;
+  /** Resolve the DEFAULT pack directory as if this module lived here. The only
+   *  way to drive the distribution layout — default path, corpus dir absent, the
+   *  embed as sole source — from a checkout, which is where the two defects in
+   *  internal design notes hid. Production never passes it;
+   *  ignored when `packDir` is pinned. */
+  moduleDir?: string;
   /** Connection-agnostic op dispatch — the live manifest registry's `get`,
    *  used to resolve a foundation CRM pack's BUNDLED vendor catalog (the
    *  catalog a by-ref `{type:'ingredient'}` content names) when rewriting its
@@ -215,12 +200,13 @@ const loadFoundationPackManifests = (
 ): { ok: BulkPackManifest[]; outcomes: FoundationPackOutcome[] } => {
   const ok: BulkPackManifest[] = [];
   const outcomes: FoundationPackOutcome[] = [];
-  // FS scan (dev/git-clone). Guarded — NOT an early return: a DEPLOYED server
-  // ships no `community/packs` dir, and the embedded-manifest union below must
-  // still run so the foundation packs pre-install there.
-  // Recursive walk — first-party packs nest under a publisher dir
-  // (`community/packs/recued-core/*.json`); the reception core-packs live there.
-  for (const file of existsSync(packDir) ? walkJsonFiles(packDir) : []) {
+  // FS scan (dev/git-clone). An absent dir yields `[]` and is NOT an early
+  // return: a DEPLOYED server ships no `community/packs`, and the
+  // embedded-manifest union below must still run so the foundation packs
+  // pre-install there. The walk recurses because first-party packs nest under a
+  // publisher dir (`community/packs/recued-core/*.json`) — see
+  // `bundled-pack-source.ts`, which the `packs.*` rpcs read through too.
+  for (const file of walkJsonFiles(packDir)) {
     const fileSlug = basename(file).replace(/\.json$/, '');
     let raw: string;
     try {
@@ -270,16 +256,46 @@ const loadFoundationPackManifests = (
   // Union the embedded foundation manifests so a DEPLOYED server (which ships no
   // `community/packs` dir — the FS scan above finds nothing) still pre-installs
   // them. A git-clone dev build finds them on the FS first → those win (dedup by
-  // slug); the embedded set fills only what the FS didn't provide. Clone so a
-  // downstream in-place manifest rewrite (op-step resolution) can't corrupt the
-  // shared module constant across boots.
+  // slug); the embedded set fills only what the FS didn't provide.
+  //
+  // ⛔⛔ THROUGH THE VALIDATOR, exactly like a disk manifest. This block cloned
+  // the raw constant until 2026-09-07, and the two foundation packs that declare
+  // their recipes through a v2 `contents[]` reached the install loop with an
+  // EMPTY `recipes[]` — the parser's lift is what fills it. Nothing errored:
+  // zero resolved recipes made `allRecipesAlreadyInstalled` vacuously true, both
+  // packs were recorded `no_op`, and a live drive of a packaged server found
+  // twelve recipes embedded, none stored, and a boot log that said nothing.
+  // See `bundled-pack-source.ts` + internal design notes.
   //
   // ONLY on the DEFAULT path — a test pinning an explicit `packDir` supplies its
   // own fixture and must not get the embedded foundation packs injected.
   if (includeEmbedded) {
     const seen = new Set(ok.map((m) => m.slug));
-    for (const manifest of BUNDLED_FOUNDATION_PACKS) {
-      if (!seen.has(manifest.slug)) ok.push(structuredClone(manifest) as BulkPackManifest);
+    const embedded = parseEmbeddedFoundationManifests();
+    for (const manifest of embedded.ok) {
+      // ⛔⛔ THE SAME GATE THE DISK LOOP APPLIES, AND FOR THE THIRD TIME THIS
+      // BLOCK LEARNED IT THE HARD WAY. The embed carries every pack that ships
+      // in the binary — `pre_install` core features AND `bundled` manageable
+      // packs — because a distribution needs both present. Only the first kind
+      // may be installed without asking. Without this line the boot wire
+      // installed `personal-organizer-foundation` and `mail-compose-foundation`
+      // on every deployed server, which is precisely the "decide for the owner"
+      // the 2026-09-07 ruling removed, and the test that should have caught it
+      // passed instead: it was asserting the OLD contract.
+      if (manifest.pre_install !== true) continue;
+      if (!seen.has(manifest.slug)) ok.push(manifest);
+    }
+    // An embedded manifest that fails validation is reported, never dropped: it
+    // would otherwise leave a release silently one core feature short. Reported
+    // for ANY embedded pack, core or manageable — an invalid manifest cannot be
+    // asked which kind it is.
+    for (const rejected of embedded.invalid) {
+      if (seen.has(rejected.slug)) continue;
+      outcomes.push({
+        slug: rejected.slug,
+        status: 'skipped_invalid_manifest',
+        reason: rejected.reason,
+      });
     }
   }
   return { ok, outcomes };
@@ -558,7 +574,7 @@ export const preInstallFoundationPacks = async (
   // no `input.packDir`). A test pins `packDir` to its own fixture + must not get
   // the embedded packs injected.
   const usingDefaultPackDir = input.packDir === undefined;
-  const packDir = input.packDir ?? findCommunityPackDir();
+  const packDir = input.packDir ?? findCommunityPackDir(input.moduleDir);
   const now = input.now ?? Date.now();
   const { ok: manifests, outcomes: manifestOutcomes } = loadFoundationPackManifests(
     packDir,

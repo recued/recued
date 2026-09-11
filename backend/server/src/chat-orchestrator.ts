@@ -172,6 +172,9 @@ import {
   type FileReadDeps,
   type FileReadResponse,
 } from './collections/file/file-read-handler.js';
+// D-262 § 1 — the STORED mime is what `file.search` and every other consumer
+// sees; a client's `media_class` is advisory by its own module's rule.
+import { mediaClassForMimeType } from './collections/file/inbound-file-collection.js';
 // D-160 spec-O-5 — the chat turn MECHANICS (per-round AI call +
 // cooperative tool loop + in-turn enforcement + rich emits) live in
 // `runChatTurn`; the orchestrator drives it through the framework
@@ -180,11 +183,13 @@ import {
 import {
   ChatContextLengthError,
   runChatTurn,
+  isNonTerminalToolResult,
   type RunChatTurnPromptContent,
   type RunChatTurnResult,
   type ChatPriorToolPointers,
 } from './chat-turn-executor.js';
 import { createChatPiiSlotOrderingSeeder } from './chat-pii-slot-ordering.js';
+import { markChatToolCallSaved, rememberChatToolCallFailure, withChatToolCallContext } from './chat-tool-call-context.js';
 import {
   RECALL_SEARCH_TOOL_NAME,
   recallJoinedPieces,
@@ -253,6 +258,7 @@ import type {
 import type {
   ExecutionCaseProposalCritic,
 } from './execution-case-critic.js';
+import { parseBrief } from './chat-rolling-brief.js';
 import type { ContactStore } from './storage/contact-store.js';
 import type { CorrectionEventsStore } from './storage/correction-events-store.js';
 
@@ -799,9 +805,23 @@ export interface ChatAiCallResult {
  *  owns inline AI-packet composition + calls this closure directly — no
  *  framework seam. D-164 P4 (prompt-cache) registers a `before-turn` hook
  *  that may short-circuit AI dispatch entirely. */
+/** Per-call knobs for a chat AI call.
+ *
+ *  ⚠ `timeout_ms` IS AN OPT-IN, AND THE DEFAULT STAYS NONE. `@recued/llm`'s
+ *  timeout policy installs no timer unless a caller asks for one, because
+ *  aborting mid-stream does not un-bill the tokens the provider already
+ *  generated — on the MAIN turn that would burn the user's money AND lose the
+ *  answer they asked for. Only a caller whose result is genuinely optional
+ *  should pass this. See `packages/llm/src/timeout.ts`. */
+export interface ChatAiCallOptions {
+  /** Per-call timeout, forwarded to `executeLLM`'s `timeout_ms` dep. */
+  readonly timeout_ms?: number;
+}
+
 export type ExecuteChatAiCall = (
   manifest: IngredientManifest,
   input: Record<string, unknown>,
+  opts?: ChatAiCallOptions,
 ) => Promise<ChatAiCallResult>;
 
 /** Minimal broadcast surface the orchestrator needs from the D-121
@@ -812,7 +832,14 @@ export interface ChatBroadcastEmitter {
   emit(event: BroadcastChatEvent): void;
 }
 
-export interface MessengerVoiceTranscriptionDeps {
+/** D-172 A.9 / D-262 — the read + transcribe capability a voice-only turn needs.
+ *
+ *  ⚠ Named for the CAPABILITY, not the caller: both the messenger turn and the
+ *  owner's own chat turn resolve a voice note through it. The dep FIELD matches
+ *  (`voiceTranscription`) as of 2026-09-06 — it was `messengerVoiceTranscription`
+ *  for one release, which named the FIRST CALLER rather than the thing, and read
+ *  as "the webclient must have its own" to anyone scanning the deps. */
+export interface VoiceTranscriptionDeps {
   getFileReadDeps?: () => FileReadDeps | undefined;
   readFile?: (
     record_id: string,
@@ -1116,12 +1143,13 @@ export interface ChatOrchestratorDeps {
    *  `personal-recipes` `after-turn` hook seeds its per-contact lookup
    *  from. Absent → that adapter no-ops. */
   getContactStore?: () => ContactStore | undefined;
-  /** D-172 A.9 — voice-only messenger notes are the user's utterance.
-   *  When the optional file-read + audio-model deps are live, the
-   *  orchestrator reads the just-ingested audio ref and transcribes it before
-   *  appending the durable user row. Missing deps / read failures /
-   *  transcription failures fall back to the P4 pending affordance. */
-  messengerVoiceTranscription?: MessengerVoiceTranscriptionDeps;
+  /** D-172 A.9 / D-262 — a voice-only note IS the user's utterance, whether it
+   *  arrived from a messenger or from the owner's own composer. When the
+   *  optional file-read + audio-model deps are live, the orchestrator reads the
+   *  just-ingested audio ref and transcribes it before appending the durable
+   *  user row. Missing deps / read failures / transcription failures fall back
+   *  to the P4 pending affordance. */
+  voiceTranscription?: VoiceTranscriptionDeps;
   /** D-160 A.8 step 5 — per-turn scope-search fan-out producer: the
    *  `{ args, sources }` the registered `scope-search` `before-turn` hook
    *  seeds onto shared `state`, the dep that fires the scope-search →
@@ -1594,6 +1622,26 @@ export const wordlessDropAffordance = (
     attachments.length === 1 ? 'it' : 'them'}?`;
 };
 
+/** D-262 § B8 — a configured transcription source was reached and failed.
+ *
+ *  ⚠ It says the NOTE was kept, because that is the part the person can still
+ *  act on, and it names transcription as what broke so they look at the
+ *  transcription slot rather than at their microphone. It deliberately does not
+ *  guess WHY: the provider's reason reaches the owner through Settings → Test,
+ *  where the raw text is shown, and inventing a cause in a chat bubble would be
+ *  worse than naming the step. */
+export const voiceTranscriptionFailedAffordance = (
+  attachments: readonly { file_id: string }[],
+  names: ReadonlyMap<string, string>,
+): string => {
+  const named = attachments
+    .map((a) => names.get(a.file_id))
+    .filter((n): n is string => n !== undefined && n.length > 0);
+  const subject = named.length === 1 ? named[0] : 'your voice note';
+  return `I couldn't transcribe ${subject} — the transcription source didn't answer. `
+    + 'The recording is saved. You can check it in Settings → AI / Models, or tell me what you wanted.';
+};
+
 const mediaOnlyAffordance = (
   media: NonNullable<ChannelInbound['media']>,
   names: ReadonlyMap<string, string>,
@@ -1607,13 +1655,51 @@ const mediaOnlyAffordance = (
 const isVoiceOnlyMedia = (media: NonNullable<ChannelInbound['media']>): boolean =>
   media.length === 1 && media[0]?.media_class === 'voice';
 
-const transcribeMessengerVoiceOnly = async (
-  deps: MessengerVoiceTranscriptionDeps | undefined,
-  media: NonNullable<ChannelInbound['media']>,
-): Promise<string | null> => {
-  if (!deps || !isVoiceOnlyMedia(media)) return null;
-  const record_id = media[0]?.file_id;
-  if (!record_id) return null;
+/** D-172 A.9 / D-262 § 2 — read ONE `data.file` record and transcribe it, or
+ *  return null.
+ *
+ *  The single transcribe path for every surface that carries a voice note: the
+ *  messenger turn (`ChannelInbound.media`) and the owner's own chat turn
+ *  (`ChatTurnInput.attachments`) both land here. ⛔ A second read-transcribe
+ *  chain written beside this one is how the two drift — and this one already
+ *  carries the rule the second caller needs (any failure returns null, so the
+ *  caller falls back to its existing wordless-drop affordance rather than
+ *  inventing new failure copy).
+ *
+ *  ⛔ D-262 § 1 — VOICE-NESS IS DECIDED HERE, FROM THE STORED MIME. A caller's
+ *  `media_class` is advisory (`composer-attachments.ts` says so in as many
+ *  words: *"it must never become the value anything decides on"*), so it may
+ *  narrow — keeping a 20 MB PDF from being read to discover it is not audio —
+ *  but it may not decide. The record's own mime is what `file.search` returns
+ *  and what this re-derives.
+ *
+ *  ⚠ On the messenger path the check is a no-op by construction: that mime was
+ *  already server-detected through `looksLikeAudio` magic bytes at ingest, so
+ *  re-deriving from the same field yields the same answer. It lives here so
+ *  there is one place it can be got right. */
+/** D-262 § B8 — the outcome, not just the text.
+ *
+ *  ⛔ "NOTHING IS SET UP" AND "WHAT YOU SET UP FAILED" ARE DIFFERENT SENTENCES.
+ *  Until slice 3 both collapsed to `null` and both got the wordless-drop
+ *  affordance, which was right while the fallback was a pool nobody configured.
+ *  Once an owner has configured a transcription slot SPECIFICALLY so this would
+ *  work, answering "Stored memo.webm. What would you like me to do with it?"
+ *  talks about a file as though they had dropped one — when in fact they spoke
+ *  and the thing they set up broke. */
+type VoiceTranscriptionOutcome =
+  | { kind: 'transcribed'; text: string }
+  | { kind: 'no_source' }
+  /** The stored mime says this is not audio, so the caller's `voice` claim was
+   *  wrong. ⚠ NOT a failure: it is an ordinary file drop, and answering "I
+   *  couldn't transcribe that" about a PDF would name the wrong problem. */
+  | { kind: 'not_voice' }
+  | { kind: 'failed' };
+
+const transcribeVoiceOnlyFile = async (
+  deps: VoiceTranscriptionDeps | undefined,
+  record_id: string | undefined,
+): Promise<VoiceTranscriptionOutcome> => {
+  if (!deps || !record_id) return { kind: 'no_source' };
 
   try {
     const fileReadDeps = deps.getFileReadDeps?.();
@@ -1622,7 +1708,9 @@ const transcribeMessengerVoiceOnly = async (
       : deps.readFile
         ? await deps.readFile(record_id)
         : null;
-    if (!file) return null;
+    if (!file) return { kind: 'failed' };
+    // ⛔ § 1 — the STORED mime decides, never the caller's claim.
+    if (mediaClassForMimeType(file.mime_type) !== 'voice') return { kind: 'not_voice' };
     const result = await transcribe(
       {
         audio: Buffer.from(file.bytes_b64, 'base64'),
@@ -1631,10 +1719,27 @@ const transcribeMessengerVoiceOnly = async (
       },
       deps.transcribeDeps,
     );
-    return result.text;
-  } catch {
-    return null;
+    return { kind: 'transcribed', text: result.text };
+  } catch (e) {
+    // ⚠ ONE code separates the two, and it is the code — never the message:
+    // `AI_NO_TRANSCRIPTION_SOURCE` means no slot is configured, which is a
+    // setup state rather than a breakage, and it is the only case where the
+    // person has nothing to fix here.
+    const code = (e as { code?: unknown } | null)?.code;
+    return code === 'AI_NO_TRANSCRIPTION_SOURCE' ? { kind: 'no_source' } : { kind: 'failed' };
   }
+};
+
+const transcribeMessengerVoiceOnly = async (
+  deps: VoiceTranscriptionDeps | undefined,
+  media: NonNullable<ChannelInbound['media']>,
+): Promise<string | null> => {
+  if (!isVoiceOnlyMedia(media)) return null;
+  const outcome = await transcribeVoiceOnlyFile(deps, media[0]?.file_id);
+  // The messenger surface keeps its existing copy: a voice note can arrive
+  // there with no slot configured (the webclient mic simply never renders), so
+  // `mediaOnlyAffordance` already says the right thing for both outcomes.
+  return outcome.kind === 'transcribed' ? outcome.text : null;
 };
 
 /** Internal-channel dispatch context builder. Strictly enforces the
@@ -1782,6 +1887,7 @@ export interface OrchestratorDispatch {
     dispatch_depth?: number;
     /** Framework-owned process-local state for this cooperative turn. */
     turn_state?: Map<string, unknown>;
+    get_retained_candidates?: () => readonly RetainedAliasCandidate[];
   }): Promise<ChatDispatchResult>;
 }
 
@@ -2415,6 +2521,7 @@ export const createChatOrchestrator = (
     llm_gateway_tool_usage,
     dispatch_depth,
     turn_state,
+    get_retained_candidates,
   }) => {
     // D-219 — ONE builder for every `chat_tool_call` detail on this path.
     //
@@ -2865,6 +2972,68 @@ export const createChatOrchestrator = (
     // is retired. Every dispatch is now a Self dispatch through the local
     // registry below.
 
+    const source = internalDispatchCtx!.execution_source
+      ?? buildChatExecutionSource(session_id, turn_id);
+    // Persist before crossing the tool boundary. A failed start write refuses
+    // dispatch; a reconnect must never lose a call that actually started.
+    const durableCalls = source.channel === 'chat'
+      && source.actor === 'user_self' && source.contract_id === undefined
+      && source.chat_session_id === session_id
+      && deps.chatStore.getSession(session_id) !== null
+      ? deps.chatStore.toolCalls : undefined;
+    const candidates = () => source.channel === 'chat' && source.actor === 'user_self'
+      && source.contract_id === undefined ? get_retained_candidates?.() ?? [] : [];
+    const callStartedAt = now();
+    let callMessageId: string | undefined;
+    try {
+      callMessageId = durableCalls ? await durableCalls.start({
+        id: `tool:${mintId()}`, session_id, turn_id, tool_name, role: 'tool',
+        content: renderToolRow(tool_name, arg_values, undefined),
+        target_server: picker_target, picker_at_send: buildPickerAtSend(picker_target),
+        model_used: { provider: 'recued', model_id: 'tool-call' },
+        execution_source: source, ts: callStartedAt,
+        retained_alias_candidates: candidates(),
+      }) : undefined;
+    } catch (error) {
+      await releaseLlmGatewayToolUsage();
+      await persistPlanExecution(consumedPlanId, { status: 'failed', turn_id,
+        reason: 'execution_error' });
+      throw error;
+    }
+    const saveOutcome = async (outcome: ChatDispatchResult): Promise<void> => {
+      if (!durableCalls || !callMessageId) return;
+      // Keep the origin even if the result write fails, so turn-end can retry
+      // the same row and settlement without dispatching the operation again.
+      markChatToolCallSaved(outcome, callMessageId);
+      if (outcome.run_id !== undefined) durableCalls.bind(callMessageId, outcome.run_id);
+      if (isNonTerminalToolResult(outcome)) {
+        durableCalls.hold(callMessageId);
+      } else {
+        await deps.chatStore.appendMessage({
+          id: `${callMessageId}:result`, session_id, turn_id, role: 'tool',
+          pair_id: durableCalls.get(callMessageId)?.run_id ?? callMessageId,
+          content: renderToolRow(tool_name, undefined, outcome),
+          target_server: picker_target, picker_at_send: buildPickerAtSend(picker_target),
+          model_used: { provider: 'recued', model_id: 'tool-call' },
+          execution_source: source, ts: now(), source_lifecycle: 'pending',
+          tool_call_settlements: [{ message_id: callMessageId,
+            state: outcome.ok && !outcome.run_failed ? 'succeeded' : 'failed' }],
+        });
+      }
+      safeBroadcast(deps.broadcast, { kind: 'chat.session_changed', session_id,
+        field: 'tool_call', value: durableCalls.get(callMessageId) });
+    };
+    const failedOutcomeWrite = (error: unknown): void => {
+      console.error('[chat] tool result persistence failed', error);
+      try {
+        if (callMessageId && durableCalls) {
+          durableCalls.interrupt(callMessageId);
+          safeBroadcast(deps.broadcast, { kind: 'chat.session_changed', session_id,
+            field: 'tool_call', value: durableCalls.get(callMessageId) });
+        }
+      } catch (writeError) { console.error('[chat] tool interruption persistence failed', writeError); }
+    };
+
     safeBroadcast(deps.broadcast, {
       kind: 'chat.tool_call_started',
       session_id,
@@ -2879,7 +3048,17 @@ export const createChatOrchestrator = (
     try {
       result = await runWithExecutionCaseVerificationContext(
         { session_id, turn_id },
-        () => rawOpEntry !== null
+        () => withChatToolCallContext({
+          bind: (run_id, recipe_id) => {
+            if (callMessageId) durableCalls?.bind(callMessageId, run_id, recipe_id);
+          },
+          progress: (run_id, at, stalled) => {
+            if (!callMessageId || !durableCalls?.progress(callMessageId, run_id, at, stalled)) return false;
+            safeBroadcast(deps.broadcast, { kind: 'chat.session_changed', session_id,
+              field: 'tool_call', value: durableCalls.get(callMessageId) });
+            return true;
+          },
+        }, () => rawOpEntry !== null
           ? deps.rawOpDispatch !== undefined
             ? deps.rawOpDispatch(tool_name, arg_values, internalDispatchCtx!)
             : Promise.resolve({
@@ -2891,9 +3070,13 @@ export const createChatOrchestrator = (
               tool_name,
               arg_values,
               internalDispatchCtx!,
-            ),
+            )),
       );
     } catch (e) {
+      const failure: ChatDispatchResult = { ok: false, reason: 'execution_error',
+        detail: e instanceof Error ? e.message : String(e) };
+      try { await saveOutcome(failure); }
+      catch (error) { failedOutcomeWrite(error); }
       await releaseLlmGatewayToolUsage();
       if (consumedPlanId !== undefined) {
         await persistPlanExecution(consumedPlanId, {
@@ -2901,20 +3084,26 @@ export const createChatOrchestrator = (
           turn_id,
           reason: 'execution_error',
         });
-        safeBroadcast(deps.broadcast, {
-          kind: 'chat.tool_call_completed',
-          session_id,
-          turn_id,
-          tool_name,
-          tier,
-          status: 'error',
-          reason: 'execution_error',
-          plan_id: consumedPlanId,
-        });
       }
-      throw e;
+      safeBroadcast(deps.broadcast, {
+        kind: 'chat.tool_call_completed',
+        session_id,
+        turn_id,
+        tool_name,
+        tier,
+        status: 'error',
+        reason: 'execution_error',
+        ...(consumedPlanId !== undefined ? { plan_id: consumedPlanId } : {}),
+      });
+      // Only the cooperative loop needs the internal result envelope. Direct
+      // dispatch callers keep the original thrown error and its type.
+      throw callMessageId && get_retained_candidates !== undefined
+        ? rememberChatToolCallFailure(e, failure) : e;
     }
     const durationMs = now() - startedAt;
+    result = { ...result };
+    try { await saveOutcome(result); }
+    catch (error) { failedOutcomeWrite(error); }
     registerVisibleRecallToolResult(turn_state, tool_name, result);
     // Only a SELF dispatch can deep-link into this client's Logs host. Peer
     // results may carry a run id from the remote executor, but that id is not
@@ -3317,7 +3506,7 @@ export const createChatOrchestrator = (
       const trackedExecuteAiCall: ExecuteChatAiCall | undefined =
         deps.executeAiCall === undefined
           ? undefined
-          : async (manifest, aiInput) => {
+          : async (manifest, aiInput, opts) => {
               plannerRounds += 1;
               // This is the transport-adjacent event: only advisory ids queued
               // by augmentation or critique for this exact next packet become
@@ -3326,7 +3515,7 @@ export const createChatOrchestrator = (
                 streamState,
                 now(),
               );
-              return deps.executeAiCall!(manifest, aiInput);
+              return deps.executeAiCall!(manifest, aiInput, opts);
             };
       const executeAiCallForTurn =
         trackedExecuteAiCall !== undefined && piiPlan !== undefined
@@ -3415,11 +3604,42 @@ export const createChatOrchestrator = (
         {
           ...(executeAiCallForTurn ? { executeAiCall: executeAiCallForTurn } : {}),
           registry: deps.registry,
+          // D-167 — the AUTHORITATIVE per-turn recall signal for the rolling
+          // brief. Same function the PII egress is wired with, over the same
+          // scratch, so the brief's skip and the egress's refusal cannot
+          // disagree about whether this turn is recall-bearing.
+          hasRegisteredRecall: () => hasRegisteredRecallResult(streamState),
+          // The server-scoped rolling-brief enable. Read PER TURN rather than
+          // captured once at wire time, so flipping it in Settings takes effect
+          // on the next turn instead of at the next restart.
+          rollingBriefEnabled: () => deps.chatStore.getRollingBriefEnabled(),
+          // ⛔⛔ THE BRIEF'S DURABLE HOME. Without this the carry lives in a
+          //   module-level Map that does not survive a restart — and the feature
+          //   now ships ON by default, so a supervisor respawn or an applied
+          //   update would silently drop every `constraints` entry, which is the
+          //   one class nothing can re-derive. The store encrypts under the chat
+          //   sub-DEK and binds the blob to its session.
+          //
+          //   ⚠ READ VALIDATES, it does not trust: a row that no longer parses
+          //   as a brief reads as NO brief, so the turn runs unbriefed rather
+          //   than carrying a shape the merge cannot reason about.
+          briefStore: {
+            read: async (sid) => {
+              const json = await deps.chatStore.readSessionBrief(sid);
+              if (json === null) return null;
+              try { return parseBrief(JSON.parse(json)); } catch { return null; }
+            },
+            write: async (sid, brief) => {
+              await deps.chatStore.writeSessionBrief(sid, JSON.stringify(brief));
+            },
+            clear: (sid) => { deps.chatStore.deleteSessionBrief(sid); },
+          },
           dispatchTool: (call) =>
             dispatchTool({
               ...call,
               ...(params.read_only === true ? { read_only: true } : {}),
               turn_state: streamState,
+              get_retained_candidates: () => [...retainedCandidates.values()],
             }),
           ...(deps.getExecutionCaseProposalCritic
             ? {
@@ -3439,6 +3659,24 @@ export const createChatOrchestrator = (
           // that has ever existed for it. That is what lets the turn recover
           // in place instead of failing and recovering on the next message.
           resolveInputTokenBudget: resolveTurnInputTokenBudget,
+          // ⛔ See `wasValueIssuedToModel` in the executor. The prefetch block is
+          //   injected at the egress seam, AFTER the grounding corpus is
+          //   captured, so its identifiers are absent from that corpus in both
+          //   forms — and the block tells the model to pass them as tool
+          //   arguments. The ledger is the authority on what the substrate
+          //   actually issued; answering from it keeps the raw records out of
+          //   the packet, which is the property the seam exists to hold.
+          ...(piiPlan !== undefined
+            ? {
+                wasValueIssuedToModel: (value: string): boolean => {
+                  if (value.length === 0) return false;
+                  for (const entry of piiPlan.ledger.byKindRealValue.values()) {
+                    if (entry.real_value === value) return true;
+                  }
+                  return false;
+                },
+              }
+            : {}),
           emit,
           now,
         },
@@ -3491,14 +3729,13 @@ export const createChatOrchestrator = (
     };
   };
 
-  const runTurn = async (input: ChatTurnInput): Promise<ChatTurnAck> => {
+  const runTurnWithId = async (input: ChatTurnInput, turn_id: string): Promise<ChatTurnAck> => {
     const session = deps.chatStore.getSession(input.session_id);
     if (!session) {
       throw new Error(
         `chat-orchestrator: session ${input.session_id} not found (create a session first via chat.session.create)`,
       );
     }
-    const turn_id = mintId();
     const executionSource = buildChatExecutionSource(input.session_id, turn_id);
     const picker_target = input.picker_state.current as ChatPickerTarget;
     const pickerAtSend = buildPickerAtSend(picker_target);
@@ -3523,6 +3760,50 @@ export const createChatOrchestrator = (
       deps.resolveFileNames,
     );
 
+    // D-262 § 2 — A VOICE NOTE IS THE UTTERANCE, on the owner's surface too.
+    //
+    // The messenger turn has done this since D-172 A.9. Until now a voice note
+    // sent from the webclient fell into the wordless-drop branch below and was
+    // answered with "Stored memo.m4a. What would you like me to do with it?" —
+    // the right reply for a spreadsheet and the wrong one for something a
+    // person SAID.
+    //
+    // ⛔ RUNS BEFORE THE APPEND, because the transcript IS the user row's
+    // content. Appending `''` first and patching after would leave the durable
+    // row, the broadcast and the (ts, message_id) recall cursor briefly
+    // disagreeing about what was said — and the empty row is the one a
+    // reconnect-replay would show.
+    //
+    // The client's `media_class` only narrows what is worth reading; § 1's
+    // authority check lives in `transcribeVoiceOnlyFile`.
+    let turnMessage = input.message;
+    /** D-262 § B8 — set only when a configured source was reached and failed;
+     *  never when none is configured, which is a setup state the person cannot
+     *  act on from a chat reply. */
+    let voiceTranscriptionFailed = false;
+    if (
+      turnMessage.trim().length === 0
+      && input.attachments?.length === 1
+      && input.attachments[0]?.media_class === 'voice'
+    ) {
+      const outcome = await transcribeVoiceOnlyFile(
+        deps.voiceTranscription,
+        input.attachments[0]?.file_id,
+      );
+      // ⚠ An EMPTY transcript is a failure, not an utterance — a silent
+      // recording, or a decode that produced nothing. It falls through to the
+      // wordless-drop branch below rather than spending a turn on a wordless
+      // prompt.
+      if (outcome.kind === 'transcribed' && outcome.text.trim().length > 0) {
+        turnMessage = outcome.text;
+      } else if (outcome.kind === 'failed') {
+        // D-262 § B8 — the owner configured a transcription slot so this would
+        // work, and it did not. Saying so is the whole difference between a
+        // reply about their FILE and a reply about what they SAID.
+        voiceTranscriptionFailed = true;
+      }
+    }
+
     // 1b) Persist the user turn immediately so reconnect-replay sees
     //     it even if the orchestrator crashes mid-turn.
     const userMessageId = mintId();
@@ -3533,7 +3814,7 @@ export const createChatOrchestrator = (
       id: userMessageId,
       session_id: input.session_id,
       role: 'user',
-      content: input.message,
+      content: turnMessage,
       target_server: picker_target,
       picker_at_send: pickerAtSend,
       model_used: modelUsed,
@@ -3564,7 +3845,7 @@ export const createChatOrchestrator = (
     try {
       deps.forwardedSenderIndex?.recordUserTurn(
         input.session_id,
-        input.message,
+        turnMessage,
         now(),
       );
     } catch {
@@ -3599,7 +3880,7 @@ export const createChatOrchestrator = (
     // next repaint and the person would be left with a file and no trace of
     // having been asked anything.
     if (
-      input.message.trim().length === 0
+      turnMessage.trim().length === 0
       && input.attachments !== undefined
       && input.attachments.length > 0
     ) {
@@ -3610,7 +3891,9 @@ export const createChatOrchestrator = (
         id: mintId(),
         session_id: input.session_id,
         role: 'assistant',
-        content: wordlessDropAffordance(input.attachments, names),
+        content: voiceTranscriptionFailed
+          ? voiceTranscriptionFailedAffordance(input.attachments, names)
+          : wordlessDropAffordance(input.attachments, names),
         target_server: picker_target,
         picker_at_send: pickerAtSend,
         model_used: modelUsed,
@@ -3709,12 +3992,12 @@ export const createChatOrchestrator = (
           // BEFORE this message is appended, so a file attached to THIS turn
           // is not in it. Without this the marker would fire one turn late.
           user_message: input.attachments && input.attachments.length > 0
-            ? `${input.message}${renderAttachmentMarker(
+            ? `${turnMessage}${renderAttachmentMarker(
               input.attachments,
               deps.resolveFileNames?.(input.attachments.map((a) => a.file_id))
                 ?? new Map<string, string>(),
             )}`
-            : input.message,
+            : turnMessage,
           chat_tail: builtChatTail.messages,
         }),
         visible_recall_item_ids: [
@@ -3812,7 +4095,7 @@ export const createChatOrchestrator = (
     const inbound: ChannelInbound = {
       session_id: input.session_id,
       surface: 'chat',
-      text: input.message,
+      text: turnMessage,
       from: LOCAL_CHAT_USER_ID,
       source: executionSource,
       // A webclient HID turn is a genuine top-level user action — the
@@ -3938,48 +4221,45 @@ export const createChatOrchestrator = (
     }
 
 
-    // ⛔⛔ TOOL RESULTS BECOME DURABLE ROWS HERE, and this is the gap the
-    //   `role: 'tool'` enum has named since 2026-05-11 without a single writer.
-    //   `ChatMessageRole` includes `'tool'`, the contract comment says one row
-    //   per tool result, and `git log -S` finds the string only inside that
-    //   comment. Meanwhile `chat_tail` and the recall scan both filter tool
-    //   rows out WITH STATED RATIONALES, so the absence read as a settled
-    //   design rather than an unfinished one.
-    //
-    // ✅ MEASURED BEFORE BUILDING, because the gap doc's stated blocker was
-    //   cost — "100 tool calls in one turn is 100 encrypted rows". Across
-    //   29,256 real results in 14,107 stored bench packets: p50 **2** calls per
-    //   turn, p90 4, p99 9, max 21. Result bytes p50 490, p90 1,585. A median
-    //   turn writes two ~490-byte rows. The blocker was hypothetical.
-    //
-    // ⚠ EVERY CORPUS, INCLUDING A DOOR'S — and the earlier owner-only rule was
-    //   reasoned wrongly. It said a contracted turn's rows would be "new
-    //   durability and searchability" over owner-warehouse data. But the
-    //   ASSISTANT's reply routinely CONTAINS that same data (this doc's own
-    //   finding: the model's prose is the de facto persistence layer for
-    //   everything a tool returned), and assistant rows have always been
-    //   written and recalled per-door under P10. Refusing the tool row while
-    //   writing the prose that quotes it was an inconsistency, not a fence.
-    //
-    // 🔑 WHAT MADE THE REFUSAL FEEL RIGHT WAS THE ARCHIVE, and the session
-    //   scope removes it: tool rows are reachable only from the session that
-    //   produced them (`tool_session_id`), so nobody — owner or customer —
-    //   can mine across every result a tool ever returned. Recovering your own
-    //   context inside your own task is not a new capability; it is not losing
-    //   what `prior_tool_calls` already had.
-    //
-    // ⚠ THE CANDIDATES ARE THE TURN'S, AND THAT IS WHAT MAKES THIS SAFE TO
-    //   RECALL. Durable sources stay PRE-ALIAS (P6), so a recalled tool row is
-    //   re-aliased into the reading session's namespace by
-    //   `aliasReharvestCandidatesInPlace` — but only for values the candidate
-    //   list names. `getRetainedCandidates()` is turn-scoped and the PII
-    //   wrapper's pass already covers `prior_tool_calls` (they are dynamic
-    //   packet fields; only `available_tools` / `commitment_context` /
-    //   `current_date` are exempt). So the same list the assistant row carries
-    //   already describes the tool bodies. A row written WITHOUT it would recall
-    //   raw historical PII that the original turn had aliased.
+    // Owner calls and outcomes were saved at dispatch. Finalize their recall
+    // candidates here, after the PII pass over prior_tool_calls. Other corpora
+    // and older store adapters retain the existing turn-end writer, with the
+    // same source/session boundaries and pre-alias candidate capture.
     if (turnResult.tool_results !== undefined) {
       for (const [index, entry] of turnResult.tool_results.entries()) {
+        if (entry.message_id) {
+          // Results are durable immediately, but become recallable only at
+          // the original turn-end boundary, after the PII pass has collected
+          // candidates for the tool payload. An interrupted turn's result
+          // remains available to its owner in Chat, outside model recall.
+          try {
+            if (entry.result !== undefined) {
+              const call = deps.chatStore.toolCalls?.get(entry.message_id);
+              if (call && call.state !== 'succeeded' && call.state !== 'failed') {
+                const outcome = entry.result as ChatDispatchResult;
+                await deps.chatStore.appendMessage({
+                  id: `${entry.message_id}:result`, session_id: input.session_id,
+                  turn_id, role: 'tool', pair_id: call.run_id ?? entry.message_id,
+                  content: renderToolRow(entry.tool_name, undefined, entry.result),
+                  target_server: picker_target, picker_at_send: pickerAtSend,
+                  model_used: modelUsed, execution_source: executionSource, ts: entry.ts,
+                  retained_alias_candidates: getRetainedCandidates(),
+                  tool_call_settlements: [{ message_id: entry.message_id,
+                    state: outcome.ok && !outcome.run_failed ? 'succeeded' : 'failed' }],
+                });
+                safeBroadcast(deps.broadcast, { kind: 'chat.session_changed',
+                  session_id: input.session_id, field: 'tool_call',
+                  value: deps.chatStore.toolCalls?.get(entry.message_id) });
+              } else {
+                await deps.chatStore.finalizeMessageSource?.({
+                  session_id: input.session_id, message_id: `${entry.message_id}:result`,
+                  candidates: getRetainedCandidates(),
+                });
+              }
+            }
+          } catch (error) { console.error('[chat] tool recall finalization failed', error); }
+          continue;
+        }
         try {
           await deps.chatStore.appendMessage({
             id: `${assistantMessageId}:tool:${index}`,
@@ -4115,6 +4395,17 @@ export const createChatOrchestrator = (
     };
   };
 
+  const runTurn = async (input: ChatTurnInput): Promise<ChatTurnAck> => {
+    const turn_id = mintId();
+    try { return await runTurnWithId(input, turn_id); }
+    finally {
+      // Any early result whose candidate pass never finished remains owner-
+      // readable, but cannot enter recall or retain a dead finalizer claim.
+      try { deps.chatStore.failToolCallSources?.(input.session_id, turn_id); }
+      catch (error) { console.error('[chat] tool recall cleanup failed', error); }
+    }
+  };
+
   // D-160 A.8 step 6 (N.9) — run one `messenger` turn over the SAME
   // `streamRegistry` (the s5 hooks) + the SAME `runChatTurn` mechanics as
   // chat, via the framework `runStream` loop with the caller-injected
@@ -4212,7 +4503,7 @@ export const createChatOrchestrator = (
     let voiceTranscribed = false;
     if (userText.trim().length === 0 && userAttachments && isVoiceOnlyMedia(userAttachments)) {
       const transcript = await transcribeMessengerVoiceOnly(
-        deps.messengerVoiceTranscription,
+        deps.voiceTranscription,
         userAttachments,
       );
       if (transcript !== null) {
@@ -4462,8 +4753,8 @@ export const createChatOrchestrator = (
         )
       : input.execute_ai_call;
     let observedGatewayUsage: TokenUsageReport | undefined;
-    const executeGatewayAiCall: ExecuteChatAiCall = async (manifest, aiInput) => {
-      const callResult = await executeAiCall(manifest, aiInput);
+    const executeGatewayAiCall: ExecuteChatAiCall = async (manifest, aiInput, opts) => {
+      const callResult = await executeAiCall(manifest, aiInput, opts);
       observedGatewayUsage = aggregateTokenUsageReports(
         observedGatewayUsage,
         callResult.usage,
@@ -4552,6 +4843,25 @@ export const createChatOrchestrator = (
         {
           executeAiCall: executeGatewayAiCall,
           registry: deps.registry,
+          // ⛔⛔ THE GATEWAY DELIBERATELY DOES NOT PASS `rollingBriefEnabled`,
+          //   AND THAT IS A SAFETY GATE, NOT AN OVERSIGHT. Folding requires the
+          //   AUTHORITATIVE per-turn recall signal (`hasRegisteredRecall`), and
+          //   this call site has no `streamState` in scope to build one from —
+          //   see the dep's own doc. Without it the brief runs on the slice
+          //   APPROXIMATION, which was measured to UNDER-trigger: over four
+          //   forced-budget runs of bench 343 it produced SEVEN tool-loop aborts
+          //   (`recall-bearing packet has invalid recall_context`), every one
+          //   surfaced to the caller as `provider_failure`.
+          //
+          //   🔑 THIS ONLY BECAME REACHABLE WHEN THE DEFAULT FLIPPED. While the
+          //   brief was off by default the gateway never folded, so the gap was
+          //   latent; wiring the enable here alongside a default of ON would
+          //   have turned a documented hazard live for every external-agent
+          //   turn that both recalls and folds.
+          //
+          //   ⇒ Re-enable ONLY together with `hasRegisteredRecall`. The two
+          //   deps travel as a pair; `chat-orchestrator-brief-recall-pairing`
+          //   pins that so a future edit cannot add one without the other.
           dispatchTool: async (call) => {
             const entry = deps.registry.getByName(call.tool_name);
             if (

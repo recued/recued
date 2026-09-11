@@ -13,6 +13,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   executeRecipe,
+  resumeFromApproval,
   type ExecutionContext,
   type IngredientExecutor,
 } from '@recued/engine';
@@ -594,5 +595,118 @@ describe('D-157 P1 slice 3 — runForeach interaction', () => {
       });
       expect(calls).toBe(0);
     }
+  });
+});
+
+/** 617fc33fb's fourth regression. The resume marker (`ctx.resumeFrom`) stays set
+ *  for the whole resumed run, and the foreach guards it added read the
+ *  checkpoint's progress for EVERY foreach the run reaches — so a foreach after
+ *  the gated one compared itself against the gated step's progress and refused.
+ *  A resumed run that approved one fan-out could never reach a second. */
+describe('D-157 P1 slice 3 — foreach resume guards apply to the gated step only', () => {
+  const stores = (): NamespaceStores => ({
+    vault: {}, config: { items: [{ n: 'a' }, { n: 'b' }], more: [{ n: 'x' }, { n: 'y' }] }, context: {}, meta: {}, step: {},
+  });
+  /** Pauses ONCE, on the named item of the named step; answers otherwise. */
+  const pausingOn = (stepId: string, itemName: string): { exec: IngredientExecutor; calls: string[] } => {
+    const calls: string[] = [];
+    let paused = false;
+    const exec: IngredientExecutor = async (slug, input) => {
+      const item = (input as { n?: string }).n ?? '?';
+      calls.push(`${slug}:${item}`);
+      if (!paused && slug === stepId && item === itemName) {
+        paused = true;
+        throw new PreflightRequiredSignal(`pause at ${item}`);
+      }
+      return { sent: item };
+    };
+    return { exec, calls };
+  };
+  const twoFanOuts = makeRecipe(asSteps([
+    { id: 'first', ingredient: 'first', foreach: '{{config.items}}', input: '{{item}}' },
+    { id: 'second', ingredient: 'second', foreach: '{{config.more}}', input: '{{item}}' },
+  ]));
+  // The host's derivation, not a hand-built one: what the pause carried is
+  // what the resume gets (see `resumeFromApproval`).
+  const resume = (recipe: RecipeDefinition, paused: Awaited<ReturnType<typeof executeRecipe>>, exec: IngredientExecutor) => {
+    const { step_state, ...resumeFrom } = resumeFromApproval(paused.awaiting_approval!);
+    const s = stores();
+    s.step = step_state;
+    return executeRecipe({ recipe, stores: s, ingredientExecutor: exec, resumeFrom });
+  };
+
+  it('resumeFromApproval carries every field the pause names — item progress, the egress bound, the identity triple, an EMPTY connection name', () => {
+    const derived = resumeFromApproval({
+      gated_step_id: 'fan', step_state: { s1: 'x' },
+      foreach_progress: { step_id: 'fan', next_index: 1, source_length: 2, source_hash: 'h'.repeat(64), results: [{ ok: true, result: 1, item: 'a' }] },
+      egress_bound: { requests: 3, total_bytes: 4096 },
+      ingredient_slug: 'records', operation_id: 'doc.create', connection_name: '',
+    });
+    expect(derived).toEqual({
+      gated_step_id: 'fan', step_state: { s1: 'x' },
+      foreach_progress: { step_id: 'fan', next_index: 1, source_length: 2, source_hash: 'h'.repeat(64), results: [{ ok: true, result: 1, item: 'a' }] },
+      egress_bound: { requests: 3, total_bytes: 4096 },
+      approved_target: { ingredient_slug: 'records', operation_id: 'doc.create', connection_name: '' },
+    });
+    // A bare pause keeps an empty target: the gate reads that as "ask again".
+    expect(resumeFromApproval({ gated_step_id: 's', step_state: {} })).toEqual({ gated_step_id: 's', step_state: {}, approved_target: {} });
+  });
+
+  it('a foreach AFTER the gated foreach runs from item zero instead of refusing against the gated step’s progress', async () => {
+    const { exec, calls } = pausingOn('first', 'b');
+    const paused = await executeRecipe({ recipe: twoFanOuts, stores: stores(), ingredientExecutor: exec });
+    expect(paused.awaiting_approval).toMatchObject({ gated_step_id: 'first', foreach_progress: { next_index: 1 } });
+    const resumed = await resume(twoFanOuts, paused, exec);
+    expect(resumed.errors).toEqual([]);
+    expect(resumed.success).toBe(true);
+    // The gated fan-out resumed at its second item; the second fan-out ran whole.
+    expect(calls).toEqual(['first:a', 'first:b', 'first:b', 'second:x', 'second:y']);
+    expect(resumed.steps.find((log) => log.id === 'second')?.result).toEqual([
+      { ok: true, result: { sent: 'x' }, item: { n: 'x' } },
+      { ok: true, result: { sent: 'y' }, item: { n: 'y' } },
+    ]);
+  });
+
+  it('a foreach after a gated PLAIN step still runs whole', async () => {
+    const recipe = makeRecipe(asSteps([
+      { id: 'solo', ingredient: 'solo', input: { n: 'solo' } },
+      { id: 'second', ingredient: 'second', foreach: '{{config.more}}', input: '{{item}}' },
+    ]));
+    const { exec, calls } = pausingOn('solo', 'solo');
+    const paused = await executeRecipe({ recipe, stores: stores(), ingredientExecutor: exec });
+    expect(paused.awaiting_approval?.gated_step_id).toBe('solo');
+    expect(paused.awaiting_approval?.foreach_progress).toBeUndefined();
+    const resumed = await resume(recipe, paused, exec);
+    expect(resumed.errors).toEqual([]);
+    expect(calls).toEqual(['solo:solo', 'solo:solo', 'second:x', 'second:y']);
+  });
+
+  it('the gated foreach itself keeps its guards: a second pause in the same fan-out carries fresh progress, and a stale checkpoint still refuses', async () => {
+    // Pause on both items of `first`, one per run: the second segment's
+    // progress must describe item two, not replay item one.
+    let pauses = 0;
+    const exec: IngredientExecutor = async (slug, input) => {
+      const item = (input as { n?: string }).n ?? '?';
+      if (slug === 'first' && pauses < 2 && item === (pauses === 0 ? 'a' : 'b')) {
+        pauses += 1;
+        throw new PreflightRequiredSignal(`pause at ${item}`);
+      }
+      return { sent: item };
+    };
+    const paused = await executeRecipe({ recipe: twoFanOuts, stores: stores(), ingredientExecutor: exec });
+    expect(paused.awaiting_approval?.foreach_progress).toMatchObject({ step_id: 'first', next_index: 0, results: [] });
+    const pausedAgain = await resume(twoFanOuts, paused, exec);
+    expect(pausedAgain.awaiting_approval?.foreach_progress).toMatchObject({ step_id: 'first', next_index: 1 });
+    expect(pausedAgain.awaiting_approval?.foreach_progress?.results).toHaveLength(1);
+    const done = await resume(twoFanOuts, pausedAgain, exec);
+    expect(done.errors).toEqual([]);
+    expect(done.success).toBe(true);
+    // And the gated step's own guard is untouched: progress for another step is a mismatch.
+    const s = stores();
+    const foreign = await executeRecipe({
+      recipe: twoFanOuts, stores: s, ingredientExecutor: exec,
+      resumeFrom: { gated_step_id: 'second', foreach_progress: { ...pausedAgain.awaiting_approval!.foreach_progress! } },
+    });
+    expect(foreign.errors[0]).toMatchObject({ details: { reason: 'checkpoint_foreach_progress_mismatch' } });
   });
 });

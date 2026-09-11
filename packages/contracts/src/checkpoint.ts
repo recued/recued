@@ -295,6 +295,12 @@ export interface Checkpoint {
    *  state a fresh execution re-seeds from. `{}` when the gate fires
    *  before any step has produced output. */
   step_state: Record<string, unknown>;
+  /** Engine phase and completed watcher outputs; absent on legacy sequential
+   * checkpoints. A resumed watcher must still qualify before prefetch. */
+  execution_phase?: 'trigger' | 'prefetch' | 'sequential';
+  trigger_state?: Record<string, unknown>;
+  /** Completed parallel prefetches; a hold may leave several others pending. */
+  prefetch_completed?: string[];
   /** Present only when the gate fired during a foreach iteration. */
   foreach_progress?: ForeachCheckpointProgress;
   /** Previous operation receipt when this checkpoint starts a later approval
@@ -347,6 +353,23 @@ export interface Checkpoint {
    *  checkpoint, byte-identical to every pre-D-182 path. The two are mutually
    *  exclusive — the guard rejects a row that mixes them. */
   raw_op?: RawOpCheckpoint;
+  /** Host-written pointer for a hold inside a reviewed future execution.
+   * It supplies no approval: the resumer must reacquire the repository's
+   * exact checkpoint and worker fence before entering this run. */
+  preapproval_execution_ref?: string;
+  /** A parent engine waiting for its actual child. Only the child's ordinary
+   * owner/peer decision is actionable; the parent resumes from its result. */
+  preapproval_nested_wait?: { child_run_id: string };
+  /** Exact host-issued qualification poll, before any reviewed run is claimed. */
+  preapproval_candidate_ref?: string;
+  /** Ordinary automatic poll captured before any owner acceptance. Its
+   * qualification must still match this target revision and sequence. */
+  auto_run_qualification?: {
+    recipe_id: string; incarnation: string; revision: number; qualifying_sequence: number;
+  };
+  /** The actual host entry tool, retained across a hold. This is provenance,
+   * never a grant supplied by a recipe or by a resume request. */
+  entry_tool_name?: string;
   /** D-202 Slice 1b — the QUALITY-relevance marker, captured at pause off the
    *  commit Gateway's `quality_not_delegated` three-conjunct verdict (threaded
    *  through `PreflightRequiredSignal` → `awaiting_approval`). `true` iff the
@@ -431,6 +454,29 @@ export const isCheckpoint = (value: unknown): value is Checkpoint => {
 
   if (!nonEmpty(v.checkpoint_id)) return false;
   if (!nonEmpty(v.run_id)) return false;
+  if (v.execution_phase !== undefined && (!['trigger', 'prefetch', 'sequential'].includes(v.execution_phase as string)
+    || v.raw_op !== undefined)) return false;
+  if (v.trigger_state !== undefined && (!v.trigger_state || typeof v.trigger_state !== 'object'
+    || Array.isArray(v.trigger_state) || v.raw_op !== undefined)) return false;
+  if (v.prefetch_completed !== undefined && (!Array.isArray(v.prefetch_completed)
+    || !v.prefetch_completed.every(nonEmpty) || v.execution_phase !== 'prefetch' || v.raw_op !== undefined)) return false;
+  if (v.preapproval_execution_ref !== undefined
+    && (!nonEmpty(v.preapproval_execution_ref) || v.raw_op !== undefined)) return false;
+  if (v.preapproval_nested_wait !== undefined && (!nonEmpty(v.preapproval_execution_ref)
+    || !v.preapproval_nested_wait || typeof v.preapproval_nested_wait !== 'object'
+    || Array.isArray(v.preapproval_nested_wait)
+    || !nonEmpty((v.preapproval_nested_wait as Record<string, unknown>).child_run_id))) return false;
+  if (v.preapproval_candidate_ref !== undefined && (!nonEmpty(v.preapproval_candidate_ref)
+    || v.preapproval_execution_ref !== undefined || v.raw_op !== undefined || v.execution_phase !== 'trigger')) return false;
+  if (v.auto_run_qualification !== undefined) {
+    const poll = v.auto_run_qualification as Record<string, unknown> | null;
+    if (!poll || typeof poll !== 'object' || Array.isArray(poll) || v.execution_phase !== 'trigger'
+      || v.preapproval_candidate_ref !== undefined || v.preapproval_execution_ref !== undefined || v.raw_op !== undefined
+      || poll.recipe_id !== v.recipe_id || !nonEmpty(poll.incarnation)
+      || !Number.isSafeInteger(poll.revision) || (poll.revision as number) < 1
+      || !Number.isSafeInteger(poll.qualifying_sequence) || (poll.qualifying_sequence as number) < 0) return false;
+  }
+  if (v.entry_tool_name !== undefined && !nonEmpty(v.entry_tool_name)) return false;
   // D-182 §8 — partition on the `raw_op` discriminant. A raw-op checkpoint is
   // recipe-LESS: `recipe_id` / `gated_step_id` MUST be absent and the `raw_op`
   // block MUST be well-formed. A recipe-bound checkpoint MUST carry both ids

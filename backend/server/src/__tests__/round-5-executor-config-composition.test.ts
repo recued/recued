@@ -5,6 +5,9 @@ import type {
   ConnectionAuth,
   ConnectionKind,
   ConnectionRow,
+  PreparePreapproval,
+  PreapprovalResult,
+  StepMeta,
 } from '@recued/contracts';
 import type {
   ConnectionNotificationHandlerDeps,
@@ -117,6 +120,8 @@ const conditionalTopLevelKeys = [
 ] as const;
 
 const alwaysKernelKeys = [
+  'preapprovalRequest',
+  'mailDraft',
   'collectionGet',
   'collectionList',
   'collectionSearch',
@@ -959,6 +964,25 @@ describe('composeExecutorConfig connectionNotification gating', () => {
 });
 
 describe('composeExecutorConfig kernel dispatcher shape', () => {
+  it('uses the current pre-approval service after late composition and retains host execution metadata', async () => {
+    let live: ReturnType<NonNullable<ComposeExecutorConfigDeps['getExecuteDeps']>>;
+    const { config } = await composeWith({ getExecuteDeps: () => live });
+    const request: PreparePreapproval = { idempotency_key: 'late-review',
+      subject: { kind: 'recipe', recipe_id: 'reviewed-mail', publisher_id: 'core', config: {} },
+      activation: { kind: 'one_shot', run_at: NOW + 60_000, time_zone: 'UTC' },
+      decision_deadline: NOW + 30_000, dispatch_deadline: NOW + 120_000 };
+    const meta: StepMeta = { step_id: 'review', execution_source: { channel: 'chat', actor: 'user_self',
+      user_id: 'owner', chat_session_id: 'chat' }, entry_tool_name: 'recipe.run' };
+    await expect(config.kernelDispatchers!.preapprovalRequest!(request, meta)).rejects.toThrow(/unavailable/);
+    const pending: PreapprovalResult = { proposal_id: 'pap_review', future_execution_ref: 'paf_review',
+      revision: 1, status: 'awaiting_owner', coverage: 'complete', eligible_members: 2, uncovered_calls: 0 };
+    const handler = vi.fn(async () => pending);
+    live = { preapprovalRequest: handler };
+    expect(await config.kernelDispatchers!.preapprovalRequest!(request, meta)).toEqual(pending);
+    expect(handler).toHaveBeenCalledExactlyOnceWith(request, meta);
+    live = undefined;
+    await expect(config.kernelDispatchers!.preapprovalRequest!(request, meta)).rejects.toThrow(/unavailable/);
+  });
   it('keeps the always-present kernel dispatcher group and omits conditional groups on the minimal path', async () => {
     const { config } = await composeWith();
     const kernel = kernelOf(config);

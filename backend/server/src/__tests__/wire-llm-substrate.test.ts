@@ -57,6 +57,13 @@ vi.mock('../llm-config.js', () => llmConfigMocks);
 type LlmManagerStub = {
   getConfig: ReturnType<typeof vi.fn>;
   setSourceCapability: ReturnType<typeof vi.fn>;
+  // D-262 follow-on — the substrate hydrates the quota tracker from the
+  // manager and writes back through it. ⚠ The double carries these because the
+  // REAL manager does: a stub that omits a method the composition root calls
+  // tests the stub's shape rather than the wiring.
+  getQuotaSnapshot: ReturnType<typeof vi.fn>;
+  setQuotaSnapshot: ReturnType<typeof vi.fn>;
+  deriveTranscriptionSlotOnce: ReturnType<typeof vi.fn>;
 };
 
 type ExecuteLLMOptions = {
@@ -115,6 +122,11 @@ const makeSubstrate = (overrides: Partial<LlmSubstrate> = {}): LlmSubstrate => {
     llmQuota: quota,
     llmAdapterRegistry: chatRegistry,
     llmEmbeddingsAdapterRegistry: embeddingsRegistry,
+    // D-262 § B7 — the callables now CONSUME the substrate's registry rather
+    // than creating a second one, so the test substrate has to carry it. That
+    // is the point of the hoist: the Settings probe and the runtime transcribe
+    // through the same object.
+    llmTranscriptionAdapterRegistry: transcriptionRegistry,
     emptyTabProbe,
     ...overrides,
   };
@@ -144,6 +156,9 @@ beforeEach(() => {
   managerStub = {
     getConfig: vi.fn(() => managerConfig),
     setSourceCapability: vi.fn(),
+    getQuotaSnapshot: vi.fn(() => undefined),
+    setQuotaSnapshot: vi.fn(),
+    deriveTranscriptionSlotOnce: vi.fn(() => 'already_marked'),
   };
 
   llmMocks.createQuotaTracker.mockReturnValue(quota);
@@ -158,7 +173,7 @@ beforeEach(() => {
 });
 
 describe('composeLlmSubstrate unconditional handles', () => {
-  it('returns exactly the seven substrate fields', () => {
+  it('returns exactly the eight substrate fields', () => {
     const substrate = composeLlmSubstrate({ db: undefined, keys: undefined, envLlmConfig: envConfig });
 
     expect(Object.keys(substrate).sort()).toEqual([
@@ -166,6 +181,10 @@ describe('composeLlmSubstrate unconditional handles', () => {
       'llmAdapterRegistry',
       'llmConfig',
       'llmEmbeddingsAdapterRegistry',
+      // D-262 § B7 — hoisted onto the substrate so the Settings probe reaches
+      // the SAME registry the housekeeping and chat paths transcribe with. Two
+      // registries would test one and run the other.
+      'llmTranscriptionAdapterRegistry',
       'llmManager',
       'llmQuota',
       'resolveLlmConfig',
@@ -349,10 +368,19 @@ describe('composeHousekeepingLlmCallables happy path', () => {
     // callable, but the bundle is spread onto the housekeeping ctx, which is
     // the one place the scheduler and these callables both reach. The ratchet
     // did its job — this list is updated as a decision, not to go green.
+    //
+    // ⚠ D-262 follow-on — `probeAiPath` joined for the same reason and against
+    // the same bar. It is not a callable either; it rides here because it MUST
+    // resolve the same config the executors beside it do. A gate reading live
+    // config while its executor read a boot snapshot would admit work the
+    // executor cannot serve, or refuse work it could — and threading
+    // `(config, quota)` out to the scheduler composer instead would let those
+    // two drift apart in a file with no other reason to know about either.
     expect(Object.keys(bundle).sort()).toEqual([
       'embed',
       'llm',
       'llmWithMeta',
+      'probeAiPath',
       'resolveLLMModelId',
       'taskTokenMeter',
       'transcribe',
@@ -433,7 +461,12 @@ describe('composeHousekeepingLlmCallables happy path', () => {
     });
   });
 
-  it('transcribe invokes transcribe with config, transcription adapters, quota, tab probe, and webChatSupported=false', async () => {
+  it('transcribe invokes transcribe with config, transcription adapters and quota — and NOTHING else', async () => {
+    // ⛔ D-262 § B4 — the exact-object form is the assertion. `transcribe` reads
+    // `transcription_slot` and nothing else, so passing a tab probe, a
+    // `budgetStatus` or an availability snapshot would be handing it routing
+    // inputs it cannot act on. `toHaveBeenCalledWith` on a LITERAL (never
+    // `objectContaining`) is what makes re-adding one turn this red.
     const substrate = makeSubstrate();
     const bundle = composeHousekeepingLlmCallables({ substrate });
 
@@ -444,9 +477,50 @@ describe('composeHousekeepingLlmCallables happy path', () => {
       config: substrate.llmConfig,
       adapters: transcriptionRegistry,
       quota: substrate.llmQuota,
-      tabProbe: substrate.emptyTabProbe,
-      webChatSupported: false,
     });
+  });
+
+  // ⛔⛔ REVIEW FINDING (2026-09-07). BACKGROUND TRANSCRIPTION READ THE BOOT
+  // SNAPSHOT. `transcription_slot` exists to be the owner's choice, edited in
+  // Settings — and clearing it, rotating its key, changing the language or
+  // lowering the cap had NO EFFECT on housekeeping until a restart, including a
+  // call succeeding against a slot the owner had just deleted. The chat path
+  // resolves per call (`get config()` in wire-chat-orchestrator) and the
+  // embeddings surface uses this same resolver; transcription was the one
+  // closure that did not, so the inconsistency was invisible from any single
+  // file.
+  it('⛔ transcribe reads the LIVE config, not the boot snapshot', async () => {
+    const live = {
+      transcription_slot: { provider: 'openai', model: 'whisper-live', api_key: 'sk-live' },
+    } as unknown as LLMConfig;
+    const substrate = makeSubstrate({ resolveLlmConfig: () => live });
+    const bundle = composeHousekeepingLlmCallables({ substrate });
+
+    await bundle.transcribe(transcribeRequest);
+
+    const passed = llmMocks.transcribe.mock.calls[0]?.[1]?.config as
+      { transcription_slot?: { model?: string } } | undefined;
+    expect(passed?.transcription_slot?.model).toBe('whisper-live');
+  });
+
+  it('⛔⛔ a slot the owner CLEARED mid-session stops being used, without a restart', async () => {
+    // The assertion that matters. Boot carried a slot; the owner deleted it.
+    // Reading the snapshot would keep transcribing against a source that no
+    // longer exists in their settings — spending a credential they revoked.
+    const booted = {
+      transcription_slot: { provider: 'openai', model: 'whisper-1', api_key: 'sk-old' },
+    } as unknown as LLMConfig;
+    const substrate = makeSubstrate({
+      llmConfig: booted,
+      resolveLlmConfig: () => ({} as unknown as LLMConfig),
+    });
+    const bundle = composeHousekeepingLlmCallables({ substrate });
+
+    await bundle.transcribe(transcribeRequest);
+
+    const passed = llmMocks.transcribe.mock.calls[0]?.[1]?.config as
+      { transcription_slot?: unknown } | undefined;
+    expect(passed?.transcription_slot).toBeUndefined();
   });
 
   it('transcribe honors housekeeping force_layer by filtering the captured config without touching packages/llm', async () => {

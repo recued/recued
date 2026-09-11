@@ -251,29 +251,28 @@ export const handleWorkEntityList = async (
 ): Promise<WorkEntityListRpcResponse> => {
   const kind = requireKind('work_entity.list', args.kind);
   if (
-    kind !== 'booking'
-    && (args.search !== undefined || args.booking_lifecycle_states !== undefined)
+    (kind !== 'booking' && args.booking_lifecycle_states !== undefined)
+    || (kind !== 'booking' && kind !== 'task' && args.search !== undefined)
+    || (kind !== 'task' && args.task_filter !== undefined)
   ) {
     throw new RpcError(
       'bad_request',
-      'work_entity.list: search and booking_lifecycle_states are booking-only filters',
+      'work_entity.list: search requires tasks or bookings; task_filter requires tasks; booking_lifecycle_states requires bookings',
     );
   }
   // Build the store-layer query from the wire request. The resolver
-  // applies the default `live` + `stale_unreachable` + enabled-Source
+  // applies the default `live` + `stale_unreachable`
   // filters; `count` reuses the same filters but drops limit/offset.
   const filters: WorkEntityListQuery = {};
   if (args.source_id !== undefined) filters.source_id = args.source_id;
   if (args.sync_states !== undefined) filters.sync_states = args.sync_states;
   if (args.include_deleted !== undefined) filters.include_deleted = args.include_deleted;
-  if (kind === 'booking' && args.search !== undefined) filters.search = args.search;
+  if (args.search !== undefined) filters.search = args.search;
+  if (args.task_filter !== undefined) filters.task_filter = args.task_filter;
   if (kind === 'booking' && args.booking_lifecycle_states !== undefined) {
     filters.booking_lifecycle_states = args.booking_lifecycle_states;
   }
   try {
-    const listQuery: WorkEntityListQuery = { ...filters };
-    if (args.limit !== undefined) listQuery.limit = args.limit;
-    if (args.offset !== undefined) listQuery.offset = args.offset;
     // A read_through Source materializes no canonical rows. Scoping the list
     // to one cannot be answered here, and an empty list would read as "no
     // records" — the freshness block below still reports the Source as
@@ -289,10 +288,14 @@ export const handleWorkEntityList = async (
     // Defensive residue filter, matching `work.search` and the recipe-callable
     // list: an interrupted posture migration must never serve rows the
     // declaration says do not exist. `total` stays on the same basis.
-    const rows = deps.resolver.listByKind(kind, listQuery);
-    const entities = rows.filter((entity) => !readThrough.has(entity.source_id));
-    const total = deps.store.countByKind(kind, filters)
-      - (rows.length - entities.length);
+    // Excluding after LIMIT would leave short pages and count hidden residue
+    // on later pages. Both SQL reads must use exactly the same visibility scope.
+    if (readThrough.size > 0) filters.excluded_source_ids = [...readThrough];
+    const listQuery: WorkEntityListQuery = { ...filters };
+    if (args.limit !== undefined) listQuery.limit = args.limit;
+    if (args.offset !== undefined) listQuery.offset = args.offset;
+    const entities = deps.resolver.listByKind(kind, listQuery);
+    const total = deps.store.countByKind(kind, filters);
     // D-192 read resolution — per-Source freshness for the query's
     // scope (same filter composition as the rows), so the client
     // renders staleness honestly (a poll mirror may trail the vendor).

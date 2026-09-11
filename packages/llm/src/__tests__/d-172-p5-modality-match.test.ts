@@ -46,16 +46,20 @@ describe('matchLLM — modality filtering (N.8)', () => {
     if (match.source.kind === 'pool') expect(match.source.entry.id).toBe('vision');
   });
 
-  it('carries modalities + transcription_model onto the synthesized slot of a winning pool entry', async () => {
+  it('carries modalities onto the synthesized slot of a winning pool entry', async () => {
     const config: LLMConfig = {
-      free_pool: [apiEntry('vision', { modalities: { image: true }, transcription_model: 'whisper-large-v3' })],
+      free_pool: [apiEntry('vision', { modalities: { image: true } })],
     };
     const match = matchLLM(
       { requires: requires(), allowUpgrade: false, requireModalities: { image: true } },
       { config, availability: await avail(config), quota: createQuotaTracker(), strategy: 'round_robin' },
     );
     expect(match.slot.modalities).toEqual({ image: true });
-    expect(match.slot.transcription_model).toBe('whisper-large-v3');
+    // ⛔ D-262 § B4 — `transcription_model` is NOT carried, because it no longer
+    // exists. The matcher synthesises a slot for a CHAT call; transcription
+    // stopped coming through here when it moved to its own slot, so copying a
+    // transcription field onto a chat slot was carrying a value nothing read.
+    expect('transcription_model' in match.slot).toBe(false);
   });
 
   it('a BYOK slot without modalities cannot serve a media turn', async () => {

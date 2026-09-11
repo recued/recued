@@ -58,6 +58,35 @@ export interface AIOutput {
    *  dispatches tool calls via tool-use; results flow back through
    *  the standard tool-use return path (D-121 events / direct return). */
   readonly tool_calls: ReadonlyArray<ToolCall>;
+  /** ⛔⛔ OPTIONAL SIGNAL, OBSERVED ONLY — NOT WIRED TO ANY DECISION YET.
+   *
+   *  True when the model plans no further action: the ask is answered, or it
+   *  has concluded it cannot be answered. NOT a success claim — a refusal
+   *  ("I cannot find the night-shift differential") is also nothing-outstanding,
+   *  and for the purpose this exists for — deciding whether more carrying is
+   *  worth paying for — those two are the same state.
+   *
+   *  🔑 WHY IT HAS TO COME FROM HERE. The only closure signal today is the
+   *  brief's `pending`, and `pending` is produced ONLY BY A FOLD. So between
+   *  folds there is nothing to read, which is precisely the window in which you
+   *  would want to stop folding. Measured over the corpus: `pending: []` appears
+   *  in 7% of briefs (27/402) and is NEVER observed on a tool-free turn, because
+   *  folds do not run there — the data cannot contain the signal.
+   *
+   *  ⚠ AND THE FREE PROXY IS TOO WEAK TO ACT ON. A tool-free turn looks like
+   *  closure and clusters at session end (83% in the last 20%), but 98 of 179
+   *  were NOT final — a 55% false-positive rate.
+   *
+   *  ⛔ SO IT IS EMITTED AND RECORDED, NOT ACTED ON. Retire claims — the closest
+   *  existing model judgement of "this is finished" — measured 72-81% precision
+   *  across five instruction variants, every paired contrast null. Wiring an
+   *  unmeasured boolean to a decision would repeat that. Measure its precision
+   *  against real session ends first, THEN choose a consumer.
+   *
+   *  ⚠ ABSENT MEANS "WORK CONTINUES", never "closed". A model that omits the
+   *  field must not be read as signalling completion — the fail-safe direction
+   *  is to keep carrying. */
+  readonly nothing_outstanding?: boolean;
 }
 
 /** Closed-list rejection reasons emitted by `validateAIOutput`. PB6

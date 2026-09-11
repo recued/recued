@@ -48,6 +48,7 @@ import type {
   ArgHashes,
   ContractSnapshot,
   ExecutionSource,
+  IngredientManifest,
   HashExcludeArgs,
   IngredientCategory,
   OpenProjectionComputation,
@@ -66,6 +67,8 @@ import type {
 } from '@recued/storage';
 import { deriveCommitKind } from './commit-kind.js';
 import { raiseOnAsk } from './preflight-gate.js';
+import { raiseInDoubtAsks, type InDoubtNotifier } from './in-doubt-reconciliation.js';
+import { describeCommitOperation } from './saga-reconciliation.js';
 
 // ────────────────────────────────────────────────────────────────
 // Executor function shapes
@@ -301,9 +304,44 @@ export interface CommitRunIdentity {
 
 /** Everything `wrapWithCommitGateway` needs. */
 export interface CommitGatewayDeps {
+  /** D-261 host-owned invocation frame. The receipt already exists in the
+   * atomic member transaction. No public marker/id can resolve this hook. */
+  reviewedDispatch?: {
+    /** A run restriction also applies to uncovered calls. It grants nothing. */
+    assertRunActive?(): void;
+    resolve(call: { slug: string; input: Record<string, unknown>; stepMeta: StepMeta | undefined }): Promise<{
+      commit_id: string; action_ref: string; idempotency_key: string;
+      validate(): Promise<void>;
+    } | null>;
+  };
   /** The commit log. The Gateway writes one pending commit per call,
    *  then transitions it on outcome. */
   commitStore: CommitStore;
+  /** D-157 A.1 step 1, runtime half — where an `in_doubt` dispatch asks the
+   *  owner what really happened.
+   *
+   *  ⛔⛔ THE BOOT SWEEP IS NOT THE ONLY PRODUCER, AND FOR A LONG TIME IT WAS
+   *  THE ONLY CALLER. `raiseInDoubtAsks` has always documented both sources
+   *  ("the boot sweep and a runtime `recordOutcome` failure both produce
+   *  `in_doubt` commits; this is the single entry point"), but only
+   *  `raiseInDoubtForSweptCommits` was wired — and `sweepPendingToInDoubt`
+   *  returns only NON-TERMINAL rows. A dispatch that settles terminal
+   *  `in_doubt` here is therefore invisible to it forever. Meanwhile the
+   *  torn-saga ask tells the owner "N calls crashed unconfirmed — you'll be
+   *  asked about those separately", so the gap was a promise nothing kept.
+   *
+   *  D-261 is what made it routine rather than rare: trusted surface dispatch
+   *  now carries the OPERATION's risk tier, so every catalog write/destructive
+   *  5xx lands here instead of on `failed`.
+   *
+   *  Absent ⇒ the commit is still durably `in_doubt` and still visible in the
+   *  log; only the ask is missing. Same graceful-degradation posture as
+   *  `preflightNotifier` / `sagaNotifier`. */
+  inDoubtNotifier?: InDoubtNotifier;
+  /** Lets the in-doubt ask name the OPERATION rather than the catalog slug —
+   *  `commit.tool` and `commit.ingredient` are both the slug for a catalog
+   *  dispatch. Absent ⇒ the prior wording. */
+  getManifest?: (slug: string) => IngredientManifest | undefined;
   /** Per-run identity. Absent → the Gateway is a no-op pass-through: it
    *  writes no commits and dispatches every call unchanged. This is
    *  slice 3b.2's inert default, and the runtime graceful-degradation
@@ -848,6 +886,9 @@ export const wrapWithCommitGateway = (
       && stepMeta?.surface_dispatch_authority_input !== undefined
       ? stepMeta.surface_dispatch_authority_input as Record<string, unknown>
       : input;
+    const reviewed = deps.reviewedDispatch
+      ? await deps.reviewedDispatch.resolve({ slug, input: authorityInput, stepMeta }) : null;
+    if (reviewed && !identity) throw new Error('A reviewed dispatch requires its original run identity.');
     const sensitiveSurfaceDispatch = surfaceDispatch
       && stepMeta?.surface_dispatch_sensitive === true;
     if (sensitiveSurfaceDispatch
@@ -1071,7 +1112,7 @@ export const wrapWithCommitGateway = (
         if (decision.verdict === 'deny') {
           throw new PreflightDeniedError(slug, decision.code, decision.detail);
         }
-        if (decision.verdict === 'ask') {
+        if (decision.verdict === 'ask' && !reviewed) {
           // D-165 follow-on (op-identity binding) — honor the resume grant
           // ONLY when the approved identity names THIS slug. Position alone
           // (the gated step id, via `preflight_admitted`) is insufficient: a
@@ -1452,7 +1493,12 @@ export const wrapWithCommitGateway = (
       throw new DispatchDepthExceededError(identity.dispatch_depth);
     }
 
-    const commit_id = genCommitId();
+    const commit_id = reviewed?.commit_id ?? genCommitId();
+    // The outer logical invocation settles its own durable member after all
+    // protocol adaptation/required children complete. Transport delegates
+    // must not independently settle that receipt or persist private output.
+    const recordOutcome = (outcome: Parameters<typeof recordOutcomeBestEffort>[2]) => reviewed
+      ? Promise.resolve() : recordOutcomeBestEffort(deps.commitStore, commit_id, outcome);
     const pending: PendingCommitInput = {
       commit_id,
       kind: deriveCommitKind(deps.getIngredientCategory?.(slug)),
@@ -1478,7 +1524,7 @@ export const wrapWithCommitGateway = (
         : {}),
       correlation_id: identity.correlation_id,
       dispatch_depth: identity.dispatch_depth,
-      idempotency_key: genIdempotencyKey(),
+      idempotency_key: reviewed?.idempotency_key ?? genIdempotencyKey(),
       dispatched_at: now(),
       request_id: identity.request_id,
       ...(identity.predecessor_commit_id !== undefined
@@ -1618,10 +1664,10 @@ export const wrapWithCommitGateway = (
     // writePending failure propagates — without the durable pending
     // row the crash-safety marker is absent, so the Gateway must NOT
     // cross the boundary. The call fails before any side-effect.
-    await deps.commitStore.writePending(pending);
+    if (!reviewed) await deps.commitStore.writePending(pending);
 
     if (deps.runAbortSignal?.aborted) {
-      await recordOutcomeBestEffort(deps.commitStore, commit_id, {
+      await recordOutcome({
         status: 'cancelled',
         completed_at: now(),
       });
@@ -1632,11 +1678,13 @@ export const wrapWithCommitGateway = (
 
     const probe: GatewayCallProbe = { cached: false };
     try {
+      await reviewed?.validate();
+      deps.reviewedDispatch?.assertRunActive?.();
       const result = await inner(
         slug,
         input,
         stepOutput,
-        stepOptions,
+        reviewed ? { cache: 'fresh' } : stepOptions,
         forwardedStepMeta,
         probe,
       );
@@ -1644,7 +1692,7 @@ export const wrapWithCommitGateway = (
       // the run's await. Its late value is evidence about a cancelled commit,
       // not a value the already-killed run may publish or cache as success.
       if (deps.runAbortSignal?.aborted) {
-        await recordOutcomeBestEffort(deps.commitStore, commit_id, {
+        await recordOutcome({
           status: 'cancelled',
           completed_at: now(),
         });
@@ -1653,7 +1701,7 @@ export const wrapWithCommitGateway = (
           commitOutcomeRecorded: true,
         });
       }
-      await recordOutcomeBestEffort(deps.commitStore, commit_id, {
+      await recordOutcome({
         status: 'succeeded',
         // Content isolation (storage-gdrive `file.download`): a
         // `response_capture` surface dispatch returns the raw file body
@@ -1676,13 +1724,38 @@ export const wrapWithCommitGateway = (
         err !== null
         && typeof err === 'object'
         && (err as { commitOutcomeRecorded?: unknown }).commitOutcomeRecorded === true;
+      const status = deps.runAbortSignal?.aborted
+        ? 'cancelled'
+        : isInDoubtError(err) ? 'in_doubt' : 'failed';
       if (!alreadyRecorded) {
-        await recordOutcomeBestEffort(deps.commitStore, commit_id, {
-          status: deps.runAbortSignal?.aborted
-            ? 'cancelled'
-            : isInDoubtError(err) ? 'in_doubt' : 'failed',
-          completed_at: now(),
-        });
+        await recordOutcome({ status, completed_at: now() });
+      }
+      // D-157 A.1 step 1, runtime half. The three other `recordOutcome` sites
+      // above settle `cancelled` / `cancelled` / `succeeded`, so this is the
+      // ONLY place a dispatch can settle `in_doubt`.
+      //
+      // 🔑 RE-READ RATHER THAN TRUST THE WRITE. `recordOutcomeBestEffort`
+      // SWALLOWS a failed outcome write on purpose — the row then stays
+      // non-terminal and the next boot's sweep settles it AND asks. Raising
+      // from the local `status` would double-ask in exactly that case. Reading
+      // the row back settles it: `raiseInDoubtAsks` skips anything not
+      // `in_doubt`, so a swallowed write falls through to the sweep untouched.
+      //
+      // ⚠ `preapproval` rows are excluded, matching `sweepPendingToInDoubt`'s
+      // own predicate — a D-261 member's uncertainty is reconciled inside its
+      // member transaction, and a second generic ask would let an ordinary
+      // answer settle a reviewed effect.
+      //
+      // Best-effort, and AFTER the outcome write: a notification failure must
+      // not replace the dispatch error the caller is about to see.
+      if (status === 'in_doubt' && deps.inDoubtNotifier) {
+        try {
+          const settled = await deps.commitStore.get(commit_id);
+          if (settled && settled.preapproval === undefined) {
+            await raiseInDoubtAsks(deps.inDoubtNotifier, [settled],
+              deps.getManifest ? c => describeCommitOperation(c, deps.getManifest!) : undefined);
+          }
+        } catch { /* the commit stays in_doubt and unreconciled — as before */ }
       }
       throw err;
     }

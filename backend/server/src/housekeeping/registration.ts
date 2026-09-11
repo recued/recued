@@ -50,6 +50,10 @@ import { engagementScorePerContactTask } from './producers/engagement-score-per-
 import { lifecycleStageInferredTask } from './producers/lifecycle-stage-inferred.js';
 import { lifecycleStageInferredSalesforceTask } from './producers/lifecycle-stage-inferred-salesforce.js';
 import { commitmentTrackerTask } from './engagement-aggregates/commitment-tracker-task.js';
+import { RECORD_AGGREGATE_TASKS } from './engagement-aggregates/record-aggregate-tasks.js';
+import { RECORD_AI_TASKS } from './engagement-aggregates/record-ai-tasks.js';
+import { outOfBandEngagementTask } from './engagement-aggregates/out-of-band-task.js';
+import { PROJECTED_RECORD_TASKS } from './engagement-aggregates/projected-record-tasks.js';
 import { sourceFreshnessDegradationTask } from './producers/source-freshness-degradation.js';
 
 import { threadSignalsProducer } from './producers/thread-signals.js';
@@ -132,6 +136,36 @@ export const STANDALONE_TASKS: ReadonlyArray<HousekeepingTaskInstance> = [
   // ── D-192 email flagship — commitment extraction (cross-vendor,
   // declaration-driven contact walk; self-checks ctx.resolveContactEngagements) ──
   commitmentTrackerTask,
+  // ── D-139 slice 3 — record-rooted engagement aggregates ──
+  // Six deterministic, zero-token producers over the D-139 engagement
+  // substrate, rooted on a CRM record (deal / account) via slice 2's
+  // `resolveEngagementsForRecord`. Each self-checks
+  // `ctx.resolveRecordEngagements` and no-ops when the engagement substrate
+  // is unwired, the same posture `commitmentTrackerTask` takes.
+  ...RECORD_AGGREGATE_TASKS,
+  // ── D-139 slice 4 — AI-surface record aggregates ─────────
+  // ⛔ Registering these does NOT turn them on. Both keep D-132's
+  // `'manual'` trust default and cost tokens per record. Registration is
+  // what gives the owner a way to turn them on at all: before it there was
+  // no Settings row to flip, `housekeeping.task.run_now` refused them as
+  // "not registered", and `manual_run_count` could therefore never reach
+  // `MANUAL_RUN_THRESHOLD` — a safety default the owner could not reach,
+  // which ships a feature permanently off rather than safely off.
+  ...RECORD_AI_TASKS,
+  // ── D-139 § A.9.2b — the cross-source visibility gap ─────
+  // Its own shell: the only D-139 topic whose inputs span local mail, CRM
+  // engagements AND the deal's contact fan-out. Self-checks BOTH
+  // `ctx.resolveRecordEngagements` and `ctx.listDealContacts` — an absent
+  // contact reader would make every deal look gap-free.
+  outOfBandEngagementTask,
+  // ── D-139 P4 — projected-input record aggregates ─────────
+  // The last three D-139 topics. Their kernels take a PROJECTED input
+  // (engagement+contact pairs, a per-deal win/loss tally, domain sets)
+  // rather than `EngagementRow[]`, which is the only reason they needed a
+  // second shell rather than a sixth entry in RECORD_AGGREGATE_TASKS.
+  ...PROJECTED_RECORD_TASKS,
+
+
   // ── D-145 PA9 standalone — per-Source health (scenario id) ──
   // Per-Source row keyed on `source_registry.id`. Reads source_registry
   // + connections + work-entity tables; engine consumes for omission

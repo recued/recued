@@ -98,9 +98,11 @@ test('the upgrade probe reports silence as silence', async () => {
  *  `npx tsx bin.ts`, died, and `recued status` said "stopped" — and every drive
  *  in this repository went through the foreground path, so nothing saw it.
  *  A binary is not shippable because ONE of its two front doors opens. */
-const PORT_FOR: Record<BootMode, number> = { foreground: 7817, daemon: 7818, unit: 7819 };
+// Only the modes exercised by this pairing suite need ports here.
+const PAIRING_MODES = ['foreground', 'daemon', 'unit'] as const satisfies readonly BootMode[];
+const PORT_FOR: Record<typeof PAIRING_MODES[number], number> = { foreground: 7817, daemon: 7818, unit: 7819 };
 
-for (const mode of ['foreground', 'daemon', 'unit'] as const) {
+for (const mode of PAIRING_MODES) {
 const launched = mode === 'daemon'
   ? 'with `recued start`'
   : mode === 'unit'
