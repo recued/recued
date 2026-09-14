@@ -26,19 +26,42 @@ import type Database from 'better-sqlite3';
 
 export type PublicationState = 'active' | 'withdrawing';
 
-export interface BoardPublication {
+/** ⛔⛔ EXACTLY ONE DEFINITION, MIRRORING THE CLOUD'S `boards_one_definition` AND THE WIRE.
+ *  § D3.1a keys a board on `(tag, metric_id|recipe_id, season_id)`; this store only ever knew
+ *  `metric_id`, which is why a recipe-defined board — an EVAL board, per § 9 answer 1 — could
+ *  not be published to at all. The row could exist in the cloud and nothing local could ever
+ *  name it.
+ *  ⚠ A UNION, NOT TWO OPTIONAL FIELDS, so the call site cannot express both-or-neither. The
+ *  wire refuses that pairing and the cloud's constraint refuses it; a type that permitted it
+ *  here would move the failure to the far end of a once-daily batch. */
+/** What a CALLER writes. `?: undefined` on the absent side so `grant({ tag, metric_id, season_id })`
+ *  stays the obvious thing to type — nobody should have to pass an explicit null to say a
+ *  recipe is not involved. */
+export type PublicationDefinition =
+  | { readonly metric_id: string; readonly recipe_id?: undefined }
+  | { readonly recipe_id: string; readonly metric_id?: undefined };
+
+/** ⛔⛔ WHAT THE STORE HOLDS, AND THE NULLS ARE EXPLICIT ON PURPOSE. SQLite returns null for an
+ *  unset column, so a union written with `?: undefined` would type-check while the runtime
+ *  value narrowed nothing — `undefined !== null` is true, and `if (p.recipe_id !== null)`
+ *  would fall through for a metric publication. Spelling the absent side as `null` is what
+ *  makes the discriminant REAL rather than documentary: the compiler then refuses any read of
+ *  `p.metric_id` that has not first ruled the recipe case out. */
+export type BoardPublication = {
   readonly tag: string;
-  readonly metric_id: string;
   readonly season_id: string;
   readonly state: PublicationState;
   readonly granted_at: number;
   readonly withdrawn_at: number | null;
-}
+} & (
+  | { readonly metric_id: string; readonly recipe_id: null }
+  | { readonly metric_id: null; readonly recipe_id: string }
+);
 
 export interface BoardPublicationStore {
   /** The owner's explicit opt-in. Re-granting an existing tag updates what is published
    *  and CLEARS a pending withdrawal — the owner changed their mind before the ack. */
-  grant(input: { tag: string; metric_id: string; season_id: string }, now: number): BoardPublication;
+  grant(input: { tag: string; season_id: string } & PublicationDefinition, now: number): BoardPublication;
   /** ⛔ MOVES TO `withdrawing`; DOES NOT DELETE. Returns undefined if the tag was never
    *  published — revoking nothing is not an error, but it must not invent a row to
    *  withdraw, or the batch would carry a withdrawal for a board this server never
@@ -55,46 +78,93 @@ export interface BoardPublicationStore {
   pending(): readonly BoardPublication[];
 }
 
+/** ⛔⛔ A REBUILD, NOT AN `ALTER TABLE ADD COLUMN`, AND THE REASON IS THE PART THAT BITES.
+ *  `CREATE TABLE IF NOT EXISTS` is a PERMANENT NO-OP on an install that already has the table
+ *  — the exact shape that left `003_slack_links.sql` inert on production forever — so shipping
+ *  a widened CREATE would change nothing for every existing server. And `ADD COLUMN`, the
+ *  house pattern elsewhere, cannot relax `metric_id NOT NULL` nor add the XOR check: both are
+ *  frozen at CREATE, the same freeze that made 041's kind widening inert until it dropped and
+ *  re-added the constraint.
+ *  ⚠ SAFE HERE IN A WAY IT WOULD NOT BE ON A SHARED DATABASE: this is one owner's local file,
+ *  the copy is deterministic, and every existing row migrates unchanged with `recipe_id` null.
+ *  ⚠ DETECTED BY COLUMN PRESENCE, NOT A VERSION FLAG — nothing here tracks schema versions, so
+ *  the schema itself is the only honest thing to ask. */
 export const ensurePublicationSchema = (db: Database.Database): void => {
   db.exec(`
     CREATE TABLE IF NOT EXISTS board_publications (
       tag TEXT PRIMARY KEY,
-      metric_id TEXT NOT NULL,
+      metric_id TEXT,
+      recipe_id TEXT,
       season_id TEXT NOT NULL,
       state TEXT NOT NULL CHECK (state IN ('active', 'withdrawing')),
       granted_at INTEGER NOT NULL,
-      withdrawn_at INTEGER
+      withdrawn_at INTEGER,
+      CHECK ((metric_id IS NOT NULL) <> (recipe_id IS NOT NULL))
     );
+  `);
+  const cols = db.prepare('PRAGMA table_info(board_publications)').all() as Array<{ name: string }>;
+  if (cols.some((c) => c.name === 'recipe_id')) return;
+  db.exec(`
+    BEGIN;
+    CREATE TABLE board_publications_new (
+      tag TEXT PRIMARY KEY,
+      metric_id TEXT,
+      recipe_id TEXT,
+      season_id TEXT NOT NULL,
+      state TEXT NOT NULL CHECK (state IN ('active', 'withdrawing')),
+      granted_at INTEGER NOT NULL,
+      withdrawn_at INTEGER,
+      CHECK ((metric_id IS NOT NULL) <> (recipe_id IS NOT NULL))
+    );
+    INSERT INTO board_publications_new (tag, metric_id, recipe_id, season_id, state, granted_at, withdrawn_at)
+      SELECT tag, metric_id, NULL, season_id, state, granted_at, withdrawn_at FROM board_publications;
+    DROP TABLE board_publications;
+    ALTER TABLE board_publications_new RENAME TO board_publications;
+    COMMIT;
   `);
 };
 
 interface Row {
   tag: string;
-  metric_id: string;
+  metric_id: string | null;
+  recipe_id: string | null;
   season_id: string;
   state: PublicationState;
   granted_at: number;
   withdrawn_at: number | null;
 }
 
-const toPublication = (r: Row): BoardPublication => ({
-  tag: r.tag,
-  metric_id: r.metric_id,
-  season_id: r.season_id,
-  state: r.state,
-  granted_at: r.granted_at,
-  withdrawn_at: r.withdrawn_at,
-});
+/** ⛔ THE CHECK CONSTRAINT IS THE GUARANTEE; THIS IS WHERE IT BECOMES A TYPE. A row that
+ *  satisfied neither side could only come from a database edited around the constraint, and
+ *  returning it shaped as a publication would push the contradiction into every caller.
+ *  ⚠ UNREACHABLE WHILE THE CHECK HOLDS, AND NO TEST COVERS THE THROW — verified by mutation:
+ *  replacing it with a silent coercion stays green, because the only row that would reach it
+ *  cannot be inserted. Reaching it would mean writing a fixture table without the constraint,
+ *  which tests the fixture rather than this. Kept on the same terms as 045's own unreachable
+ *  refusal: the constraint is the guarantee, this is what happens when the guarantee is wrong. */
+const toPublication = (r: Row): BoardPublication => {
+  const base = {
+    tag: r.tag,
+    season_id: r.season_id,
+    state: r.state,
+    granted_at: r.granted_at,
+    withdrawn_at: r.withdrawn_at,
+  };
+  if (r.metric_id !== null && r.recipe_id === null) return { ...base, metric_id: r.metric_id, recipe_id: null };
+  if (r.recipe_id !== null && r.metric_id === null) return { ...base, metric_id: null, recipe_id: r.recipe_id };
+  throw new Error(`board_publications row "${r.tag}" names neither exactly one definition`);
+};
 
 export const createBoardPublicationStore = (db: Database.Database): BoardPublicationStore => {
   ensurePublicationSchema(db);
   const getStmt = db.prepare('SELECT * FROM board_publications WHERE tag = ?');
   const allStmt = db.prepare('SELECT * FROM board_publications ORDER BY tag');
   const put = db.prepare(
-    `INSERT INTO board_publications (tag, metric_id, season_id, state, granted_at, withdrawn_at)
-       VALUES (?, ?, ?, 'active', ?, NULL)
+    `INSERT INTO board_publications (tag, metric_id, recipe_id, season_id, state, granted_at, withdrawn_at)
+       VALUES (?, ?, ?, ?, 'active', ?, NULL)
        ON CONFLICT(tag) DO UPDATE SET
          metric_id = excluded.metric_id,
+         recipe_id = excluded.recipe_id,
          season_id = excluded.season_id,
          state = 'active',
          withdrawn_at = NULL`,
@@ -116,7 +186,9 @@ export const createBoardPublicationStore = (db: Database.Database): BoardPublica
       // ⚠ `granted_at` keeps its ORIGINAL value on a re-grant — the ON CONFLICT clause
       // does not touch it. It answers "since when has this been published", and
       // re-stamping it on every edit would erase that.
-      put.run(input.tag, input.metric_id, input.season_id, now);
+      // ⚠ BOTH COLUMNS ARE ALWAYS BOUND, one of them to null — the union above guarantees
+      // exactly one is present, and the CHECK refuses the row if that ever stops being true.
+      put.run(input.tag, input.metric_id ?? null, input.recipe_id ?? null, input.season_id, now);
       return get(input.tag)!;
     },
 

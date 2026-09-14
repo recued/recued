@@ -45,27 +45,27 @@ export const SOURCE_TOP_TIER_COPY: Readonly<Record<ReceptionInboxTopTierKind, st
 
 export const RECEPTION_INBOX_ERROR_COPY: Readonly<Record<ReceptionInboxRpcErrorCode, string>> = {
   permission_denied:
-    'The Reception Inbox is admin-only. Re-pair this client with an admin token, or open Settings from an admin-bound device.',
+    'Only an administrator can see this inbox. Pair this browser again with an administrator key, or open Settings on a device that has one.',
   hold_not_found:
-    'That inbox item is no longer held. It may have been resolved from another paired client.',
+    'That is not waiting any more. Somebody may have dealt with it on another device.',
   edit_not_allowed:
-    'One of those edits is not allowlisted for this held operation. Refresh the inbox and try again.',
+    'You cannot change one of those things here. Load the inbox again and try once more.',
   // D-210 step 2c — a bad VALUE, not a missing permission. The server names the field and
   // what it expected, so the copy hands that through rather than restating it generically:
   // "start_at must be a finite number" is the whole message the owner needs.
   edit_invalid:
-    'One of those edits is not valid for its field. Check the highlighted value and try again.',
+    'One of your changes does not fit its box. Check the one marked and try again.',
   attachment_scan_pending:
-    'The attachment is being scanned. Approval is held for a moment until the scan completes — try again shortly.',
+    'Recued is checking the file for viruses. Try again in a moment.',
   attachment_unscanned:
-    'The attachment has not been virus-scanned. Review it, then confirm to attach it anyway.',
+    'Nobody has checked this file for viruses. Look at it, then say yes if you still want it.',
   attachment_flagged:
-    'The attachment was flagged by the virus scan. Review it, then confirm to attach it anyway.',
-  bad_request: 'The inbox request was malformed. Refresh the page and try again.',
+    'The virus check flagged this file. Look at it, then say yes if you still want it.',
+  bad_request: 'Recued could not read that. Load the page again and try once more.',
 };
 
 export const RECEPTION_INBOX_APPROVE_NOT_CONFIGURED_COPY =
-  "Couldn't release this inbox item because notifications are not configured.";
+  "Recued could not let this go, because it has no way to tell you.";
 
 export type ReceptionInboxInputKind =
   | 'text'
@@ -236,7 +236,7 @@ export const computeReceptionInboxOverlapLabel = (
     : `${count} other ${noun} then`;
   if (!partial) return body;
   const cal = unreadable_calendars === 1 ? 'calendar' : 'calendars';
-  return `${body} — ${unreadable_calendars} ${cal} couldn’t be read`;
+  return `${body} — ${unreadable_calendars} ${cal} could not be read`;
 };
 
 export const formatReceptionInboxFileSize = (bytes: number): string => {
@@ -252,9 +252,9 @@ export const formatReceptionInboxFileSize = (bytes: number): string => {
 
 const SCAN_STATUS_WARNING: Readonly<Record<ReceptionInboxScanStatus, string | null>> = {
   clean: null,
-  pending: 'Attachment is being scanned…',
-  unscanned: 'Attachment has not been virus-scanned.',
-  flagged: 'Attachment was flagged by the virus scan.',
+  pending: 'Checking the file for viruses…',
+  unscanned: 'Nobody has checked this file for viruses.',
+  flagged: 'The virus check flagged this file.',
 };
 
 export const buildReceptionInboxAttachmentModel = (
@@ -494,7 +494,7 @@ export const buildReceptionInboxDetailModel = (
   const immutable_arg_keys = Object.keys(item.args).filter((key) => !editable.has(key)).sort();
   const attachment = buildReceptionInboxAttachmentModel(item.attachment);
   const approve_disabled_reason =
-    attachment?.approve_blocked === true ? 'Attachment is being scanned.' : null;
+    attachment?.approve_blocked === true ? 'Recued is checking the file for viruses.' : null;
   const review_body =
     item.top_tier_kind === 'form_response'
     && typeof item.args.body === 'string'
@@ -589,7 +589,7 @@ export const resolveReceptionInboxApproveResultCopy = (
 ): string | null => {
   if (result.released) return null;
   if (result.reason === 'not_configured') return RECEPTION_INBOX_APPROVE_NOT_CONFIGURED_COPY;
-  return "Couldn't release this inbox item.";
+  return "Recued could not let this go.";
 };
 
 export const resolveReceptionInboxErrorCopy = (err: unknown): string => {

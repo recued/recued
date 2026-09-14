@@ -284,7 +284,7 @@ export const mountReceptionAuthoringSection = (
         formHost.innerHTML = panel({
           tone: 'danger',
           role: 'alert',
-          title: 'Could not load the page',
+          title: 'Recued could not load the page',
           body: '<p class="reception-error-copy">The current page configuration could not be loaded. Go back and try again — editing now could overwrite it.</p>',
         });
       });

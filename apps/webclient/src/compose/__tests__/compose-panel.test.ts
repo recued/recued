@@ -239,7 +239,7 @@ describe('D-174 P5 Compose local draft route', () => {
     expect(shell.attrs.has(COMPOSE_ROUTE_HOST_ATTR)).toBe(true);
     expect(firstByAttr(shell, COMPOSE_ROUTE_HEADING_ATTR)?.textContent).toBe('Compose');
     // R18 — Project joins the fast-access create so its kind set matches Data's.
-    expect(targetKeys(shell)).toEqual(['contact', 'task', 'note', 'commitment', 'project']);
+    expect(targetKeys(shell)).toEqual(['contact', 'task', 'note', 'commitment', 'project', 'booking']);
     expect(targetKeys(shell)).toEqual(COMPOSE_LOCAL_TARGETS.map((target) => target.kind));
     expect(targetKeys(shell)).toContain('project');
     // Write-back targets (calendar / CRM sync) are still NOT local-create kinds.
@@ -324,22 +324,30 @@ describe('D-174 P5 Compose local draft route', () => {
     const chips = collectByAttr(root, COMPOSE_ROUTE_TARGET_CHIP_ATTR);
 
     expect(group?.getAttribute('aria-label')).toBe('Create type');
-    expect(chips.map((chip) => chip.getAttribute('aria-pressed'))).toEqual([
-      'true',
-      'false',
-      'false',
-      'false',
-      'false',
-    ]);
+    // ⚠ Derived from the chip count, not a hand-counted list: this assertion
+    // has been re-typed once per new target, which is how it stays a count
+    // rather than a claim. What it pins is "exactly one is pressed, and it is
+    // the first" — the part that is actually about the toggle group.
+    expect(chips.map((chip) => chip.getAttribute('aria-pressed'))).toEqual(
+      chips.map((_chip, index) => (index === 0 ? 'true' : 'false')),
+    );
+    expect(chips.filter((chip) => chip.getAttribute('aria-pressed') === 'true'))
+      .toHaveLength(1);
 
     route.selectTarget('task');
-    expect(chips.map((chip) => chip.getAttribute('aria-pressed'))).toEqual([
-      'false',
-      'true',
-      'false',
-      'false',
-      'false',
-    ]);
+    expect(chips.map((chip) => chip.getAttribute('aria-pressed'))).toEqual(
+      chips.map((chip) =>
+        chip.getAttribute(COMPOSE_ROUTE_TARGET_CHIP_ATTR) === 'task' ? 'true' : 'false'),
+    );
+
+    // The LAST chip is reachable too — a selection assertion that only ever
+    // names index 0 or 1 would stay green if a newly added target rendered
+    // unpressable.
+    route.selectTarget('booking');
+    expect(chips.map((chip) => chip.getAttribute('aria-pressed'))).toEqual(
+      chips.map((chip) =>
+        chip.getAttribute(COMPOSE_ROUTE_TARGET_CHIP_ATTR) === 'booking' ? 'true' : 'false'),
+    );
 
     route.dispose();
   });
@@ -621,7 +629,7 @@ describe('D-174 P5 Compose local draft route', () => {
     expect(textTree(shell)).not.toContain('Generate preview');
     expect(textTree(shell)).not.toContain('Create endpoint');
     expect(textTree(shell)).not.toContain('Template');
-    expect(targetKeys(shell)).toEqual(['contact', 'task', 'note', 'commitment', 'project']);
+    expect(targetKeys(shell)).toEqual(['contact', 'task', 'note', 'commitment', 'project', 'booking']);
 
     route.dispose();
   });
@@ -639,12 +647,109 @@ describe('D-174 P5 Compose local draft route', () => {
 
     expect(route.getState().stage).toBe('error');
     expect(route.getState().error).toBe(
-      'Saving contacts is not available on this server yet.',
+      'This server cannot save contacts yet.',
     );
     expect(firstByAttr(root, COMPOSE_ROUTE_ERROR_ATTR)?.getAttribute('data-active')).toBe(
       'true',
     );
 
     route.dispose();
+  });
+});
+
+describe('D-267 follow-on — the Booking capture target', () => {
+  const bookingRig = () => {
+    const workEntityUpsertCaller = vi.fn<ComposeWorkEntityUpsertCaller>(
+      async () => ({ entity: { _kind: 'booking', id: 'bk_1', title: 'Haircut' } as never }),
+    );
+    const rig = mountFor({ workEntityUpsertCaller });
+    rig.route.selectTarget('booking');
+    return { ...rig, workEntityUpsertCaller };
+  };
+
+  it('is born CONFIRMED — never the lifecycle list\'s first member', async () => {
+    const { route, workEntityUpsertCaller } = bookingRig();
+    // ⛔ `pending` sorts FIRST in `BOOKING_LIFECYCLE_STATES` and is explicitly
+    // NOT the default; the contract names the default precisely so nobody
+    // reaches for `[0]`. A booking is normally created at the moment it is
+    // approved, so `confirmed` is what a hand-made one is born as too.
+    expect(route.getState().values.lifecycle_state).toBe('confirmed');
+    route.setFieldValues({ title: 'Haircut' });
+    await route.commitDraft();
+    expect(workEntityUpsertCaller).toHaveBeenCalledWith({
+      kind: 'booking', title: 'Haircut', lifecycle_state: 'confirmed',
+    });
+  });
+
+  it('⛔ refuses half a slot, and says which half to fix', async () => {
+    const { route, workEntityUpsertCaller } = bookingRig();
+    route.setFieldValues({ title: 'Haircut', slot_start_at: '2026-09-14T10:00' });
+    await route.commitDraft();
+    // The store refuses a start with no end — "a corrupt time, not a partly
+    // known one". Caught HERE so the owner is told which field to fix instead
+    // of reading a server refusal about a record they cannot see.
+    expect(route.getState().error).toBe('Add an end time, or remove the start time.');
+    expect(workEntityUpsertCaller).not.toHaveBeenCalled();
+
+    route.setFieldValues({ slot_start_at: '', slot_end_at: '2026-09-14T11:00' });
+    await route.commitDraft();
+    expect(route.getState().error).toBe('Add a start time, or remove the end time.');
+
+    route.setFieldValues({ slot_start_at: '2026-09-14T11:00', slot_end_at: '2026-09-14T10:00' });
+    await route.commitDraft();
+    expect(route.getState().error).toBe('The end time must be after the start time.');
+    expect(workEntityUpsertCaller).not.toHaveBeenCalled();
+  });
+
+  it('sends a whole slot as epoch ms, and no slot at all when none is given', async () => {
+    const { route, workEntityUpsertCaller } = bookingRig();
+    route.setFieldValues({
+      title: 'Haircut',
+      slot_start_at: '2026-09-14T10:00',
+      slot_end_at: '2026-09-14T11:00',
+    });
+    await route.commitDraft();
+    const sent = workEntityUpsertCaller.mock.calls[0]?.[0];
+    expect(sent).toMatchObject({
+      kind: 'booking',
+      slot_start_at: new Date('2026-09-14T10:00').getTime(),
+      slot_end_at: new Date('2026-09-14T11:00').getTime(),
+    });
+    // ⚠ Duration is DERIVED server-side and must never be sent.
+    expect(sent).not.toHaveProperty('duration');
+    // ⛔ And provenance is the SERVER's to write: a hand-made booking must not
+    // be able to claim it came from an approved visitor reservation.
+    expect(sent).not.toHaveProperty('reception_record_id');
+
+    // Absent entirely is a real state — an enquiry before a time is agreed.
+    const second = bookingRig();
+    second.route.setFieldValues({ title: 'Enquiry' });
+    await second.route.commitDraft();
+    const bare = second.workEntityUpsertCaller.mock.calls[0]?.[0];
+    expect(bare).toMatchObject({ kind: 'booking', title: 'Enquiry' });
+    expect(bare).not.toHaveProperty('slot_start_at');
+    expect(bare).not.toHaveProperty('slot_end_at');
+  });
+
+  it('⛔ pairs money with its currency, and keeps the amount a STRING', async () => {
+    const { route, workEntityUpsertCaller } = bookingRig();
+    route.setFieldValues({ title: 'Haircut', monetary_amount: '45.00' });
+    await route.commitDraft();
+    expect(route.getState().error).toBe('Add a currency, or remove the amount.');
+
+    route.setFieldValues({ monetary_amount: '', monetary_currency: 'gbp' });
+    await route.commitDraft();
+    expect(route.getState().error).toBe('Add an amount, or remove the currency.');
+
+    route.setFieldValues({ monetary_amount: '45.005', monetary_currency: 'gbp' });
+    await route.commitDraft();
+    expect(route.getState().error).toBe('The amount has to be a number with no more than two decimal places.');
+
+    route.setFieldValues({ monetary_amount: '45.00', monetary_currency: 'gbp' });
+    await route.commitDraft();
+    // ⛔ A STRING, never a float: parsing money to a number rounds it.
+    expect(workEntityUpsertCaller).toHaveBeenCalledWith(expect.objectContaining({
+      monetary_value: { amount: '45.00', currency: 'GBP' },
+    }));
   });
 });

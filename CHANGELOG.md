@@ -7,6 +7,72 @@ checkpoint was cut. One entry per published export; the machine-readable
 provenance for each — source commit, tree, payload digest, and what was omitted
 — lives in `.recued-public-export.json`.
 
+## 26.9.14 — 2026-09-14
+
+Three threads that turn out to answer the same complaint from different sides:
+the assistant could read your world but never add to it, reminders you set here
+never actually reached you, and the screens that explain both were written for
+the people who built them.
+
+### Added
+
+- **The assistant can put things in, not just read them back.** It can create a
+  task, a commitment or a booking, and mark one done, reschedule it or rename
+  it. Until now it could only tell you what was already there.
+- **It can add to your calendar — and it stops to ask first.** Creating or
+  changing a calendar event is the first thing the assistant does that
+  deliberately pauses for your approval instead of acting.
+- **Attach files from the cloud accounts you have connected**, not only from
+  the device in front of you. Where a file came from is remembered, an
+  attachment survives a retry, and previews are shared between your files and
+  your chats. Deleting a file no longer takes a conversation's copy with it.
+- **Choose what you are notified about, and how far ahead.** Tasks,
+  commitments, bookings and calendar events each carry their own setting, so
+  you can ask for a day's warning on one and an hour on another — or turn one
+  off entirely.
+- **Quiet hours.** One window and one switch: nothing reaches you inside it,
+  and you get a summary of what happened when it ends. Approvals can be let
+  through if you would rather be interrupted for those.
+
+### Fixed
+
+- **Reminders you set in Recued never reached you.** A task or commitment with
+  a deadline you typed here told nobody. The deadline was recorded and the
+  settings screen offered controls over it, but there was nothing on the other
+  end. All four kinds now notify you, and a restart no longer makes Recued tell
+  you the same thing twice.
+- **The setting for how far ahead you are warned could not be opened.** The
+  behaviour shipped and worked; nothing in the interface could change it, so it
+  quietly stayed at its default for everyone. A setting you cannot reach is the
+  same as no setting.
+- **A missed schedule now says which one is waiting and how late it is**,
+  rather than only that something was missed.
+- **An unattended automation that fails now says so and stops**, instead of
+  failing on a timer indefinitely.
+
+### Improved
+
+- **Quiet hours runs on a clock your server declares, rather than one it
+  guesses.** A window like 22:00 to 07:00 means nothing without a zone, and a
+  laptop crossing an ocean should not move it. You set the zone once; the panel
+  previews both clocks with their dates and links you to where it is changed.
+- **Plain English across more of the interface** — the recipe editor,
+  connection setup, and a good deal of jargon an earlier pass walked straight
+  past.
+- **A board is created by the first submission that declares it**, whoever
+  wrote the recipe owns its tag, and the description stays editable after it is
+  first published.
+- **Work you create leaves a trail you can follow**, and the calendar Recued
+  keeps for you now says whose it is by name.
+
+### A note on upgrading
+
+This release adds tables and columns, and rebuilds one of them. The upgrade is
+unattended and copies every row forward. Going back to 26.9.10 still works,
+with one caveat: a board published from a recipe — new in this release — stores
+something the older version's schema does not expect. If you think you may want
+to revert, do it before publishing a board that way.
+
 ## 26.9.10 — 2026-09-10
 
 Three things this time. Recued now keeps a short running summary of what a

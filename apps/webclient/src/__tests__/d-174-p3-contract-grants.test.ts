@@ -516,7 +516,7 @@ describe('contract-grants panel — D-192 Slice 7 transitive-read disclosure', (
     const chip = collectByAttr(writeCell!, CONTRACT_GRANTS_ALSO_READS_ATTR)[0];
     expect(chip).toBeDefined();
     expect(chip!.getAttribute('data-reads')).toBe('team');
-    expect(chip!.textContent).toContain('also reads: team');
+    expect(chip!.textContent).toContain('also looks at: team');
 
     // The read op binds no dependency — no disclosure chip.
     const readCell = cellFor(opsRootEl(panel), READ_OP);
@@ -858,8 +858,8 @@ describe('contract-grants panel — write / reconcile + chrome', () => {
     const { panel } = mountPanelWith({});
     await panel.whenLoaded();
     const note = collectByAttr(opsRootEl(panel), CONTRACT_GRANTS_AXIS_NOTE_ATTR)[0];
-    expect(note?.textContent).toContain('Access');
-    expect(note?.textContent).toContain('do not vary by contract');
+    expect(note?.textContent).toContain('What it may reach');
+    expect(note?.textContent).toContain('are the same for every contract');
     // ⛔ Never "visibility" — an ungranted op is a HARD DENY, so calling the toggle
     // visibility undersells it in the opposite direction from the error it corrects.
     expect(note?.textContent).not.toContain('visibility');
@@ -1197,7 +1197,7 @@ describe('contracts route delta 3 — Ops/Entities tabs', () => {
     await tick();
     expect(ctx.route.contractGrantsPanel()).toBeNull();
     expect(collectByAttr(tabBodyEl(root), CONTRACT_GRANTS_HOST_ATTR)).toHaveLength(0);
-    expect(allText(tabBodyEl(root))).toContain('Per-operation grants');
+    expect(allText(tabBodyEl(root))).toContain('What it may do, grouped by Pack');
   });
 });
 
@@ -1487,7 +1487,7 @@ describe('D-247 D11 — the op row shows what a revoke would actually cost', () 
     await panel.whenLoaded();
     const line = usedLine(panel);
     expect(line).toBeDefined();
-    expect(line!.textContent).toContain('Direct calls off');
+    expect(line!.textContent).toContain('The AI cannot call this itself');
     expect(line!.textContent).toContain('still used by: overdue-invoice-chase');
     expect(line!.textContent).toContain('ran 3× in the last 30 days');
     // Structured, so a copy edit cannot silently drop one half.
@@ -1496,7 +1496,7 @@ describe('D-247 D11 — the op row shows what a revoke would actually cost', () 
   });
 
   it('says the WINDOW when nothing ran — retention is not history', async () => {
-    // ⛔ `data.audit` evicts oldest-first, so "no runs in the last 30 days" is the
+    // ⛔ `data.audit` evicts oldest-first, so "not run in the last 30 days" is the
     // honest sentence and "never used" is a claim the instrument cannot make.
     const { panel } = mountPanelWith({
       seed: { [WRITE_OP]: false },
@@ -1504,7 +1504,7 @@ describe('D-247 D11 — the op row shows what a revoke would actually cost', () 
     });
     await panel.whenLoaded();
     const line = usedLine(panel);
-    expect(line!.textContent).toContain('no runs in the last 30 days');
+    expect(line!.textContent).toContain('not run in the last 30 days');
     expect(line!.textContent).not.toContain('never');
   });
 
@@ -1613,6 +1613,6 @@ describe('D-247 — installed recipes are grantable on their own root', () => {
   it('with no recipe source the root says so rather than rendering empty', async () => {
     const { panel } = mountPanelWith({});
     await panel.whenLoaded();
-    expect(allText(recipesRootEl(panel))).toContain('No recipes are installed yet');
+    expect(allText(recipesRootEl(panel))).toContain('You have no Recipes yet');
   });
 });

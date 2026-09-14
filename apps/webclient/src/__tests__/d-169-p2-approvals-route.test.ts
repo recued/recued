@@ -498,7 +498,7 @@ describe('D-169 P2 — bootstrapApprovalsRoute: re-hosts the asks panel', () => 
     expect(retry.getAttribute('aria-busy')).toBeNull();
     expect(retry.textContent).toBe('Yes');
     expect(error.hidden).toBe(false);
-    expect(error.textContent).toBe('Could not submit — try again.');
+    expect(error.textContent).toBe('Recued could not send that. Try again.');
     expect(route.hasInFlightWork()).toBe(false);
 
     route.dispose();
@@ -826,7 +826,7 @@ describe('D-174 — bootstrapApprovalsRoute: deep queue', () => {
     expect(busyReject.textContent).toBe('Rejecting…');
     expect(route.hasInFlightWork()).toBe(true);
     expect(route.inFlightWorkPrompt()).toBe(
-      'An approval action is still in progress. Leave Approvals anyway?',
+      'Something is still happening here. Leave anyway?',
     );
     rejectResolve(new Error('Decision could not be saved.'));
     await tick();
@@ -942,7 +942,7 @@ describe('D-174 — bootstrapApprovalsRoute: deep queue', () => {
     await route.whenLoaded();
 
     expect(firstByAttr(root, APPROVALS_ROUTE_SUMMARY_ATTR)?.textContent).toBe(
-      "Pending decisions couldn't be verified.",
+      "Recued could not check what is waiting for you.",
     );
     expect(firstByAttr(root, APPROVALS_ROUTE_EMPTY_ATTR)?.hidden).toBe(true);
     expect(firstByAttr(root, APPROVALS_ROUTE_ERROR_ATTR)?.textContent).toContain(
@@ -1378,7 +1378,7 @@ describe('R20 — chat plan-approvals in #approvals', () => {
     expect(
       collectByAttr(receipt, APPROVALS_ROUTE_PLAN_RESOLUTION_LINK_ATTR)[0]
         ?.textContent,
-    ).toBe('Continue in Chat');
+    ).toBe('Carry on in Chat');
     expect(
       collectByAttr(receipt, APPROVALS_ROUTE_PLAN_RESOLUTION_LINK_ATTR)[0]
         ?.focused,
@@ -1391,7 +1391,7 @@ describe('R20 — chat plan-approvals in #approvals', () => {
     expect(announcer.getAttribute('role')).toBe('status');
     expect(announcer.getAttribute('aria-live')).toBe('polite');
     expect(announcer.textContent).toContain(
-      'Approved once for these exact details. The action has not run.',
+      'You said yes to exactly these details. Nothing has run yet.',
     );
 
     firstByAttr(
@@ -1460,7 +1460,7 @@ describe('R20 — chat plan-approvals in #approvals', () => {
     expect(runChatPlanResolve).toHaveBeenCalledTimes(1);
     expect(route.hasInFlightWork()).toBe(true);
     expect(route.inFlightWorkPrompt()).toBe(
-      'An approval action is still in progress. Leave Approvals anyway?',
+      'Something is still happening here. Leave anyway?',
     );
 
     // A benign store notification rebuilds the unified list while the action
@@ -1748,7 +1748,7 @@ describe('bootstrapApprovalsRoute: re-arms approval.subscribe on reconnect', () 
     expect(err).toBeDefined();
     expect(err!.getAttribute(APPROVALS_ROUTE_ERROR_ATTR)).toBe('error');
     expect(err!.getAttribute('role')).toBe('alert');
-    expect(err!.textContent).toBe("Couldn't load approval gates: Bad filter.");
+    expect(err!.textContent).toBe("Recued could not load the approval rules: Bad filter.");
     route.dispose();
   });
 

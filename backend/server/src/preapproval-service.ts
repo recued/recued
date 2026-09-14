@@ -252,6 +252,13 @@ export const createPreapprovalService = (deps: PreapprovalServiceDeps) => {
         const target = deps.activations.prepareTarget(request);
         const result = inventory(request, boundOrigin, target, undefined, 'prepare', draft);
         if (draft) {
+          // D-264 — capability BEFORE plan shape. A draft-only mailbox produces
+          // a perfectly well-formed plan, so the shape check below would pass it
+          // and the owner would review a send that can never happen. And when
+          // both are wrong, "this mailbox cannot send" is the one the owner can
+          // act on; the carrier message would send them to edit a draft that is
+          // fine.
+          deps.mail!.assertCanSend(normalizeMailSend(draft.content).instance);
           const send = result.members.find(member => member.op_id === 'core.mail.send');
           if (!send || result.members.filter(member => member.parent_member_id === null).length !== 1
             || result.uncovered.length !== 0

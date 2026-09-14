@@ -23,6 +23,7 @@ export type {
   InteractiveTransport,
   TransportVendor,
   OutboundMessage,
+  OutboundAttachment,
   TransportSendResult,
   TransportError,
   TransportErrorKind,
@@ -35,6 +36,8 @@ export type {
   ClosePrompt,
 } from './types.js';
 export { createSlackTransport, type SlackTransportOptions } from './slack.js';
+/** Bounded, timed vendor JSON requests; also used to verify bot identity. */
+export { getJson, postJson } from './http.js';
 /** D-238 — the first base-`Transport` vendor: send-only, no prompt surface. */
 export {
   createTeamsTransport,

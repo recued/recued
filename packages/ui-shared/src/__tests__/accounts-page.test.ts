@@ -132,7 +132,7 @@ describe('validateAccountForm', () => {
       username: 'u',
       password: 'p',
     });
-    expect(validateAccountForm(imap(), v)).toMatch(/lowercase/);
+    expect(validateAccountForm(imap(), v)).toMatch(/lower-case/);
   });
 
   it('rejects an out-of-range port', () => {
@@ -190,10 +190,10 @@ describe('validateAccountForm', () => {
     expect(validateAccountForm(imap(), base)).toBeNull();
     expect(
       validateAccountForm(imap(), { ...base, smtp_password: 'sp' }),
-    ).toMatch(/SMTP Host is required/);
+    ).toMatch(/you need the SMTP host too/);
     expect(
       validateAccountForm(imap(), { ...base, smtp_from: 'me@x.com' }),
-    ).toMatch(/SMTP Host is required/);
+    ).toMatch(/you need the SMTP host too/);
     // With the host, a filled sibling is fine.
     expect(
       validateAccountForm(imap(), { ...base, smtp_host: 's', smtp_password: 'sp' }),
@@ -361,9 +361,9 @@ describe('renderAccountsPanel', () => {
 
   it('does not offer enrollment when the lane list is unavailable', () => {
     const html = renderAccountsPanel({
-      state: base({ error: 'This lane is not available on this server yet.' }),
+      state: base({ error: 'This server cannot do this yet.' }),
     });
-    expect(html).toContain('This lane is not available');
+    expect(html).toContain('This server cannot do this yet');
     expect(html).not.toContain('data-action="accounts-open-add"');
   });
 
@@ -399,7 +399,7 @@ describe('renderAccountsPanel', () => {
       '<h2 class="accounts-list-title">Mailboxes</h2>',
     );
     expect(html).toContain(
-      'Recued can search and use these mailboxes in your work.',
+      'Recued can search these mailboxes and use them in your work.',
     );
     expect(html).not.toContain('Mailboxes Recued can');
     expect(html).toContain('+ Connect mailbox');
@@ -825,7 +825,7 @@ describe('renderAccountsPanel', () => {
     expect(retry).toContain('Safe to restart sign-in');
     expect(retry).toContain('data-action="accounts-oauth-recovery-check"');
     expect(retry).toContain('data-action="accounts-oauth-recovery-restart"');
-    expect(retry).toContain('Restart sign-in');
+    expect(retry).toContain('Start signing in again');
     expect(retry.indexOf('accounts-oauth-recovery-restart')).toBeLessThan(
       retry.indexOf('accounts-oauth-recovery-check'),
     );

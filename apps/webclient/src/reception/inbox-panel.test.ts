@@ -287,7 +287,7 @@ const item = (over: Partial<InboxItem> = {}): InboxItem => ({
   args: over.args ?? { title: 'Follow up' },
   arg_schema: over.arg_schema ?? { fields: [DESTINATION_FIELD] },
   preview: over.preview ?? { title: 'Follow up with Sam' },
-  proposed_action: over.proposed_action ?? 'Create a commitment',
+  proposed_action: over.proposed_action ?? 'Make a promise',
   status: over.status ?? 'pending',
   ...(over.allow_offer !== undefined ? { allow_offer: over.allow_offer } : {}),
   ...(over.booking_history !== undefined ? { booking_history: over.booking_history } : {}),
@@ -552,7 +552,7 @@ describe('reception inbox panel — destination ref-picker', () => {
     expect(title.getAttribute('aria-label')).toBe('Title');
     expect(title.getAttribute('id')).not.toBeNull();
     expect(titleLabel?.getAttribute('for')).toBe(title.getAttribute('id'));
-    expect(reason.getAttribute('aria-label')).toBe('Reject reason');
+    expect(reason.getAttribute('aria-label')).toBe('Why you are saying no');
     title.value = 'Owner draft';
     reason.value = 'Need the account owner to confirm.';
     title.focus();
@@ -856,13 +856,13 @@ describe('reception inbox panel — destination ref-picker', () => {
     expect(h.approveCalls()).toHaveLength(1);
     expect(h.mount.getState().in_flight).toBe(false);
     expect(h.mount.getState().error).toBe(
-      "Decision saved, but the inbox couldn't refresh: refresh unavailable",
+      "Saved. Recued could not reload your inbox: refresh unavailable",
     );
     expect(h.root.querySelector(
       `[${RECEPTION_INBOX_ROW_ATTR}="hold-1"]`,
     )).toBeNull();
     expect(h.root.querySelector('[role="alert"]')?.textContent).toBe(
-      "Decision saved, but the inbox couldn't refresh: refresh unavailable",
+      "Saved. Recued could not reload your inbox: refresh unavailable",
     );
     expect(h.mount.getState().selected_hold_id).toBe('hold-2');
     expect(h.document.activeElement).toBe(h.root.querySelector(
@@ -1032,7 +1032,7 @@ describe('reception inbox panel — destination ref-picker', () => {
     expect(control!.tagName).toBe('SELECT');
     expect(control!.disabled).toBe(true);
     const emptyOption = control!.children[0]!;
-    expect(emptyOption.textContent).toBe('Picker unavailable: some_other_source');
+    expect(emptyOption.textContent).toBe('Recued cannot offer choices here: some_other_source');
     // No live ref-picker for an unresolved source.
     expect(root.querySelector('[data-recued-reception-inbox-picker="widget"]')).toBeNull();
   });

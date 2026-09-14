@@ -140,13 +140,13 @@ export const CHAT_MODEL_ROUTING_LAYER_OPTIONS: ReadonlyArray<{
     layer: 'free_pool',
     label: 'Free pool',
     is_remote: true,
-    description: 'Uses your own free-tier API keys (Groq, OpenRouter, etc.).',
+    description: 'Uses your own free keys, from Groq, OpenRouter and the like.',
   },
   {
     layer: 'byok',
     label: 'BYOK',
     is_remote: true,
-    description: 'Bring your own paid API key (Anthropic, OpenAI, etc.).',
+    description: 'Use your own paid key, from Anthropic, OpenAI and the like.',
   },
 ] as const;
 

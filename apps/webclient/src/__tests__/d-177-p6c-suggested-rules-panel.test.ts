@@ -565,7 +565,7 @@ describe('D-177 P6c Suggested rules panel', () => {
     const disclosure = collectByAttr(card, SUGGESTED_RULES_DOOR_DISCLOSURE_ATTR);
     expect(disclosure).toHaveLength(1);
     expect(disclosure[0]!.textContent).toContain('to');
-    expect(disclosure[0]!.textContent).toContain('vary');
+    expect(disclosure[0]!.textContent).toContain('change with every answer');
     mount.dispose();
   });
 
@@ -656,7 +656,7 @@ describe('D-177 P6c Suggested rules panel', () => {
   });
 
   it('N.14.8 fork 3 — ZERO rejections is EARNED evidence and is said; NOT COUNTED says nothing', async () => {
-    // The two must not collapse: "no rejections" is a claim the card can back;
+    // The two must not collapse: "you never said no" is a claim the card can back;
     // an unwired counter cannot back any claim, so it makes none.
     const zero = suggestionRow('key_zero', {
       snapshot: { channel: 'reception', actor: 'anonymous', bound_contract_id: 'ct_door_a' },
@@ -666,7 +666,7 @@ describe('D-177 P6c Suggested rules panel', () => {
     await m1.whenLoaded();
     expect(
       collectByClass(suggestionCardFor(h1, 'key_zero')!, 'sr-evidence')
-        .some((c) => c.textContent.includes('no rejections on this form')),
+        .some((c) => c.textContent.includes('you never said no on this form')),
     ).toBe(true);
     m1.dispose();
 
@@ -925,7 +925,7 @@ describe('D-177 P6c Suggested rules panel', () => {
 
     suggestionButtonFor(host, SUGGESTED_RULES_DISMISS_ATTR, 'key_dismiss')!.click();
     expect(allText(suggestionCardFor(host, 'key_dismiss')!).join(' '))
-      .toContain('Dismiss forever');
+      .toContain('Hide this for good');
     suggestionButtonFor(host, SUGGESTED_RULES_DISMISS_CONFIRM_ATTR, 'key_dismiss')!
       .click();
     await tick();
@@ -1064,10 +1064,10 @@ describe('D-177 P6c contracts inventory grouping', () => {
 
     const headers = collectByAttr(host, CONTRACTS_GROUP_HEADER_ATTR);
     expect(headers.map((h) => h.textContent)).toEqual([
-      'Standing contracts',
-      'Delegation rules',
-      'Session grants',
-      'Other grants',
+      'Contracts that stay',
+      'Rules you handed over',
+      'Yeses for one sitting',
+      'Other yeses',
     ]);
     expect(headers.map((h) => h.getAttribute('data-group'))).toEqual([
       'standing',

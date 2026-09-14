@@ -674,7 +674,7 @@ export const mountWebclientServerPill = (
         : busyAction === 'resume'
           ? 'Resume'
           : 'Restart';
-      detail = `${action} is still awaiting a server response. Review the live status; controls stay unavailable until it settles.`;
+      detail = `${action} is still waiting for your server to answer. Watch the status. The controls stay off until it settles.`;
       actions = paused()
         ? button('resume', 'Resume', ' server-control-btn--resume') + restart
         : button('pause-request', 'Pause server', ' server-control-btn--pause')
@@ -683,22 +683,22 @@ export const mountWebclientServerPill = (
       detail = 'Restarting — reconnecting…';
       actions = '';
     } else if (confirming === 'pause') {
-      detail = 'Closes all doors + stops scheduled work. You stay connected — resume anytime.';
+      detail = 'Shuts every door and stops anything scheduled. You stay connected, and you can start it again whenever you like.';
       actions = button('pause-cancel', 'Cancel')
         + button('pause-confirm', 'Confirm pause', ' server-control-btn--confirm');
     } else if (confirming === 'restart') {
-      detail = 'Drains in-flight work, then restarts and reconnects.';
+      detail = 'Finishes what it is doing, then restarts and reconnects.';
       actions = button('restart-cancel', 'Cancel')
         + button('restart-confirm', 'Confirm restart', ' server-control-btn--restart-confirm');
     } else if (crashHalted()) {
       // A SYSTEM fault, not a user pause — info + the honest recovery (logs /
       // restart), never a pause/resume-as-fix or a footgun manual clear.
-      detail = 'Crash loop detected — the server restarted too many times and paused writes to '
-        + 'protect your data. Check the server logs; it recovers automatically once stable, or restart it.';
+      detail = 'Your server keeps crashing. It restarted too many times, so it stopped writing, to '
+        + 'keep your things safe. Check its logs. It sorts itself out once it settles, or you can restart it.';
       detailCls = ' server-control-status--crash';
       actions = restart;
     } else if (paused()) {
-      detail = 'Execution paused — doors closed, scheduled work stopped.';
+      detail = 'Paused. Every door is shut, and nothing scheduled is running.';
       actions = button('resume', 'Resume', ' server-control-btn--resume') + restart;
     } else {
       detail = 'Running.';

@@ -7,6 +7,7 @@
  */
 
 import type {
+  BookingLifecycleState,
   CommitmentDerivation,
   CommitmentDirection,
   CommitmentExpiryPolicy,
@@ -17,6 +18,7 @@ import type {
   WorkEntityUpsertRpcRequest,
   WorkEntityUpsertRpcResponse,
 } from '@recued/contracts';
+import { BOOKING_DEFAULT_LIFECYCLE_STATE } from '@recued/contracts';
 import { humanizeRpcError } from '../shell/rpc-error-copy.js';
 
 export const COMPOSE_ROUTE_STYLES_MARKER = 'data-recued-compose-styles';
@@ -44,7 +46,13 @@ export type ComposeLocalTargetKind =
   // R18 — Project added so the fast-access create (L1 menu + chat) offers the
   // same kind set as Data's full create (owner: "create consistent everywhere
   // including project"). Quick-capture depth; the full form stays in Data.
-  | 'project';
+  | 'project'
+  // D-267 follow-on — Booking. ⛔ NOT the reception path: that mints a booking
+  // at APPROVE and writes `reception_record_id` itself, which is why the create
+  // op refuses that field as an argument. This is the owner-authored booking
+  // the D-210 contract explicitly allows — "nothing stops the owner minting one
+  // by hand" — and the reason `pending` exists in the lifecycle at all.
+  | 'booking';
 
 export type ComposeRouteStage =
   | 'drafting'
@@ -116,7 +124,13 @@ export interface ComposeTargetModel {
 export interface ComposeFieldModel {
   readonly key: string;
   readonly label: string;
-  readonly type: 'text' | 'email' | 'textarea' | 'date' | 'select';
+  /** ⚠ `datetime-local` exists for the booking SLOT and nothing else. A
+   *  date-only input resolves to midnight, so a same-day start and end would be
+   *  EQUAL — and the store refuses `slot_end_at` that is not after
+   *  `slot_start_at`. The value reaches `dateValue` carrying a `T`, which
+   *  parses it as the owner's LOCAL time; that is what someone entering an
+   *  appointment means. */
+  readonly type: 'text' | 'email' | 'textarea' | 'date' | 'datetime-local' | 'select';
   readonly required?: boolean;
   readonly options?: readonly ComposeFieldOption[];
 }
@@ -159,6 +173,19 @@ const PROJECT_STATE_OPTIONS: readonly ComposeFieldOption[] = [
   { value: 'paused', label: 'Paused' },
   { value: 'completed', label: 'Completed' },
   { value: 'archived', label: 'Archived' },
+];
+
+/** ⛔ `pending` IS NOT THE DEFAULT even though it sorts first in the contract —
+ *  a booking is born `confirmed`, and the contract pins that by NAME
+ *  (`BOOKING_DEFAULT_LIFECYCLE_STATE`) precisely so nobody reaches for
+ *  `BOOKING_LIFECYCLE_STATES[0]`. The order below is narrative, matching how a
+ *  person reads a lifecycle; the default is set in `seededValues`. */
+const BOOKING_LIFECYCLE_OPTIONS: readonly ComposeFieldOption[] = [
+  { value: 'pending', label: 'Pending' },
+  { value: 'confirmed', label: 'Confirmed' },
+  { value: 'completed', label: 'Completed' },
+  { value: 'cancelled', label: 'Cancelled' },
+  { value: 'no_show', label: 'No show' },
 ];
 
 export const COMPOSE_LOCAL_TARGETS: readonly ComposeTargetModel[] = [
@@ -239,6 +266,23 @@ export const COMPOSE_LOCAL_TARGETS: readonly ComposeTargetModel[] = [
       { key: 'description', label: 'Description', type: 'textarea' },
       { key: 'target_completion_at', label: 'Target completion', type: 'date' },
       { key: 'state', label: 'State', type: 'select', options: PROJECT_STATE_OPTIONS },
+    ],
+  },
+  {
+    kind: 'booking',
+    label: 'Booking',
+    rpc: 'work_entity.upsert',
+    fields: [
+      // ⚠ The SERVICE, not the customer's name — identity lives on
+      // `counterparty_contact_id`, which quick-capture does not set.
+      { key: 'title', label: 'What was booked', type: 'text', required: true },
+      { key: 'slot_start_at', label: 'Starts', type: 'datetime-local' },
+      { key: 'slot_end_at', label: 'Ends', type: 'datetime-local' },
+      { key: 'lifecycle_state', label: 'State', type: 'select', options: BOOKING_LIFECYCLE_OPTIONS },
+      // `no_show` and `completed` are what an owner counts at the end of a
+      // month, and counting needs the value — so it is worth two fields here.
+      { key: 'monetary_amount', label: 'Value', type: 'text' },
+      { key: 'monetary_currency', label: 'Currency', type: 'text' },
     ],
   },
 ] as const;
@@ -429,7 +473,7 @@ const selectedOption = <T extends string>(
 const targetFor = (kind: ComposeLocalTargetKind): ComposeTargetModel => {
   const target = COMPOSE_TARGET_BY_KIND.get(kind);
   if (target === undefined) {
-    throw new Error(`Unknown Compose target: ${kind}`);
+    throw new Error(`Recued does not know what to make: ${kind}`);
   }
   return target;
 };
@@ -448,6 +492,12 @@ const seededValues = (
       direction: 'outbound',
       derivation: 'user_declared',
       expiry_policy: 'escalate_overdue',
+    };
+  }
+  if (target === 'booking') {
+    return {
+      ...(capture.length > 0 ? { title: capture } : {}),
+      lifecycle_state: BOOKING_DEFAULT_LIFECYCLE_STATE,
     };
   }
   return {};
@@ -472,7 +522,7 @@ const contactUpsertArgs = (
 ): Parameters<ComposeContactUpsertCaller>[0] => {
   const email = nonEmpty(values.email);
   if (email === undefined) throw new Error('Email is required.');
-  if (!email.includes('@')) throw new Error('Email must include @.');
+  if (!email.includes('@')) throw new Error('An email address needs an @ in it.');
   const out: Parameters<ComposeContactUpsertCaller>[0] = { email };
   const name = nonEmpty(values.name);
   const phone = nonEmpty(values.phone);
@@ -544,6 +594,37 @@ const workEntityUpsertArgs = (
     }
     return out;
   }
+  if (target === 'booking') {
+    const title = nonEmpty(values.title) ?? nonEmpty(captureText);
+    if (title === undefined) throw new Error('Type what was booked.');
+    const out: {
+      kind: 'booking';
+      title: string;
+      lifecycle_state?: BookingLifecycleState;
+      slot_start_at?: number;
+      slot_end_at?: number;
+      monetary_value?: { amount: string; currency: string };
+    } = { kind: 'booking', title };
+    const slot = bookingSlot(values);
+    const value = bookingValue(values);
+    if (slot !== undefined) {
+      out.slot_start_at = slot.slot_start_at;
+      out.slot_end_at = slot.slot_end_at;
+    }
+    if (value !== undefined) out.monetary_value = value;
+    if (nonEmpty(values.lifecycle_state) !== undefined) {
+      out.lifecycle_state = selectedOption<BookingLifecycleState>(
+        values.lifecycle_state,
+        ['pending', 'confirmed', 'completed', 'cancelled', 'no_show'],
+        BOOKING_DEFAULT_LIFECYCLE_STATE,
+      );
+    }
+    // ⛔ `reception_record_id` is NEVER set here. That provenance means "this
+    // came from an approved reservation", and the server writes it; accepting
+    // it as a field would let a hand-made booking claim a visitor submission
+    // that does not exist.
+    return out;
+  }
   const statement = nonEmpty(values.statement) ?? nonEmpty(captureText);
   if (statement === undefined) throw new Error('Statement is required.');
   const out: {
@@ -586,6 +667,44 @@ const workEntityUpsertArgs = (
   return out;
 };
 
+/** ⛔⛔ THE SLOT IS A PAIR OR IT IS NOTHING. The store refuses a start without
+ *  an end ("a start with no end is a corrupt time, not a partly known one") and
+ *  refuses an end that is not after the start. Both are enforced HERE so the
+ *  owner is told which field to fix, rather than reading a server refusal about
+ *  a record they cannot see. ⚠ Absent-entirely is a legitimate state, not an
+ *  incomplete one: an owner-authored enquiry exists before a time is agreed. */
+const bookingSlot = (
+  values: Readonly<Record<string, string>>,
+): { slot_start_at: number; slot_end_at: number } | undefined => {
+  const start = dateValue(values.slot_start_at);
+  const end = dateValue(values.slot_end_at);
+  if (start === undefined && end === undefined) return undefined;
+  if (start === undefined) throw new Error('Add a start time, or remove the end time.');
+  if (end === undefined) throw new Error('Add an end time, or remove the start time.');
+  if (end <= start) throw new Error('The end time must be after the start time.');
+  return { slot_start_at: start, slot_end_at: end };
+};
+
+/** ⛔ AMOUNT AND CURRENCY TOGETHER OR NEITHER — the storage CHECK pairs them,
+ *  exactly as `commitment` does. The amount stays a STRING all the way to the
+ *  server (decimal, scale 2): parsing it to a float here would round money. */
+const bookingValue = (
+  values: Readonly<Record<string, string>>,
+): { amount: string; currency: string } | undefined => {
+  const amount = nonEmpty(values.monetary_amount);
+  const currency = nonEmpty(values.monetary_currency);
+  if (amount === undefined && currency === undefined) return undefined;
+  if (amount === undefined) throw new Error('Add an amount, or remove the currency.');
+  if (currency === undefined) throw new Error('Add a currency, or remove the amount.');
+  if (!/^-?\d+(\.\d{1,2})?$/.test(amount)) {
+    throw new Error('The amount has to be a number with no more than two decimal places.');
+  }
+  if (!/^[A-Za-z]{3}$/.test(currency)) {
+    throw new Error('The currency has to be three letters, like USD.');
+  }
+  return { amount, currency: currency.toUpperCase() };
+};
+
 const workEntityLabel = (
   target: ComposeLocalTargetKind,
   entity: WorkEntity,
@@ -598,6 +717,7 @@ const workEntityLabel = (
     return row.statement;
   }
   if (target === 'project' && typeof row.title === 'string') return row.title;
+  if (target === 'booking' && typeof row.title === 'string') return row.title;
   if (typeof row.id === 'string') return row.id;
   return targetFor(target).label;
 };
@@ -823,7 +943,7 @@ export const bootstrapComposeRoute = (
     try {
       if (target === 'contact') {
         if (opts.contactUpsertCaller === undefined) {
-          throw new Error('Saving contacts is not available on this server yet.');
+          throw new Error('This server cannot save contacts yet.');
         }
         const args = contactUpsertArgs(values);
         emit({
@@ -854,7 +974,7 @@ export const bootstrapComposeRoute = (
         return;
       }
       if (opts.workEntityUpsertCaller === undefined) {
-        throw new Error('Saving this item is not available on this server yet.');
+        throw new Error('This server cannot save this yet.');
       }
       const args = workEntityUpsertArgs(target, captureText, values);
       emit({

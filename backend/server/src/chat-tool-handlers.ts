@@ -37,6 +37,7 @@
 import {
   isReadableCollection,
   OP_ENTITY_COLLECTION,
+  TIER1_CLASSIFICATIONS,
   TIER1_TOOL_ENTITY,
   CONNECTION_MCP_READ_SLUG,
   CONNECTION_MCP_WRITE_SLUG,
@@ -154,6 +155,12 @@ import type {
 import type { WorkEntityResolver } from './work-entity-resolver.js';
 import type { WorkEntityEdgeStore } from './storage/work-entity-edge-store.js';
 import type { WorkEntityTargetedReadDeps } from './work-entity-write-executor.js';
+import { handleWorkEntityUpsert } from './work-entity-crud-handler.js';
+import {
+  DEFAULT_LOCAL_CALENDAR_ID,
+  DEFAULT_LOCAL_CALENDAR_SLUG,
+} from './collections/calendar/local-provider.js';
+import type { WorkEntityCrudRpcDeps } from './work-entity-crud-handler.js';
 // D-225 § 9.5.1 — the raw catalog-op projection, shared with the inbound door.
 import {
   OP_TOOL_PREFIX,
@@ -429,6 +436,20 @@ export interface ChatToolHandlerDeps {
    *  `work-entity-read-tools.ts`); absent → the flag discloses that the store
    *  is unwired rather than reporting an empty relationship set. */
   getWorkEntityEdgeStore?: () => Pick<WorkEntityEdgeStore, 'listByOwner'> | undefined;
+  /** The LOCAL work-entity write path for the Tier-1 `work.create` tool — the
+   *  same `WorkEntityCrudRpcDeps` the `work_entity.upsert` rpc uses, so a chat
+   *  create and an owner's own click land through ONE dispatcher (warehouse
+   *  events, enrichment cascade and audit all fan identically). Late-bound: the
+   *  deps are assembled in `compose-listeners` once the store AND the
+   *  bus-wired dispatchers exist. Absent ⇒ the tool reports `execution_error`
+   *  rather than silently doing nothing. */
+  getWorkEntityCrudDeps?: () => WorkEntityCrudRpcDeps | undefined;
+  /** Slice 2 — the calendar write dispatchers behind `calendar.create` /
+   *  `calendar.update` (`calendarStack.kernelDispatchers.*`). The SAME
+   *  verified-then-reflected pair the reception booking seam and the
+   *  `calendar-create` recipe step use, so a chat mutation, a booking and a
+   *  recipe all land through one provider call + one warehouse mirror. */
+  getCalendarWriteDeps?: () => CalendarWriteDeps | undefined;
   /** D-188 + the D-192 admission seam — the op-admission gate
    *  (`isFrozenByPause` + `isOpGranted`) for caller-triggered vendor
    *  escalations, which never traverse the op-admission gate on the
@@ -3384,6 +3405,396 @@ const admitWorkEntityRead = (
   && (source.actor === 'user_self' || source.actor === 'contracted_user')
   && gate.isOpGranted(source, WORK_ENTITY_READ_OP_ID);
 
+/** The per-kind create op the `work.create` tool gates on. Keyed by kind rather
+ *  than one umbrella op so the grant the owner sees in Contracts is the same
+ *  vocabulary the kernel and the recipes already use
+ *  (`core.work-entity.task.create`), and so granting "may add notes" to a door
+ *  never also grants "may add commitments". */
+const WORK_ENTITY_CREATE_OP_ID: Readonly<Record<WorkCreateKind, string>> = {
+  task: 'core.work-entity.task.create',
+  note: 'core.work-entity.note.create',
+  commitment: 'core.work-entity.commitment.create',
+  project: 'core.work-entity.project.create',
+};
+
+/** Mirrors {@link admitWorkEntityRead} on the write side — same shape, same
+ *  fail-closed posture, different op. The tool is `classification: 'unknown'`
+ *  (it bypasses P3 plan-approval by design, see the note in `chat.ts`), so THIS
+ *  is the enforcement boundary and nothing else stands behind it. */
+const admitWorkEntityCreate = (
+  gate: Pick<OpAdmissionGate, 'isOpGranted'> | undefined,
+  source: ExecutionSource | undefined,
+  kind: WorkCreateKind,
+): boolean =>
+  gate !== undefined
+  && source !== undefined
+  && (source.actor === 'user_self' || source.actor === 'contracted_user')
+  && gate.isOpGranted(source, WORK_ENTITY_CREATE_OP_ID[kind]);
+
+/** The narrow slice of `KernelDispatchers` the two calendar write tools need.
+ *  Declared here rather than importing the whole dispatcher bag so the chat
+ *  layer states exactly what it reaches for. */
+export interface CalendarWriteDeps {
+  readonly calendarCreate: (input: {
+    slug: string;
+    calendar_id: string;
+    event: Record<string, unknown>;
+  }) => Promise<{ source_id: string; ical_uid: string }>;
+  readonly calendarUpdate: (input: {
+    slug: string;
+    source_id: string;
+    patch: Record<string, unknown>;
+  }) => Promise<{ source_id: string }>;
+}
+
+const WORK_ENTITY_UPDATE_OP_ID: Readonly<Record<WorkCreateKind, string>> = {
+  task: 'core.work-entity.task.update',
+  note: 'core.work-entity.note.update',
+  commitment: 'core.work-entity.commitment.update',
+  project: 'core.work-entity.project.update',
+};
+
+/** ⛔ `done` HAS ITS OWN OP AND ITS OWN DISPATCHER, and that is a substrate
+ *  decision this tool must respect rather than paper over. `work-entities.ts`
+ *  states it: *"`state` never auto-flips `done`: `done` stays the single
+ *  completion bit (mark-done dispatcher + `completed` reactive events)"*.
+ *  `handleWorkEntityUpsert` does not carry a `done` field AT ALL — routing a
+ *  completion through it would silently drop the claim. */
+const TASK_MARK_DONE_OP_ID = 'core.work-entity.task.mark-done';
+
+/** Slice 3 — `work.update`. Two paths behind one tool, because the model should
+ *  not have to know which verb the substrate files a change under.
+ *
+ *  ⛔ A MIXED CALL IS REFUSED rather than split into two dispatches. `done` and a
+ *  field edit are different ops with different grants; running both would mean
+ *  two gates, two writes, and a half-applied change when the second fails —
+ *  reported to the owner as one confirmed action. Doing one thing per call keeps
+ *  the approval card honest about what it approved. */
+const createWorkUpdateHandler =
+  (deps: ChatToolHandlerDeps): Tier1Handler =>
+  async (raw, ctx) => {
+    const crud = deps.getWorkEntityCrudDeps?.();
+    if (!crud) return executionError('work-entity write path unavailable');
+    const args = asObject(raw);
+    if (!args) return invalidArgs('args must be an object');
+
+    const kind = args.kind;
+    if (!isWorkCreateKind(kind)) {
+      return invalidArgs(
+        `work.update requires kind to be one of ${WORK_CREATE_KINDS.join(' / ')}`,
+      );
+    }
+    const id = typeof args.id === 'string' ? args.id.trim() : '';
+    if (id.length === 0) {
+      return invalidArgs('work.update requires the id of the row to change');
+    }
+
+    const patch: Record<string, unknown> = {};
+    if (typeof args.title === 'string' && args.title.trim().length > 0) {
+      patch.title = args.title.trim();
+    }
+    if (typeof args.body === 'string') patch.body = args.body;
+    if (typeof args.due_at === 'number' && Number.isFinite(args.due_at)) {
+      patch.due_at = args.due_at;
+    }
+    if (typeof args.state === 'string' && args.state.trim().length > 0) {
+      patch.state = args.state.trim();
+    }
+    const marksDone = typeof args.done === 'boolean';
+
+    if (marksDone && kind !== 'task') {
+      return invalidArgs('work.update: `done` applies to a task only');
+    }
+    if (marksDone && Object.keys(patch).length > 0) {
+      return invalidArgs(
+        'work.update: send `done` on its own — a completion and a field edit are separate changes',
+      );
+    }
+    // Same reasoning as `calendar.update`: an empty change would pass the
+    // owner's approval card, dispatch, alter nothing and report success.
+    if (!marksDone && Object.keys(patch).length === 0) {
+      return invalidArgs(
+        'work.update: send at least one field to change (done / title / body / due_at / state)',
+      );
+    }
+
+    const opId = marksDone ? TASK_MARK_DONE_OP_ID : WORK_ENTITY_UPDATE_OP_ID[kind];
+    if (!admitWriteOp(deps.getOpAdmissionGate?.(), ctx.execution_source, opId)) {
+      return {
+        ok: false,
+        reason: 'classification_blocked',
+        detail: `work.update is not granted to this contract for ${kind} (write rejected)`,
+      };
+    }
+
+    try {
+      if (marksDone) {
+        const markDone = (crud.dispatchers as { taskMarkDone?: (i: { id: string; done?: boolean }) => Promise<unknown> })
+          .taskMarkDone;
+        if (!markDone) return executionError('work.update: mark-done dispatcher unavailable');
+        await markDone({ id, done: args.done as boolean });
+        return { ok: true, result: { updated: true, kind, id, done: args.done as boolean } };
+      }
+      await handleWorkEntityUpsert(
+        crud,
+        { kind, id, ...patch } as unknown as Parameters<typeof handleWorkEntityUpsert>[1],
+        ctx.execution_source,
+      );
+      return {
+        ok: true,
+        result: { updated: true, kind, id, fields: Object.keys(patch) },
+      };
+    } catch (e) {
+      return executionError(
+        `work.update failed: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+  };
+
+const CALENDAR_CREATE_OP_ID = 'core.data.calendar.create';
+const CALENDAR_UPDATE_OP_ID = 'core.data.calendar.update';
+
+/** The shared op-grant gate for every `classification: 'write'` Tier-1 tool —
+ *  both calendar writes and `work.update`.
+ *
+ *  ⚠ RENAMED FROM `admitCalendarWrite` IN SLICE 3. It was calendar-specific for
+ *  exactly one slice, and the second caller made the name a lie: a predicate
+ *  named for its first caller invites the next one to write a near-identical
+ *  twin rather than reuse it.
+ *
+ *  ⚠ NOTE what it defends and what it does NOT: `work.create` is
+ *  `classification: 'unknown'`, so its grant is the ONLY gate. These tools are
+ *  `'write'`, so the owner also sees a plan-approval card — two gates, not one.
+ *  The grant still runs FIRST, so an ungranted door never gets to propose. */
+const admitWriteOp = (
+  gate: Pick<OpAdmissionGate, 'isOpGranted'> | undefined,
+  source: ExecutionSource | undefined,
+  opId: string,
+): boolean =>
+  gate !== undefined
+  && source !== undefined
+  && (source.actor === 'user_self' || source.actor === 'contracted_user')
+  && gate.isOpGranted(source, opId);
+
+/** Slice 2 — `calendar.create`. Defaults to the LOCAL calendar, which the boot
+ *  wiring auto-creates and which declares `create_event: 'yes'` with
+ *  `auth: 'none'`, so this works on a machine that has never seen an account. */
+const createCalendarCreateHandler =
+  (deps: ChatToolHandlerDeps): Tier1Handler =>
+  async (raw, ctx) => {
+    const cal = deps.getCalendarWriteDeps?.();
+    if (!cal) return executionError('calendar write path unavailable');
+    const args = asObject(raw);
+    if (!args) return invalidArgs('args must be an object');
+
+    const summary = typeof args.summary === 'string' ? args.summary.trim() : '';
+    if (summary.length === 0) return invalidArgs('calendar.create requires a summary');
+    const start = typeof args.start_at === 'number' ? args.start_at : NaN;
+    const end = typeof args.end_at === 'number' ? args.end_at : NaN;
+    if (!Number.isFinite(start) || !Number.isFinite(end)) {
+      return invalidArgs('calendar.create requires numeric start_at and end_at (Unix ms)');
+    }
+    // ⛔ Refused here rather than at the provider. An inverted window is not a
+    // provider-shaped error — it is a misread instruction, and the model can fix
+    // it if told plainly. Some providers would accept it and render nothing.
+    if (end <= start) {
+      return invalidArgs('calendar.create: end_at must be after start_at');
+    }
+    const timezone = typeof args.timezone === 'string' ? args.timezone.trim() : '';
+    if (timezone.length === 0) {
+      return invalidArgs('calendar.create requires an IANA timezone (do not assume UTC)');
+    }
+
+    if (!admitWriteOp(deps.getOpAdmissionGate?.(), ctx.execution_source, CALENDAR_CREATE_OP_ID)) {
+      return {
+        ok: false,
+        reason: 'classification_blocked',
+        detail: 'calendar.create is not granted to this contract (write rejected)',
+      };
+    }
+
+    const slug = typeof args.calendar_id === 'string' && args.calendar_id.trim().length > 0
+      ? args.calendar_id.trim()
+      : DEFAULT_LOCAL_CALENDAR_SLUG;
+    try {
+      const { source_id } = await cal.calendarCreate({
+        slug,
+        calendar_id: DEFAULT_LOCAL_CALENDAR_ID,
+        event: {
+          calendar_id: DEFAULT_LOCAL_CALENDAR_ID,
+          summary,
+          ...(typeof args.description === 'string' && args.description.length > 0
+            ? { description: args.description }
+            : {}),
+          start_at: start,
+          end_at: end,
+          timezone,
+          is_all_day: args.is_all_day === true,
+          status: 'confirmed',
+        },
+      });
+      return { ok: true, result: { created: true, source_id, calendar: slug } };
+    } catch (e) {
+      return executionError(
+        `calendar.create failed: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+  };
+
+/** Slice 2 — `calendar.update`. PATCH semantics: only the fields sent change. */
+const createCalendarUpdateHandler =
+  (deps: ChatToolHandlerDeps): Tier1Handler =>
+  async (raw, ctx) => {
+    const cal = deps.getCalendarWriteDeps?.();
+    if (!cal) return executionError('calendar write path unavailable');
+    const args = asObject(raw);
+    if (!args) return invalidArgs('args must be an object');
+
+    const sourceId = typeof args.source_id === 'string' ? args.source_id.trim() : '';
+    if (sourceId.length === 0) {
+      return invalidArgs('calendar.update requires the source_id of the event to change');
+    }
+
+    const patch: Record<string, unknown> = {};
+    if (typeof args.summary === 'string' && args.summary.trim().length > 0) {
+      patch.summary = args.summary.trim();
+    }
+    if (typeof args.description === 'string') patch.description = args.description;
+    if (typeof args.start_at === 'number' && Number.isFinite(args.start_at)) {
+      patch.start_at = args.start_at;
+    }
+    if (typeof args.end_at === 'number' && Number.isFinite(args.end_at)) {
+      patch.end_at = args.end_at;
+    }
+    if (typeof args.timezone === 'string' && args.timezone.trim().length > 0) {
+      patch.timezone = args.timezone.trim();
+    }
+    if (args.status === 'confirmed' || args.status === 'cancelled') patch.status = args.status;
+
+    // ⛔ AN EMPTY PATCH IS A MISTAKE, NOT A NO-OP. Dispatching it would burn the
+    // owner's approval card on a write that changes nothing, and report success.
+    if (Object.keys(patch).length === 0) {
+      return invalidArgs(
+        'calendar.update: send at least one field to change (summary / start_at / end_at / timezone / status)',
+      );
+    }
+    if (
+      typeof patch.start_at === 'number'
+      && typeof patch.end_at === 'number'
+      && (patch.end_at as number) <= (patch.start_at as number)
+    ) {
+      return invalidArgs('calendar.update: end_at must be after start_at');
+    }
+
+    if (!admitWriteOp(deps.getOpAdmissionGate?.(), ctx.execution_source, CALENDAR_UPDATE_OP_ID)) {
+      return {
+        ok: false,
+        reason: 'classification_blocked',
+        detail: 'calendar.update is not granted to this contract (write rejected)',
+      };
+    }
+
+    const slug = typeof args.calendar_id === 'string' && args.calendar_id.trim().length > 0
+      ? args.calendar_id.trim()
+      : DEFAULT_LOCAL_CALENDAR_SLUG;
+    try {
+      const { source_id } = await cal.calendarUpdate({ slug, source_id: sourceId, patch });
+      return {
+        ok: true,
+        result: { updated: true, source_id, calendar: slug, fields: Object.keys(patch) },
+      };
+    } catch (e) {
+      return executionError(
+        `calendar.update failed: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+  };
+
+const WORK_CREATE_KINDS = ['task', 'note', 'commitment', 'project'] as const;
+type WorkCreateKind = (typeof WORK_CREATE_KINDS)[number];
+
+const isWorkCreateKind = (v: unknown): v is WorkCreateKind =>
+  typeof v === 'string' && (WORK_CREATE_KINDS as readonly string[]).includes(v);
+
+/** Slice 1 — the local zero-config write. Creates one `task` / `note` /
+ *  `commitment` / `project` in the owner's own work graph through the SAME
+ *  `handleWorkEntityUpsert` the webclient's own Create button uses, so there is
+ *  one validation path, one dispatcher and one audit story rather than a chat
+ *  shortcut beside them.
+ *
+ *  ⛔ `execution_source` is passed as the `callerSource` that handler documents
+ *  as "SERVER-DERIVED … never caller-supplied". A chat turn's source IS
+ *  server-derived (the orchestrator builds it from the authenticated channel),
+ *  which is exactly the contract that argument wants. It is NOT read from the
+ *  model's arguments, and the handler strips any forged `origin_execution_source`
+ *  off the wire regardless. */
+const createWorkCreateHandler =
+  (deps: ChatToolHandlerDeps): Tier1Handler =>
+  async (raw, ctx) => {
+    const crud = deps.getWorkEntityCrudDeps?.();
+    if (!crud) return executionError('work-entity write path unavailable');
+    const args = asObject(raw);
+    if (!args) return invalidArgs('args must be an object');
+
+    const kind = args.kind;
+    if (!isWorkCreateKind(kind)) {
+      return invalidArgs(
+        `work.create requires kind to be one of ${WORK_CREATE_KINDS.join(' / ')}`,
+      );
+    }
+
+    const title = typeof args.title === 'string' ? args.title.trim() : '';
+    const body = typeof args.body === 'string' ? args.body.trim() : '';
+    // A note IS its body; everything else is identified by its title. Refusing
+    // here rather than at the dispatcher keeps the model's error specific to the
+    // field it actually omitted.
+    if (kind === 'note' ? body.length === 0 : title.length === 0) {
+      return invalidArgs(
+        kind === 'note'
+          ? 'work.create requires a non-empty body for a note'
+          : `work.create requires a non-empty title for a ${kind}`,
+      );
+    }
+
+    if (!admitWorkEntityCreate(deps.getOpAdmissionGate?.(), ctx.execution_source, kind)) {
+      return {
+        ok: false,
+        reason: 'classification_blocked',
+        detail: `work.create is not granted to this contract for ${kind} (write rejected)`,
+      };
+    }
+
+    const due = typeof args.due_at === 'number' && Number.isFinite(args.due_at)
+      ? args.due_at
+      : undefined;
+
+    try {
+      const res = await handleWorkEntityUpsert(
+        crud,
+        {
+          kind,
+          ...(title.length > 0 ? { title } : {}),
+          ...(body.length > 0 ? { body } : {}),
+          ...(due !== undefined ? { due_at: due } : {}),
+        } as unknown as Parameters<typeof handleWorkEntityUpsert>[1],
+        ctx.execution_source,
+      );
+      const entity = res.entity as { id?: string; _kind?: string } | undefined;
+      return {
+        ok: true,
+        result: {
+          created: true,
+          kind,
+          ...(entity?.id !== undefined ? { id: entity.id } : {}),
+        },
+      };
+    } catch (e) {
+      return executionError(
+        `work.create failed: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+  };
+
 const workEntityReadToolsDeps = (deps: ChatToolHandlerDeps): WorkEntityReadToolsDeps => ({
   // D-205 #3 — inject the PREDICATE, not the resolver: the gate logic stays in one place
   // and `work-entity-read-tools.ts` grows no grant-store dependency. `kind` IS the
@@ -3618,6 +4029,9 @@ export const wrapCollectionFence = (
   deps: ChatToolHandlerDeps,
 ): Record<string, Tier1Handler> =>
   Object.fromEntries(Object.entries(handlers).map(([tool, handler]) => {
+    // Collection read grants fence reads. Writes reach their own operation
+    // grant checks and must never be turned into successful empty reads.
+    if (TIER1_CLASSIFICATIONS[tool as keyof typeof TIER1_CLASSIFICATIONS] !== 'read') return [tool, handler];
     const entity = TIER1_TOOL_ENTITY[tool as keyof typeof TIER1_TOOL_ENTITY];
     const collection = entity === undefined || entity === 'work' || FAN_OUT_TOOLS.has(tool)
       ? undefined
@@ -3704,6 +4118,10 @@ export const buildChatTier1Handlers = (
   'account.search': createAccountSearchHandler(deps),
   'work.search': createWorkSearchHandler(deps),
   'work.read': createWorkReadHandler(deps),
+  'work.create': createWorkCreateHandler(deps),
+  'calendar.create': createCalendarCreateHandler(deps),
+  'calendar.update': createCalendarUpdateHandler(deps),
+  'work.update': createWorkUpdateHandler(deps),
   'file.search': createFileSearchHandler(deps),
   'recipe.run': createRecipeRunHandler(deps),
   'recipe.stop': createRecipeStopHandler(deps),

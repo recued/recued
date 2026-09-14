@@ -360,7 +360,7 @@ describe('route-specific recovery intent landing', () => {
     mount.orient({ target, intent: 'review', route: 'contracts' });
     expect(target.getAttribute(RECOVERY_INTENT_CUE_ATTR)).toBe('review');
     expect(announcer.textContent).toBe(
-      'Review this status before continuing.',
+      'Check this before you carry on.',
     );
     expect(clearTimer).toHaveBeenCalledWith(1);
     doc.fireEvent('click');
@@ -373,7 +373,7 @@ describe('route-specific recovery intent landing', () => {
 
     mount.orient({ target, intent: 'review', route: 'contracts' });
     expect(announcer.textContent).toBe(
-      'Review this status before continuing.',
+      'Check this before you carry on.',
     );
     doc.firePageHide();
     expect(target.hasAttribute(RECOVERY_INTENT_CUE_ATTR)).toBe(false);
@@ -575,7 +575,7 @@ describe('route-specific recovery intent landing', () => {
     expect(firstError.getAttribute('tabindex')).toBe('-1');
     expect(firstError.getAttribute(RECOVERY_INTENT_CUE_ATTR)).toBe('review');
     expect(announcer.textContent).toBe(
-      'This changed. Review this status before continuing.',
+      'This changed. Check this before you carry on.',
     );
     expect(announcer.textContent).not.toContain('private-error-code');
     expect(clearTimer).toHaveBeenCalledWith(1);
@@ -587,7 +587,7 @@ describe('route-specific recovery intent landing', () => {
     expect(firstError.focusMock).toHaveBeenCalledOnce();
     expect(setTimer).toHaveBeenCalledTimes(2);
     expect(announcer.textContentWrites.filter((copy) =>
-      copy === 'This changed. Review this status before continuing.'
+      copy === 'This changed. Check this before you carry on.'
     )).toHaveLength(1);
 
     // A higher-priority sibling condition does not reorder an exact Review
@@ -680,7 +680,7 @@ describe('route-specific recovery intent landing', () => {
     expect(error.focusMock).toHaveBeenCalledOnce();
     expect(error.getAttribute(RECOVERY_INTENT_CUE_ATTR)).toBe('review');
     expect(statusHost.childList[0]!.textContent).toBe(
-      'This changed. Review this status before continuing.',
+      'This changed. Check this before you carry on.',
     );
     expect(statusHost.childList[0]!.textContent)
       .not.toContain('private-error');
@@ -910,7 +910,7 @@ describe('route-specific recovery intent landing', () => {
       );
       expect(condition.focusMock, route).toHaveBeenCalledOnce();
       expect(statusHost.childList[0]!.textContent, route).toBe(
-        'This changed. Review this status before continuing.',
+        'This changed. Check this before you carry on.',
       );
       mount.dispose();
     }
@@ -1029,7 +1029,7 @@ describe('route-specific recovery intent landing', () => {
     expect(landedState.focusMock).toHaveBeenCalledOnce();
     expect(otherBlockedState.focusMock).not.toHaveBeenCalled();
     expect(statusHost.childList[0]!.textContent).toBe(
-      'This changed. Review this status before continuing.',
+      'This changed. Check this before you carry on.',
     );
 
     // If the landed item recovers, return only to its exact original action.
@@ -1190,7 +1190,7 @@ describe('route-specific recovery intent landing', () => {
     expect(historyError.getAttribute(RECOVERY_INTENT_CUE_ATTR)).toBe('review');
     expect(historyError.focusMock).toHaveBeenCalledOnce();
     expect(statusHost.childList[0]!.textContent).toBe(
-      'This changed. Review this status before continuing.',
+      'This changed. Check this before you carry on.',
     );
     mount.dispose();
   });

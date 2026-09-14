@@ -170,7 +170,7 @@ describe('the gate holds only while the boundary is shared', () => {
    *  function". A THIRD caller is not a bug in itself — it is a caller that must be
    *  looked at, because reaching remote bytes any other way skips the gate silently.
    *  Listing the known callers here means adding one is a deliberate act. */
-  it('resolveRemoteFileBytes has exactly the two known callers', () => {
+  it('resolveRemoteFileBytes has only the reviewed callers', () => {
     const callers = walk(SRC)
       .filter((f) => !f.endsWith('remote-file-byte-resolver.ts'))
       .filter((f) => /\bresolveRemoteFileBytes\s*\(/.test(readFileSync(f, 'utf8')))
@@ -185,6 +185,8 @@ describe('the gate holds only while the boundary is shared', () => {
     // rather than the boundary.
     const devDrive = 'dev/remote-fetch-grant-drive.ts';
     expect(callers).toEqual([
+      // Paired-owner cloud attachment import: same grant at fetch, rechecked before retaining bytes.
+      'cloud-file-attachments.ts',
       // The `file:remote:*` branch of the kernel file read.
       'collections/file/file-read-handler.ts',
       // The CLI executor's `input_materialize` reader — the route the shipped

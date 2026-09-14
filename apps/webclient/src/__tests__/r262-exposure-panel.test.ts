@@ -448,7 +448,7 @@ describe('R26.2 Delta 1 — /mcp.public ack gate', () => {
     expect(titleId).toMatch(/^recued-exposure-modal-\d+-title$/);
     expect(descriptionId).toMatch(/^recued-exposure-modal-\d+-description$/);
     expect(findByAttr(host, 'id', titleId ?? '')?.textContent).toBe(
-      'Enable public MCP?',
+      'Let AI apps in from outside?',
     );
     // ⛔ PIN THE WIRING, NOT THE WORDS. This assertion exists to prove
     // `aria-describedby` resolves to the acknowledge SUBTITLE; it used to
@@ -513,7 +513,7 @@ describe('R26.2 Delta 1 — /mcp.public ack gate', () => {
       }),
     });
     const btn = findByAttr(host, EXPOSURE_PUBLIC_MCP_BTN_ATTR);
-    expect(btn?.textContent).toMatch(/Revoke/);
+    expect(btn?.textContent).toMatch(/Shut AI apps out/);
   });
 });
 
@@ -636,7 +636,7 @@ describe('R26.2 Delta 1 — broadcast, DDNS gate, dispose', () => {
     const rowEl = findByAttr(host, EXPOSURE_PRESET_ROW_ATTR, 'public');
     // The radio (first child) is disabled.
     expect(rowEl?.children[0]?.disabled).toBe(true);
-    expect(collectText(rowEl as FakeElement)).toMatch(/Configure DDNS/);
+    expect(collectText(rowEl as FakeElement)).toMatch(/Set up a web address first/);
   });
 
   it('dispose removes the panel from the host + unsubscribes', async () => {
@@ -673,10 +673,10 @@ describe('R26.2 Delta 2 — apex picker', () => {
     const { host } = await setup(); // default: webclient + reception not public
     const wc = findByAttr(host, EXPOSURE_APEX_ROW_ATTR, 'serve_webclient');
     expect(wc?.children[0]?.disabled).toBe(true);
-    expect(collectText(wc as FakeElement)).toMatch(/Enable the \/webclient public bit/);
+    expect(collectText(wc as FakeElement)).toMatch(/Open \/webclient in the list above/);
     const rec = findByAttr(host, EXPOSURE_APEX_ROW_ATTR, 'serve_reception');
     expect(rec?.children[0]?.disabled).toBe(true);
-    expect(collectText(rec as FakeElement)).toMatch(/Enable the \/reception public bit/);
+    expect(collectText(rec as FakeElement)).toMatch(/Open \/reception in the list above/);
   });
 
   it('enables serve_reception once /reception is public + selecting it calls runSetApex', async () => {

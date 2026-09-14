@@ -718,22 +718,22 @@ export const PERMISSION_DOORS: readonly PermissionDoor[] = [
     channel: 'mcp',
     label: 'MCP',
     description:
-      'Let AI agents (Claude Desktop, ChatGPT, your own scripts) connect to '
-      + 'Recued over MCP — call the tools you grant, and, if you allow it, talk '
-      + 'to your assistant.',
+      'Let AI apps, like Claude Desktop or ChatGPT, and your own scripts, connect to '
+      + 'Recued. They can use the tools you allow, and, if you let them, talk '
+      + 'to your Chat.',
   },
   {
     channel: 'reception',
     label: 'Reception',
     description:
-      'Public links other people can use without an account — intake forms, '
-      + 'drop links, scheduling, and approval links you publish.',
+      'Links other people can use without an account: forms, '
+      + 'file drops, booking, and approval links you share.',
   },
   {
     channel: 'messenger',
     label: 'Messaging',
     description:
-      'Inbound messages from a connected messenger that can trigger your '
+      'Messages from a connected messenger that can set off your '
       + 'recipes.',
   },
 ];
@@ -745,7 +745,7 @@ export const PERMISSION_DOORS: readonly PermissionDoor[] = [
  *  state on a stable label lets it re-derive purely from the listed tokens.
  *  This panel is the only issuer of door-labelled tokens, so the label is
  *  unambiguous (pre-launch, no legacy rows). */
-export const MCP_DOOR_TOKEN_LABEL = 'MCP door';
+export const MCP_DOOR_TOKEN_LABEL = 'The door for AI apps';
 
 /** D-171 slice 2 — the active token backing the mcp door, or null. Picks
  *  the first active match (enabling is hidden while one exists, so there is
@@ -782,7 +782,7 @@ const buildMcpDoorIssueArgs = (): PermissionsIssueInboundTokenArgs => ({
  *  contract. The door binds AT MOST ONE limit contract (a single envelope
  *  carrying `max_uses` and/or `expiry_at`); a fixed name keeps it legible in
  *  the Contracts inspector without per-edit churn. */
-export const MCP_DOOR_CONTRACT_NAME = 'MCP door limits';
+export const MCP_DOOR_CONTRACT_NAME = 'The door for AI apps limits';
 
 /** D-171 slice 3b — the scope minted onto the mcp door's limit contract:
  *  `{ channels: ['mcp'] }`, the wildcard-on-every-other-axis scope that admits
@@ -929,8 +929,8 @@ const toDateInputValue = (ms: number): string => {
 const CONTRACT_LIFECYCLE_LABEL: Record<ContractDefinitionView['lifecycle_state'], string> = {
   active: 'Active',
   revoked: 'Revoked',
-  expired: 'Expired — door blocked',
-  exhausted: 'Cap reached — door blocked',
+  expired: 'Ran out. The door is shut',
+  exhausted: 'Limit reached. The door is shut',
 };
 
 /** D-171 slice 3b — one-line read-only summary of a bound limit contract:
@@ -994,7 +994,7 @@ const policyFacets = (p: OverridePolicyInput): string[] => {
   if (p.denied === true) parts.push('denied');
   if (p.approval !== undefined) parts.push(`approval: ${p.approval}`);
   if (p.max_risk_without_approval !== undefined) {
-    parts.push(`max risk without approval: ${p.max_risk_without_approval}`);
+    parts.push(`how risky it may get before asking you: ${p.max_risk_without_approval}`);
   }
   if (p.timeout_ms !== undefined) parts.push(`timeout: ${p.timeout_ms} ms`);
   if (p.cache_ttl_ms !== undefined) parts.push(`cache TTL: ${p.cache_ttl_ms} ms`);
@@ -1010,7 +1010,7 @@ const policyFacets = (p: OverridePolicyInput): string[] => {
  *  `contracted_self` actor collapsed into a `user_self` carrying a contract). */
 const ACTOR_OPTIONS: ReadonlyArray<{ value: Actor; label: string }> = [
   { value: 'user_self', label: 'You (user_self)' },
-  { value: 'contracted_user', label: 'A contracted agent (contracted_user)' },
+  { value: 'contracted_user', label: 'An app you have an agreement with' },
 ];
 
 const APPROVAL_OPTIONS = ['never', 'ask', 'always'] as const;
@@ -1055,8 +1055,8 @@ const upsertErrorMessage = (err: unknown): string => {
       ? raw.filter((f): f is string => typeof f === 'string')
       : [];
     return fields.length > 0
-      ? `Overrides can only tighten — this loosens: ${fields.join(', ')}`
-      : 'Overrides can only tighten — this change would loosen the current policy.';
+      ? `You can only make rules stricter. This makes them looser: ${fields.join(', ')}`
+      : 'You can only make rules stricter. This change would make them looser.';
   }
   if (e.code === 'bad_request' && typeof e.message === 'string') return e.message;
   return errMessage(err);
@@ -1278,7 +1278,7 @@ export const mountPermissionsPanel = (
       controls.className = 'perm-confirm';
       const prompt = doc.createElement('span');
       prompt.className = 'perm-confirm-prompt';
-      prompt.textContent = 'Remove override?';
+      prompt.textContent = 'Remove this rule?';
       controls.appendChild(prompt);
       const confirm = makeButton(
         PERMISSIONS_DELETE_CONFIRM_ATTR,
@@ -1316,7 +1316,7 @@ export const mountPermissionsPanel = (
         row,
         PERMISSIONS_ROW_ERROR_ATTR,
         'perm-row-error',
-        `Could not delete: ${rowError}`,
+        `Recued could not delete it: ${rowError}`,
       );
     }
 
@@ -1357,16 +1357,16 @@ export const mountPermissionsPanel = (
     const heading = doc.createElement('div');
     heading.className = 'perm-doors-heading';
     heading.textContent =
-      surface === 'contracts-detail' ? 'Contract credential' : 'Doors';
+      surface === 'contracts-detail' ? 'The key for this agreement' : 'Doors';
     section.appendChild(heading);
 
     const intro = doc.createElement('div');
     intro.className = 'perm-doors-intro';
     intro.textContent =
       surface === 'contracts-detail'
-        ? 'URL, one-time token, tool grants, chat access, and optional limits for the MCP door.'
-        : 'The ways other people and agents reach Recued. Open a door and grant '
-          + 'only the tools you want available through it.';
+        ? 'URL, one-time token, tool grants, chat access, and optional limits for the The door for AI apps.'
+        : 'How other people and apps reach Recued. Open a door and allow '
+          + 'only the tools you want them to have.';
     section.appendChild(intro);
 
     const doors =
@@ -1413,8 +1413,8 @@ export const mountPermissionsPanel = (
       overridesHeading.className = 'perm-overrides-heading';
       overridesHeading.textContent =
         surface === 'contracts-detail'
-          ? 'Additional restrictions'
-          : 'Per-tool restrictions';
+          ? 'Extra rules'
+          : 'Rules for each tool';
       root.appendChild(overridesHeading);
     }
   };
@@ -2123,7 +2123,7 @@ export const mountPermissionsPanel = (
         state = {
           ...state,
           advancedError:
-            'Usage cap must be a whole number of 1 or more (or turn the cap off).',
+            'The limit has to be a whole number, 1 or more. Or turn it off.',
         };
         render();
         return;
@@ -2192,7 +2192,7 @@ export const mountPermissionsPanel = (
       const intro = doc.createElement('div');
       intro.className = 'perm-door-token-intro';
       intro.textContent =
-        'Copy this token into your AI client now — it is shown only once.';
+        'Copy this key into your AI app now. You will not see it again.';
       panel.appendChild(intro);
 
       const value = doc.createElement('code');
@@ -2215,7 +2215,7 @@ export const mountPermissionsPanel = (
       note.setAttribute(PERMISSIONS_MCP_DOOR_TOKEN_VALUE_ATTR, '');
       note.className = 'perm-door-token-note';
       note.textContent =
-        `Active. The token value was shown once when the door was opened `
+        `Working. The key was shown once, when the door was opened `
         + `(id ${token.token_id}). Re-open the door to issue a fresh one.`;
       panel.appendChild(note);
     }
@@ -2246,7 +2246,7 @@ export const mountPermissionsPanel = (
     const desc = doc.createElement('div');
     desc.className = 'perm-door-chat-desc';
     desc.textContent =
-      'Let this connection talk to your assistant, not just call individual '
+      'Let this connection talk to your Chat, not just use single '
       + 'tools.';
     info.appendChild(desc);
     chatRow.appendChild(info);
@@ -2297,8 +2297,8 @@ export const mountPermissionsPanel = (
     const intro = doc.createElement('div');
     intro.className = 'perm-door-grants-intro';
     intro.textContent =
-      'Choose which tools agents using this token may call. Nothing is '
-      + 'allowed until you grant it.';
+      'Choose which tools this key may use. Nothing is '
+      + 'allowed until you allow it.';
     section.appendChild(intro);
 
     if (state.toolCatalogError !== null) {
@@ -2306,7 +2306,7 @@ export const mountPermissionsPanel = (
         section,
         PERMISSIONS_MCP_DOOR_GRANTS_EMPTY_ATTR,
         'perm-door-grants-empty',
-        `Tools unavailable: ${state.toolCatalogError}`,
+        `Recued cannot list the tools: ${state.toolCatalogError}`,
       );
       parent.appendChild(section);
       return;
@@ -2333,7 +2333,7 @@ export const mountPermissionsPanel = (
         section,
         PERMISSIONS_MCP_DOOR_GRANTS_EMPTY_ATTR,
         'perm-door-grants-empty',
-        'No tools available to grant yet.',
+        'No tools to allow yet.',
       );
       parent.appendChild(section);
       return;
@@ -2419,10 +2419,10 @@ export const mountPermissionsPanel = (
         alsoReads.setAttribute(PERMISSIONS_MCP_DOOR_GRANT_TOOL_ALSO_READS_ATTR, '');
         alsoReads.setAttribute('data-reads', refs.join(','));
         alsoReads.className = 'perm-door-grant-tool-also-reads';
-        alsoReads.textContent = `also reads: ${refs.join(', ')}`;
+        alsoReads.textContent = `also looks at: ${refs.join(', ')}`;
         alsoReads.title =
-          `Granting this also lets it read ${row.also_reads.map((r) => r.list_op).join(', ')} `
-          + 'to resolve the target — no separate grant needed.';
+          `Allowing this also lets it read ${row.also_reads.map((r) => r.list_op).join(', ')} `
+          + 'so it can find what you meant. You do not need to allow that separately.';
         info.appendChild(alsoReads);
       }
       rowEl.appendChild(info);
@@ -2472,10 +2472,10 @@ export const mountPermissionsPanel = (
     const intro = doc.createElement('div');
     intro.className = 'perm-door-advanced-intro';
     intro.textContent =
-      'Optional limits. A usage cap auto-blocks the token after a number of '
-      + 'tool calls; an expiry auto-closes the door at a date. Off means '
-      + 'unlimited and never. Connected clients keep working when you change '
-      + 'these — the token value is unchanged.';
+      'Limits, if you want them. A use limit shuts the key off after a number of '
+      + 'uses. An end date shuts the door on that day. Off means '
+      + 'no limit and no end. Anything already connected keeps working when you change '
+      + 'these. The key itself does not change.';
     section.appendChild(intro);
 
     if (state.contractDefsError !== null) {
@@ -2483,7 +2483,7 @@ export const mountPermissionsPanel = (
         section,
         PERMISSIONS_MCP_DOOR_ADVANCED_SUMMARY_ATTR,
         'perm-door-advanced-summary',
-        `Limits unavailable: ${state.contractDefsError}`,
+        `Recued cannot read the limits: ${state.contractDefsError}`,
       );
       parent.appendChild(section);
       return;
@@ -2530,16 +2530,16 @@ export const mountPermissionsPanel = (
     } else if (transientUnresolved) {
       summary.setAttribute('data-state', 'unresolved');
       summary.textContent =
-        `A usage limit is bound (id ${activeToken!.contract_id}) — resolving its `
-        + `details… The editor is locked until it loads.`;
+        `A use limit is set (id ${activeToken!.contract_id}) — resolving its `
+        + `details… You cannot change anything until it loads.`;
     } else if (boundButMissing) {
       summary.setAttribute('data-state', 'unresolved');
       summary.textContent =
-        `A usage limit is bound (id ${activeToken!.contract_id}) but its details `
-        + `could not be loaded — the door may be blocked until it reloads. `
-        + `Turn the limits off to clear it, or reload.`;
+        `A use limit is set (id ${activeToken!.contract_id}) but its details `
+        + `could not be loaded, so the door may stay shut until it does. `
+        + `Turn the limits off, or load the page again.`;
     } else {
-      summary.textContent = 'No limits — unlimited use, never expires.';
+      summary.textContent = 'No limits. It can be used any number of times, and never runs out.';
     }
     section.appendChild(summary);
 
@@ -2555,8 +2555,8 @@ export const mountPermissionsPanel = (
     // ── Usage cap ──
     section.appendChild(
       renderAdvancedLimitRow({
-        label: 'Usage cap',
-        description: 'Auto-block after a number of tool calls.',
+        label: 'Use limit',
+        description: 'Shut it off after this many uses.',
         enabled: state.advancedDraft.capEnabled,
         toggleAttr: PERMISSIONS_MCP_DOOR_ADVANCED_CAP_TOGGLE_ATTR,
         onToggle: () =>
@@ -2574,7 +2574,7 @@ export const mountPermissionsPanel = (
     section.appendChild(
       renderAdvancedLimitRow({
         label: 'Expiry',
-        description: 'Auto-close the door at a date.',
+        description: 'Shut the door on this day.',
         enabled: state.advancedDraft.expiryEnabled,
         toggleAttr: PERMISSIONS_MCP_DOOR_ADVANCED_EXPIRY_TOGGLE_ATTR,
         onToggle: () =>
@@ -2602,7 +2602,7 @@ export const mountPermissionsPanel = (
         section,
         PERMISSIONS_MCP_DOOR_ADVANCED_NOTE_ATTR,
         'perm-door-advanced-note',
-        'Saving any limit change starts a fresh usage count.',
+        'Changing any limit starts the count again from zero.',
       );
     }
 
@@ -2727,7 +2727,7 @@ export const mountPermissionsPanel = (
         controls,
         PERMISSIONS_MCP_DOOR_ERROR_ATTR,
         'perm-door-error',
-        `MCP door: ${state.doorError}`,
+        `The door for AI apps: ${state.doorError}`,
       );
     }
 
@@ -2760,7 +2760,7 @@ export const mountPermissionsPanel = (
         enable.setAttribute('disabled', '');
         enable.textContent = 'Opening…';
       } else {
-        enable.textContent = 'Open the MCP door';
+        enable.textContent = 'Open the The door for AI apps';
         enable.addEventListener('click', () => {
           void enableMcpDoor();
         });
@@ -2792,8 +2792,8 @@ export const mountPermissionsPanel = (
       const warn = doc.createElement('div');
       warn.className = 'perm-door-warn';
       warn.textContent =
-        'This revokes the MCP token. Every client you gave it to will stop '
-        + 'working immediately and will need a new token if you re-open the door.';
+        'This turns the key off. Everything you gave it to will stop '
+        + 'working at once, and will need a new key if you open the door again.';
       confirmBox.appendChild(warn);
       const yes = doc.createElement('button');
       yes.setAttribute(PERMISSIONS_MCP_DOOR_DISABLE_CONFIRM_ATTR, '');
@@ -2803,7 +2803,7 @@ export const mountPermissionsPanel = (
         yes.setAttribute('disabled', '');
         yes.textContent = 'Revoking…';
       } else {
-        yes.textContent = 'Revoke token';
+        yes.textContent = 'Turn the key off';
         yes.addEventListener('click', () => {
           void disableMcpDoor();
         });
@@ -2829,7 +2829,7 @@ export const mountPermissionsPanel = (
         disable.setAttribute('disabled', '');
         disable.textContent = 'Working…';
       } else {
-        disable.textContent = 'Disable the MCP door';
+        disable.textContent = 'Disable the The door for AI apps';
         disable.addEventListener('click', () => {
           state = { ...state, confirmingDisableMcp: true };
           render();
@@ -2867,31 +2867,31 @@ export const mountPermissionsPanel = (
 
     if (channel === 'reception') {
       addInfo(
-        'Open to the web through the public links you publish — each link is '
-        + 'its own access boundary.',
+        'Open to the web through the links you share. Each link decides '
+        + 'for itself what it lets people do.',
       );
       // The Reception page is a sibling route; link to it via the established
       // `#reception` hash nav (mirrors the Settings route's back-link).
       const link = doc.createElement('a');
       link.className = 'perm-door-link';
       link.setAttribute('href', '#reception');
-      link.textContent = 'Create and manage links on the Reception page →';
+      link.textContent = 'Make and manage links on the Reception page →';
       controls.appendChild(link);
       // Don't claim the Per-tool restrictions below gate link traffic: a public
       // link runs as the `anonymous` actor, which the restriction picker
       // deliberately omits (ACTOR_OPTIONS). The real boundary for a visitor is
       // what each link is configured to do, set on the Reception page.
       addInfo(
-        'Public-link visitors are limited by what each link is configured to '
-        + 'do on the Reception page — not by the Per-tool restrictions below.',
+        'What a visitor can do is set by the link itself, '
+        + 'do on the Reception page — not by the Rules for each tool below.',
       );
       addInfo(
-        'No token to copy — access is granted per published link, not a shared '
+        'There is no key to copy. Each link carries its own access, not a shared '
         + 'credential.',
       );
     } else {
       addInfo(
-        'Inbound messages from a connected messenger can trigger your recipes.',
+        'Messages from a connected messenger can set off your Recipes.',
       );
       for (const vendor of listMessengerVendors()) {
         const vrow = doc.createElement('div');
@@ -2902,11 +2902,11 @@ export const mountPermissionsPanel = (
         vrow.textContent = `${label} — configured in Connections`;
         controls.appendChild(vrow);
       }
-      addInfo('Which recipes respond is set by each recipe’s trigger.');
-      addInfo('Per-tool restrictions below also apply.');
+      addInfo('Each Recipe decides for itself whether to answer.');
+      addInfo('Rules for each tool below also apply.');
       addInfo(
-        'No token to copy — access comes from your connected messenger, not a '
-        + 'shared credential.',
+        'There is no key to copy. It gets in through the messenger you connected, not through a '
+        + 'shared key.',
       );
     }
 
@@ -2933,7 +2933,7 @@ export const mountPermissionsPanel = (
         root,
         PERMISSIONS_PANEL_ERROR_ATTR,
         'perm-error',
-        `Could not load permissions: ${state.listError}`,
+        `Recued could not load your permissions: ${state.listError}`,
       );
     }
 
@@ -2968,7 +2968,7 @@ export const mountPermissionsPanel = (
         root,
         PERMISSIONS_PANEL_EMPTY_ATTR,
         'perm-empty',
-        'No permission overrides. Restrictions you place on what agents or contracts can do appear here.',
+        'No rules yet. Anything you stop apps from doing shows up here.',
       );
     }
     // phase === 'error' with zero rows → the error chip above is the whole
@@ -3107,17 +3107,17 @@ export const mountPermissionsPanel = (
     if (!canCreate || disposed || state.creating || upsert === undefined) return;
     const d = state.draft;
     if (d.actor === '') {
-      setCreateError('Choose an actor to restrict.');
+      setCreateError('Choose who to put a rule on.');
       return;
     }
     if (d.ingredient_id === '') {
-      setCreateError('Choose an ingredient.');
+      setCreateError('Choose an Ingredient.');
       return;
     }
     const policy = buildPolicy(d);
     if (isEmptyOverridePolicy(policy as Readonly<Record<string, unknown>>)) {
       setCreateError(
-        'Set at least one restriction (deny, approval, or max risk without approval).',
+        'Set at least one rule: block it, ask you first, or cap how risky it may get.',
       );
       return;
     }
@@ -3176,7 +3176,7 @@ export const mountPermissionsPanel = (
 
     const heading = doc.createElement('div');
     heading.className = 'perm-create-heading';
-    heading.textContent = 'Add a restriction';
+    heading.textContent = 'Add a rule';
     form.appendChild(heading);
 
     const addSelect = (
@@ -3217,7 +3217,7 @@ export const mountPermissionsPanel = (
     addSelect(
       PERMISSIONS_CREATE_ACTOR_ATTR,
       'Actor',
-      [{ value: '', label: 'Select actor…' }, ...ACTOR_OPTIONS],
+      [{ value: '', label: 'Choose who…' }, ...ACTOR_OPTIONS],
       state.draft.actor,
       false,
       (v) => updateDraft('actor', v as CreateDraft['actor']),
@@ -3229,12 +3229,12 @@ export const mountPermissionsPanel = (
       state.catalog === null || state.catalogError !== null || catalog.length === 0;
     const ingredientPlaceholder =
       state.catalogError !== null
-        ? `Catalog unavailable: ${state.catalogError}`
+        ? `Recued cannot list them: ${state.catalogError}`
         : state.catalog === null
-          ? 'Loading ingredients…'
+          ? 'Loading Ingredients…'
           : catalog.length === 0
-            ? 'No catalog ingredients installed'
-            : 'Select ingredient…';
+            ? 'No Ingredients installed'
+            : 'Choose an Ingredient…';
     addSelect(
       PERMISSIONS_CREATE_INGREDIENT_ATTR,
       'Ingredient',
@@ -3255,7 +3255,7 @@ export const mountPermissionsPanel = (
       PERMISSIONS_CREATE_OPERATION_ATTR,
       'Operation',
       [
-        { value: '', label: 'All operations (ingredient-wide)' },
+        { value: '', label: 'Everything this Ingredient does' },
         ...(selected?.operations ?? []).map((op) => ({
           value: op.operation_id,
           label: `${bareOperation(state.draft.ingredient_id, op.operation_id)} (${op.risk_tier})`,
@@ -3280,7 +3280,7 @@ export const mountPermissionsPanel = (
     deniedField.appendChild(deniedBox);
     const deniedSpan = doc.createElement('span');
     deniedSpan.className = 'perm-create-label';
-    deniedSpan.textContent = 'Deny entirely';
+    deniedSpan.textContent = 'Never allow it';
     deniedField.appendChild(deniedSpan);
     form.appendChild(deniedField);
 
@@ -3298,7 +3298,7 @@ export const mountPermissionsPanel = (
     );
     addSelect(
       PERMISSIONS_CREATE_MAXRISK_ATTR,
-      'Max risk without approval',
+      'How risky it may get before asking you',
       [
         { value: '', label: 'No change' },
         ...MAX_RISK_OPTIONS.map((r) => ({ value: r, label: r })),
@@ -3321,7 +3321,7 @@ export const mountPermissionsPanel = (
       save.setAttribute('disabled', '');
       save.textContent = 'Saving…';
     } else {
-      save.textContent = 'Add override';
+      save.textContent = 'Add the rule';
       save.addEventListener('click', () => {
         void submitCreate();
       });

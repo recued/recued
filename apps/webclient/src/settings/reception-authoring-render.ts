@@ -592,7 +592,7 @@ const renderLinkButtonCells = (
     repeaterKey: key,
     rowIndex: index,
     rowField: 'url',
-    label: 'HTTPS destination',
+    label: 'Where it goes. It must start with https',
     value: row.url,
   }) +
   repeaterTextCell({
@@ -632,7 +632,7 @@ const renderExplicitWindowCells = (
     repeaterKey: key,
     rowIndex: index,
     rowField: 'start_minute',
-    label: 'Start (minute of day)',
+    label: 'Start time',
     value: row.start_minute,
     min: 0,
     max: 1440,
@@ -641,7 +641,7 @@ const renderExplicitWindowCells = (
     repeaterKey: key,
     rowIndex: index,
     rowField: 'end_minute',
-    label: 'End (minute of day)',
+    label: 'End time',
     value: row.end_minute,
     min: 0,
     max: 1440,
@@ -710,7 +710,7 @@ const renderIntakeFieldCells = (
     repeaterKey: key,
     rowIndex: index,
     rowField: 'values',
-    label: 'Choice values (comma-separated — Choice type only)',
+    label: 'The choices, separated by commas. Only for a Choice box',
     value: row.values.join(', '),
   });
 
@@ -853,13 +853,13 @@ const renderIntakeFormBody = (m: IntakeFormFormModel): string => {
       renderRepeaterField(m.user_only_field_names, (row, i) =>
         renderStringRowCells(
           m.user_only_field_names.key,
-          'Owner-only field name',
+          'A box only you can see',
           row,
           i,
         ),
       ),
     ]),
-    formSection('Submission processing', [
+    formSection('What happens when someone sends it', [
       renderSelectField(m.target_kind),
       ...(answersAreTheRecord ? [answersAreTheRecordHint] : []),
       // D-210 WS3 — the calendar mapping. An intake's fields are role-agnostic,
@@ -979,11 +979,11 @@ const renderApprovalLinkBody = (m: ApprovalLinkFormModel): string => {
       renderTextField(m.prompt),
       renderTextField(m.context_summary),
     ]),
-    formSection('Private context (stripped at the packet boundary)', [
+    formSection('Private notes. Nobody outside Recued ever sees these', [
       renderRepeaterField(m.counterparty_aliases, (row, i) =>
         renderStringRowCells(
           m.counterparty_aliases.key,
-          'Counterparty alias',
+          'What to call the other person',
           row,
           i,
         ),
@@ -1018,7 +1018,7 @@ const renderStatusLinkBody = (m: StatusLinkFormModel): string =>
       renderTextField(m.caption),
       renderSelectField(m.projection_kind),
     ]),
-    formSection('Source entity', [
+    formSection('Where it came from', [
       renderSelectField(m.source_ref_kind),
       renderTextField(m.source_ref_id),
       renderMultiSelectField(m.fields_visible_override),

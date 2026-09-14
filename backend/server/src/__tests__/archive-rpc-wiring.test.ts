@@ -39,6 +39,9 @@ const FAKES: Pick<
   | 'contactEngagementsRpcDeps'
   | 'packInstallDeps'
   | 'formResponseDeps'
+  | 'serverTimeZoneDeps'
+  | 'notificationKindPolicyDeps'
+  | 'quietHoursDeps'
 > = {
   archiveDeps: {
     runtime: {} as never,
@@ -58,6 +61,21 @@ const FAKES: Pick<
   packInstallDeps: {
     recipeStore: {} as never,
     marketplaceFetch: mock404Fetch,
+  },
+  // D-269 step 1 — `server.timezone.*`. A read-only fake is enough: the probe
+  // below only needs the dispatch to REACH the handler, and this handler's own
+  // registered-client gate answers before the store is touched.
+  serverTimeZoneDeps: {
+    store: { read: () => null, write: () => ({ mode: 'fixed', zone: null, updated_at: 0 }) } as never,
+  },
+  // D-269 step 2 — the per-kind reminder policy. Read-only fake: the probe only
+  // needs the dispatch to REACH the handler, whose registered-client gate
+  // answers before the store is touched.
+  notificationKindPolicyDeps: { store: { list: () => [], get: () => null, write: () => null } as never },
+  // D-269 step 3 — the quiet-hours window.
+  quietHoursDeps: {
+    store: { read: () => null, write: () => null } as never,
+    timezoneStore: { read: () => null, write: () => null } as never,
   },
 };
 
@@ -127,6 +145,50 @@ describe('rpc-dep forwarding into the ws-server (server.ts)', () => {
       try {
         const r = await callRpc(ws, 'data.contact.engagements.list', { contact_email: 'x@y.z' });
         expect(r.error?.code).not.toBe('not_configured');
+      } finally {
+        ws.close();
+      }
+    });
+
+    it('server.timezone.get is wired (D-269 — not not_configured)', async () => {
+      // ⛔ THE TRAP THIS FILE EXISTS FOR, AND A NEW FAMILY WALKS STRAIGHT INTO
+      // IT. `server.timezone.*` needs a ServerConfig DECLARATION and a separate
+      // explicit FORWARD in `createServerHandlerSet`; the handler unit tests and
+      // the contracts ratchet both pass with the forward missing, and the only
+      // symptom is `not_configured` on the live wire. Probed here rather than
+      // trusted, because every other layer already said yes.
+      const ws = await connectWs(server.port);
+      try {
+        const r = await callRpc(ws, 'server.timezone.get', {});
+        expect(r.error?.code).not.toBe('not_configured');
+        // This unregistered probe is turned away by the handler's own paired-
+        // client gate — which is itself the proof the slice claimed the method.
+        expect(r.error?.code).toBe('unauthorized');
+      } finally {
+        ws.close();
+      }
+    });
+
+    it('notification.kind_policy.get is wired (D-269 step 2 — not not_configured)', async () => {
+      // Same forward-or-dead-rpc seam as `server.timezone.get`: a ServerConfig
+      // declaration AND a separate explicit forward, with every other layer
+      // green when the forward is missing.
+      const ws = await connectWs(server.port);
+      try {
+        const r = await callRpc(ws, 'notification.kind_policy.get', {});
+        expect(r.error?.code).not.toBe('not_configured');
+        expect(r.error?.code).toBe('unauthorized');
+      } finally {
+        ws.close();
+      }
+    });
+
+    it('notification.quiet_hours.get is wired (D-269 step 3 — not not_configured)', async () => {
+      const ws = await connectWs(server.port);
+      try {
+        const r = await callRpc(ws, 'notification.quiet_hours.get', {});
+        expect(r.error?.code).not.toBe('not_configured');
+        expect(r.error?.code).toBe('unauthorized');
       } finally {
         ws.close();
       }

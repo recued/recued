@@ -278,7 +278,7 @@ describe('D-149 follow-on — reception page shell: spine list + status', () => 
     expect(fakeConn.calls).toHaveLength(callCountBefore);
     const page = shell.getState().page;
     expect(page?.status_header.emergency_disabled).toBe(true);
-    expect(page?.status_header.status_label).toBe('Emergency disabled');
+    expect(page?.status_header.status_label).toBe('Switched off in a hurry');
   });
 
   it('setStatus() before loadPage updates status but leaves page null', () => {
@@ -359,7 +359,7 @@ describe('D-149 follow-on — reception page shell: spine lifecycle dispatch', (
     });
     expect(fakeConn.calls[1]?.method).toBe('reception.endpoints.list');
     expect(shell.getState().status.emergency_disabled).toBe(true);
-    expect(shell.getState().page?.status_header.status_label).toBe('Emergency disabled');
+    expect(shell.getState().page?.status_header.status_label).toBe('Switched off in a hurry');
   });
 });
 
@@ -695,7 +695,7 @@ describe('D-149 follow-on — reception page shell: broadcast handlers', () => {
     const optimistic = shell.getState();
     expect(optimistic.status.emergency_disabled).toBe(true);
     expect(optimistic.page?.active_endpoints).toBe(0);
-    expect(optimistic.page?.status_header.status_label).toBe('Emergency disabled');
+    expect(optimistic.page?.status_header.status_label).toBe('Switched off in a hurry');
     await tick();
     // Authoritative refetch still reflects the emergency-disabled status.
     expect(shell.getState().page?.status_header.emergency_disabled).toBe(true);

@@ -77,7 +77,7 @@ export const recoveryReturnReceipt = (input: {
   const reviewAction = `Review ${input.areaLabel}`;
   if (!input.routeStillActive) {
     return {
-      copy: `Back on ${input.profileLabel}. ${input.areaLabel} was your saved return area, but this tab has moved since arrival.`,
+      copy: `Back on ${input.profileLabel}. ${input.areaLabel} is where you were going back to, but this tab has moved on since.`,
       actionLabel: `Return to ${input.areaLabel}`,
       intent: 'return',
       tone: 'attention',
@@ -86,14 +86,14 @@ export const recoveryReturnReceipt = (input: {
   if (input.freshness === 'unavailable') {
     if (input.canRetry === true) {
       return {
-        copy: `Back on ${input.profileLabel}, but Recued couldn’t confirm ${input.areaLabel} is current. Try again to check the latest information before continuing.`,
+        copy: `Back on ${input.profileLabel}, but Recued could not check that ${input.areaLabel} is up to date. Check again before you carry on.`,
         actionLabel: `Retry ${input.areaLabel}`,
         intent: 'retry',
         tone: 'attention',
       };
     }
     return {
-      copy: `Back on ${input.profileLabel}, but Recued couldn’t confirm ${input.areaLabel} is current. Review the area before continuing.`,
+      copy: `Back on ${input.profileLabel}, but Recued could not check that ${input.areaLabel} is up to date. Have a look before you carry on.`,
       actionLabel: reviewAction,
       intent: 'review',
       tone: 'attention',
@@ -109,7 +109,7 @@ export const recoveryReturnReceipt = (input: {
   }
   if (input.returnContext === 'detail_withheld') {
     return {
-      copy: `Back on ${input.profileLabel}. ${input.areaLabel} is refreshed. For privacy, the item you had open wasn’t carried across servers; choose it again if you still need it.`,
+      copy: `Back on ${input.profileLabel}. ${input.areaLabel} is up to date. To keep things private, Recued did not carry what you had open across to another server. Pick it again if you still need it.`,
       actionLabel: `Choose again in ${input.areaLabel}`,
       intent: 'choose_again',
       tone: 'attention',
@@ -117,14 +117,14 @@ export const recoveryReturnReceipt = (input: {
   }
   if (input.returnContext !== 'area') {
     return {
-      copy: `Back on ${input.profileLabel}. ${input.areaLabel} is refreshed; review the current view before continuing.`,
+      copy: `Back on ${input.profileLabel}. ${input.areaLabel} is up to date. Have a look before you carry on.`,
       actionLabel: reviewAction,
       intent: 'review',
       tone: 'attention',
     };
   }
   return {
-    copy: `Back on ${input.profileLabel}. ${input.areaLabel} is refreshed and ready.`,
+    copy: `Back on ${input.profileLabel}. ${input.areaLabel} is up to date and ready.`,
     actionLabel: `Continue in ${input.areaLabel}`,
     intent: 'continue',
     tone: 'success',
@@ -138,7 +138,7 @@ export const recoveryReturnAfterReconnectReceipt = (input: {
   readonly profileLabel: string;
   readonly areaLabel: string;
 }): RecoveryReturnReceipt => ({
-  copy: `Back on ${input.profileLabel}. The server is connected, but Recued hasn’t confirmed ${input.areaLabel} is current. Review the area before continuing.`,
+  copy: `Back on ${input.profileLabel}. The server is connected, but Recued could not check that ${input.areaLabel} is up to date. Have a look before you carry on.`,
   actionLabel: `Review ${input.areaLabel}`,
   intent: 'review',
   tone: 'attention',

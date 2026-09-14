@@ -519,7 +519,7 @@ describe('mountDevicesPage — two-stage revoke confirm', () => {
     await flush();
     expect(listCallCount).toBe(2);
     expect(fakeHost.getHtml()).toContain('Loading devices…');
-    expect(fakeHost.getHtml()).toContain('Device revoked.');
+    expect(fakeHost.getHtml()).toContain('Done. That device can no longer reach this server.');
     expect(fakeHost.getFocusedTarget()).toEqual({ receipt: true });
     expect(mount.hasInFlightWork()).toBe(true);
 
@@ -545,7 +545,7 @@ describe('mountDevicesPage — two-stage revoke confirm', () => {
     expect(html).toContain('No paired devices yet');
     // The confirm panel collapsed.
     expect(html).not.toContain('account-devices-confirm-row');
-    expect(html).toContain('Device revoked. It no longer has access');
+    expect(html).toContain('Done. That device can no longer reach this server.');
     expect(fakeHost.getFocusedTarget()).toEqual({ receipt: true });
     expect(mount.hasInFlightWork()).toBe(false);
   });
@@ -574,7 +574,7 @@ describe('mountDevicesPage — two-stage revoke confirm', () => {
     const html = fakeHost.getHtml();
     // The confirm panel stays expanded for retry.
     expect(html).toContain('account-devices-confirm-row');
-    expect(html).toContain('Could not revoke this device');
+    expect(html).toContain('Recued could not shut this device out');
     expect(html).toContain('forbidden. Try again');
     expect(fakeHost.getFocusedAction()).toEqual({
       action: 'confirm-revoke',

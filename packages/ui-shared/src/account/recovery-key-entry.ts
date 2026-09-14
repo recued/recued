@@ -174,7 +174,7 @@ export const createRecoveryKeyEntryHandlers = (
     if (!crypto.isValid(normalized)) {
       deps.setState(
         entryFailed(
-          'That doesn\'t look like a valid 24-word recovery key. Check for typos or missing words.',
+          'That does not look like a 24-word recovery key. Check for typing mistakes or missing words.',
         ),
       );
       return;
@@ -195,7 +195,7 @@ export const createRecoveryKeyEntryHandlers = (
       // instead). Surface a clear error rather than silently passing.
       deps.setState(
         entryFailed(
-          'No recovery key is set up on this device. Set one up first, then retry.',
+          'This device has no recovery key yet. Set one up first.',
         ),
       );
       return;
@@ -215,7 +215,7 @@ export const createRecoveryKeyEntryHandlers = (
     if (!ok) {
       deps.setState(
         entryFailed(
-          'That key doesn\'t match the one set up on this device. Check your written copy and re-enter.',
+          'That does not match the key on this device. Check what you wrote down and type it again.',
         ),
       );
       return;

@@ -159,7 +159,7 @@ export const createAccountBindingAuthClient = (
       headers: { 'Accept': 'application/json' },
     });
     const data = await readJson(res);
-    if (!res.ok) throw new Error(normalizeError(data, 'Session check failed.'));
+    if (!res.ok) throw new Error(normalizeError(data, 'Recued could not check you are signed in.'));
     const session = parseSession(data as SessionWire);
     csrfToken = session.csrfToken;
     currentSession = session;
@@ -174,12 +174,12 @@ export const createAccountBindingAuthClient = (
       await getSession();
       loadedSessionThisCall = true;
     }
-    if (!csrfToken) throw new Error('Auth form expired. Please retry.');
+    if (!csrfToken) throw new Error('That form ran out of time. Please try again.');
     if (currentSession?.authenticated !== true && !loadedSessionThisCall) {
       await getSession();
     }
     if (currentSession?.authenticated !== true) {
-      throw new Error('Sign in required.');
+      throw new Error('You have to sign in first.');
     }
 
     const headers = new Headers({
@@ -198,7 +198,7 @@ export const createAccountBindingAuthClient = (
 
     const res = await fetcher(`${workerUrl}/v1/account/binding/token`, init);
     const data = await readJson(res);
-    if (!res.ok) throw new Error(normalizeError(data, 'Could not mint binding token.'));
+    if (!res.ok) throw new Error(normalizeError(data, 'Recued could not make the link token.'));
     return parseToken(data as BindingTokenWire);
   };
 
@@ -216,7 +216,7 @@ export const createAccountBindingAuthClient = (
       headers,
     });
     const data = await readJson(res);
-    if (!res.ok) throw new Error(normalizeError(data, 'Sign out failed.'));
+    if (!res.ok) throw new Error(normalizeError(data, 'Signing out did not work.'));
     // The signout response carries a fresh csrfToken + `authenticated:false`;
     // adopt it so a later mint/sign-out reuses the rotated token.
     const session = parseSession(data as SessionWire);

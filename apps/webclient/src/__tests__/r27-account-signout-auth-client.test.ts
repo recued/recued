@@ -73,10 +73,10 @@ describe('R27 account auth-client — signOut (local scope)', () => {
     const fetch: AccountBindingFetch = vi.fn(async (input) => {
       const url = String(input);
       if (url.endsWith('/v1/auth/session')) return res(200, sessionBody('csrf-1')) as unknown as Response;
-      return res(401, { error: { message: 'Sign out failed.' } }) as unknown as Response;
+      return res(401, { error: { message: 'Signing out did not work.' } }) as unknown as Response;
     });
     const client = createAccountBindingAuthClient({ workerUrl: 'https://auth.test', fetch });
 
-    await expect(client.signOut()).rejects.toThrow('Sign out failed.');
+    await expect(client.signOut()).rejects.toThrow('Signing out did not work.');
   });
 });

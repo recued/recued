@@ -69,7 +69,7 @@ export type PublicMcpModalState =
 /** Modal copy. Bullet list mirrors the spec § A.7.2 flow (a-e). */
 export const PUBLIC_MCP_MODAL_COPY = {
   acknowledge: {
-    title: 'Enable public MCP?',
+    title: 'Let AI apps in from outside?',
     // ⛔⛔ THIS IS CONSENT COPY, SO A STALE MECHANISM HERE IS NOT DOC DRIFT —
     // the owner types an exact phrase on the strength of this explanation, and
     // a wrong description makes the informed half of informed consent false.
@@ -89,33 +89,33 @@ export const PUBLIC_MCP_MODAL_COPY = {
     // acknowledgement. Saying "agents reach MCP after acknowledgement" invited
     // exactly the misreading that this is an access grant.
     subtitle:
-      'Binds the MCP port beyond your LAN. What a remote agent may then do is '
-      + 'governed by its contract, not by this switch.',
+      'This opens the door beyond your own network. What an AI app may then do is '
+      + 'set by its agreement, not by this switch.',
     bullets: [
-      'Remote AI agents can reach the MCP port. Every call is still gated by the '
-        + 'agent\'s contract — its granted ops and its granted reads.',
-      'Prompt-injection is a substrate risk — content an agent reads can steer its '
-        + 'behavior, and a contract bounds what that steering can reach.',
+      'AI apps anywhere can reach the door. Every single thing they ask for is still checked against '
+        + 'their agreement: what they may do, and what they may read.',
+      'There is a real risk here. Whatever an AI app reads can push it around, '
+        + 'and its agreement is what limits how far that can go.',
       'Contract grants decide what is exposed: `enrichment.<topic>` per topic, '
         + '`data.<collection>` per collection, resolved against the bound contract.',
-      'Recommendation: keep MCP LAN-only unless a specific use case requires public access.',
+      'We suggest keeping this to your own network, unless you really need it open.',
     ],
     phrase_prompt: `Type "${PUBLIC_MCP_ACKNOWLEDGEMENT_PHRASE}" to confirm`,
-    submit_label: 'Acknowledge + enable public MCP',
-    cancel_label: 'Cancel — keep MCP LAN-only',
+    submit_label: 'I understand. Let AI apps in',
+    cancel_label: 'Cancel, and keep it to my own network',
   },
   revoke: {
-    title: 'Revoke public MCP?',
+    title: 'Shut AI apps out again?',
     subtitle:
-      'Removes the acknowledgement record + forces `/mcp.public` off. Demotion is always allowed without friction.',
+      'This forgets that you agreed, and shuts the door. You can always make things safer, with no fuss.',
     bullets: [
-      'Removing the acknowledgement drops the audit row signature trail to a "revoked" state.',
-      'AI agents reaching `/mcp` from outside the LAN will be refused at the listener.',
-      'You can re-acknowledge later by typing the phrase again.',
+      'Recued writes down that you took your agreement back.',
+      'AI apps from outside your network will be turned away at the door.',
+      'You can agree again later by typing the phrase.',
     ],
     phrase_prompt: '',
-    submit_label: 'Revoke acknowledgement',
-    cancel_label: 'Cancel — keep public MCP enabled',
+    submit_label: 'Take my agreement back',
+    cancel_label: 'Cancel, and leave it open',
   },
 } as const;
 

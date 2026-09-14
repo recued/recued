@@ -250,6 +250,13 @@ describe('D-134 P2 — barrel completeness', () => {
       // (optional) cascade engine. Builder ships as
       // `buildWorkEntityDueStatusSweepTask`.
       'work-entity-due-status-sweep',
+      // D-269 — the four-kind reminder sweep. Needs `WorkEntityStore` + a
+      // notify sink + `db` (the persisted reminder ledger), and registers only
+      // when all three are present: its entire output is a `notify`, so without
+      // a sink it is not a degraded feature but a no-op burning a cycle slot.
+      // Builder ships as `buildWorkEntityReminderSweepTask`
+      // (wire-housekeeping-substrate.ts, gated on `notifyReminder`).
+      'work-entity-reminder-sweep',
       // D-148 § A.6.5 — needs `RotationEngine` + `PairBlobCertSource`.
       // Builder ships as `buildTlsCertRenewalTask`; gated in bin.ts on
       // both deps being present. Cert source + production `TlsRenewalHook`

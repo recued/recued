@@ -792,7 +792,7 @@ describe('Packs R3b add affordance', () => {
     const noDoorsOpen = renderPack(noDoorsCtrl, packEntry('stripe-pack'));
     const noDoorsEmpty = findByAttr(noDoorsOpen, PACK_ACCESS_ADD_EMPTY_ATTR);
     expect(noDoorsEmpty).not.toBeNull();
-    expect(collectTextContent(noDoorsEmpty!)).toContain('No other contracts yet');
+    expect(collectTextContent(noDoorsEmpty!)).toContain('No other agreements yet');
     const links = findAllByTag(noDoorsEmpty!, 'a');
     expect(links).toHaveLength(1);
     expect(links[0]!.getAttribute('href')).toBe('#contracts');

@@ -182,3 +182,79 @@ describe('D-145 PA6 — renderWorkEntityListView (list)', () => {
     expect(html).toContain('<strong>zzz</strong>');
   });
 });
+
+describe('D-267 follow-on — the row says what only Recued can say', () => {
+  const commitment = (
+    over: Partial<WorkEntity & { _kind: 'commitment' }> = {},
+  ): WorkEntityListRow => ({
+    entity: {
+      _kind: 'commitment', id: 'c1', statement: 'Send Maya the draft',
+      direction: 'outbound', derivation: 'user_declared',
+      lifecycle_state: 'pending', due_status: 'not_due',
+      expiry_policy: 'escalate_overdue', promised_at: 1, state_changed_at: 1,
+      lifecycle_changed_at: 1, due_status_changed_at: 1,
+      blocks_task_ids: [], blocks_project_ids: [],
+      source_id: 'recued.commitment', last_seen_at: 1, sync_state: 'live',
+      conflict_policy: 'recued_wins', created_at: 1, updated_at: 1,
+      ...over,
+    } as WorkEntity,
+    source: { id: 'recued.commitment', label: 'Recued', source_kind: 'builtin', write_capable: true },
+  });
+
+  it('⛔ a clean, hand-made row says NOTHING — the default origin is not a badge', () => {
+    // `user_declared` is what every row of a fresh install carries. Badging it
+    // would print "you declared this" on every line of the one screen that has
+    // nothing else to read — noise dressed as provenance.
+    const html = renderWorkEntityListView({
+      kind: 'commitment', rows: [commitment()], show_source_label: true, search_query: '',
+    });
+    expect(html).not.toContain('work-entity-list-row-badge');
+  });
+
+  it('names an origin that is NOT you, which is the whole point', () => {
+    for (const [derivation, label] of [
+      ['mail_extracted', 'From mail'],
+      ['recipe_emitted', 'From a recipe'],
+      ['peer_received', 'From a peer'],
+    ] as const) {
+      const html = renderWorkEntityListView({
+        kind: 'commitment', rows: [commitment({ derivation })],
+        show_source_label: true, search_query: '',
+      });
+      expect(html).toContain(label);
+    }
+  });
+
+  it('⛔ flags a source it cannot reach, in Today\'s exact words', () => {
+    const html = renderWorkEntityListView({
+      kind: 'commitment', rows: [commitment({ sync_state: 'stale_unreachable' })],
+      show_source_label: true, search_query: '',
+    });
+    // ⚠ Two surfaces describing one fact differently is worse than either
+    // wording — Today already calls this "Recued cannot reach this source".
+    expect(html).toContain('Recued cannot reach this source');
+    expect(html).toContain('data-warning');
+  });
+
+  it('flags an edit that has not reached its source', () => {
+    const html = renderWorkEntityListView({
+      kind: 'commitment',
+      rows: [commitment({
+        pending_write: { staged_at: 1, operation: 'update', dirty_fields: ['statement'], state: 'pending' },
+      })],
+      show_source_label: true, search_query: '',
+    });
+    expect(html).toContain('Change not sent yet');
+  });
+
+  it('⚠ says nothing about origin for the four kinds that store none', () => {
+    // Task / note / project / booking have NO origin field — their provenance
+    // lives in the audit trail, not on the row. Asserting that here keeps the
+    // gap visible instead of letting a future reader assume it is covered.
+    const html = renderWorkEntityListView({
+      kind: 'task', rows: [row({ id: 't1', title: 'Ship it' })],
+      show_source_label: true, search_query: '',
+    });
+    expect(html).not.toContain('work-entity-list-row-badge');
+  });
+});

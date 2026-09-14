@@ -55,13 +55,9 @@ export interface IdempotencyLedger {
   record(vendor: string, event_id: string): { fresh: boolean };
   /** Read-only replay check — does NOT record.
    *
-   *  The webhook port answers the vendor before the work completes, so
-   *  check-and-set in one call is right there. Local ingress is the
-   *  opposite shape: Telegram polling, Slack Socket Mode, and the Discord
-   *  Gateway all RETRY a delivery whose dispatch failed (that is what
-   *  keeps a cursor honest), so burning the key on the attempt would turn
-   *  the retry into a silent drop. Those callers check here first and
-   *  `record` only after the dispatch resolves. */
+   *  HTTP webhooks and local ingress record only after durable dispatch.
+   *  The HTTP handler separately coalesces in-flight attempts, so a failed
+   *  admission stays retryable without starting concurrent work. */
   seen(vendor: string, event_id: string): boolean;
   /** Snapshot count of currently-tracked keys — for diagnostics. */
   size(): number;

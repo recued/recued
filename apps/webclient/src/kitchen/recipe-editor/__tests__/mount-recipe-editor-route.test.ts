@@ -619,8 +619,8 @@ describe('mountFormResponseRecipeSeedRoute — Data → Kitchen handoff', () => 
       version: 1,
       ttl: 300,
       metadata: {
-        name: 'Handle accepted form responses',
-        description: 'Runs after the owner accepts a response from this intake form.',
+        name: 'Deal with form answers you accept',
+        description: 'Runs after you accept an answer from this form.',
         author: 'local',
         supported_platforms: [],
       },
@@ -794,9 +794,9 @@ describe('mountFormResponseRecipeSeedRoute — Data → Kitchen handoff', () => 
       FORM_RESPONSE_WORKFLOW_TEMPLATE_USE_ATTR,
       template.recipe_id,
     );
-    expect(use?.textContent).toBe('Use installed workflow template');
+    expect(use?.textContent).toBe('Use a ready-made template');
     expect(use?.getAttribute('aria-label')).toBe(
-      'Use installed workflow template Start paid document fulfillment (start-paid-document-fulfillment)',
+      'Use a ready-made template Start paid document fulfillment (start-paid-document-fulfillment)',
     );
     expect(doc.styleElements[0]?.textContent).toContain('.rx-btn-primary');
     expect(doc.styleElements[0]?.textContent).toContain(
@@ -838,7 +838,7 @@ describe('mountFormResponseRecipeSeedRoute — Data → Kitchen handoff', () => 
 
     expect(
       findByAttr(root, MOUNT_RECIPE_EDITOR_STATUS_ATTR)?.textContent,
-    ).toBe('Checking existing automations…');
+    ).toBe('Looking at what you already have…');
     expect(handle.hasUnsavedChanges()).toBe(false);
     await tick();
 
@@ -916,7 +916,7 @@ describe('mountFormResponseRecipeSeedRoute — Data → Kitchen handoff', () => 
       findAllByAttr(root, FORM_RESPONSE_AUTOMATION_SCOPE_ATTR)[1]?.getAttribute(
         'title',
       ),
-    ).toBe('This recipe also narrows by response or endpoint.');
+    ).toBe('This Recipe only runs for certain answers or links.');
     expect(findByAttr(root, RECIPE_EDITOR_ROUTE_ATTR)).toBeUndefined();
     expect(handle.hasUnsavedChanges()).toBe(false);
 

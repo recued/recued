@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -36,6 +36,7 @@ import { remoteFileRecordId } from '../../../file-view-resolver.js';
 import type { FileMetaProjection } from '@recued/contracts';
 import type { FileMetaRow, FileMetaStore } from '../../../storage/file-meta-store.js';
 import type { FileConnectionCredential, FileConnectionResolver } from '../../../file-source-adapters/index.js';
+import { createReviewedFileAccess, describeFileContent } from '../file-snapshot.js';
 
 const sha256 = (bytes: Buffer): string =>
   createHash('sha256').update(bytes).digest('hex');
@@ -159,6 +160,60 @@ const makeGateway = (
 };
 
 describe('file.read content handler', () => {
+  it.each([false, true])('leases reviewed bytes independently of a deleted source and releases on read failure=%s', async fail => {
+    const { bytes, record } = await ingestPdf();
+    const snapshot = describeFileContent(record)!;
+    h.collection.delete(record.record_id);
+    expect(h.collection.get(record.record_id)).toBeNull();
+    const read = h.blobs.get.bind(h.blobs);
+    vi.spyOn(h.blobs, 'get').mockImplementation(async blobHash => {
+      expect(h.db.prepare('SELECT source_id, blob_hash FROM collection_file_attachment_leases').all())
+        .toEqual([{ source_id: record.record_id, blob_hash: snapshot.blob_hash }]);
+      if (fail) throw new Error('fixture read failure');
+      return read(blobHash);
+    });
+    const validate = vi.fn(async () => {});
+    const access = createReviewedFileAccess(snapshot, validate);
+    const pending = handleFileRead({ registry: h.registry, blobs: h.blobs }, { record_id: record.record_id }, access);
+    if (fail) await expect(pending).rejects.toThrow('fixture read failure');
+    else await expect(pending).resolves.toMatchObject({ bytes_b64: bytes.toString('base64'), blob_hash: snapshot.blob_hash });
+    expect(validate).toHaveBeenCalledTimes(fail ? 1 : 2);
+    expect(h.db.prepare('SELECT * FROM collection_file_attachment_leases').all()).toEqual([]);
+    await expect(handleFileRead({ registry: h.registry, blobs: h.blobs }, { record_id: record.record_id }))
+      .rejects.toMatchObject({ code: 'file_not_found' });
+  });
+
+  it('rejects a fabricated reviewed snapshot before leasing or reading bytes', async () => {
+    const { record } = await ingestPdf();
+    const read = vi.spyOn(h.blobs, 'get');
+    await expect(handleFileRead({ registry: h.registry, blobs: h.blobs }, { record_id: record.record_id }, {}))
+      .rejects.toMatchObject({ code: 'preapproval_stale' });
+    expect(read).not.toHaveBeenCalled();
+    expect(h.db.prepare('SELECT * FROM collection_file_attachment_leases').all()).toEqual([]);
+  });
+
+  it('protects the library deletion boundary while reading a reviewed attachment version', async () => {
+    const { bytes, record } = await ingestPdf();
+    const lifecycle = h.collection.attachmentLifecycle;
+    if (!lifecycle) throw new Error('The received-file fixture must provide attachment lifecycle support.');
+    const prepared = lifecycle.prepare([{ file_id: record.record_id, media_class: 'document' }]);
+    lifecycle.bind('message', 'retained-message', 'retained-session', prepared);
+    const versionId = prepared.files[0]!.attachment.file_id;
+    const snapshot = describeFileContent(h.collection.get(versionId)!)!;
+    const read = h.blobs.get.bind(h.blobs);
+    vi.spyOn(h.blobs, 'get').mockImplementation(async blobHash => {
+      const impact = lifecycle.preview(record.record_id);
+      expect(impact.in_use).toBe(true);
+      expect(() => lifecycle.mutate(record.record_id, 'delete', impact.revision, id => h.collection.delete(id)))
+        .toThrow('currently in use');
+      return read(blobHash);
+    });
+    await expect(handleFileRead({ registry: h.registry, blobs: h.blobs }, { record_id: versionId },
+      createReviewedFileAccess(snapshot, async () => {})))
+      .resolves.toMatchObject({ bytes_b64: bytes.toString('base64') });
+    expect(lifecycle.preview(record.record_id).in_use).toBe(false);
+  });
+
   it('materializes CAS bytes and audits the content read', async () => {
     const { bytes, record } = await ingestPdf();
 

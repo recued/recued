@@ -395,7 +395,7 @@ describe('D-149 follow-on — mountReceptionSettings: prompt bridge', () => {
     const { shell } = makeFakeShell();
     const host = mountReceptionSettings(baseOpts(page.host, modal.host, prompts.host, shell));
     page.click({ action: 'reception-extend', endpointId: 'ep-sched' });
-    expect(prompts.getHtml()).toContain('Extend endpoint');
+    expect(prompts.getHtml()).toContain('Give it more time');
     expect(prompts.getHtml()).toContain('ep-sched');
     expect(modal.getHtml()).toBe('');
     host.dispose();
@@ -408,7 +408,7 @@ describe('D-149 follow-on — mountReceptionSettings: prompt bridge', () => {
     const { shell } = makeFakeShell();
     const host = mountReceptionSettings(baseOpts(page.host, modal.host, prompts.host, shell));
     page.click({ action: 'reception-rotate-token', endpointId: 'ep-sched' });
-    expect(prompts.getHtml()).toContain('Rotate token');
+    expect(prompts.getHtml()).toContain('Swap the secret');
     expect(modal.getHtml()).toBe('');
     host.dispose();
   });
@@ -420,7 +420,7 @@ describe('D-149 follow-on — mountReceptionSettings: prompt bridge', () => {
     const { shell } = makeFakeShell();
     const host = mountReceptionSettings(baseOpts(page.host, modal.host, prompts.host, shell));
     page.click({ action: 'reception-revoke', endpointId: 'ep-sched' });
-    expect(prompts.getHtml()).toContain('Revoke endpoint');
+    expect(prompts.getHtml()).toContain('Take this link back');
     expect(modal.getHtml()).toBe('');
     host.dispose();
   });
@@ -432,7 +432,7 @@ describe('D-149 follow-on — mountReceptionSettings: prompt bridge', () => {
     const { shell } = makeFakeShell();
     const host = mountReceptionSettings(baseOpts(page.host, modal.host, prompts.host, shell));
     page.click({ action: 'reception-emergency-disable-all' });
-    expect(prompts.getHtml()).toContain('Emergency: disable Reception?');
+    expect(prompts.getHtml()).toContain('Turn Reception off right now?');
     expect(modal.getHtml()).toBe('');
     host.dispose();
   });
@@ -479,7 +479,7 @@ describe('D-149 follow-on — mountReceptionSettings: prompt bridge', () => {
     const { shell, fns } = makeFakeShell();
     const host = mountReceptionSettings(baseOpts(page.host, modal.host, prompts.host, shell));
     page.click({ action: 'reception-extend', endpointId: 'ep-sched' });
-    expect(prompts.getHtml()).toContain('Extend endpoint');
+    expect(prompts.getHtml()).toContain('Give it more time');
     prompts.click({ action: 'reception-prompt-cancel' });
     expect(fns.extendEndpoint).not.toHaveBeenCalled();
     expect(prompts.getHtml()).toBe('');
@@ -497,7 +497,7 @@ describe('D-149 follow-on — mountReceptionSettings: prompt bridge', () => {
     page.click({ action: 'reception-new-endpoint', kind: 'intake_form' });
     page.click({ action: 'reception-rotate-token', endpointId: 'ep-sched' });
     expect(modal.getHtml()).toContain('data-kind="intake_form"');
-    expect(prompts.getHtml()).toContain('Rotate token');
+    expect(prompts.getHtml()).toContain('Swap the secret');
     host.dispose();
   });
 });
@@ -667,7 +667,7 @@ describe('D-149 follow-on — mountReceptionSettings: seam forwarding', () => {
     });
     page.click({ action: 'reception-open-templates' });
     expect(getTemplates).toHaveBeenCalled();
-    // The gallery's intake section heading is "Intake forms" (the
+    // The gallery's intake section heading is "Let people send you answers" (the
     // assertion had drifted to a stale "Intake form templates" string).
     expect(modal.getHtml()).toContain('Intake forms');
     expect(modal.getHtml()).toContain('Client inquiry');
@@ -811,7 +811,7 @@ describe('D-149 follow-on — mountReceptionSettings: mount order', () => {
     const { shell } = makeFakeShell();
     const host = mountReceptionSettings(baseOpts(page.host, modal.host, prompts.host, shell));
     page.click({ action: 'reception-extend', endpointId: 'ep-sched' });
-    expect(prompts.getHtml()).toContain('Extend endpoint');
+    expect(prompts.getHtml()).toContain('Give it more time');
     host.dispose();
   });
 });

@@ -4,6 +4,7 @@ import {
   WORK_ENTITY_KINDS, type WorkEntityKind,
 } from './work-entities.js';
 import type { RecordsPackRef } from './records.js';
+import { parseRecordsViewSettings, type RecordsViewSettings } from './records-view.js';
 import { parseTaskViewFilters, type TaskViewFilters } from './task-data-view.js';
 
 export const SAVED_DATA_VIEW_LIMIT = 100;
@@ -22,7 +23,7 @@ export type SavedDataViewDefinition =
     }
   | { tab: 'mail' | 'calendar' | 'files' | 'webhook'; collection_slug: string | null }
   | { tab: 'memory'; origin: 'all' | 'user_self' | 'contracted_user' | 'system' }
-  | { tab: 'records'; owner: RecordsPackRef | null; entity: string | null }
+  | ({ tab: 'records'; owner: RecordsPackRef | null; entity: string | null } & RecordsViewSettings)
   | { tab: 'today' | 'form_response' | 'annotation' | 'link' | 'shared' };
 
 export interface SavedDataView {
@@ -121,13 +122,21 @@ export const parseSavedDataViewDefinition = (value: unknown): SavedDataViewDefin
     return { tab, origin };
   }
   if (tab === 'records') {
-    if (!keysAre(value, ['tab', 'owner', 'entity']) || !locator(value.entity)) return null;
+    const keys = ['tab', 'owner', 'entity'];
+    if (Object.hasOwn(value, 'filters')) keys.push('filters');
+    if (Object.hasOwn(value, 'sort')) keys.push('sort');
+    if (!keysAre(value, keys) || !locator(value.entity)) return null;
+    const settings = parseRecordsViewSettings({
+      ...(Object.hasOwn(value, 'filters') ? { filters: value.filters } : {}),
+      ...(Object.hasOwn(value, 'sort') ? { sort: value.sort } : {}),
+    });
+    if (settings === null || (value.entity === null && Object.keys(settings).length > 0)) return null;
     if (value.owner === null) return value.entity === null ? { tab, owner: null, entity: null } : null;
     if (!isObject(value.owner) || !keysAre(value.owner, ['publisher', 'pack_slug'])) return null;
     const { publisher, pack_slug } = value.owner;
     if (typeof publisher !== 'string' || !locator(publisher)
       || typeof pack_slug !== 'string' || !locator(pack_slug)) return null;
-    return { tab, owner: { publisher, pack_slug }, entity: value.entity };
+    return { tab, owner: { publisher, pack_slug }, entity: value.entity, ...settings };
   }
   if (tab === 'today' || tab === 'form_response' || tab === 'annotation' || tab === 'link' || tab === 'shared') {
     return keysAre(value, ['tab']) ? { tab } : null;

@@ -537,6 +537,7 @@ describe('D-160 I-10 ratchet -- Slack / Telegram stay BYO leaf transports', () =
       'packages/chat/src/session-store.ts',
       'packages/messenger/src/index.ts',
       'packages/messenger/src/messenger-channel.ts',
+      'packages/transport/src/attachments.ts',
       'packages/transport/src/callback.ts',
       'packages/transport/src/discord.ts',
       'packages/transport/src/fit-text.ts',

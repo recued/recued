@@ -66,6 +66,27 @@ const buildHubspotDescriptor = (
 });
 
 describe('createWebhookPortHandler', () => {
+  it('shares concurrent admission and records replay success only after durable dispatch', async () => {
+    let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; });
+    let attempts = 0; let succeeds = false;
+    const descriptor = buildHubspotDescriptor('secret', { calls: 0 });
+    descriptor.dispatch = async () => { attempts += 1; await gate; return { ok: succeeds }; };
+    const handler = createWebhookPortHandler({ vendors: { hubspot: descriptor }, ledger: createIdempotencyLedger() });
+    const body = JSON.stringify([{ eventId: 'same-native-message' }]);
+    const request = () => buildReq({ url: '/v1/connection/webhook/hubspot/main', body,
+      headers: { 'x-hubspot-signature-v3': createHmac('sha256', 'secret').update(body).digest('hex') } });
+    const a = new FakeRes(); const b = new FakeRes();
+    const pending = [handler(request(), a as unknown as ServerResponse), handler(request(), b as unknown as ServerResponse)];
+    await new Promise(resolve => setTimeout(resolve, 10));
+    expect(attempts).toBe(1); expect(a.body).toBeNull(); expect(b.body).toBeNull();
+    release(); await Promise.all(pending); expect([a.statusCode, b.statusCode]).toEqual([502, 502]);
+    succeeds = true;
+    const c = new FakeRes(); await handler(request(), c as unknown as ServerResponse);
+    expect(c.statusCode).toBe(200); expect(attempts).toBe(2);
+    const d = new FakeRes(); await handler(request(), d as unknown as ServerResponse);
+    expect(json(d)).toEqual({ ok: true, deduped: true }); expect(attempts).toBe(2);
+  });
+
   it('vendor-agnostic 404 on unknown path (no body fingerprint)', async () => {
     const dispatched = { calls: 0 };
     const handler = createWebhookPortHandler({

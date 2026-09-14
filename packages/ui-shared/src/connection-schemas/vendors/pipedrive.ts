@@ -18,7 +18,7 @@ const PIPEDRIVE_FIELDS: readonly ConnectionField[] = [
     key: 'name',
     label: 'Name',
     type: 'identifier',
-    help: 'Lowercase identifier used in recipes (e.g. `pipedrive`).',
+    help: 'A short lower-case name you use in Recipes, such as `pipedrive`).',
     placeholder: 'pipedrive',
   },
   {
@@ -31,7 +31,7 @@ const PIPEDRIVE_FIELDS: readonly ConnectionField[] = [
     key: 'config.vendor',
     label: 'Vendor',
     type: 'text',
-    help: 'Pipedrive vendor identifier — locked at enrollment.',
+    help: 'Pipedrive sets this when you connect. You cannot change it.',
     placeholder: 'pipedrive',
     hidden: true,
   },
@@ -48,7 +48,7 @@ const PIPEDRIVE_FIELDS: readonly ConnectionField[] = [
     label: 'Auth Type',
     type: 'select',
     options: ['oauth2_refresh'],
-    help: 'Pipedrive uses OAuth 2.0 with refresh tokens.',
+    help: 'Pipedrive asks you to sign in, and Recued stays signed in for you.',
     hidden: true,
   },
   {

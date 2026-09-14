@@ -360,7 +360,7 @@ export const wireConfigEditorOverlay = (
     if (error !== null) {
       error.hidden = false;
       error.textContent = opts.confirmFailureCopy
-        ?? "Couldn't save changes. Your edits are still here. Try again.";
+        ?? "Recued could not save that. What you typed is still here. Try again.";
     }
     if (active === confirmButton) {
       confirmButton?.focus({ preventScroll: true });

@@ -20,6 +20,42 @@ const MANIFESTS = [
     output: action === 'delete' ? { deleted: 'deleted' } : { draft_id: 'draft_id', incarnation: 'incarnation',
       revision: 'revision', content: 'content', origin_contract_id: 'origin_contract_id', created_at: 'created_at', updated_at: 'updated_at' },
   })),
+  // D-264 — the fifth draft verb, and deliberately NOT part of the map above.
+  // Those four say "cannot send, schedule or approve" and touch nothing outside
+  // Recued; this one WRITES INTO THE OWNER'S MAILBOX, so it gets its own
+  // description rather than inheriting a claim that would be false for it.
+  {
+    "slug": "mail-draft-save-to-mailbox",
+    // ⛔ NOT `mcp_exposed`, unlike the four draft verbs above — and the omission
+    // is the deliberate act this field's own contract asks for ("fail-closed is
+    // the default; exposure is the deliberate act").
+    //
+    // Those four are local-only and say so; this one writes into the owner's
+    // mailbox, where the copy syncs to their devices and reads as something
+    // they wrote. `mail-send` — the other kernel verb that leaves Recued — is
+    // fenced the same way, grant or no grant, so exposing this one would make
+    // the mailbox reachable over MCP by the one door the send fence was built
+    // to close. Recipes reach it through the ordinary gate; the owner's own
+    // surfaces reach it directly. Open it later with evidence, not by default.
+    "name": "Save an email draft into the mailbox",
+    "description": "Copy a saved draft into the mail account's own Drafts folder, where it appears in the owner's mail app and syncs to their devices. This operation does NOT send: the message is parked, and sending it remains a separate action the owner takes. Re-exporting the same draft updates the mailbox copy where the provider allows it. Attachments stay in Recued.",
+    "author": "recued",
+    "kind": "storage",
+    "version": 1,
+    "category": "action",
+    "risk_tier": "write",
+    "tags": ["kernel", "mail", "draft"],
+    "input": {
+      "draft_id": null
+    },
+    "output": {
+      "draft_id": "draft_id",
+      "source_id": "source_id",
+      "saved_at": "saved_at",
+      "replaced": "replaced",
+      "warnings": "warnings"
+    }
+  },
   {
     "slug": "preapproval-request",
     "mcp_exposed": true,
@@ -923,6 +959,10 @@ const MANIFESTS = [
       "id": null,
       "cancelled_at": null
     },
+    "writes": {
+      "collection": "commitment",
+      "id_output_field": "commitment.id"
+    },
     "output": {
       "commitment": "commitment"
     }
@@ -958,6 +998,10 @@ const MANIFESTS = [
       "blocks_project_ids": null,
       "source_id": null,
       "evidence_blob": null
+    },
+    "writes": {
+      "collection": "commitment",
+      "id_output_field": "commitment.id"
     },
     "output": {
       "commitment": "commitment"
@@ -996,6 +1040,10 @@ const MANIFESTS = [
       "source_id": null,
       "evidence_blob": null
     },
+    "writes": {
+      "collection": "commitment",
+      "id_output_field": "commitment.id"
+    },
     "output": {
       "commitment": "commitment"
     }
@@ -1018,6 +1066,10 @@ const MANIFESTS = [
     "input": {
       "id": null,
       "fulfilled_at": null
+    },
+    "writes": {
+      "collection": "commitment",
+      "id_output_field": "commitment.id"
     },
     "output": {
       "commitment": "commitment"
@@ -1048,6 +1100,10 @@ const MANIFESTS = [
       "derivation_confidence": null,
       "blocks_task_ids": null,
       "blocks_project_ids": null
+    },
+    "writes": {
+      "collection": "commitment",
+      "id_output_field": "commitment.id"
     },
     "output": {
       "commitment": "commitment"
@@ -3610,6 +3666,10 @@ const MANIFESTS = [
       "source_id": null,
       "container_names": {}
     },
+    "writes": {
+      "collection": "note",
+      "id_output_field": "note.id"
+    },
     "output": {
       "note": "note"
     }
@@ -3632,6 +3692,10 @@ const MANIFESTS = [
     "input": {
       "id": null,
       "tombstone": null
+    },
+    "writes": {
+      "collection": "note",
+      "id_output_field": "id"
     },
     "output": {
       "ok": "ok",
@@ -3662,6 +3726,10 @@ const MANIFESTS = [
       "related_calendar_event_ids": null,
       "related_mail_thread_ids": null,
       "related_project_ids": null
+    },
+    "writes": {
+      "collection": "note",
+      "id_output_field": "note.id"
     },
     "output": {
       "note": "note"
@@ -3797,6 +3865,10 @@ const MANIFESTS = [
     "input": {
       "id": null
     },
+    "writes": {
+      "collection": "project",
+      "id_output_field": "project.id"
+    },
     "output": {
       "project": "project"
     }
@@ -3826,6 +3898,10 @@ const MANIFESTS = [
       "source_id": null,
       "container_names": {}
     },
+    "writes": {
+      "collection": "project",
+      "id_output_field": "project.id"
+    },
     "output": {
       "project": "project"
     }
@@ -3853,6 +3929,10 @@ const MANIFESTS = [
       "target_completion_at": null,
       "related_contact_ids": null,
       "parent_project_id": null
+    },
+    "writes": {
+      "collection": "project",
+      "id_output_field": "project.id"
     },
     "output": {
       "project": "project"
@@ -3882,6 +3962,10 @@ const MANIFESTS = [
       "counterparty_contact_id": null,
       "source_id": null
     },
+    "writes": {
+      "collection": "booking",
+      "id_output_field": "booking.id"
+    },
     "output": {
       "booking": "booking"
     }
@@ -3910,6 +3994,10 @@ const MANIFESTS = [
       "monetary_value": null,
       "counterparty_contact_id": null
     },
+    "writes": {
+      "collection": "booking",
+      "id_output_field": "booking.id"
+    },
     "output": {
       "booking": "booking"
     }
@@ -3932,6 +4020,10 @@ const MANIFESTS = [
     "input": {
       "id": null,
       "tombstone": null
+    },
+    "writes": {
+      "collection": "booking",
+      "id_output_field": "id"
     },
     "output": {
       "ok": "ok",
@@ -4267,6 +4359,10 @@ const MANIFESTS = [
       "source_id": null,
       "container_names": {}
     },
+    "writes": {
+      "collection": "task",
+      "id_output_field": "task.id"
+    },
     "output": {
       "task": "task"
     }
@@ -4289,6 +4385,10 @@ const MANIFESTS = [
     "input": {
       "id": null,
       "tombstone": null
+    },
+    "writes": {
+      "collection": "task",
+      "id_output_field": "id"
     },
     "output": {
       "ok": "ok",
@@ -4315,6 +4415,10 @@ const MANIFESTS = [
       "id": null,
       "done": null,
       "completed_at": null
+    },
+    "writes": {
+      "collection": "task",
+      "id_output_field": "task.id"
     },
     "output": {
       "task": "task"
@@ -4349,6 +4453,10 @@ const MANIFESTS = [
       "parent_project_id": null,
       "blocks_task_ids": null,
       "source_extension_blob": null
+    },
+    "writes": {
+      "collection": "task",
+      "id_output_field": "task.id"
     },
     "output": {
       "task": "task"

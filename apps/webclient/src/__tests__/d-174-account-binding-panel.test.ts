@@ -278,7 +278,7 @@ describe('D-174 account binding panel — status states', () => {
         csrfToken: 'csrf',
       })),
       mintBindingToken: vi.fn(async () => {
-        throw new Error('Could not mint binding token.');
+        throw new Error('Recued could not make the link token.');
       }),
     });
     await mount.whenLoaded();
@@ -287,7 +287,7 @@ describe('D-174 account binding panel — status states', () => {
     await mount.connect();
 
     expect(mount.viewState()).toBe('connected-no-server');
-    expect(textOf(host)).toContain('Connected, server not bound');
+    expect(textOf(host)).toContain('Signed in, but your server is not hooked up');
     mount.dispose();
   });
 
@@ -391,7 +391,7 @@ describe('D-174 account binding panel — connect flow', () => {
     expect(opts.mintBindingToken).toHaveBeenCalledTimes(1);
     expect(runBind).toHaveBeenCalledTimes(1);
     expect(mount.getState().bindingStatus?.status).toBe('bound');
-    expect(mount.getState().actionMessage).toContain('Server bound');
+    expect(mount.getState().actionMessage).toContain('Your server is hooked up');
     mount.dispose();
   });
 
@@ -418,7 +418,7 @@ describe('D-174 account binding panel — connect flow', () => {
     await mount.connect();
 
     expect(mount.getState().bindingStatus?.binding?.account_id).toBe('acct-2');
-    expect(mount.getState().actionMessage).toContain('rebound');
+    expect(mount.getState().actionMessage).toContain('now belongs to this recued.com account');
     mount.dispose();
   });
 
@@ -472,7 +472,7 @@ describe('D-174 account binding panel — connect flow', () => {
     mount.dispose();
   });
 
-  it('keeps Confirm rebind focusable, busy, and single-flight', async () => {
+  it('keeps Yes, move it focusable, busy, and single-flight', async () => {
     let resolveRebind!: (value: AccountBindResult) => void;
     const rebind = new Promise<AccountBindResult>((resolve) => {
       resolveRebind = resolve;
@@ -533,7 +533,7 @@ describe('D-174 account binding panel — connect flow', () => {
     mount.cancelRebind();
     expect(mount.viewState()).toBe('bound-active');
     expect(findByAttr(host, 'role', 'alertdialog')).toBeNull();
-    expect(mount.getState().actionMessage).toBe('Rebind cancelled.');
+    expect(mount.getState().actionMessage).toBe('Nothing was moved.');
     expect(runBind).toHaveBeenCalledTimes(1);
     mount.dispose();
   });
@@ -559,7 +559,7 @@ describe('D-174 account binding panel — unbind and Pro status', () => {
       .toBe('account-binding-unbind-description');
     expect(findByAttr(host, ACCOUNT_BINDING_CONFIRM_UNBIND_ATTR)?.textContent)
       .toBe('Disconnect server');
-    expect(textOf(confirmation!)).toContain('Your browser stays signed in');
+    expect(textOf(confirmation!)).toContain('This browser stays signed in');
     expect(opts.runUnbind).not.toHaveBeenCalled();
 
     findByAttr(host, ACCOUNT_BINDING_CANCEL_UNBIND_ATTR)?.click();
@@ -614,7 +614,7 @@ describe('D-174 account binding panel — unbind and Pro status', () => {
     expect(opts.runUnbind).toHaveBeenCalledTimes(1);
     expect(mount.hasInFlightWork()).toBe(false);
     expect(findByAttr(host, ACCOUNT_BINDING_ACTION_MESSAGE_ATTR)).not.toBeNull();
-    expect(textOf(host)).toContain('No binding was stored');
+    expect(textOf(host)).toContain('This server was not hooked up');
     mount.dispose();
   });
 
@@ -702,7 +702,7 @@ describe('D-174 account binding panel — unbind and Pro status', () => {
     expect(findByAttr(host, ACCOUNT_BINDING_CONNECT_ATTR)).toBeNull();
     findByAttr(host, ACCOUNT_BINDING_RETRY_ATTR)?.click();
     const retry = findByAttr(host, ACCOUNT_BINDING_RETRY_ATTR);
-    expect(retry?.textContent).toBe('Retrying account status…');
+    expect(retry?.textContent).toBe('Checking your account again…');
     expect(retry?.getAttribute('aria-disabled')).toBe('true');
     expect(retry?.getAttribute('aria-busy')).toBe('true');
     expect(retry?.disabled).toBe(false);
@@ -734,7 +734,7 @@ describe('D-174 account binding panel — unbind and Pro status', () => {
     await mount.whenLoaded();
 
     expect(textOf(host)).toContain(
-      'Couldn’t reach recued.com. Your local Recued server is still connected.',
+      'Recued could not reach recued.com. Your own server is still connected.',
     );
     expect(textOf(host)).not.toContain('Failed to fetch');
     mount.dispose();
@@ -776,7 +776,7 @@ describe('R27 account panel — Free-account card', () => {
     expect(findByAttr(host, ACCOUNT_BINDING_FREE_HANDLE_ATTR)).toBeNull();
     expect(findByAttr(host, ACCOUNT_BINDING_FREE_CLAIM_ATTR)).not.toBeNull();
     const link = findByAttr(host, ACCOUNT_BINDING_PUBLISHING_LINK_ATTR);
-    expect(link?.textContent).toBe('Claim your handle in the dashboard');
+    expect(link?.textContent).toBe('Pick your name in the dashboard');
     expect(link?.getAttribute('href')).toBe('https://dashboard.example/');
     expect(link?.className).toContain('rx-btn-secondary');
     mount.dispose();
@@ -973,7 +973,7 @@ describe('R27 account panel — recued.com session sign-out', () => {
     expect(runSignOut).toHaveBeenCalledTimes(1);
     expect(mount.hasInFlightWork()).toBe(false);
     expect(mount.getState().actionMessage).toContain('Signed out of recued.com');
-    expect(mount.getState().actionMessage).toContain('pairing is unchanged');
+    expect(mount.getState().actionMessage).toContain('Your server is still paired');
     expect(findByAttr(host, ACCOUNT_BINDING_SIGNOUT_ATTR)).toBeNull();
     expect(findByAttr(host, ACCOUNT_BINDING_SESSION_ATTR)).toBeNull();
     mount.dispose();
@@ -1029,8 +1029,8 @@ describe('R27 account panel — Pro lifecycle line', () => {
     ['entitled', 'Pro — active'],
     ['not_entitled', 'Free account'],
     ['unbound', 'No account connected'],
-    ['pending', 'Checking subscription'],
-    ['unavailable', 'Status unavailable'],
+    ['pending', 'Checking what you pay for'],
+    ['unavailable', 'Recued cannot tell'],
   ];
 
   for (const [entitlement, label] of cases) {

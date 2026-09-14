@@ -921,7 +921,7 @@ describe('D-149 § A.10 — mountReceptionPageHost: open-templates forward', () 
       getTemplates: () => [makeTemplate(TEMPLATE_REF_A, 'Client inquiry')],
     });
     page.click({ action: 'reception-open-templates' });
-    // The gallery's intake section heading (the mount renders "Intake forms";
+    // The gallery's intake section heading (the mount renders "Let people send you answers";
     // this assertion predated that copy + had drifted to a stale string).
     expect(modal.getHtml()).toContain('Intake forms');
     expect(modal.getHtml()).toContain('Client inquiry');

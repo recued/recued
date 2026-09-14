@@ -542,6 +542,11 @@ export const composeMailStack = (
       if (full) await startLive(full);
     },
     onDeleted: (slug) => stopLive(slug),
+    // D-264 — the listing's draft axis, answered by the running collection
+    // rather than re-derived from config/scopes at the rpc layer. A slug with
+    // no live collection (never started, auth broken, stopped) returns
+    // `undefined` and the row reports `draft_capable: false`.
+    draftCapable: (slug) => live.get(slug)?.draftCapable,
   };
 
   const startAll = async (): Promise<void> => {

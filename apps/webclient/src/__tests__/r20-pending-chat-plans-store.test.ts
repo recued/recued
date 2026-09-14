@@ -430,7 +430,7 @@ describe('durable pending Chat-plans store', () => {
     expect(pendingChatPlanResolutionCopy(store.latestResolution()!)).toEqual({
       title: 'Approval updated: mail-send',
       detail:
-        'This action is no longer waiting for your decision. Open Chat to see its current state.',
+        'This is not waiting for you any more. Open Chat to see where it got to.',
       linkLabel: 'Open Chat',
     });
 

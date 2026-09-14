@@ -719,9 +719,9 @@ describe('D-145 PA10 follow-on — install dialog', () => {
     const heading = dialog!.children.find((c) => c.id === labelledby);
     expect(heading).not.toBeUndefined();
     const dialogCopy = collectTextContent(dialog!);
-    expect(dialogCopy).toContain('Pack setup');
+    expect(dialogCopy).toContain('Setting up this Pack');
     expect(dialogCopy).toContain(
-      'Review what this pack adds, then choose any connection and access it should receive.',
+      'Look at what this Pack adds, then choose what it may connect to and what it may do.',
     );
   });
 
@@ -805,10 +805,10 @@ describe('D-145 PA10 follow-on — install dialog', () => {
       'removed',
     ]);
     const copy = collectTextContent(review!);
-    expect(copy).toContain('Global operation rulings to review');
+    expect(copy).toContain('Rules that apply everywhere');
     expect(copy).toContain('Owner risk: admin');
     expect(copy).toContain('Pack approval: ask');
-    expect(copy).toContain('Removed operations keep their ruling stored but inactive');
+    expect(copy).toContain('your rule for it is kept but does nothing');
     expect(findByAttr(host, PACKS_DIALOG_INSTALL_BTN_ATTR)?.textContent).toBe('Update');
   });
 
@@ -879,7 +879,15 @@ describe('D-145 PA10 follow-on — install dialog', () => {
     expect(review).not.toBeNull();
     expect(collectTextContent(review!)).toContain('Version 2 → 3');
     expect(collectTextContent(review!)).toContain('12 rows');
-    expect(collectTextContent(review!)).toContain('Potentially destructive migration mappings');
+    // ⛔ BYTES AT HUMAN SCALE. This read `4096 logical bytes` and
+    // `4096/1000000 bytes · Global 8192/10000000 bytes (+1024 reserved)` —
+    // unseparated raw counts. Same formatter as the Records explorer's quota
+    // lines, which show the same ceilings one screen later.
+    expect(collectTextContent(review!)).toContain('4 KB logical');
+    expect(collectTextContent(review!)).toContain('4 KB/977 KB');
+    expect(collectTextContent(review!)).toContain('8 KB/9.5 MB');
+    expect(collectTextContent(review!)).toContain('(+1 KB reserved)');
+    expect(collectTextContent(review!)).toContain('These changes could lose things');
     expect(collectTextContent(review!)).toContain('2 unacknowledged events');
     expect(findAllByAttr(review!, PACKS_DIALOG_RECORDS_REVIEW_CHANGE_ATTR)).toHaveLength(1);
     expect(findAllByAttr(review!, PACKS_DIALOG_RECORDS_REVIEW_DESTRUCTIVE_ATTR)).toHaveLength(1);
@@ -1012,7 +1020,7 @@ describe('D-145 PA10 follow-on — install rpc', () => {
     await mount.whenLoaded();
     mount.clickInstall('test-pack');
     await mount.clickConfirmInstall();
-    expect(mount.getDialogError()).toContain('required permission was not granted');
+    expect(mount.getDialogError()).toContain('you did not allow something it needs');
     // Dialog stays open
     expect(mount.getDialogOpenFor()).toBe('test-pack');
   });
@@ -1036,7 +1044,7 @@ describe('D-145 PA10 follow-on — install rpc', () => {
     mount.clickInstall('test-pack');
     await mount.clickConfirmInstall();
     expect(mount.getDialogError()).toBe(
-      'Install rejected: new_code_v2. new server detail',
+      'Recued did not install it: new_code_v2. new server detail',
     );
   });
 

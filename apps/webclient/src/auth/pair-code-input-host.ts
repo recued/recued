@@ -312,29 +312,29 @@ export type PairCodeInputErrorCode =
  *  the structured `data-error` value on the status element; this map
  *  is what renders to the human. */
 export const PAIR_CODE_INPUT_ERROR_COPY: Readonly<Record<PairCodeInputErrorCode, string>> = {
-  pair_code_input_no_server_url: 'Enter the URL your recued-server is reachable at.',
+  pair_code_input_no_server_url: 'Type the web address where your Recued server can be reached.',
   pair_code_input_no_input:
-    'Enter your 24-word recovery key, or a pairing code from the server terminal, or both.',
+    'Type your 24-word recovery key, or a pairing code from the server terminal. You can use both.',
   pair_code_input_invalid_recovery_key:
-    'All 24 words are present, but they do not form a valid recovery key. Check for a misspelled, missing, or duplicated word.',
+    'All 24 words are there, but they do not make a working recovery key. Look for a word that is misspelled, missing, or typed twice.',
   pair_code_input_transport_failed:
-    "Couldn't reach your recued-server. Check the URL and that the server is running, then try again.",
+    "Recued could not reach your server. Check the address, and check the server is switched on. Then try again.",
   pair_code_input_blocked_by_browser:
-    'This browser blocked the request: this page is secure (https) but that '
-    + 'server address is not. Open the webclient from the server itself — its '
-    + 'own address ending in /webclient/ — or give the server a domain and '
-    + 'certificate and use its https address.',
+    'Your browser blocked this. The page uses https, but that '
+    + 'server address does not. Open Recued from the server itself. That is its '
+    + 'own address, ending in /webclient/. Or give the server its own name and '
+    + 'certificate, then use its https address.',
   // Reserved for a reply that isn't shaped like a recued-server's at all
   // (non-JSON, or a 200 with no realm token) — there, "check the URL" is
   // genuinely the right advice. A server that answered with a proper
   // error block gets `pair_code_input_server_refused` instead.
   pair_code_input_server_unknown_error:
-    'The server returned an unexpected response. Check the URL and try again.',
+    'Your server sent back something Recued did not expect. Check the address and try again.',
   pair_code_input_server_refused: PAIR_SERVER_REFUSED_COPY,
   pair_code_input_already_paired:
-    'Another tab finished pairing while this form was open. Reload to use the existing pair, or clear this browser from Settings to pair a new server.',
+    'Another tab paired this browser while this form was open. Reload the page to use it. To pair a different server, clear this browser in Settings first.',
   pair_code_input_finalize_interrupted:
-    'The server paired this browser, but saving access here was interrupted.',
+    'Your server paired this browser, but saving the sign-in here was cut short.',
   // The server half is SPREAD, not restated. Restating it is what let the
   // webclient and the Bridge drift from each other and from the server.
   ...PAIR_SERVER_ERROR_COPY,
@@ -347,9 +347,9 @@ export const PAIR_CODE_INPUT_ERROR_COPY: Readonly<Record<PairCodeInputErrorCode,
  *  "check your written copy" copy, which makes no sense for a key we
  *  just generated. */
 export const PAIR_CODE_INPUT_GENERATE_ALREADY_ENROLLED_COPY =
-  "This server already has a recovery key. Enter your existing 24-word key below to connect.";
+  "This server already has a recovery key. Type your 24 words below to connect.";
 export const PAIR_CODE_INPUT_REPLACEMENT_ALREADY_ENROLLED_COPY =
-  'This current server is already set up, so Recued did not replace its recovery key. Confirm with its administrator before entering the existing key that belongs to this server.';
+  'This server is already set up, so Recued kept its recovery key. Check with whoever looks after it before you type the key that belongs to this server.';
 
 // ════════════════════════════════════════════════════════════════
 // Pure submit
@@ -366,14 +366,22 @@ const codeShaped = (raw: string | undefined): string | null =>
   raw !== undefined && /^[a-z0-9_]{1,64}$/i.test(raw) ? raw : null;
 
 const interruptedFinalizeCopy = (error: unknown): string => {
+  // ⛔ THESE TWO PATTERNS ARE A CONTRACT WITH `pair-code-success.ts`'s COPY.
+  // This path is RECOVERABLE — the user retries in place — so the reload
+  // instruction that copy carries must be stripped, or we tell them to do the
+  // one thing that loses the recoverable state. A copy edit that does not
+  // update these regexes leaves "Reload the page" in the status and reads as a
+  // wording change while being a behaviour change. Pinned by the
+  // `.not.toContain('Reload')` assertion in the d-156 host suite, which is what
+  // caught it during the plain-English sweep.
   const detail = (error instanceof Error ? error.message : String(error))
-    .replace(/^Pairing succeeded,\s*but\s*/i, '')
-    .replace(/\s*Reload and try again\.?\s*$/i, '')
+    .replace(/^Pairing worked,\s*but\s*/i, '')
+    .replace(/\s*Reload the page and try again\.?\s*$/i, '')
     .replace(/[.!]\s*$/, '')
     .trim();
   return `${detail.length > 0
-    ? `Saving access here was interrupted: ${detail}.`
-    : 'Saving access here was interrupted.'} Try again below. Recued will finish the browser save without sending another pairing request.`;
+    ? `Saving the sign-in here was cut short: ${detail}.`
+    : 'Saving the sign-in here was cut short.'} Try again below. Recued will finish saving here. It will not ask to pair again.`;
 };
 
 export interface PairCodeInputCommitOptions {
@@ -471,17 +479,17 @@ const buildRecoveryKeyRejectionDiagnostic = (
   const originComparison = previousOrigin === null
     ? 'unavailable'
     : currentOrigin === previousOrigin
-      ? 'matches previously paired origin'
-      : 'differs from previously paired origin';
+      ? 'matches the server this browser paired with before'
+      : 'is different from the server this browser paired with before';
   return [
-    'Recued recovery-key mismatch',
-    `Format-valid key rejections in this tab: ${attemptCount}`,
-    `Latest server origin tried: ${currentOrigin}`,
-    `Previously paired server origin: ${previousOrigin ?? 'unavailable in this recovery form'}`,
-    `Origin comparison: ${originComparison}`,
+    'The recovery key does not match',
+    `Keys that looked right but were refused, in this tab: ${attemptCount}`,
+    `Last server address tried: ${currentOrigin}`,
+    `Server address paired with before: ${previousOrigin ?? 'not known on this screen'}`,
+    `Do the addresses match: ${originComparison}`,
     'Server response code: recovery_key_invalid',
-    'Requested owner check: confirm this server origin and whether the server was replaced or reset; do not request the recovery key',
-    'Excluded: recovery key, pairing code, page route, Chat draft, bearer, and raw server text',
+    'What to ask the server owner: is this the right address, and was the server replaced or reset? Do not ask them for the recovery key.',
+    'Left out: your recovery key, pairing code, which page you were on, your Chat message, your sign-in, and anything the server said word for word',
   ].join('\n');
 };
 
@@ -3086,7 +3094,7 @@ export const mountPairCodeInputHost = (
         pendingFocus = 'submit';
         setState({
           submitting: false,
-          restoreNotice: `Could not start the restore: ${err instanceof Error ? err.message : String(err)}`,
+          restoreNotice: `Recued could not start putting your backup back: ${err instanceof Error ? err.message : String(err)}`,
         });
       }
       return;
@@ -3177,8 +3185,8 @@ export const mountPairCodeInputHost = (
               takeoverRecoveryOwner: coordinatedRecoveryAttempt,
               error: {
                 copy: finalizeRetry
-                  ? `Could not check this browser's saved access before finishing: ${err instanceof Error ? err.message : String(err)}. Try again; the successful pairing response is still held in this tab.`
-                  : `Pre-pair check failed: ${err instanceof Error ? err.message : String(err)}`,
+                  ? `Recued could not check this browser’s saved sign-in before finishing: ${err instanceof Error ? err.message : String(err)}. Try again; the successful pairing response is still held in this tab.`
+                  : `The check before pairing failed: ${err instanceof Error ? err.message : String(err)}`,
                 code: finalizeRetry
                   ? 'pair_code_input_finalize_interrupted'
                   : 'pair_code_input_server_unknown_error',
@@ -3384,8 +3392,8 @@ export const mountPairCodeInputHost = (
         takeoverRecoveryOwner: coordinatedRecoveryAttempt,
         error: {
           copy: finalizeRetry
-            ? `Could not resume the browser save: ${err instanceof Error ? err.message : String(err)}. Try again; Recued still will not send another pairing request.`
-            : `Could not coordinate pairing in this browser: ${err instanceof Error ? err.message : String(err)}. Try again.`,
+            ? `Recued could not carry on saving in this browser: ${err instanceof Error ? err.message : String(err)}. Try again; Recued still will not send another pairing request.`
+            : `Recued could not sort out pairing between your tabs: ${err instanceof Error ? err.message : String(err)}. Try again.`,
           code: finalizeRetry
             ? 'pair_code_input_finalize_interrupted'
             : 'pair_code_input_server_unknown_error',
@@ -3415,7 +3423,7 @@ export const mountPairCodeInputHost = (
           submitting: false,
           siblingTakeoverOwnsAttempt: false,
           error: {
-            copy: `Paired, but post-pair startup failed: ${err instanceof Error ? err.message : String(err)}`,
+            copy: `Paired, but Recued could not start afterwards: ${err instanceof Error ? err.message : String(err)}`,
             code: 'pair_code_input_server_unknown_error',
           },
         });
@@ -3565,39 +3573,39 @@ const isRecoveryKeyCorrectionError = (s: PairCodeInputState): boolean =>
 
 const submitBlockedReason = (s: PairCodeInputState): string | null => {
   if (s.recoveryPaused) {
-    return 'Recovery is paused. Return with the original recovery key or review the server address before trying again.';
+    return 'Recued has paused. Come back with the original recovery key, or check the server address, before trying again.';
   }
   if (s.replacementServerStage === 'details') {
     if (s.serverUrl.trim().length === 0) {
-      return 'Enter the current server URL to continue.';
+      return 'Type this server’s web address to carry on.';
     }
     if (safeServerOrigin(s.serverUrl) === null) {
-      return 'Enter a full http:// or https:// server URL from the current server.';
+      return 'Type the whole address. It starts with http:// or https://.';
     }
     if (s.pairingCode.trim().length === 0) {
-      return 'Enter a fresh pairing code from the current server terminal.';
+      return 'Type a new pairing code from this server’s terminal.';
     }
     return null;
   }
   if (s.replacementServerStage === 'review') {
-    return 'Confirm the reviewed current server or change its details.';
+    return 'Say yes to the server you checked, or change its details.';
   }
   if (s.replacementServerStage === 'not_fresh') {
-    return 'Confirm that you have this current server’s existing recovery key, or review a different server.';
+    return 'Say yes if you have this server’s own recovery key. If not, check a different server.';
   }
   if (s.siblingRecoveryOwnerElsewhere) {
     if (!s.siblingTakeoverCoordinationAvailable) {
-      return 'Continue in the tab showing the reconnect error. If it stops, use only one remaining reconnect tab.';
+      return 'Carry on in the tab showing the reconnect error. If that tab stops, use just one other reconnect tab.';
     }
     return s.siblingRecoverySuccessorElsewhere
-      ? 'Recued chose another open tab to continue recovery. This tab will stay paused unless that successor stops responding.'
-      : 'Continue in the tab showing the reconnect error. Recued will choose one safe successor if that tab stops responding.';
+      ? 'Recued picked another open tab to carry on. This tab stays paused unless that tab stops answering.'
+      : 'Carry on in the tab showing the reconnect error. If it stops answering, Recued will pick one other tab.';
   }
   if (s.siblingSuccessionInProgress) {
-    return 'Another tab is reconnecting now. This tab will restore its retry if that attempt stops.';
+    return 'Another tab is reconnecting now. If it stops, this tab will pick the job back up.';
   }
   if (s.submitting) {
-    if (s.finalizePending) return 'Browser access is being saved.';
+    if (s.finalizePending) return 'Your sign-in is being saved.';
     if (
       s.reauthOnly
       && s.interruptedTransition
@@ -3605,10 +3613,10 @@ const submitBlockedReason = (s: PairCodeInputState): string | null => {
       && !s.finalizeRestarted
     ) {
       return !s.siblingTakeoverCoordinationAvailable
-        ? 'This tab is checking saved access and reconnecting. Keep other reconnect forms idle.'
+        ? 'This tab is checking your saved sign-in and reconnecting. Leave other reconnect screens alone.'
         : s.siblingTakeoverOwnsAttempt
-        ? 'This tab is reconnecting and saving browser access.'
-        : 'Recued is choosing one reconnecting tab and checking shared browser access.';
+        ? 'This tab is reconnecting and saving your sign-in.'
+        : 'Recued is picking one reconnecting tab and checking the sign-in they share.';
     }
     return s.reauthOnly
       ? 'Reconnection is in progress.'
@@ -3623,68 +3631,68 @@ const submitBlockedReason = (s: PairCodeInputState): string | null => {
     && !s.siblingTakeoverReady
     && !s.finalizeRestarted
   ) {
-    return 'Waiting for the other tab. Recued will offer a safe takeover if it does not finish.';
+    return 'Waiting for the other tab. If it does not finish, Recued will offer to take over here.';
   }
   if (isRecoveryKeyRejection(s)) {
-    return 'Review the server address or re-enter the recovery key before retrying.';
+    return 'Check the server address, or type the recovery key again, before trying once more.';
   }
   if (isMalformedRecoveryKeyError(s)) {
-    return 'Correct the recovery key before retrying.';
+    return 'Fix the recovery key, then try again.';
   }
   const filled = s.recoveryWords.filter((w) => w.length > 0).length;
 
   if (s.recoveryMode === 'restore') {
     if (s.serverUrl.trim().length === 0) {
-      return 'Enter the server URL to continue.';
+      return 'Type the server’s web address to carry on.';
     }
     // A fresh server is restored into via code-only pairing, which always
     // needs the console pairing code.
     if (s.pairingCode.trim().length === 0) {
-      return 'Enter the pairing code from your server console to continue.';
+      return 'Type the pairing code from your server terminal to carry on.';
     }
     if (s.restoreFile === null) {
       return 'Choose the backup file to restore.';
     }
     if (filled < 24) {
-      return `Enter the backup's 24-word recovery key to continue (${filled}/24 words).`;
+      return `Type the backup’s 24-word recovery key to carry on (${filled}/24 words).`;
     }
     // BIP39-check before the (potentially multi-GB) upload: the orchestrator
     // uploads BEFORE it validates the key, so catching an obvious typo here
     // saves a wasted round-trip. A valid-but-wrong key still bounces at the
     // server-side dry-run.
     if (!isValidRecoveryKey(fromRecoveryWords(s.recoveryWords))) {
-      return 'All 24 words are present, but they do not form a valid recovery key. Check for a misspelled, missing, or duplicated word.';
+      return 'All 24 words are there, but they do not make a working recovery key. Look for a word that is misspelled, missing, or typed twice.';
     }
     return null;
   }
 
   if (s.recoveryMode === 'generate') {
     if (s.serverUrl.trim().length === 0) {
-      return 'Enter the server URL to continue.';
+      return 'Type the server’s web address to carry on.';
     }
     if (s.generateStage !== 'challenging' || !s.generatedKey) {
-      return 'Generate your recovery key and confirm it to continue.';
+      return 'Make your recovery key and type it back to carry on.';
     }
     // First-pair enrollment always needs the console pairing code.
     if (s.pairingCode.trim().length === 0) {
-      return 'Enter the pairing code from your server console to continue.';
+      return 'Type the pairing code from your server terminal to carry on.';
     }
     if (filled < 24) {
-      return `Re-enter your written recovery key to confirm (${filled}/24 words).`;
+      return `Type your written recovery key again to check it (${filled}/24 words).`;
     }
     if (normalizeRecoveryKey(fromRecoveryWords(s.recoveryWords)) !==
         normalizeRecoveryKey(s.generatedKey)) {
-      return "The re-typed words don't match — check your written copy.";
+      return "Those words do not match. Check what you wrote down.";
     }
     return null;
   }
 
   // enter mode (unchanged)
   if (s.serverUrl.trim().length === 0) {
-    return 'Enter the server URL and paste the 24-word recovery key to continue.';
+    return 'Type the server’s web address and paste the 24-word recovery key to carry on.';
   }
   if (filled < 24) {
-    return `Paste the 24-word recovery key to continue (${filled}/24 words).`;
+    return `Paste the 24-word recovery key to carry on (${filled}/24 words).`;
   }
   return null;
 };
@@ -3753,18 +3761,18 @@ const renderForm = (
     submitLabel = 'Continuing in another tab…';
   } else if (state.finalizePending) {
     submitLabel = state.submitting
-      ? 'Saving access…'
-      : 'Finish saving access';
+      ? 'Saving your sign-in…'
+      : 'Finish saving your sign-in';
   } else if (state.replacementServerStage === 'details') {
-    submitLabel = 'Review current server';
+    submitLabel = 'Check this server';
   } else if (state.replacementServerStage === 'fresh_key') {
     submitLabel = state.submitting
-      ? 'Verifying current server…'
-      : 'Pair with this fresh server';
+      ? 'Checking this server…'
+      : 'Pair with this new server';
   } else if (state.replacementServerStage === 'existing_key') {
     submitLabel = state.submitting
-      ? 'Verifying current server…'
-      : 'Verify and pair current server';
+      ? 'Checking this server…'
+      : 'Check this server and pair with it';
   } else if (isRestore) {
     submitLabel = state.submitting
       ? 'Starting restore…'
@@ -3775,13 +3783,13 @@ const renderForm = (
         ? 'Reconnecting from this tab…'
         : state.siblingTakeoverOwnsAttempt
         ? 'Reconnecting from this tab…'
-        : 'Choosing one tab…'
+        : 'Picking one tab…'
       : state.reauthOnly
         ? 'Reconnecting…'
         : 'Pairing…';
   } else if (recoveryOwnerHere) {
     submitLabel = recoverySuccessorHere
-      ? 'Continue recovery here'
+      ? 'Carry on here'
       : 'Retry in this tab';
   } else if (siblingTakeover) {
     submitLabel = state.siblingTakeoverReady
@@ -3827,12 +3835,12 @@ const renderForm = (
     && normalizeServerUrl(context.previouslyPairedServerUrl)
       !== normalizeServerUrl(state.serverUrl);
   const repeatedIdentityCopy = previouslyPairedServerOrigin === null
-    ? 'This recovery form has no previously paired server address it can safely compare. Confirm the intended address on the computer running Recued.'
+    ? 'This screen has no earlier server address to compare against. Check the address you want on the computer running Recued.'
     : currentServerOrigin === previouslyPairedServerOrigin
       ? exactSavedAddressDiffers
         ? `The scheme, hostname, and port match the server this browser used before recovery: <code>${e(previouslyPairedServerOrigin)}</code>. The full address is different, so restoring the previously paired address can rule out a path or spelling difference.`
         : `This address matches the scheme, hostname, and port this browser used before recovery: <code>${e(previouslyPairedServerOrigin)}</code>. If the server was replaced or reset at that address, its original saved key may no longer match.`
-      : `This form is trying <code>${e(currentServerOrigin ?? 'an unrecognized address')}</code>, but this browser previously used <code>${e(previouslyPairedServerOrigin)}</code>. The scheme, hostname, or port is different.`;
+      : `This form is trying <code>${e(currentServerOrigin ?? 'an address Recued does not know')}</code>, but this browser previously used <code>${e(previouslyPairedServerOrigin)}</code>. The scheme, hostname, or port is different.`;
   const showRecoveryDiagnostic =
     showRepeatedRecoveryTriage
     || (state.recoveryPaused && !state.recoveryPausedFromReentry);
@@ -3847,24 +3855,24 @@ const renderForm = (
     ? 'Copying the reviewed summary…'
     : context.recoveryDiagnosticCopyState === 'copied'
       ? state.recoveryPaused
-        ? 'Safe owner handoff copied. Nothing was sent automatically.'
-        : 'Safe diagnostic copied. Nothing was sent automatically.'
+        ? 'Copied, with nothing private in it. Recued sent nothing by itself.'
+        : 'Copied, with nothing private in it. Recued sent nothing by itself.'
       : context.recoveryDiagnosticCopyState === 'unavailable'
-        ? 'Copy is unavailable here. The safe summary is focused so you can select and copy it manually.'
+        ? 'Copying is not available here. The summary is selected, so you can copy it yourself.'
         : '';
   const recoveryDiagnosticCopyLabel = context.recoveryDiagnosticCopyInFlight
     ? 'Copying…'
     : context.recoveryDiagnosticCopyState === 'copied'
       ? state.recoveryPaused
-        ? 'Copy owner handoff again'
-        : 'Copy diagnostic again'
+        ? 'Copy the owner’s notes again'
+        : 'Copy the details again'
       : state.recoveryPaused
-        ? 'Copy safe owner handoff'
-        : 'Copy safe diagnostic';
+        ? 'Copy notes for the server owner'
+        : 'Copy the details';
   const recoveryDiagnosticPanel = !showRecoveryDiagnostic
     ? ''
     : `<details class="pair-code-input-recovery-diagnostic" ${PAIR_CODE_INPUT_RECOVERY_DIAGNOSTIC_ATTR} aria-busy="${context.recoveryDiagnosticCopyInFlight}"${state.recoveryPaused || context.recoveryDiagnosticCopyInFlight || context.recoveryDiagnosticCopyState !== 'idle' ? ' open' : ''}>
-        <summary>${state.recoveryPaused ? 'Safe details for the server owner' : 'Details to share with the server owner'}</summary>
+        <summary>${state.recoveryPaused ? 'Details for the server owner, with nothing private in them' : 'Details to show the server owner'}</summary>
         <div class="pair-code-input-recovery-diagnostic-body">
           <p id="${PAIR_CODE_INPUT_RECOVERY_DIAGNOSTIC_PRIVACY_ID}">Nothing is sent automatically. Review before sharing. This includes only server origins, this tab’s attempt count, the fixed response code, and the requested owner check; it leaves out the recovery key, pairing code, page, Chat draft, credentials, and raw server text.</p>
           <pre ${PAIR_CODE_INPUT_RECOVERY_DIAGNOSTIC_SUMMARY_ATTR} tabindex="0" aria-label="Privacy-safe recovery diagnostic summary">${e(recoveryDiagnostic)}</pre>
@@ -3884,7 +3892,7 @@ const renderForm = (
           <div class="pair-code-input-recovery-triage-paths">
             <section class="pair-code-input-recovery-triage-path" aria-labelledby="${PAIR_CODE_INPUT_RECOVERY_TRIAGE_SERVER_TITLE_ID}">
               <h4 id="${PAIR_CODE_INPUT_RECOVERY_TRIAGE_SERVER_TITLE_ID}">Check the server</h4>
-              <p>On the computer running the intended server, run <code>recued pair</code>. Compare the full scheme, hostname, and port. If someone else manages it, ask them to confirm only that address — never send them your recovery key.${exactSavedAddressDiffers ? ' Using the previously paired address keeps the 24 words here and clears the pairing code because codes belong to one server.' : ''}</p>
+              <p>On the computer running the intended server, run <code>recued pair</code>. Compare the full scheme, hostname, and port. If someone else manages it, ask them to confirm only that address — never send them your recovery key.${exactSavedAddressDiffers ? ' Using the address you paired with before keeps your 24 words here. It clears the pairing code, because each code belongs to one server.' : ''}</p>
               <div class="pair-code-input-recovery-correction-actions">
                 <button type="button" data-action="${PAIR_CODE_INPUT_REVIEW_REJECTED_SERVER_ACTION}">Review server address</button>
                 ${exactSavedAddressDiffers
@@ -3918,10 +3926,10 @@ const renderForm = (
         </section>`;
 
   const pausedWorkCopy = reauthRecovery === undefined
-    ? 'Keep this tab open if you plan to return with the original key.'
+    ? 'Keep this tab open if you are going to come back with the original key.'
     : reauthRecovery.chatDraftPreserved
-      ? 'Keep this tab open. Your exact page and unsent Chat draft are still held here.'
-      : 'Keep this tab open. Your exact page is still held here.';
+      ? 'Keep this tab open. Your page and the Chat message you had not sent are still here.'
+      : 'Keep this tab open. Your page is still here.';
   const recoveryStop = !state.recoveryPaused
     ? ''
     : safeStopReentry
@@ -3950,7 +3958,7 @@ const renderForm = (
           <p id="${PAIR_CODE_INPUT_RECOVERY_STOP_CONTEXT_ID}">Recovery is paused. No pairing request is running, and this tab will not send another one unless you explicitly resume.</p>
           <div class="pair-code-input-recovery-stop-state">
             <strong>Confirmed server origin</strong>
-            <code>${e(currentServerOrigin ?? 'Origin unavailable — review the address locally')}</code>
+            <code>${e(currentServerOrigin ?? 'Address not known. Check it on the server itself')}</code>
             <p>This shareable origin omits any path or sign-in details. The rejected recovery words and pairing code were cleared from this form. Work stored on the server was not changed.</p>
             <p>${e(pausedWorkCopy)}</p>
           </div>
@@ -3973,8 +3981,8 @@ const renderForm = (
       ? `<div class="pair-code-input-reauth-notice" ${PAIR_CODE_INPUT_RECOVERY_RESUME_NOTICE_ATTR} role="status" aria-live="polite" aria-atomic="true">
           <strong>Original key ready</strong>
           <p>${state.serverUrl.trim().length > 0
-            ? 'The reviewed server address is still here. Enter the original 24-word key in this browser; add a fresh pairing code only if that server asks for one.'
-            : 'Enter the current server address, then enter its original 24-word key in this browser. Add a fresh pairing code only if that server asks for one.'}</p>
+            ? 'The server address you checked is still here. Type the original 24 words in this browser. Only add a new pairing code if that server asks for one.'
+            : 'Type this server’s address, then its original 24 words, in this browser. Only add a new pairing code if that server asks for one.'}</p>
           <p>Nothing from the owner handoff was submitted automatically. Reconnecting will return to the exact page still selected in this tab.</p>
         </div>`
       : replacementServerDetails
@@ -3986,18 +3994,18 @@ const renderForm = (
         : replacementRecoveryReady
           ? `<div class="pair-code-input-reauth-notice" ${PAIR_CODE_INPUT_RECOVERY_RESUME_NOTICE_ATTR} ${PAIR_CODE_INPUT_REPLACEMENT_CONFIRMED_ATTR} role="status" aria-live="polite" aria-atomic="true">
               <strong>${replacementFreshKey
-                ? 'Fresh start confirmed for this server'
-                : 'Use only this current server’s key'}</strong>
-              <p>Current server origin: <code>${e(currentServerOrigin ?? 'Origin unavailable')}</code>. ${replacementCodeAccepted
-                ? 'The current server accepted the fresh pairing code. It was discarded and will not be sent again; any visible retry finishes only this browser’s save.'
-                : 'A fresh pairing code from that server is ready and remains hidden.'}</p>
+                ? 'You have chosen a fresh start for this server'
+                : 'Use only this server’s own key'}</strong>
+              <p>Current server origin: <code>${e(currentServerOrigin ?? 'Address not known')}</code>. ${replacementCodeAccepted
+                ? 'Your server took the new pairing code. Recued threw the code away and will not send it again. Trying again only finishes saving in this browser.'
+                : 'A new pairing code from that server is ready. It stays hidden.'}</p>
               <p>${replacementFreshKey
                 ? replacementCodeAccepted
-                  ? 'The new recovery key already belongs to this server. Keep its saved paper copy; this retry will not create another key or restore data from the previous server.'
-                  : 'Create and save a new recovery key for this current server. The old server’s key cannot be entered in this path, and data from the previous server is not restored.'
+                  ? 'The new recovery key already belongs to this server. Keep the copy you wrote down. Trying again will not make another key, and will not bring anything back from the old server.'
+                  : 'Make a new recovery key for this server and write it down. You cannot use the old server’s key here, and nothing is brought back from the old server.'
                 : replacementCodeAccepted
-                  ? 'The current server accepted its confirmed recovery key. This retry will not contact the pairing endpoint again.'
-                  : 'Enter the existing recovery key its administrator confirmed belongs to this current server. Do not reuse the old server’s key merely because the address looks familiar.'}</p>
+                  ? 'Your server took the recovery key you confirmed. Trying again will not ask to pair once more.'
+                  : 'Type the recovery key that the server owner says belongs to this server. Do not reuse the old server’s key just because the address looks familiar.'}</p>
               <button type="button" class="pair-code-input-change-server" data-action="${PAIR_CODE_INPUT_EDIT_REPLACEMENT_SERVER_ACTION}" ${editingDisabled ? 'disabled' : ''}>Review different server details</button>
             </div>`
           : '';
@@ -4007,7 +4015,7 @@ const renderForm = (
         <p id="${PAIR_CODE_INPUT_REPLACEMENT_REVIEW_CONTEXT_ID}">Nothing has been sent yet. Review the destination and the fresh-start consequence before Recued creates recovery material.</p>
         <div class="pair-code-input-recovery-stop-state">
           <strong>Current server origin</strong>
-          <code>${e(currentServerOrigin ?? 'Origin unavailable')}</code>
+          <code>${e(currentServerOrigin ?? 'Address not known')}</code>
           <p>A fresh pairing code was entered from this server’s terminal. The code stays hidden here and will be sent only after you finish saving a new recovery key.</p>
         </div>
         <h4>What starting fresh means</h4>
@@ -4030,7 +4038,7 @@ const renderForm = (
           <p id="${PAIR_CODE_INPUT_REPLACEMENT_REVIEW_CONTEXT_ID}">The current server rejected the newly generated key because it already has a recovery key. Recued cleared the unused generated words and did not consume the fresh pairing code.</p>
           <div class="pair-code-input-recovery-stop-state">
             <strong>Current server origin</strong>
-            <code>${e(currentServerOrigin ?? 'Origin unavailable')}</code>
+            <code>${e(currentServerOrigin ?? 'Address not known')}</code>
             <p>Ask its administrator which existing recovery key belongs to this current server. Do not assume the previous server’s key is correct.</p>
           </div>
           <div class="pair-code-input-recovery-correction-actions pair-code-input-recovery-stop-actions">
@@ -4046,31 +4054,31 @@ const renderForm = (
       : isRestore
         ? renderRestoreBody(state)
         : renderEnterBody(state);
-  let reauthNoticeHeading = 'Saved access needs attention';
+  let reauthNoticeHeading = 'Your saved sign-in needs a look';
   let reauthNoticeBody =
-    "Your server no longer accepts this browser's saved access. This can happen after access is revoked or the server identity changes. Reconnecting does not delete work stored on your server.";
+    "Your server will not take the sign-in saved in this browser any more. That happens when the sign-in is turned off, or when the server changes. Reconnecting deletes nothing on your server.";
   if (reauthRecovery?.recoveryReentry === true) {
-    reauthNoticeHeading = 'Recovery resumed in this tab';
+    reauthNoticeHeading = 'Carrying on in this tab';
     reauthNoticeBody =
-      'The earlier recovery page closed before this browser reconnected. You do not need to wait for that page. Work stored on your server was not changed.';
+      'The earlier page closed before this browser reconnected. You do not need to wait for it. Nothing on your server changed.';
   } else if (reauthRecovery?.reason === 'local_credentials_unreadable') {
-    reauthNoticeHeading = 'Unreadable local access cleared';
+    reauthNoticeHeading = 'A sign-in Recued could not read has been cleared';
     reauthNoticeBody =
-      'This browser could not unlock its saved sign-in, so Recued removed only that local access record and started a secure reconnect. Work stored on your server was not deleted.';
+      'This browser could not unlock its saved sign-in. Recued cleared just that one saved sign-in and started reconnecting. Nothing on your server was deleted.';
   } else if (reauthRecovery?.reason === 'local_credentials_incomplete') {
-    reauthNoticeHeading = 'Incomplete browser setup cleared';
+    reauthNoticeHeading = 'An unfinished setup has been cleared';
     reauthNoticeBody =
-      'A previous setup stopped before every local access detail was saved. Recued cleared only that incomplete browser record and started a clean reconnect. Work stored on your server was not deleted.';
+      'An earlier setup stopped before everything was saved here. Recued cleared just that half-finished record and started again. Nothing on your server was deleted.';
   } else if (reauthRecovery?.reason === 'credentials_changed_elsewhere') {
-    reauthNoticeHeading = 'Saved access changed in another tab';
+    reauthNoticeHeading = 'Another tab changed your saved sign-in';
     reauthNoticeBody =
-      'Another Recued tab cleared or replaced this browser’s saved access. This tab stopped using the old session. Work stored on your server was not deleted.';
+      'Another Recued tab cleared or replaced this browser’s sign-in. This tab stopped using the old one. Nothing on your server was deleted.';
   } else if (
     reauthRecovery?.reason === 'startup_credentials_changed_elsewhere'
   ) {
-    reauthNoticeHeading = 'Access changed while this tab was recovering';
+    reauthNoticeHeading = 'Your sign-in changed while this tab was still working';
     reauthNoticeBody =
-      'Another Recued tab cleared or replaced the saved access this startup retry was using. Recued stopped that stale retry before it could open your page. Work stored on your server was not deleted.';
+      'Another Recued tab cleared or replaced the sign-in this tab was using. Recued stopped the old attempt before it could open your page. Nothing on your server was deleted.';
   }
   const reauthNotice =
     reauthRecovery === undefined
@@ -4082,74 +4090,74 @@ const renderForm = (
         <strong>${e(reauthNoticeHeading)}</strong>
         <p>${e(reauthNoticeBody)}</p>
         <p>${reauthRecovery.recoveryReentry === true
-          ? 'The exact page you were returning to is still selected. Pairing details are not restored; re-enter any missing server address, pairing code, and recovery key, then reconnect to return.'
+          ? 'The page you were going back to is still chosen. Your pairing details are not kept. Type any missing server address, pairing code, and recovery key again, then reconnect.'
           : `${reauthRecovery.chatDraftPreserved
-            ? 'Your current page and unsent Chat draft are held in this tab.'
-            : 'Your current page is held in this tab.'} Keep this tab open, then reconnect to return where you left off.`}</p>
+            ? 'Your page and the Chat message you had not sent are still in this tab.'
+            : 'Your page is still in this tab.'} Keep this tab open, then reconnect to go back to where you were.`}</p>
       </div>`;
   const interruptedTakeoverLead = isRestore
-    ? 'Another tab started saving this browser\'s access. This tab will continue automatically if it finishes. If that tab stopped, you can safely restart this restore here; your selected backup and archive key stay ready.'
+    ? 'Another tab started saving this browser\'s sign-in. If it finishes, this tab carries on by itself. If it has stopped, you can start the restore again here. Your chosen backup and its key are still ready.'
     : reauthRecovery !== undefined
-      ? `Keep this tab open. It will return to your current page${reauthRecovery.chatDraftPreserved ? ' and unsent Chat draft' : ''} automatically when the other tab finishes.`
-      : 'Another tab started saving this browser\'s access. This tab will continue automatically if it finishes. If that tab stopped, you can safely take over here with the recovery key already tied to the server.';
+      ? `Keep this tab open. It will go back to your page${reauthRecovery.chatDraftPreserved ? ' and the Chat message you had not sent' : ''} by itself once the other tab finishes.`
+      : 'Another tab started saving this browser\'s sign-in. If it finishes, this tab carries on by itself. If it has stopped, you can take over here using the recovery key that already belongs to the server.';
   const interruptedTakeoverNext = isRestore
-    ? `Recued cleared the old one-time code so it cannot be replayed. Work on your server is unchanged, and this tab's selected backup is still waiting. Get a fresh pairing code to continue.`
+    ? `Recued cleared the old one-time code so nobody can reuse it. Nothing on your server changed, and the backup you chose is still waiting. Get a new pairing code to carry on.`
     : reauthRecovery !== undefined
-      ? 'The old one-time code is cleared. Your recovery-key entry stays here and work on your server is unchanged; get a fresh code only if the other tab stops.'
-      : `Recued cleared the old one-time code so it cannot be replayed. Work on your server is unchanged, and this tab's current page is still waiting. Get a fresh code only if the server asks for one.`;
+      ? 'The old one-time code is cleared. What you typed as your recovery key stays here, and nothing on your server changed. Only get a new code if the other tab stops.'
+      : `Recued cleared the old one-time code so nobody can reuse it. Nothing on your server changed, and this tab’s page is still waiting. Only get a new code if the server asks for one.`;
   const stalledSiblingLead = !state.siblingTakeoverCoordinationAvailable
     ? state.submitting
-      ? 'This tab is checking saved access and reconnecting. Keep any other reconnect form idle until it finishes.'
-      : 'You can reconnect safely here, but continue in this tab only. This browser cannot safely choose between simultaneous reconnect attempts.'
+      ? 'This tab is checking your saved sign-in and reconnecting. Leave any other reconnect screen alone until it finishes.'
+      : 'You can reconnect here, but use only this tab. This browser cannot safely pick between two reconnects at once.'
     : state.submitting
       ? state.siblingTakeoverOwnsAttempt
-        ? 'This tab passed the shared-access check and is reconnecting. If it succeeds, other open tabs will adopt its saved access without sending their pairing codes.'
-        : 'Recued is choosing one reconnecting tab. If another tab finishes first, this tab will return automatically without sending its pairing code.'
-      : 'You can keep waiting or reconnect safely here. If you do the same in another tab, Recued lets only one continue and returns the others automatically.';
+        ? 'This tab passed the check and is reconnecting. If it works, your other tabs will use the same sign-in without sending their pairing codes.'
+        : 'Recued is picking one reconnecting tab. If another finishes first, this tab comes back by itself and never sends its pairing code.'
+      : 'You can wait, or reconnect here. If you do the same in another tab, Recued lets only one carry on and brings the others back by itself.';
   const stalledSiblingNext = state.siblingTakeoverOwnsAttempt
-    ? `Keep this tab open. Your recovery key, current page${reauthRecovery?.chatDraftPreserved ? ', and unsent Chat draft' : ''} stay here until reconnecting finishes.`
-    : `Your recovery key, current page${reauthRecovery?.chatDraftPreserved ? ', and unsent Chat draft' : ''} stay here. Add a fresh pairing code only if your server asks, then choose Reconnect in this tab.`;
+    ? `Keep this tab open. Your recovery key, your page${reauthRecovery?.chatDraftPreserved ? ', and the Chat message you had not sent' : ''} stay here until reconnecting is done.`
+    : `Your recovery key, your page${reauthRecovery?.chatDraftPreserved ? ', and the Chat message you had not sent' : ''} stay here. Only add a new pairing code if your server asks, then choose Reconnect in this tab.`;
   const successionLead =
-    'A reconnect you already started in another tab is continuing now.';
+    'A reconnect you started in another tab is still going.';
   const successionNext = reauthRecovery !== undefined
-    ? `This tab is waiting so it will not send or save the same access twice. Your recovery key, current page${reauthRecovery.chatDraftPreserved ? ', and unsent Chat draft' : ''} stay here. If the other tab stops, your retry returns here.`
-    : 'This tab is waiting so it will not send or save the same access twice. If the other tab stops, your retry returns here.';
+    ? `This tab is waiting so it will not send or save the same access twice. Your recovery key, your page${reauthRecovery.chatDraftPreserved ? ', and the Chat message you had not sent' : ''} stay here. If the other tab stops, you can try again here.`
+    : 'This tab is waiting so the same sign-in is not sent or saved twice. If the other tab stops, you can try again here.';
   const recoveryOwnerNext = reauthRecovery !== undefined
-    ? `Review the message below, make any needed correction, then retry here. Your recovery key, current page${reauthRecovery.chatDraftPreserved ? ', and unsent Chat draft' : ''} remain in this tab.`
-    : 'Review the message below, make any needed correction, then retry here.';
+    ? `Read the message below, fix anything that is wrong, then try again here. Your recovery key, your page${reauthRecovery.chatDraftPreserved ? ', and the Chat message you had not sent' : ''} stay in this tab.`
+    : 'Read the message below, fix anything that is wrong, then try again here.';
   const remoteRecoveryOwnerNext =
     !state.siblingTakeoverCoordinationAvailable
       ? reauthRecovery !== undefined
-        ? `Keep this tab open. Your recovery key, current page${reauthRecovery.chatDraftPreserved ? ', and unsent Chat draft' : ''} remain here. If the other tab stops, continue in just one open reconnect tab and keep the others idle.`
-        : 'Keep this tab open. If the other tab stops, continue in just one open reconnect tab and keep the others idle.'
+        ? `Keep this tab open. Your recovery key, your page${reauthRecovery.chatDraftPreserved ? ', and the Chat message you had not sent' : ''} stay here. If the other tab stops, carry on in just one reconnect tab and leave the others alone.`
+        : 'Keep this tab open. If the other tab stops, carry on in just one reconnect tab and leave the others alone.'
       : reauthRecovery !== undefined
-        ? `Keep this tab open. Your recovery key, current page${reauthRecovery.chatDraftPreserved ? ', and unsent Chat draft' : ''} remain here. If the other tab closes or stops responding, Recued will choose one open tab to continue.`
-        : 'Keep this tab open. If the other tab closes or stops responding, Recued will choose one open tab to continue.';
+        ? `Keep this tab open. Your recovery key, your page${reauthRecovery.chatDraftPreserved ? ', and the Chat message you had not sent' : ''} stay here. If the other tab closes or stops answering, Recued will pick one open tab to carry on.`
+        : 'Keep this tab open. If the other tab closes or stops answering, Recued will pick one open tab to carry on.';
   const recoverySuccessorNext = state.finalizePending
     ? reauthRecovery !== undefined
-      ? `This tab still holds the successful server response. Finish saving access here; Recued will not contact the pairing endpoint again. Your current page${reauthRecovery.chatDraftPreserved ? ' and unsent Chat draft remain' : ' remains'} ready.`
-      : 'This tab still holds the successful server response. Finish saving access here; Recued will not contact the pairing endpoint again.'
+      ? `This tab still has your server’s yes. Finish saving the sign-in here. Recued will not ask to pair again. Your page${reauthRecovery.chatDraftPreserved ? ' and the Chat message you had not sent remain' : ' remains'} ready.`
+      : 'This tab still has your server’s yes. Finish saving the sign-in here. Recued will not ask to pair again.'
     : reauthRecovery !== undefined
-      ? `Review the retained message below, make any needed correction, then retry here. Your recovery key, current page${reauthRecovery.chatDraftPreserved ? ', and unsent Chat draft' : ''} remain in this tab.`
-      : 'Review the retained message below, make any needed correction, then retry here.';
+      ? `Read the message kept below, fix anything that is wrong, then try again here. Your recovery key, your page${reauthRecovery.chatDraftPreserved ? ', and the Chat message you had not sent' : ''} stay in this tab.`
+      : 'Read the message kept below, fix anything that is wrong, then try again here.';
   const remoteRecoverySuccessorNext =
     !state.siblingTakeoverCoordinationAvailable
       ? reauthRecovery !== undefined
-        ? `Keep this tab open. Your recovery key, current page${reauthRecovery.chatDraftPreserved ? ', and unsent Chat draft' : ''} remain here. If the chosen tab also stops, continue in just one open reconnect tab.`
-        : 'Keep this tab open. If the chosen tab also stops, continue in just one open reconnect tab.'
+        ? `Keep this tab open. Your recovery key, your page${reauthRecovery.chatDraftPreserved ? ', and the Chat message you had not sent' : ''} stay here. If that tab stops too, carry on in just one reconnect tab.`
+        : 'Keep this tab open. If that tab stops too, carry on in just one reconnect tab.'
       : reauthRecovery !== undefined
-        ? `Keep this tab open. Your recovery key, current page${reauthRecovery.chatDraftPreserved ? ', and unsent Chat draft' : ''} remain here. If the chosen tab also stops, Recued will choose another open tab.`
-        : 'Keep this tab open. If the chosen tab also stops, Recued will choose another open tab.';
+        ? `Keep this tab open. Your recovery key, your page${reauthRecovery.chatDraftPreserved ? ', and the Chat message you had not sent' : ''} stay here. If that tab stops too, Recued will pick another open tab.`
+        : 'Keep this tab open. If that tab stops too, Recued will pick another open tab.';
   const interruptedNotice = recoveryOwnerElsewhere
     ? `<div id="${PAIR_CODE_INPUT_INTERRUPTED_NOTICE_ID}" class="pair-code-input-interrupted-notice" ${PAIR_CODE_INPUT_INTERRUPTED_NOTICE_ATTR} ${PAIR_CODE_INPUT_RECOVERY_OWNER_ELSEWHERE_ATTR}${recoverySuccessorElsewhere ? ` ${PAIR_CODE_INPUT_RECOVERY_SUCCESSOR_ELSEWHERE_ATTR}` : ''} role="status" aria-live="polite" aria-atomic="true">
-        <strong>${recoverySuccessorElsewhere ? 'Recovery continued in another tab' : 'Continue in the tab that needs attention'}</strong>
-        <p>${recoverySuccessorElsewhere ? 'The previous recovery tab stopped responding. Recued chose one open tab to continue, so this tab remains safely paused.' : 'Another reconnect tab has the latest error and is the only tab offering a retry.'}</p>
+        <strong>${recoverySuccessorElsewhere ? 'Another tab is carrying on' : 'Carry on in the tab that needs you'}</strong>
+        <p>${recoverySuccessorElsewhere ? 'The tab that was working stopped answering. Recued picked one open tab to carry on, so this tab stays paused.' : 'Another reconnect tab has the newest error. It is the only one you can try again in.'}</p>
         <p>${e(recoverySuccessorElsewhere ? remoteRecoverySuccessorNext : remoteRecoveryOwnerNext)}</p>
       </div>`
     : recoveryOwnerHere
       ? `<div id="${PAIR_CODE_INPUT_INTERRUPTED_NOTICE_ID}" class="pair-code-input-interrupted-notice" ${PAIR_CODE_INPUT_INTERRUPTED_NOTICE_ATTR} ${PAIR_CODE_INPUT_RECOVERY_OWNER_ATTR}${recoverySuccessorHere ? ` ${PAIR_CODE_INPUT_RECOVERY_SUCCESSOR_ATTR}` : ''} role="status" aria-live="polite" aria-atomic="true">
-          <strong>${recoverySuccessorHere ? 'Recovery moved to this tab' : 'This tab needs attention'}</strong>
-          <p>${recoverySuccessorHere ? 'The previous recovery tab stopped responding. Recued chose this tab as the only safe successor.' : 'The other reconnect tabs are waiting, so there is only one retry to manage.'}</p>
+          <strong>${recoverySuccessorHere ? 'Recued moved to this tab' : 'This tab needs you'}</strong>
+          <p>${recoverySuccessorHere ? 'The tab that was working stopped answering. Recued picked this tab to carry on.' : 'The other reconnect tabs are waiting, so there is only one to deal with.'}</p>
           <p>${e(recoverySuccessorHere ? recoverySuccessorNext : recoveryOwnerNext)}</p>
         </div>`
     : siblingSuccession
@@ -4163,8 +4171,8 @@ const renderForm = (
     : state.finalizePending
       ? `<div class="pair-code-input-interrupted-notice" ${PAIR_CODE_INPUT_INTERRUPTED_NOTICE_ATTR} data-local-finalize-retry role="status" aria-live="polite" aria-atomic="true">
           <strong>Server pairing is complete</strong>
-          <p>This tab still has the successful response in memory. Finish saving access here; Recued will not contact the pairing endpoint again.</p>
-          <p>Work on your server is unchanged. Keep this tab open; your current page${reauthRecovery?.chatDraftPreserved ? ' and unsent Chat draft are' : ' is'} still waiting for you.</p>
+          <p>This tab still has your server’s yes. Finish saving your sign-in here. Recued will not ask to pair again.</p>
+          <p>Work on your server is unchanged. Keep this tab open; your current page${reauthRecovery?.chatDraftPreserved ? ' and the Chat message you had not sent are' : ' is'} still waiting for you.</p>
         </div>`
       : state.finalizeRestarted
         ? `<div class="pair-code-input-interrupted-notice" ${PAIR_CODE_INPUT_INTERRUPTED_NOTICE_ATTR} data-local-finalize-restarted role="status" aria-live="polite" aria-atomic="true">
@@ -4179,11 +4187,11 @@ const renderForm = (
                   ? 'This tab is reconnecting'
                   : state.siblingTakeoverOwnsAttempt
                   ? 'This tab is reconnecting'
-                  : 'Choosing one tab safely'
+                  : 'Picking one tab'
                 : 'The other tab is taking longer'
               : reauthRecovery !== undefined
                 ? 'Another tab is reconnecting'
-                : 'Another tab is saving access'}</strong>
+                : 'Another tab is saving your sign-in'}</strong>
             <p>${e(siblingTakeover && state.siblingTakeoverReady
               ? stalledSiblingLead
               : interruptedTakeoverLead)}</p>
@@ -4193,15 +4201,15 @@ const renderForm = (
           </div>`;
   const secureResumeProgress = isRestore
     ? state.pairingCode.trim().length > 0
-      ? 'Your pairing code is ready too. Choose your backup and enter its recovery key.'
-      : 'Add the pairing code, choose your backup, and enter its recovery key.'
+      ? 'Your pairing code is ready too. Choose your backup and type its recovery key.'
+      : 'Add the pairing code, choose your backup, then type its recovery key.'
     : state.recoveryMode === 'generate'
       ? state.pairingCode.trim().length > 0
-        ? 'Your pairing code is ready too. Generate and save your recovery key to continue.'
-        : 'Generate and save your recovery key; add a pairing code if your server asks for one.'
+        ? 'Your pairing code is ready too. Make your recovery key and write it down to carry on.'
+        : 'Make your recovery key and write it down. Add a pairing code if your server asks for one.'
       : state.pairingCode.trim().length > 0
-        ? 'Your pairing code is ready too. Continue with your recovery key.'
-        : 'Continue with your recovery key; add a pairing code only if your server asks for one.';
+        ? 'Your pairing code is ready too. Carry on with your recovery key.'
+        : 'Carry on with your recovery key. Only add a pairing code if your server asks for one.';
   const secureResumeNotice =
     reauthRecovery === undefined
       && !state.recoveryPaused
@@ -4231,16 +4239,16 @@ const renderForm = (
     <form id="${e(PAIR_CODE_INPUT_FORM_ID)}" class="pair-code-input-form" aria-labelledby="${e(PAIR_CODE_INPUT_TITLE_ID)}"${state.submitting || siblingSuccession ? ' aria-busy="true"' : ''} novalidate>
       <h2 id="${e(PAIR_CODE_INPUT_TITLE_ID)}" class="pair-code-input-title">${state.recoveryPaused
         ? safeStopReentry
-          ? 'Recovery still paused'
-          : 'Recovery paused safely'
+          ? 'Still paused'
+          : 'Paused, and nothing was lost'
         : state.replacementServerStage !== null
           ? state.finalizePending
-            ? 'Finish saving server access'
+            ? 'Finish saving your sign-in'
             : state.replacementServerStage === 'fresh_key'
-              ? 'Set up the current server'
+              ? 'Set up this server'
               : state.replacementServerStage === 'existing_key'
-                ? 'Verify the current server'
-                : 'Review the current server'
+                ? 'Check this server'
+                : 'Look at this server'
         : isRestore
           ? 'Restore a backup'
           : state.reauthOnly
@@ -4252,33 +4260,33 @@ const renderForm = (
       <p class="pair-code-input-help">
         ${state.recoveryPaused
           ? safeStopReentry
-            ? 'This tab returned to the safe stop without restoring the sensitive details that led there. Continue only from a server owner’s confirmed answer.'
-            : 'You confirmed the server address, but it rejected repeated complete 24-word entries and no usable original key was available. Share only the reviewed owner handoff below.'
+            ? 'This tab came back to a safe stop. It did not bring back the private details that got it here. Only carry on once the server owner has answered.'
+            : 'You said the server address was right, but it turned down your 24 words every time, and no working key was left to try. Share only the notes below.'
           : state.replacementServerStage === 'details'
-            ? 'Enter the current server address and a fresh code from that same server. Recued keeps recovery material out of this step.'
+            ? 'Type this server’s address and a new code from that same server. Recued keeps your recovery key out of this step.'
             : state.replacementServerStage === 'review'
-              ? 'Check the current origin and what a fresh start can—and cannot—recover.'
+              ? 'Check this address, and what a fresh start can and cannot bring back.'
               : state.replacementServerStage === 'fresh_key'
                 ? replacementCodeAccepted
-                  ? 'Pairing succeeded and the current server identity is ready. Finish saving that access in this browser; Recued will not send the pairing request again.'
-                  : 'Create a new recovery key for the current server. Pairing verifies and saves this server’s identity; it does not restore data from the previous server.'
+                  ? 'Pairing worked and your server is ready. Finish saving the sign-in in this browser. Recued will not ask to pair again.'
+                  : 'Make a new recovery key for this server. Pairing checks and saves which server this is. It does not bring anything back from the old server.'
                 : state.replacementServerStage === 'not_fresh'
-                  ? 'The current server already has a recovery key. Continue only with a key its administrator confirms belongs here.'
+                  ? 'This server already has a recovery key. Only carry on with the key its owner says belongs here.'
                   : state.replacementServerStage === 'existing_key'
                     ? replacementCodeAccepted
-                      ? 'Pairing succeeded with this server’s confirmed recovery key. Finish saving that access in this browser; Recued will not send the pairing request again.'
-                      : 'Enter only the existing recovery key confirmed for this current server. The fresh code and reviewed origin remain fixed for this attempt.'
+                      ? 'Pairing worked with this server’s own recovery key. Finish saving the sign-in in this browser. Recued will not ask to pair again.'
+                      : 'Type only the recovery key that belongs to this server. The new code and the address you checked stay as they are for this try.'
           : isRestore
             ? state.sameOriginResume
-              ? "Restore a Recued backup onto this secure server. Its address is ready; check the pairing code, choose your backup file, then enter the backup's 24-word recovery key."
-              : "Restore a Recued backup onto a fresh server. Enter the server's URL and pairing code, choose your backup file, then enter the backup's 24-word recovery key."
+              ? "Put a Recued backup onto this server. Its address is ready. Check the pairing code, choose your backup file, then type the backup\'s 24-word recovery key."
+              : "Put a Recued backup onto a new server. Type the server\'s address and pairing code, choose your backup file, then type the backup\'s 24-word recovery key."
             : state.reauthOnly
               ? reauthRecovery?.recoveryReentry === true
-                ? 'Start with the server address, then enter your existing 24-word recovery key. Add a pairing code only if your server asks for one.'
+                ? 'Start with the server address, then type your 24-word recovery key. Only add a pairing code if your server asks for one.'
                 : 'Enter your existing 24-word recovery key. If you need a fresh pairing code, run <code>recued pair</code> on your server.'
               : state.sameOriginResume
-                ? "Finish pairing with your existing recovery key — or generate a new one if you're setting the server up for the first time."
-                : "Connect this browser to your recued-server. Enter its URL, then enter your existing recovery key — or generate a new one if you're setting the server up for the first time."}
+                ? "Finish pairing with the recovery key you already have. If this is a brand new server, make a new key instead."
+                : "Connect this browser to your Recued server. Type its address, then your recovery key. If this is a brand new server, make a new key instead."}
       </p>
       ${recoveryResumeNotice}
       ${recoveryMaterialHelp}
@@ -4307,7 +4315,7 @@ const renderForm = (
           ${editingDisabled || (state.replacementServerStage !== null && !replacementServerDetails) ? 'disabled' : ''} />
         <p class="field-hint pair-code-input-insecure-address" id="${PAIR_CODE_INPUT_INSECURE_ADDRESS_ID}"${
           isCertainlyBlockedServerAddress(state.serverUrl, readPageProtocol()) ? '' : ' hidden'
-        }>This page is secure (https) and that server address is not, so this browser will refuse the connection. Open the webclient from the server itself — its own address ending in /webclient/ — or give the server a domain and certificate.</p>
+        }>This page is secure (https) and that server address is not, so this browser will refuse the connection. Open the webclient from the server itself — its own address, ending in /webclient/. Or give the server its own name and certificate.</p>
         ${state.sameOriginResume
           ? `<button type="button" class="pair-code-input-change-server" data-action="${PAIR_CODE_INPUT_CHANGE_SERVER_ACTION}" aria-describedby="${PAIR_CODE_INPUT_CHANGE_SERVER_NOTE_ID}" ${editingDisabled ? 'disabled' : ''}>Use a different server address</button>
             <span id="${PAIR_CODE_INPUT_CHANGE_SERVER_NOTE_ID}" class="pair-code-input-change-server-note">Changing servers also clears any pairing code.</span>`
@@ -4340,11 +4348,11 @@ const renderForm = (
 
       <div class="form-row form-row-recovery"${state.replacementServerStage !== null && !replacementRecoveryReady ? ' hidden aria-hidden="true"' : ''}>
         <label>${isRestore
-          ? "Backup's recovery key"
+          ? "The backup\'s recovery key"
           : replacementFreshKey
             ? 'New recovery key for this server'
             : state.replacementServerStage === 'existing_key'
-              ? 'Current server recovery key'
+              ? 'This server\'s recovery key'
               : 'Recovery key'}</label>
         ${state.restoreOnly || state.reauthOnly
           ? ''
@@ -4402,7 +4410,7 @@ const renderRecoveryModeToggle = (state: PairCodeInputState): string => {
   return `
     <div class="pair-code-input-mode" role="group" aria-label="Recovery key source">
       ${tab('enter', 'I have a recovery key')}
-      ${tab('generate', 'Generate a new one')}
+      ${tab('generate', 'Make a new one')}
       ${state.restoreEnabled ? tab('restore', 'Restore a backup') : ''}
     </div>
   `;
@@ -4461,8 +4469,8 @@ const renderGenerateBody = (state: PairCodeInputState): string => {
 const renderGenerateStart = (state: PairCodeInputState): string => `
   <p class="field-hint">
     ${state.replacementServerFreshStart
-      ? 'Generate a new 24-word recovery key for this current server. It protects only this new server setup and does not recover data from the previous server.'
-      : "First time setting up this server? Generate a 24-word recovery key. It's the only way to recover your encrypted data if you lose this device — nobody, including Recued, can recover it for you."}
+      ? 'Make a new 24-word recovery key for this server. It guards only this new setup. It does not bring anything back from the old server.'
+      : "Setting this server up for the first time? Make a 24-word recovery key. If you lose this device, it is the only way to get your data back. Nobody can do it for you, not even Recued."}
   </p>
   <div class="pair-code-input-generate-actions">
     <button type="button"
@@ -4492,8 +4500,8 @@ const renderGenerateWriting = (state: PairCodeInputState): string => {
   return `
     <p class="field-hint pair-code-input-generate-warn">
       ${state.replacementServerFreshStart
-        ? "Write this current server's 24 words on paper and store them separately from any old-server key. This is the only time they're shown — do not share them."
-        : "Write these 24 words on paper and store them somewhere safe. This is the only time they're shown — do not share them. We'll ask you to re-type them next to confirm."}
+        ? "Write this server\'s 24 words on paper. Keep them apart from any old server\'s key. This is the only time you will see them. Do not show them to anyone."
+        : "Write these 24 words on paper and keep them somewhere safe. This is the only time you will see them. Do not show them to anyone. Next, you will type them back to check."}
     </p>
     <div class="rx-recovery-words rx-recovery-words-readonly">
       ${cells}
@@ -4514,8 +4522,8 @@ const renderGenerateWriting = (state: PairCodeInputState): string => {
 const renderGenerateChallenge = (state: PairCodeInputState): string => `
   <p class="field-hint">
     ${state.replacementServerFreshStart
-      ? "Type the 24 new words from this current server's paper copy. This confirms the new key you just saved, not any key from the previous server."
-      : 'Type the 24 words from your paper copy to confirm you saved them correctly. Paste into any box to fan the phrase out across the rest.'}
+      ? "Type the 24 new words you wrote down for this server. This checks the new key you just saved, not any key from the old server."
+      : 'Type the 24 words you wrote down, to check you saved them correctly. You can paste into any box and the words spread across the rest.'}
   </p>
   ${recoveryGrid({
     words: state.recoveryWords,

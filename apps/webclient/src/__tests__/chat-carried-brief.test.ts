@@ -33,7 +33,7 @@ describe('carried-brief projection', () => {
       const m = buildCarriedBriefModel(input);
       if (m.kind === 'loading') throw new Error('unreachable');
       expect(m.caveat).toMatch(/in its own words/i);
-      expect(m.caveat).toMatch(/incomplete or wrong/i);
+      expect(m.caveat).toMatch(/missing things, or wrong/i);
     }
   });
 

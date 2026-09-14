@@ -333,14 +333,14 @@ describe('D-169 P2 Slice 5 notify toasts', () => {
     const { host, fake, toasts } = mount();
 
     toasts.push({
-      title: 'Approved action dispatched',
+      title: 'What you allowed was sent',
       text: 'The export was handed off.',
     });
 
     expect(fake.calls.filter((c) => c.kind === 'notification.notify')).toHaveLength(1);
     expect(toasts.getToasts()).toEqual([{
       id: 'toast-1',
-      title: 'Approved action dispatched',
+      title: 'What you allowed was sent',
       text: 'The export was handed off.',
     }]);
     expect(textOf(findAllByAttr(host, NOTIFY_TOAST_ATTR)[0]!))

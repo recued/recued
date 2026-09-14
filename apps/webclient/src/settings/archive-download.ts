@@ -44,11 +44,11 @@ const messageFor = (reason: DownloadErrorReason): string => {
     case 'not_found':
       return 'That backup is no longer on the server.';
     case 'invalid_name':
-      return 'That backup file name is not valid.';
+      return 'That backup file name will not work.';
     case 'read_error':
       return 'The server could not read the backup.';
     case 'bad_request':
-      return 'The server rejected the download request.';
+      return 'Your server said no to the download.';
     default:
       return 'The download failed.';
   }
@@ -78,7 +78,7 @@ export const createArchiveDownload = (
     try {
       s = await deps.openSocket();
     } catch {
-      settle(() => onError('Could not open the download connection.'));
+      settle(() => onError('Recued could not start the download.'));
       return;
     }
     // Cancelled while the socket was opening — drop it.
@@ -99,24 +99,24 @@ export const createArchiveDownload = (
       if (!frame) return;
       if (frame.type === 'download_complete') {
         if (received !== frame.size_bytes) {
-          settle(() => onError('The download was incomplete — please try again.'));
+          settle(() => onError('The download did not finish. Please try again.'));
           return;
         }
         // Save before reporting success — only `onDone` if it actually saved.
         let saved = true;
         try { deps.saveBlob(name, parts); } catch { saved = false; }
-        settle(saved ? onDone : () => onError('Could not save the download.'));
+        settle(saved ? onDone : () => onError('Recued could not save the download.'));
       } else if (frame.type === 'download_error') {
         settle(() => onError(messageFor(frame.reason)));
       }
     });
-    s.onClose(() => settle(() => onError('The download connection closed before finishing.')));
-    s.onError(() => settle(() => onError('The download connection failed.')));
+    s.onClose(() => settle(() => onError('The download stopped before it finished.')));
+    s.onError(() => settle(() => onError('The download went wrong.')));
 
     try {
       s.send(JSON.stringify({ type: 'download_start', req_id: deps.newReqId(), name }));
     } catch {
-      settle(() => onError('Could not start the download.'));
+      settle(() => onError('Recued could not start the download.'));
     }
   })();
 

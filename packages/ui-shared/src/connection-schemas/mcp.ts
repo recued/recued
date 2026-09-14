@@ -13,13 +13,13 @@ const sse: ConnectionSchema = {
   kind: 'mcp',
   subtype: 'sse',
   label: 'MCP — Server-Sent Events',
-  description: 'JSON-RPC over an HTTP SSE endpoint. The most common transport for hosted MCP servers.',
+  description: 'The usual way to reach a hosted AI-tools server over the web.',
   fields: [
     {
       key: 'name',
       label: 'Name',
       type: 'identifier',
-      help: 'Lowercase identifier used in recipes (e.g. `gh-mcp`, `internal-tools`).',
+      help: 'A short lower-case name you use in Recipes, such as `gh-mcp`, `internal-tools`).',
       placeholder: 'gh-mcp',
     },
     { key: 'display_name', label: 'Display Name', type: 'text', placeholder: 'GitHub MCP' },
@@ -49,17 +49,17 @@ const sse: ConnectionSchema = {
       label: 'Headers',
       type: 'header-list',
       showWhen: (v) => v['auth.type'] === 'header',
-      help: 'Sent on every tool call. Add one per credential header — most need just one.',
+      help: 'Sent every time. Add one line per header. Most need only one.',
     },
   ],
-  probe: { description: 'Initialize + tools/list — caches the available tool catalog.' },
+  probe: { description: 'Recued asks what tools it offers, and remembers the list.' },
 };
 
 const websocket: ConnectionSchema = {
   kind: 'mcp',
   subtype: 'websocket',
   label: 'MCP — WebSocket',
-  description: 'JSON-RPC over WebSocket. Handler ships in a follow-up — the record can still be enrolled now.',
+  description: 'Over a live web connection. Recued cannot use this yet, but you can set it up now.',
   fields: [
     {
       key: 'name',
@@ -93,7 +93,7 @@ const stdio: ConnectionSchema = {
   kind: 'mcp',
   subtype: 'stdio',
   label: 'MCP — stdio (subprocess)',
-  description: 'Child-process MCP server. Server-side only — extension clients cannot fork processes.',
+  description: 'A tools server Recued starts itself. Only your server can do this, not a browser.',
   fields: [
     {
       key: 'name',
@@ -115,7 +115,7 @@ const stdio: ConnectionSchema = {
       type: 'json',
       placeholder: '["--config", "/etc/mcp.toml"]',
       optional: true,
-      help: 'Optional. Parsed as JSON; pass an array of strings.',
+      help: 'You can leave this empty. Write it as a JSON list of words.',
     },
   ],
 };

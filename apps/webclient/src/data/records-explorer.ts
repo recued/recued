@@ -7,7 +7,12 @@ import type {
   RecordsOwnerRecordDiagnostics,
   RecordsRetentionPolicy,
 } from '@recued/contracts';
+// One byte formatter for the whole product — B / KB / MB / GB / TB. These
+// numbers are quota ceilings (`1_000_000`) and payload totals, and both read as
+// digit soup at `.toLocaleString()` width.
+import { formatPressureBytes } from '@recued/contracts';
 import { e, renderReferenceLink } from '@recued/ui-shared';
+import { recordsViewHasDraft, renderRecordsViewControls, type RecordsBrowseState } from './records-view-controls.js';
 
 export const RECORDS_SELECT_NAMESPACE_ACTION = 'records-select-namespace';
 export const RECORDS_SELECT_KIND_ACTION = 'records-select-kind';
@@ -42,7 +47,7 @@ export type RecordsExportAction =
   | typeof RECORDS_EXPORT_KIND_ACTION
   | typeof RECORDS_EXPORT_KIND_CSV_ACTION;
 
-export interface RecordsExplorerState {
+export interface RecordsExplorerState extends RecordsBrowseState {
   namespaces: readonly RecordsNamespaceView[];
   globalQuota: RecordsGlobalQuotaSnapshot | null;
   selectedNamespace: RecordsNamespaceView | null;
@@ -112,8 +117,8 @@ const stateLabel = (namespace: RecordsNamespaceView): string => {
   const state = namespace.state;
   if (state.state === 'ready') return `ready · v${state.version}`;
   if (state.state === 'migrating') return `migrating · v${state.from_version} → v${state.target_version}`;
-  if (state.state === 'orphaned') return `orphaned · last v${state.last_version}`;
-  return 'incoherent · repair required';
+  if (state.state === 'orphaned') return `has no owner · last v${state.last_version}`;
+  return 'does not add up · needs fixing';
 };
 
 const quotaPercent = (used: number, limit: number): string =>
@@ -144,7 +149,7 @@ const renderQuota = (namespace: RecordsNamespaceView): string => {
   const quota = namespace.quota;
   return `<dl class="records-quota" aria-label="Records quota">
     <div><dt>Rows</dt><dd>${quota.row_count.toLocaleString()} / ${quota.row_limit.toLocaleString()} <small>${quotaPercent(quota.row_count, quota.row_limit)}</small></dd></div>
-    <div><dt>Payload</dt><dd>${quota.payload_bytes.toLocaleString()} / ${quota.byte_limit.toLocaleString()} bytes <small>${quotaPercent(quota.payload_bytes, quota.byte_limit)}</small></dd></div>
+    <div><dt>Payload</dt><dd>${formatPressureBytes(quota.payload_bytes)} / ${formatPressureBytes(quota.byte_limit)} <small>${quotaPercent(quota.payload_bytes, quota.byte_limit)}</small></dd></div>
     <div><dt>Event backlog</dt><dd>${quota.outbox_count.toLocaleString()} / ${quota.outbox_limit.toLocaleString()} <small>${quotaPercent(quota.outbox_count, quota.outbox_limit)}</small></dd></div>
   </dl>`;
 };
@@ -153,8 +158,8 @@ const renderGlobalQuota = (quota: RecordsGlobalQuotaSnapshot | null): string => 
   if (quota === null) return '';
   return `<dl class="records-quota records-global-quota" aria-label="Global Records quota">
     <div><dt>All Records rows</dt><dd>${quota.row_count.toLocaleString()} / ${quota.row_limit.toLocaleString()} <small>${quotaPercent(quota.row_count, quota.row_limit)}</small></dd></div>
-    <div><dt>All payload</dt><dd>${quota.payload_bytes.toLocaleString()} / ${quota.byte_limit.toLocaleString()} bytes <small>${quotaPercent(quota.payload_bytes, quota.byte_limit)}</small></dd></div>
-    <div><dt>Migration reserve</dt><dd>${quota.reserved_payload_bytes.toLocaleString()} bytes</dd></div>
+    <div><dt>All payload</dt><dd>${formatPressureBytes(quota.payload_bytes)} / ${formatPressureBytes(quota.byte_limit)} <small>${quotaPercent(quota.payload_bytes, quota.byte_limit)}</small></dd></div>
+    <div><dt>Migration reserve</dt><dd>${formatPressureBytes(quota.reserved_payload_bytes)}</dd></div>
     <div><dt>All event backlog</dt><dd>${quota.outbox_count.toLocaleString()} / ${quota.outbox_limit.toLocaleString()} <small>${quotaPercent(quota.outbox_count, quota.outbox_limit)}</small></dd></div>
   </dl>`;
 };
@@ -225,7 +230,7 @@ const renderList = (state: RecordsExplorerState): string => {
   const entity = namespace.schema.entities[kind];
   if (entity === undefined) return '<p role="alert">The installed schema no longer contains this kind.</p>';
   const fields = entity.fields.slice(0, 6);
-  if (state.records.length === 0) return '<p class="records-empty">No records in this kind.</p>';
+  if (state.records.length === 0) return `<p class="records-empty">${state.loading ? 'Loading results…' : state.view.filters ? 'No records match what you picked.' : 'No records in this kind.'}</p>`;
   return `<div class="records-table-scroll" data-recued-scroll-rail><table class="records-table">
     <thead><tr>${fields.map((field) => `<th>${e(field.key)}${field.privacy ? `<small>${e(field.privacy)}</small>` : ''}</th>`).join('')}<th>Revision</th></tr></thead>
     <tbody>${state.records.map((record) => `<tr data-action="${RECORDS_OPEN_RECORD_ACTION}"
@@ -267,8 +272,8 @@ const renderDetail = (state: RecordsExplorerState): string => {
     }, null, 2))}</pre></details>
     ${state.error ? `<p role="alert">${e(state.error)}</p>` : ''}
     ${!state.canDelete ? '' : state.deletePending ? `<div class="records-delete-confirm" role="alert"><p>Delete this record permanently? ${state.diagnostics?.incoming.length
-        ? `${state.diagnostics.incoming.length} incoming relationship${state.diagnostics.incoming.length === 1 ? '' : 's'} will be checked and may restrict deletion.`
-        : 'No incoming relationships are present in the current reverse index.'}</p>
+        ? `${state.diagnostics.incoming.length} incoming relationship${state.diagnostics.incoming.length === 1 ? '' : 's'} will be checked, and may stop you deleting this.`
+        : 'Nothing else points at this record.'}</p>
       <button type="button" data-action="${RECORDS_CONFIRM_DELETE_ACTION}" ${state.deleting ? 'aria-disabled="true" aria-busy="true"' : recordsControlsLocked(state) ? 'aria-disabled="true"' : ''}>${state.deleting ? 'Deleting…' : 'Delete record'}</button>
       <button type="button" data-action="${RECORDS_CANCEL_DELETE_ACTION}" ${recordsControlsLocked(state) ? 'aria-disabled="true"' : ''}>Cancel</button></div>`
       : `<button type="button" data-action="${RECORDS_DELETE_RECORD_ACTION}" ${recordsControlsLocked(state) ? 'aria-disabled="true"' : ''}>Delete record…</button>`}
@@ -297,7 +302,7 @@ const renderOutbox = (state: RecordsExplorerState): string => {
       <span>Oldest pending: ${e(renderAge(outbox.oldest_pending_age_ms))}</span>
       <span>Total retries: ${outbox.total_retries.toLocaleString()}</span>
       <span>Delivered evidence: ${outbox.delivered.toLocaleString()}</span>
-      <button type="button" data-action="${RECORDS_REFRESH_OUTBOX_ACTION}" ${recordsControlsLocked(state) || state.outboxRefreshing ? 'aria-disabled="true"' : ''} ${state.outboxRefreshing ? 'aria-busy="true"' : ''}>${state.outboxRefreshing ? 'Refreshing…' : 'Refresh drain status'}</button>
+      <button type="button" data-action="${RECORDS_REFRESH_OUTBOX_ACTION}" ${recordsControlsLocked(state) || state.outboxRefreshing ? 'aria-disabled="true"' : ''} ${state.outboxRefreshing ? 'aria-busy="true"' : ''}>${state.outboxRefreshing ? 'Refreshing…' : 'Check again'}</button>
     </div>
     <p class="records-help">The durable worker drains admitted deliveries automatically. A pending event can be explicitly retired to dead-letter evidence when recovery cannot proceed.</p>
     ${outbox.events.length === 0 ? '<p class="records-empty">No event evidence in this view.</p>' : `<ol class="records-outbox-events">${outbox.events.map((item) => {
@@ -331,7 +336,7 @@ const renderPurge = (state: RecordsExplorerState, namespace: RecordsNamespaceVie
       <input ${RECORDS_PURGE_CONFIRMATION_ATTR} autocomplete="off" spellcheck="false" placeholder="${e(fullRef)}"
         value="${e(state.purgeConfirmation)}" ${recordsControlsLocked(state) ? 'readonly aria-disabled="true"' : ''}>
     </label>
-    <button type="button" data-action="${RECORDS_CONFIRM_PURGE_ACTION}" ${state.purging ? 'aria-disabled="true" aria-busy="true"' : recordsControlsLocked(state) ? 'aria-disabled="true"' : ''}>${state.purging ? 'Purging…' : 'Permanently purge'}</button>
+    <button type="button" data-action="${RECORDS_CONFIRM_PURGE_ACTION}" ${state.purging ? 'aria-disabled="true" aria-busy="true"' : recordsControlsLocked(state) ? 'aria-disabled="true"' : ''}>${state.purging ? 'Purging…' : 'Delete everything for good'}</button>
     <button type="button" data-action="${RECORDS_CANCEL_PURGE_ACTION}" ${recordsControlsLocked(state) ? 'aria-disabled="true"' : ''}>Cancel</button>
   </div>`;
 };
@@ -350,6 +355,8 @@ const renderExportButton = (
 
 export const renderRecordsExplorer = (state: RecordsExplorerState): string => {
   const namespace = state.selectedNamespace;
+  const browsingLocked = state.loading || recordsControlsLocked(state) || state.exporting || state.outboxRefreshing;
+  const pagingLocked = browsingLocked || recordsViewHasDraft(state);
   const policy = state.selectedKind === null ? undefined : state.retention[state.selectedKind];
   return `<section class="records-explorer" data-recued-records-explorer>
     <header class="records-heading"><div><span>Pack-owned storage</span><h2>Records</h2>
@@ -372,13 +379,22 @@ export const renderRecordsExplorer = (state: RecordsExplorerState): string => {
               <div class="records-kind-toolbar"><span>Retention: ${e(policy?.mode ?? 'keep')}${policy?.days ? ` · ${policy.days} days` : ''}${policy?.legal_hold ? ' · legal hold' : ''}</span>
                 ${state.canExport ? `<div class="records-export-actions">${renderExportButton(state, RECORDS_EXPORT_KIND_ACTION, 'Export kind JSON')}
                   ${renderExportButton(state, RECORDS_EXPORT_KIND_CSV_ACTION, 'Export kind CSV')}</div>` : ''}</div>
-              ${state.detail ? renderDetail(state) : renderList(state)}
+              ${state.detail ? renderDetail(state) : `${namespace.schema.entities[state.selectedKind]
+                ? renderRecordsViewControls(state, namespace.schema.entities[state.selectedKind]!, browsingLocked) : ''}
+                ${renderList(state)}
+                <nav class="records-pagination" aria-label="Records pages">
+                  <button type="button" data-action="records-prev-page"${pagingLocked || !state.prevCursor ? ' aria-disabled="true"' : ''}>Previous page</button>
+                  <span role="status">Page ${state.page} · ${state.records.length} records</span>
+                  <button type="button" data-action="records-next-page"${pagingLocked || !state.nextCursor ? ' aria-disabled="true"' : ''}>Next page</button>
+                  <button type="button" data-action="records-first-page"${pagingLocked ? ' aria-disabled="true"' : ''}>Refresh results</button>
+                </nav>`}
             </div>`}`}</section>
     </div>
   </section>`;
 };
 
 export const RECORDS_EXPLORER_STYLES = `
+  .records-view-controls{display:grid;gap:10px;margin:16px 0;min-width:0}.records-filter-row,.records-view-actions,.records-pagination{display:flex;align-items:end;gap:8px;flex-wrap:wrap;min-width:0}.records-view-controls label{display:grid;gap:4px;flex:1 1 150px;min-width:0;max-width:100%}.records-view-controls input,.records-view-controls select{width:100%;min-width:0}.records-view-controls select{box-sizing:border-box;min-height:38px;padding:7px 9px;border:1px solid var(--border,#d0d5dd);border-radius:6px;background:var(--surface,#fff);color:var(--fg,#101828);font:inherit}.records-view-controls .records-help{margin:0;overflow-wrap:anywhere}.records-pagination{align-items:center;margin-top:12px}.records-view-controls button:disabled{opacity:.6;cursor:default}
   .records-explorer{display:grid;gap:18px;min-width:0}.records-heading{display:flex;justify-content:space-between;gap:20px;align-items:end}.records-heading>*{min-width:0}.records-heading h2{margin:2px 0}.records-heading p{max-width:760px;margin:6px 0;color:var(--muted,#667085)}
   .records-explorer button{box-sizing:border-box;min-height:36px;padding:7px 10px;border:1px solid var(--border,#d0d5dd);border-radius:6px;background:var(--surface,#fff);color:var(--fg,#101828);font:inherit;font-size:13px;line-height:1.2;cursor:pointer}.records-explorer button:hover:not([aria-disabled=true]){border-color:var(--border-strong,var(--border,#98a2b3));background:var(--surface-sunk,var(--surface-subtle,#f7f8fa))}.records-explorer button:focus-visible,.records-explorer summary:focus-visible{outline:2px solid var(--accent,#315efb);outline-offset:1px}.records-explorer summary{box-sizing:border-box;min-height:36px;padding:8px 4px;border-radius:6px;cursor:pointer}.records-explorer input{box-sizing:border-box;min-height:38px;padding:7px 9px;border:1px solid var(--border,#d0d5dd);border-radius:6px;background:var(--surface,#fff);color:var(--fg,#101828);font:inherit}
   .records-layout{display:grid;grid-template-columns:minmax(190px,260px) minmax(0,1fr);gap:18px;min-width:0}.records-layout>.records-content{min-width:0}.records-namespace-nav{display:grid;gap:8px;align-content:start;min-width:0}.records-namespace{text-align:left;display:grid;gap:2px;min-width:0;padding:10px;border:1px solid var(--border,#d0d5dd);border-radius:8px;background:transparent}.records-namespace[data-active=true]{border-color:var(--accent,#315efb);background:var(--surface-subtle,#f5f7ff)}.records-namespace strong,.records-namespace span,.records-namespace small{overflow-wrap:anywhere}.records-namespace span,.records-namespace small{color:var(--muted,#667085)}

@@ -26,6 +26,9 @@ import type { ContactStore } from '../storage/contact-store.js';
 import type { ConnectionLookup } from '../housekeeping/reconciliation/vendor-reconciler.js';
 
 export interface ComposeGenericEngagementReconciliationInput {
+  /** D-269 step 1 — the owner's declared server zone for D-139 § A.3.7's
+   *  engagement timezone fallback. */
+  prefsTimezone?: () => string | null | undefined;
   /** Late-bound — `executeDeps` is composed by listener-compose time, so this
    *  returns a value by the post-listener stage. */
   getExecuteDeps: () => ExecuteHandlerDeps | undefined;
@@ -60,12 +63,20 @@ export const composeGenericEngagementReconciliation = (
   // enrolled. The Dynamics leaf's `data.contact` email edges (`sender`/`torecipients`)
   // route through the D-138 `resolveContactRedirect` (merged-contact survivor
   // resolution — the same contact-store wrapper `buildEngagementsResolverDeps` uses),
-  // so a Dynamics email scores under its contact end-to-end. `prefsTimezone` stays
-  // default (Dataverse stamps UTC → the tz hint is inferred either way).
+  // so a Dynamics email scores under its contact end-to-end.
+  //
+  // ⚠ D-269 — `prefsTimezone` is now SUPPLIED here. The old note said it "stays
+  // default (Dataverse stamps UTC → the tz hint is inferred either way)", which
+  // was true only because there was no value to supply: with one, a Dataverse
+  // row that carries no zone resolves on the owner's clock instead of landing
+  // on the UTC sentinel with `event_at_tz_inferred: true`. That flag is the
+  // difference between "we know" and "we guessed", and it was always the
+  // latter.
   const contactStore = input.contactStore;
   const dynamicsFetch: DynamicsFetch = (url, init) => defaultProviderApiFetch(url, init);
   registerDynamicsEngagementLeaf({
     fetch: dynamicsFetch,
+    ...(input.prefsTimezone ? { prefsTimezone: input.prefsTimezone } : {}),
     ...(contactStore !== undefined
       ? {
           resolveContactRedirect: ((email): { merged_into?: string } | null => {

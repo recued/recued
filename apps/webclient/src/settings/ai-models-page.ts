@@ -206,7 +206,7 @@ type FreePoolEntryRecord = Record<string, unknown>;
 
 const MODEL_SOURCE_DISPLAY_NAME: Record<ChatModelSourceId, string> = {
   slot_1: 'Slot 1: fast',
-  slot_2: 'Slot 2: quality / thinking',
+  slot_2: 'Slot 2: better, slower thinking',
   free_pool: 'Free pool',
 };
 
@@ -281,7 +281,7 @@ const CHAT_SETUP_PROVIDERS: ReadonlyArray<{
   },
   {
     id: 'openai-compatible',
-    label: 'OpenAI-compatible endpoint',
+    label: 'An address that works like OpenAI’s',
     suggestedModel: '',
     keyPlaceholder: 'API key',
   },
@@ -578,39 +578,39 @@ export interface AiModelsPageMount {
 const CONTROL_COPY: Readonly<Record<string, { title: string; body: string }>> = {
   prompts: {
     title: 'System prompts',
-    body: 'Pending backend support.',
+    body: 'Your server cannot do this yet.',
   },
   byok: {
-    title: 'BYOK slots',
-    body: 'Fast and quality/thinking provider slots used when chat or runtime work selects BYOK.',
+    title: 'Your own paid keys',
+    body: 'A fast one and a slower, better one. Recued uses these when it needs your own paid key.',
   },
   free_pool: {
     title: 'Free pool',
-    body: 'Free-tier provider entries used before paid BYOK when policy allows it.',
+    body: 'Free ones Recued tries first, before spending on your paid key.',
   },
   model_pref: {
     title: 'Model preference',
-    body: 'Global source every non-overridden chat session inherits.',
+    body: 'What every chat uses, unless you change it for that chat.',
   },
   chat_behaviour: {
     title: 'Chat behaviour',
-    body: 'Applies to every chat on this server, on every model — including chats started from Slack, Telegram or an external agent.',
+    body: 'This applies to every chat on this server, whichever AI it uses. That includes chats started from Slack, Telegram, or another app.',
   },
   embeddings: {
     title: 'Embeddings model',
-    body: 'A dedicated provider + model for embeddings (semantic search / clustering), used by recipes and housekeeping — never chat. OpenAI-compatible is the common case (e.g. text-embedding-3-small, or a self-hosted endpoint via Base URL); Google works too. Anthropic publishes no embeddings model.',
+    body: 'A separate AI just for working out which things are similar. Recipes and tidying-up use it. Chat never does. Most people use one that works like OpenAI’s, such as text-embedding-3-small, or run their own. Google’s works too. Anthropic does not make one.',
   },
   cache: {
     title: 'LLM result cache',
-    body: 'Deterministic short-circuit cache for repeated LLM results.',
+    body: 'Remembers answers so Recued does not pay for the same one twice.',
   },
   ai_policy: {
-    title: 'AI usage policy',
-    body: 'Background BYOK permission and Pause-AI window.',
+    title: 'How Recued may use AI',
+    body: 'Whether Recued may spend your paid key on its own, and when to stop AI altogether.',
   },
   budget: {
-    title: 'Instance token budget',
-    body: 'Daily LLM token ceiling for this server instance.',
+    title: 'Daily spending limit',
+    body: 'The most this server may use in a day.',
   },
 } as const;
 
@@ -622,24 +622,24 @@ const CATALOG_MODE_LABELS: Readonly<
   Record<ChatCatalogDeliveryMode, string>
 > = {
   full: 'Full catalog',
-  index: 'Index (lean list)',
-  'lean-core': 'Lean core (search)',
+  index: 'A short list',
+  'lean-core': 'Only the basics, then search',
 };
 
 /** One-word mode names for inline sentences (the "Automatic" hint). */
 const CATALOG_MODE_SHORT: Readonly<Record<ChatCatalogDeliveryMode, string>> = {
   full: 'Full',
   index: 'Index',
-  'lean-core': 'Lean core',
+  'lean-core': 'Only the basics',
 };
 
 /** The plain-language "how to choose" explanation per mode, shown in the
  *  collapsible legend under the control. This is the answer to "what does each
  *  mode do and when do I want it". */
 const CATALOG_MODE_LEGEND: Readonly<Record<ChatCatalogDeliveryMode, string>> = {
-  full: 'Every tool is listed with its full input schema. Most reliable, largest prompt. Best for BYOK slots, where the prompt is cached and nearly free after the first call.',
-  index: 'Tools are listed by name and summary; the model fetches a tool’s schema on demand. Big token savings with routing intact. Best for the free pool, which has no prompt cache.',
-  'lean-core': 'Only the core tools are listed; the model searches to discover recipes. Biggest savings, best on capable models. Advanced.',
+  full: 'Every tool is listed in full. Most reliable, but the longest message. Best with your own paid key, where the message is remembered and costs almost nothing after the first time.',
+  index: 'Tools are listed by name only. The AI asks for the details when it needs them. Much cheaper, and it still picks the right tool. Best for the free ones, which do not remember anything.',
+  'lean-core': 'Only the main tools are listed. The AI searches for Recipes itself. Cheapest of all, and it works best with a clever AI. For advanced users.',
 };
 
 /** Test connection — what each verdict means, in the owner's terms.
@@ -651,16 +651,16 @@ const CATALOG_MODE_LEGEND: Readonly<Record<ChatCatalogDeliveryMode, string>> = {
  *  identifies the problem. */
 const PROBE_VERDICT: Readonly<Record<ServerLlmProbeResult['diagnosis'], string>> = {
   ok: 'Connected.',
-  auth: 'The API key was rejected. Check the key.',
-  unreachable: 'Could not reach the endpoint. Check the Base URL, and that the server is running.',
-  model_missing: 'The endpoint answered, but does not have that model. Check the Model.',
-  rate_limited: 'The key works — the provider is rate-limiting it right now. Try again shortly.',
+  auth: 'That key was refused. Check it.',
+  unreachable: 'Recued could not reach it. Check the address, and check it is switched on.',
+  model_missing: 'It answered, but it does not have that AI. Check the name you typed.',
+  rate_limited: 'The key works. They are just asking you to slow down. Try again in a moment.',
   // D-262 § B7 — ⛔ NOT a verdict about the slot. Nothing was sent, so nothing
   // was learned, and saying "connected" here would be a badge for a request
   // that never left the process.
-  no_sample: 'This build has no sample audio, so the connection could not be tested. Your settings may still be correct.',
-  provider_error: 'The key works — the provider is having trouble. Not your configuration.',
-  rejected: 'The endpoint refused the request. See the detail below.',
+  no_sample: 'This version has no sample sound to test with. Your settings may still be right.',
+  provider_error: 'The key works. They are having trouble at their end. Nothing is wrong with your settings.',
+  rejected: 'They said no. The reason is below.',
 };
 
 /** Per-surface framing for the System prompts tab. The copy's job is to say WHO
@@ -672,11 +672,11 @@ const PROMPT_SURFACE_COPY: Readonly<Record<ServerLlmPromptSurface, {
 }>> = {
   chat: {
     title: 'Chat',
-    body: 'Read by your own chat and by messenger turns (Slack / Telegram). Set who the assistant is and what to check before it answers — "you are a lawyer", "always look at the calendar first".',
+    body: 'Used by your own chat, and by Slack and Telegram. Tell the AI who it is and what to check before it answers — "you are a lawyer", "always look at the calendar first".',
   },
   llm_gateway: {
-    title: 'LLM gateway',
-    body: 'Read on every request to your OpenAI-compatible gateway — by whoever holds a token, not by you. One block for the whole door. This is where you say what the door is FOR: Recued only fences the caller, it never tells the model what job it is doing.',
+    title: 'The AI door',
+    body: 'Read on every request that comes through your door, by whoever holds a key. Not by you. One set of words for the whole door. This is where you say what the door is for. Recued only decides who may come in. It never tells the AI what job it is doing.',
   },
 };
 
@@ -722,10 +722,10 @@ export interface PromptDraft {
 const CALLER_SYSTEM_POLICY_LABELS: Readonly<
   Record<ServerLlmCallerSystemPolicy, string>
 > = {
-  context: 'As context (default)',
-  append: 'Add to yours',
-  replace: 'Use instead of yours',
-  ignore: 'Ignore it',
+  context: 'As background (normal)',
+  append: 'Added to yours',
+  replace: 'Used instead of yours',
+  ignore: 'Thrown away',
 };
 
 /** What each policy actually does, in the owner's terms. The trade the owner is
@@ -734,10 +734,10 @@ const CALLER_SYSTEM_POLICY_LABELS: Readonly<
 const CALLER_SYSTEM_POLICY_HINTS: Readonly<
   Record<ServerLlmCallerSystemPolicy, string>
 > = {
-  context: "The customer's system prompt reaches the model as context. Your instructions win a conflict. Their app keeps working.",
-  append: "The customer's system prompt is added to yours as real instructions. They can shape tone and task; they cannot remove your text.",
-  replace: "The customer's system prompt is used instead of yours. They steer the model however they like within the tools you granted — your wording no longer applies.",
-  ignore: "The customer's system prompt is dropped. The model never sees it, so anything their app configured there stops working.",
+  context: "What the customer wrote reaches the AI as background. If it clashes with yours, yours wins. Their app keeps working.",
+  append: "What the customer wrote is added to yours as real instructions. They can change the tone and the job. They cannot remove your words.",
+  replace: "What the customer wrote is used instead of yours. They steer the AI however they like, using only the tools you allowed. Your words no longer count.",
+  ignore: "What the customer wrote is thrown away. The AI never sees it, so anything their app set up there stops working.",
 };
 
 const stringifyError = (err: unknown): string =>
@@ -829,7 +829,7 @@ const computeFailLoud = (
   // the user to pick one (rather than silently routing somewhere else).
   return pref.matched
     ? null
-    : 'No AI model is available for your current default. Choose a configured source above.';
+    : 'The AI you picked is not available. Choose one you have set up above.';
 };
 
 const removeChildren = (el: HTMLElement): void => {
@@ -1182,7 +1182,7 @@ export const mountAiModelsPage = (
     row.className = 'ai-models-pending';
     row.setAttribute(AI_MODELS_PENDING_CONTROL_ATTR, id);
     appendHeading(doc, row, 'h4', CONTROL_COPY[id]?.title ?? id);
-    appendText(doc, row, CONTROL_COPY[id]?.body ?? 'Pending backend support.');
+    appendText(doc, row, CONTROL_COPY[id]?.body ?? 'Your server cannot do this yet.');
     parent.appendChild(row);
   };
 
@@ -1403,8 +1403,8 @@ export const mountAiModelsPage = (
       doc,
       section,
       brief
-        ? ' Carrying a running brief across turns. Only the last few messages stay in view otherwise, so anything you said that no tool can look up would be lost.'
-        : ' Not carrying a brief. Anything you said that no tool can look up is lost once it scrolls out of the last few messages.',
+        ? ' Chat keeps a running note of your conversation. Without it, only the last few messages stay in view, so anything you said that no tool can look up would be lost.'
+        : ' Chat keeps no running note. Anything you said that no tool can look up is lost once it scrolls past the last few messages.',
     );
     const briefButton = appendButton(
       doc,
@@ -1412,8 +1412,8 @@ export const mountAiModelsPage = (
       rollingBriefPending
         ? 'Saving…'
         : brief
-          ? 'Turn off running brief'
-          : 'Turn on running brief',
+          ? 'Stop keeping a running note'
+          : 'Keep a running note',
       () => {
         void submitRollingBrief(!brief);
       },
@@ -1457,12 +1457,12 @@ export const mountAiModelsPage = (
       appendText(
         doc,
         section,
-        ' No model sources yet — add a BYOK slot or a free-pool entry.',
+        ' No AI set up yet. Add your own paid key, or a free one.',
       );
       appendButton(
         doc,
         section,
-        'Add a model source',
+        'Add an AI',
         () => {
           setAiTab('providers');
         },
@@ -1570,18 +1570,18 @@ export const mountAiModelsPage = (
     // Per-source hint: what "Automatic" resolves to HERE (the shipped default),
     // so the recommended choice is legible without opening the legend.
     const autoMode = CHAT_CATALOG_SMART_DEFAULT_BY_SOURCE[source];
-    const sourceWord = source === 'free_pool' ? 'the free pool' : 'a BYOK slot';
+    const sourceWord = source === 'free_pool' ? 'the free pool' : 'your own paid key';
     const hint = doc.createElement('span');
     hint.className = 'ai-models-hint';
     hint.textContent =
-      `Applies immediately. Automatic uses ${CATALOG_MODE_SHORT[autoMode]} for ${sourceWord}.`;
+      `This takes effect at once. Automatic uses ${CATALOG_MODE_SHORT[autoMode]} for ${sourceWord}.`;
     parent.appendChild(hint);
     // A collapsed "how to choose" legend explaining each mode. Native
     // <details> — no JS, low visual noise closed, full copy on demand.
     const legend = doc.createElement('details');
     legend.className = 'ai-models-mode-legend';
     const summary = doc.createElement('summary');
-    summary.textContent = 'What do these modes mean?';
+    summary.textContent = 'What do these mean?';
     legend.appendChild(summary);
     const dl = doc.createElement('dl');
     for (const mode of CHAT_CATALOG_DELIVERY_MODES) {
@@ -1623,7 +1623,7 @@ export const mountAiModelsPage = (
       card,
       slot
         ? ` ${asString(slot.provider) || 'provider?'} / ${asString(slot.model) || 'model?'}`
-        : ' Not configured.',
+        : ' Not set up.',
     );
     const provider = appendInput(doc, card, 'Provider', draft.provider, [
       [AI_MODELS_SLOT_FIELD_ATTR, fieldId('provider')],
@@ -1643,7 +1643,7 @@ export const mountAiModelsPage = (
       'API key',
       draft.apiKey,
       [
-        ['placeholder', slot?.has_key === true ? 'Leave blank to keep existing key' : 'Required'],
+        ['placeholder', slot?.has_key === true ? 'Leave empty to keep the key you have' : 'Required'],
         [AI_MODELS_SLOT_FIELD_ATTR, fieldId('api-key')],
         ['aria-label', `${title} API key`],
       ],
@@ -1671,7 +1671,7 @@ export const mountAiModelsPage = (
     const contextWindow = appendInput(
       doc,
       card,
-      'Context window (tokens)',
+      'How much it can hold at once',
       draft.contextWindow,
       [
         [AI_MODELS_CONTEXT_WINDOW_INPUT_ATTR, slotKey],
@@ -1901,8 +1901,8 @@ export const mountAiModelsPage = (
     const body = doc.createElement('p');
     body.setAttribute('id', bodyId);
     body.textContent =
-      'This removes the saved provider settings and API key from this Recued server. '
-      + 'You will need to enter them again to restore this slot.';
+      'This deletes the settings and the key from this Recued server. '
+      + 'You would have to type them in again.';
     panel.appendChild(body);
     if (actionError !== null) {
       const error = doc.createElement('p');
@@ -1985,7 +1985,7 @@ export const mountAiModelsPage = (
       card,
       slot
         ? ` ${asString(slot.provider) || 'provider?'} / ${asString(slot.model) || 'model?'}`
-        : ' Not configured.',
+        : ' Not set up.',
     );
     const provider = appendInput(doc, card, 'Provider', draft.provider, [
       [AI_MODELS_EMBEDDINGS_FIELD_ATTR, 'provider'],
@@ -2012,7 +2012,7 @@ export const mountAiModelsPage = (
       'API key',
       draft.apiKey,
       [
-        ['placeholder', slot?.has_key === true ? 'Leave blank to keep existing key' : 'Required'],
+        ['placeholder', slot?.has_key === true ? 'Leave empty to keep the key you have' : 'Required'],
         [AI_MODELS_EMBEDDINGS_FIELD_ATTR, 'api-key'],
         ['aria-label', 'Embeddings slot API key'],
       ],
@@ -2116,7 +2116,7 @@ export const mountAiModelsPage = (
       card,
       slot
         ? ` ${asString(slot.provider) || 'provider?'} / ${asString(slot.model) || 'model?'}`
-        : ' Not configured. Voice notes need this — the microphone stays hidden until it is set.',
+        : ' Not set up. Voice notes need this. The microphone stays hidden until you set it.',
     );
     const provider = appendInput(doc, card, 'Provider', draft.provider, [
       [AI_MODELS_TRANSCRIPTION_FIELD_ATTR, 'provider'],
@@ -2128,12 +2128,12 @@ export const mountAiModelsPage = (
       ['aria-label', 'Transcription slot model'],
     ]);
     const baseUrl = appendInput(doc, card, 'Base URL', draft.baseUrl, [
-      ['placeholder', 'A local or remote endpoint — both work'],
+      ['placeholder', 'Your own, or someone else’s. Both work'],
       [AI_MODELS_TRANSCRIPTION_FIELD_ATTR, 'base-url'],
       ['aria-label', 'Transcription slot base URL'],
     ]);
     const apiKey = appendInput(doc, card, 'API key', draft.apiKey, [
-      ['placeholder', slot?.has_key === true ? 'Leave blank to keep existing key' : 'Required'],
+      ['placeholder', slot?.has_key === true ? 'Leave empty to keep the key you have' : 'Required'],
       [AI_MODELS_TRANSCRIPTION_FIELD_ATTR, 'api-key'],
       ['aria-label', 'Transcription slot API key'],
     ]);
@@ -2150,7 +2150,7 @@ export const mountAiModelsPage = (
       'Spoken language',
       transcriptionLanguageDraft ?? asString(llmConfig?.transcription_language),
       [
-        ['placeholder', 'Leave empty to detect automatically'],
+        ['placeholder', 'Leave empty and Recued will work it out'],
         [AI_MODELS_TRANSCRIPTION_FIELD_ATTR, 'language'],
         ['aria-label', 'Transcription spoken language'],
       ],
@@ -2166,7 +2166,7 @@ export const mountAiModelsPage = (
     const cap = appendInput(
       doc,
       card,
-      'Daily limit (calls a day)',
+      'Most times a day it may be used',
       transcriptionCapDraft ?? (
         typeof llmConfig?.transcription_daily_requests === 'number'
           ? String(llmConfig.transcription_daily_requests)
@@ -2280,10 +2280,10 @@ export const mountAiModelsPage = (
       // construction, because only providers that report a duration
       // contribute. Presenting it as a measurement would be a number the
       // owner could not reconcile with their bill.
-      if (seconds > 0) parts.push(`at least ${Math.round(seconds)}s of audio heard`);
+      if (seconds > 0) parts.push(`at least ${Math.round(seconds)}s of sound heard`);
     }
-    if (row.over_limit) parts.push('limit reached — resets at 00:00 UTC');
-    if (row.in_cooldown) parts.push('the provider is rate-limiting this right now');
+    if (row.over_limit) parts.push('you have hit the limit. It starts again at midnight UTC');
+    if (row.in_cooldown) parts.push('they are asking you to slow down right now');
     if (parts.length === 0) return;
     const line = doc.createElement('p');
     line.className = 'ai-models-usage';
@@ -2414,10 +2414,10 @@ export const mountAiModelsPage = (
       }
       if (probeResult.supports_json === false) {
         // The owner DECLARED this and nothing has ever checked it.
-        parts.push('JSON mode not supported — Recued will parse the text instead');
+        parts.push('This AI cannot answer in JSON, so Recued will read its plain text instead');
       }
       if (probeResult.accepts_system_role === false) {
-        parts.push('no system-message support — instructions ride in the first user turn');
+        parts.push('This AI has no separate place for instructions, so Recued puts them in the first message');
       }
       facts.textContent = parts.join(' · ');
       box.appendChild(facts);
@@ -2496,8 +2496,8 @@ export const mountAiModelsPage = (
     const body = doc.createElement('p');
     body.setAttribute('id', 'recued-ai-models-remove-body');
     body.textContent =
-      'This deletes the saved entry and API key from this Recued server. '
-      + 'You will need to add both again to restore it.';
+      'This deletes the entry and the key from this Recued server. '
+      + 'You would have to add them again.';
     panel.appendChild(body);
     if (actionError !== null) {
       const error = doc.createElement('p');
@@ -2605,7 +2605,7 @@ export const mountAiModelsPage = (
     renderCatalogModeControl(section, 'free_pool');
     const entries = getPoolEntries(llmConfig);
     if (entries.length === 0) {
-      appendText(doc, section, ' No free-pool entries configured.');
+      appendText(doc, section, ' No free ones set up.');
     }
     for (const entry of entries) {
       const id = asString(entry.id);
@@ -2717,7 +2717,7 @@ export const mountAiModelsPage = (
     const contextWindow = appendInput(
       doc,
       add,
-      'Context window (tokens)',
+      'How much it can hold at once',
       freePoolAddDraft.contextWindow,
       [
         [AI_MODELS_CONTEXT_WINDOW_INPUT_ATTR, 'free_pool:new'],
@@ -2726,7 +2726,7 @@ export const mountAiModelsPage = (
         ['inputmode', 'numeric'],
         ['min', '1'],
         ['step', '1'],
-        ['aria-label', 'New free-pool entry context window (tokens)'],
+        ['aria-label', 'How much the new free one can hold at once'],
       ],
     );
     contextWindow.type = 'number';
@@ -2786,13 +2786,13 @@ export const mountAiModelsPage = (
       return;
     }
     const allow = housekeepingConfig?.allow_byok_background === true;
-    appendText(doc, section, ` Background BYOK: ${allow ? 'allowed' : 'free pool only'}.`);
+    appendText(doc, section, ` Spending your paid key on its own: ${allow ? 'allowed' : 'free pool only'}.`);
     const allowButton = appendButton(
       doc,
       section,
       aiPolicyPendingAction === 'allow'
-        ? 'Updating background BYOK…'
-        : allow ? 'Disable background BYOK' : 'Allow background BYOK',
+        ? 'Changing…'
+        : allow ? 'Do not spend my key on its own' : 'May spend my key on its own',
       () => {
         void submitAiPolicyMutation(
           'allow',
@@ -2806,7 +2806,7 @@ export const mountAiModelsPage = (
       doc,
       section,
       pause === null
-        ? ' Pause-AI: not active.'
+        ? ' AI is not paused.'
         : ` Pause-AI until ${formatClientDateTime(pause, { invalidText: 'unknown time' })}.`,
     );
     const pauseButton = appendButton(
@@ -2953,10 +2953,10 @@ export const mountAiModelsPage = (
       const syncStatus = (): void => {
         const text = currentDraft().role_instructions;
         status.textContent = text !== record.role_instructions
-          ? 'Unsaved changes — Save to put this in force.'
+          ? 'You have not saved yet. Save to make this happen.'
           : record.is_default
-            ? 'Showing the built-in default, in force now.'
-            : 'Showing your saved prompt, in force now.';
+            ? 'This is the one Recued comes with. It is in use now.'
+            : 'This is yours. It is in use now.';
       };
       syncStatus();
       section.appendChild(status);
@@ -2993,7 +2993,7 @@ export const mountAiModelsPage = (
       const loadDefault = appendButton(
         doc,
         controls,
-        'Load default',
+        'Use the one Recued comes with',
         () => {
           if (promptMutationPending.has(record.surface)) return;
           updateDraft({ role_instructions: record.default_role_instructions });
@@ -3025,7 +3025,7 @@ export const mountAiModelsPage = (
         const revert = appendButton(
           doc,
           transport,
-          pendingMutation === 'transport' ? 'Switching…' : 'Deliver as system',
+          pendingMutation === 'transport' ? 'Switching…' : 'Send it as instructions',
           () => {
             void submitPromptMutation(
               record.surface,
@@ -3058,7 +3058,7 @@ export const mountAiModelsPage = (
       if (record.caller_system_policy !== undefined) {
         const policySection = doc.createElement('div');
         policySection.className = 'ai-models-prompt-policy';
-        appendHeading(doc, policySection, 'h4', "Customer's own system prompt");
+        appendHeading(doc, policySection, 'h4', "What the customer writes");
         const policyLabel = doc.createElement('label');
         policyLabel.className = 'ai-models-field';
         const policySelect = doc.createElement('select');
@@ -3105,7 +3105,7 @@ export const mountAiModelsPage = (
       );
       const summary = doc.createElement('summary');
       summary.textContent =
-        'Recued always adds this (not editable — it is how the engine works)';
+        'Recued always adds this. You cannot change it. It is how Recued works.';
       summary.setAttribute(
         'aria-label',
         `Show ${copy.title} always-on prompt text`,
@@ -3253,17 +3253,17 @@ export const mountAiModelsPage = (
     const apiKey = chatSetupDraft.apiKey.trim();
     const baseUrl = chatSetupDraft.baseUrl.trim();
     if (model.length === 0) {
-      chatSetupError = 'Enter the model name supplied by your provider.';
+      chatSetupError = 'Type the name your provider gave you.';
       render();
       return;
     }
     if (apiKey.length === 0) {
-      chatSetupError = 'Enter an API key to connect this model.';
+      chatSetupError = 'Type a key to connect this AI.';
       render();
       return;
     }
     if (provider === 'openai-compatible' && baseUrl.length === 0) {
-      chatSetupError = 'Enter the base URL for this compatible endpoint.';
+      chatSetupError = 'Type the address for this AI.';
       render();
       return;
     }
@@ -3272,7 +3272,7 @@ export const mountAiModelsPage = (
       && !isChatSetupEndpointUrl(baseUrl)
     ) {
       chatSetupError =
-        'Enter a full Base URL beginning with http:// or https://.';
+        'Type the whole address. It starts with http:// or https://.';
       render();
       return;
     }
@@ -3358,20 +3358,20 @@ export const mountAiModelsPage = (
       doc,
       section,
       'h3',
-      'Connect a model to start chatting',
+      'Connect an AI to start chatting',
     );
     setupHeading.id = 'recued-chat-setup-title';
     const intro = doc.createElement('p');
     intro.className = 'ai-models-chat-setup-intro';
     intro.textContent =
-      'Choose your provider, confirm its model name, and add your API key. You can tune everything else later.';
+      'Pick your provider, check the name of the AI, and add your key. You can change everything else later.';
     section.appendChild(intro);
 
     if (state === 'loading') {
       const status = doc.createElement('div');
       status.setAttribute(AI_MODELS_CHAT_SETUP_STATUS_ATTR, 'loading');
       status.setAttribute('role', 'status');
-      status.textContent = 'Checking your current Chat setup…';
+      status.textContent = 'Checking how Chat is set up…';
       section.appendChild(status);
       parent.appendChild(section);
       return;
@@ -3381,7 +3381,7 @@ export const mountAiModelsPage = (
       const alert = doc.createElement('div');
       alert.setAttribute(AI_MODELS_CHAT_SETUP_ERROR_ATTR, 'load');
       alert.setAttribute('role', 'alert');
-      alert.textContent = `Could not read all current settings: ${loadErrors.join(' ')}`;
+      alert.textContent = `Recued could not read all your settings: ${loadErrors.join(' ')}`;
       section.appendChild(alert);
     }
     if (chatSetupError !== null) {
@@ -3403,7 +3403,7 @@ export const mountAiModelsPage = (
         alert.setAttribute(AI_MODELS_CHAT_SETUP_ERROR_ATTR, 'unavailable');
         alert.setAttribute('role', 'alert');
         alert.textContent =
-          'This server cannot read the current model setup, so Recued will not overwrite it.';
+          'This server cannot read how the AI is set up, so Recued will not change it.';
         section.appendChild(alert);
       } else {
         const retry = appendButton(
@@ -3437,10 +3437,10 @@ export const mountAiModelsPage = (
       ready.setAttribute(AI_MODELS_CHAT_SETUP_STATUS_ATTR, 'ready');
       ready.setAttribute('role', 'status');
       ready.setAttribute('tabindex', '-1');
-      appendHeading(doc, ready, 'h4', 'Model selected for Chat');
+      appendHeading(doc, ready, 'h4', 'Chat has an AI');
       const detail = doc.createElement('p');
       detail.textContent = selectedSource === null
-        ? 'Your model is selected for new chats.'
+        ? 'New chats will use it.'
         : `${selectedSource.label} is selected for Chat.`;
       ready.appendChild(detail);
       section.appendChild(ready);
@@ -3455,7 +3455,7 @@ export const mountAiModelsPage = (
       finishing.setAttribute(AI_MODELS_CHAT_SETUP_STATUS_ATTR, 'saving');
       finishing.setAttribute('role', 'status');
       finishing.setAttribute('tabindex', '-1');
-      finishing.textContent = 'Finishing Chat setup…';
+      finishing.textContent = 'Finishing off…';
       section.appendChild(finishing);
       parent.appendChild(section);
       focusChatSetupProgress(finishing);
@@ -3463,11 +3463,11 @@ export const mountAiModelsPage = (
     }
 
     if (hasConfiguredSource && sources.length > 0 && !chatSetupSubmitting) {
-      appendHeading(doc, section, 'h4', 'Use a model that is already connected');
+      appendHeading(doc, section, 'h4', 'Use one that is already connected');
       const copy = doc.createElement('p');
       copy.className = 'ai-models-chat-setup-helper';
       copy.textContent =
-        'Your provider is connected, but Chat still needs a default model.';
+        'Your provider is connected. Chat still needs to know which AI to use.';
       section.appendChild(copy);
       if (
         chatSetupExistingSourceId === null
@@ -3500,7 +3500,7 @@ export const mountAiModelsPage = (
       const useButton = appendButton(
         doc,
         section,
-        'Use this model and start chatting',
+        'Use this one and start chatting',
         () => {
           if (chatSetupExistingSourceId !== null) {
             void useExistingChatSource(chatSetupExistingSourceId);
@@ -3553,7 +3553,7 @@ export const mountAiModelsPage = (
     if (chatSetupSubmitting) modelInput.readOnly = true;
     const modelHint = doc.createElement('span');
     modelHint.className = 'ai-models-chat-setup-helper';
-    modelHint.textContent = 'This suggestion is editable if your provider gave you a different model ID.';
+    modelHint.textContent = 'You can change this if your provider gave you a different name.';
     section.appendChild(modelHint);
 
     const keyInput = appendInput(
@@ -3574,7 +3574,7 @@ export const mountAiModelsPage = (
     const keyHint = doc.createElement('span');
     keyHint.className = 'ai-models-chat-setup-helper';
     keyHint.textContent =
-      'The key is stored server-side; Recued never sends it back to this browser.';
+      'The key is kept on your server. Recued never sends it back to this browser.';
     section.appendChild(keyHint);
 
     const baseUrlWrap = doc.createElement('div');
@@ -3662,7 +3662,7 @@ export const mountAiModelsPage = (
       const unavailable = doc.createElement('p');
       unavailable.className = 'ai-models-chat-setup-helper';
       unavailable.textContent =
-        'This server does not expose the settings needed to finish Chat setup.';
+        'This server will not let Recued read the settings it needs to finish.';
       section.appendChild(unavailable);
     }
     appendChatSetupExits(section, false);
@@ -3820,7 +3820,7 @@ export const mountAiModelsPage = (
     // heading (<h2>); the page no longer repeats it as an <h3> (the
     // duplicate-header review finding).
     if (state === 'loading') {
-      appendText(doc, dynamicHost, 'Loading AI configuration.');
+      appendText(doc, dynamicHost, 'Loading your AI settings.');
     }
     if (loadErrors.length > 0) {
       const list = doc.createElement('ul');
@@ -4083,7 +4083,7 @@ export const mountAiModelsPage = (
             housekeepingConfig = snapshot;
           })
           .catch((err) => {
-            loadErrors.push(`AI usage policy: ${stringifyError(err)}`);
+            loadErrors.push(`How Recued may use AI: ${stringifyError(err)}`);
           }),
       );
     }

@@ -656,17 +656,17 @@ export const mountProfileList = (
   const removalErrorCopy = (error: unknown): string =>
     error instanceof Error && error.message.trim().length > 0
       ? error.message
-      : 'This server profile could not be removed. Try again.';
+      : 'Recued could not remove that server. Try again.';
 
   const renameErrorCopy = (error: unknown): string =>
     error instanceof Error && error.message.trim().length > 0
       ? error.message
-      : 'This server name could not be saved. Try again.';
+      : 'Recued could not save that name. Try again.';
 
   const switchErrorCopy = (error: unknown): string =>
     error instanceof Error && error.message.trim().length > 0
       ? error.message
-      : 'Couldn’t switch servers. This tab is still using the current server.';
+      : 'Recued could not change servers. This tab is still on the one you were using.';
 
   const currentSwitchWorkState = (): ServerSwitchWorkState => {
     try {
@@ -709,7 +709,7 @@ export const mountProfileList = (
       // broken rather than as "nothing paired yet".
       const empty = doc.createElement('li');
       empty.setAttribute(SERVER_SWITCHER_EMPTY_ATTR, '');
-      empty.textContent = 'No servers paired on this browser.';
+      empty.textContent = 'This browser is not paired with any server.';
       list.appendChild(empty);
       return;
     }
@@ -819,7 +819,7 @@ export const mountProfileList = (
         remove.textContent = 'Forget';
         remove.setAttribute(
           'aria-label',
-          `Review options for removing ${p.label} from this browser`,
+          `See how to remove ${p.label} from this browser`,
         );
         remove.addEventListener('click', () => {
           if (choiceBusy) return;
@@ -875,22 +875,22 @@ export const mountProfileList = (
         const resultReadyOnly = switching.activeWork.length > 0
           && switching.activeWork.every((work) => work.phase === 'result_ready');
         consequence.textContent = switching.workState === 'chat_draft'
-          ? `Your unsent Chat draft stays only in this tab. Switching will discard it; it will not be sent to or stored on ${p.label}.`
+          ? `The Chat message you have not sent is only in this tab. Switching loses it. It will never be sent to, or saved on, ${p.label}.`
           : switching.workState === 'unsaved_changes'
             ? `You have unsaved changes on ${sourceLabel}. Switching will discard them.`
             : switching.workState === 'in_flight_with_chat_draft'
               ? resultReadyOnly
-                ? `A result is ready to review on ${sourceLabel}, and this tab has an unsent Chat draft. Switching will leave the result there, discard the draft, and move neither one to ${p.label}.`
+                ? `There is a result waiting on ${sourceLabel}, and this tab has an unsent Chat draft. Switching will leave the result there, discard the draft, and move neither one to ${p.label}.`
                 : `Work is still finishing on ${sourceLabel}, and this tab has an unsent Chat draft. It may already have reached that server. Switching now cannot confirm or cancel it, will discard the draft, and will not move either one to ${p.label}.`
               : switching.workState === 'in_flight_with_unsaved_changes'
                 ? resultReadyOnly
-                  ? `A result is ready to review on ${sourceLabel}, and this tab may also hold unsaved changes. Switching will leave the result there and discard changes that have not been saved.`
+                  ? `There is a result waiting on ${sourceLabel}, and this tab may also hold unsaved changes. Switching will leave the result there and discard changes that have not been saved.`
                   : `Work is still finishing on ${sourceLabel}, and this tab may also hold unsaved changes. Switching now cannot confirm or cancel work that may have reached that server, and will discard changes that have not.`
                 : switching.workState === 'in_flight'
                   ? resultReadyOnly
-                    ? `A result is ready to review on ${sourceLabel}. Switching now will leave that result there; it will not move to ${p.label}.`
+                    ? `There is a result waiting on ${sourceLabel}. Switching now will leave that result there; it will not move to ${p.label}.`
                     : `Work is still finishing on ${sourceLabel}. It may already have reached that server. Switching now cannot confirm or cancel it; any outcome or receipt will stay there.`
-                  : `Recued will reload this tab to use ${p.label}.`;
+                  : `Recued will reload this tab so it uses ${p.label}.`;
         confirm.appendChild(consequence);
 
         if (switching.activeWork.length > 0) {
@@ -932,7 +932,7 @@ export const mountProfileList = (
         const detail = doc.createElement('p');
         detail.setAttribute('id', detailId);
         detail.textContent =
-          'You’ll stay in the same area when it is safe. Server-specific chats, records, runs, and detail links stay on their original server.';
+          'You stay where you are when that is safe. Chats, records, runs and links belong to one server and stay there.';
         confirm.appendChild(detail);
 
         if (switching.error !== null) {
@@ -956,8 +956,8 @@ export const mountProfileList = (
           ? 'Switching…'
           : isInFlightServerSwitchWorkState(switching.workState)
             ? resultReadyOnly
-              ? 'Switch and review later'
-              : 'Switch and check later'
+              ? 'Switch, and look later'
+              : 'Switch, and check later'
             : 'Switch server';
         if (switching.busy) commit.setAttribute('disabled', '');
         commit.addEventListener('click', () => {
@@ -1206,7 +1206,7 @@ export const mountProfileList = (
 
         const detail = doc.createElement('p');
         detail.textContent =
-          'Forgetting removes this saved profile only. It does not revoke access already granted by the server.';
+          'Forgetting only removes this saved server from here. The server still lets this browser in.';
         confirm.appendChild(detail);
 
         const instanceId = p.pair_metadata?.instance_id?.trim() ?? '';
@@ -1215,10 +1215,10 @@ export const mountProfileList = (
         status.setAttribute(SERVER_SWITCHER_REMOVE_STATUS_ATTR, '');
         if (canRevoke) {
           status.textContent =
-            'Revoke access to sign this browser out on the server before removing the saved profile.';
+            'Take this browser’s access away first, to sign it out on the server, before you forget it here.';
         } else if (!isActive) {
           status.textContent =
-            'Switch to this server first if you also want to revoke this browser’s access.';
+            'Switch to this server first if you also want to take this browser’s access away.';
         } else if (!activeConnected) {
           status.textContent =
             'Reconnect to this server before revoking access. You can still forget the saved profile here.';
@@ -1283,7 +1283,7 @@ export const mountProfileList = (
           revoke.setAttribute(SERVER_SWITCHER_REMOVE_REVOKE_ATTR, '');
           revoke.textContent = removal.busy === 'revoke'
             ? 'Revoking…'
-            : 'Revoke access and forget';
+            : 'Take access away and forget';
           if (busy) revoke.setAttribute('disabled', '');
           revoke.addEventListener('click', () => runRemoval('revoke'));
           registerFocusTarget(`remove-revoke:${p.id}`, revoke);

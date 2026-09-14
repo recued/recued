@@ -28,6 +28,18 @@ export type { Namespace } from './namespaces.js';
 
 // Types — errors
 export type { RecipeErrorCode, ErrorSeverity, RecipeError } from './errors.js';
+// D-268 — how hard to stop an unattended automation that just failed. Splits the
+// `environment` attribution bucket by "will waiting help", which is the only
+// bucket ERROR_ATTRIBUTION does not already determine.
+export type {
+  AutomationFailureBasis,
+  AutomationFailureDisposition,
+  AutomationStopPoint,
+} from './automation-failure-policy.js';
+export {
+  ENVIRONMENT_RETRY_POLICY,
+  classifyAutomationFailure,
+} from './automation-failure-policy.js';
 
 // Types — steps
 export type { RecipeSimulationInput, RecipeSimulationRequest, RecipeSimulationResult, SimulatedStep } from './recipe-simulation.js';
@@ -158,6 +170,14 @@ export {
   PAID_DOCUMENT_AI_DRAFT_MAX_CHARS,
   resolvePaidDocumentDirectCheckoutClaimConfiguration,
 } from './paid-document-direct-checkout-config.js';
+export {
+  REVIEW_CRITERIA_MAX,
+  REVIEW_CRITERIA_METADATA_KEY,
+  REVIEW_CRITERION_KEY_MAX,
+  readReviewCriteria,
+  type ReviewCriteriaDeclaration,
+  type ReviewCriterion,
+} from './review-criteria-config.js';
 export type {
   PaidDocumentDirectCheckoutClaimConfiguration,
   PaidDocumentDirectCheckoutLegacyClaimConfiguration,
@@ -805,6 +825,16 @@ export {
   buildCronFromInterval,
   describeCron,
 } from './cron-presets.js';
+// D-266 — owner-declared missed-schedule policy. Same boundary reason
+// as the cron presets above: the picker lives on clients, the decision
+// runs in `@recued/scheduler`.
+export {
+  MISSED_SCHEDULE_POLICIES,
+  DEFAULT_MISSED_SCHEDULE_POLICY,
+  MISSED_SCHEDULE_POLICY_COPY,
+  isMissedSchedulePolicy,
+  type MissedSchedulePolicy,
+} from './missed-schedule-policy.js';
 export {
   AUTO_RUN_EXTENSION_FLOOR_MS,
   AUTO_RUN_SERVER_FLOOR_MS,
@@ -2996,6 +3026,76 @@ export {
 } from './prefs.js';
 export type { InstancePrefKey, InstancePrefs, InstancePrefSpec, InstancePrefValue, VoiceSpeakMode } from './prefs.js';
 
+// D-269 step 1 — the server's own timezone (declared, or followed on a laptop
+// install). The single source every wall-clock surface resolves through.
+export {
+  canonicalizeIanaZone,
+  isValidIanaZone,
+  resolveServerTimeZone,
+  isServerTimeZoneConfigured,
+  DEFAULT_SERVER_TIME_ZONE_MODE,
+} from './server-timezone.js';
+export type {
+  ServerTimeZoneMode,
+  ServerTimeZoneSetting,
+  ServerTimeZoneGetResponse,
+  ServerTimeZoneSetRequest,
+  ServerTimeZoneSetResponse,
+} from './server-timezone.js';
+
+// D-269 step 2 — the per-kind notification policy (anchored kinds only).
+export {
+  NOTIFICATION_ANCHORED_KINDS,
+  NOTIFICATION_KIND_DEFAULT_OFFSET_MS,
+  NOTIFICATION_KIND_MIN_OFFSET_MS,
+  NOTIFICATION_KIND_MAX_OFFSET_MS,
+  isNotificationAnchoredKind,
+  isValidNotificationOffsetMs,
+  defaultNotificationKindPolicy,
+} from './notification-kind-policy.js';
+export type {
+  NotificationAnchoredKind,
+  NotificationKindPolicy,
+  NotificationKindPolicyGetResponse,
+  NotificationKindPolicySetRequest,
+  NotificationKindPolicySetResponse,
+} from './notification-kind-policy.js';
+
+// D-269 step 3 — quiet hours: one window, per person, consulted by delivery.
+export {
+  QUIET_HOURS_APPLIES_TO,
+  MINUTES_PER_DAY,
+  DEFAULT_QUIET_HOURS_FROM_MINUTE,
+  DEFAULT_QUIET_HOURS_TO_MINUTE,
+  defaultQuietHoursPolicy,
+  isValidQuietHoursMinute,
+  localMinuteOfDay,
+  isMinuteWithinWindow,
+  isWithinQuietHours,
+  canArmQuietHours,
+  shouldSuppressForQuietHours,
+  mayHoldAskForQuietHours,
+  QUIET_HOURS_APPROVAL_IS_NOT_RECOMMENDED,
+  resolveQuietHoursOccurrence,
+  buildQuietHoursDigest,
+  isQuietHoursDigestEmpty,
+  renderQuietHoursDigest,
+} from './quiet-hours.js';
+export type {
+  QuietHoursAppliesTo,
+  QuietHoursPolicy,
+  QuietHoursGetResponse,
+  QuietHoursSetRequest,
+  QuietHoursSetResponse,
+  QuietHoursOccurrence,
+  QuietHoursDigest,
+  QuietHoursDigestItem,
+} from './quiet-hours.js';
+
+// D-269 step 3 follow-on — zoned wall clock, shared by the server sweep and the
+// client's quiet-hours preview (which cannot import from `backend/`).
+export { zonedWallClockToEpochMs, zoneOffsetMsAt, cronZoneFor } from './zoned-wall-clock.js';
+
 // Phase B — pressure details (heartbeat + server.getStatus shared shape).
 export {
   STORAGE_STATE_RANK,
@@ -4455,11 +4555,17 @@ export type {
   ChatDataDiagnosisRequest,
   ChatDataDiagnosisContext,
   ChatMessage,
+  ChatReplyReference,
+  ChatMessageReply,
   ChatEgressPacket,
   ChatSessionSummary,
   ChatRpcMethod,
   ChatBroadcastEventKind,
   ChatHistoryCursor,
+  ChatMessageSearchRequest,
+  ChatMessageSearchMatch,
+  ChatMessageSearchResult,
+  ChatSessionGetRequest,
   ChatSessionChangedField,
   ChatTableName,
   // D-137 W2.2 — Mary's per-kind catalog scope
@@ -4894,6 +5000,8 @@ export type {
   ServerAuthState,
   ServerAuthMigrationStatus,
   ServerSchedule,
+  ServerMissedRunEntry,
+  ServerMissedRunReport,
   RecipeRunFacts,
   ServerExecuteResponse,
   ServerMigrationResult,
@@ -4916,6 +5024,7 @@ export type {
   ServerRecentExecution,
   ServerRecentNotification,
   ServerPendingAsk,
+  ServerPendingAskDetail,
   SharedCompareAndSetResult,
   SharedListEntry,
   SharedReadResult,
@@ -5521,6 +5630,7 @@ export type {
   MailComposeAiAction,
   MailComposeRewriteAction,
   MailComposeAttachment,
+  ComposeDispatchMode,
   ComposeDispatchResult,
   ComposeMailSendPayload,
   NormalizedMailSend,
@@ -5550,6 +5660,7 @@ export {
   deriveReplyValues,
   composeStateToSendPayload,
   composePayloadToSendRecipeConfig,
+  SAVE_COMPOSED_DRAFT_TO_MAILBOX_RECIPE_ID,
   SEND_COMPOSED_MAIL_RECIPE_ID,
   composeRewriteRecipeConfig,
   REWRITE_COMPOSED_MAIL_RECIPE_ID,
@@ -6495,6 +6606,12 @@ export type {
 export * from './date-compute.js';
 export * from './searchable-score.js';
 export * from './saved-data-views.js';
+export * from './records-view.js';
 export * from './task-data-view.js';
 export * from './preapproval.js';
 export * from './operation-phrase.js';
+
+export * from './chat-turn-queue.js';
+export * from './file-lifecycle.js';
+export * from './chat-delivery.js';
+export * from './chat-history-filters.js';

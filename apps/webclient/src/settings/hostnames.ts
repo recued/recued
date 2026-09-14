@@ -121,7 +121,7 @@ const CERT_SOURCE_LABELS: Record<HostnameCertSource, string> = {
   // certificate would read as a broken feature rather than an unbuilt one.
   recued_acme_custom: 'My own domain, managed by Recued',
   byo_uploaded: 'Upload my own certificate',
-  byo_external: 'Handled outside Recued',
+  byo_external: 'Looked after somewhere else',
 };
 
 const VERIFICATION_METHOD_LABELS: Record<HostnameVerificationMethod, string> = {
@@ -155,7 +155,7 @@ const OWNERSHIP_CLASS: Record<HostnameOwnershipStatus, string> = {
  *  written before the column existed (absent ⇒ unknown, not assumed). */
 const CERT_PROVISIONING_LABELS: Record<HostnameCertProvisioningState, string> = {
   pending: 'Provisioning…',
-  failed: 'Cert failed — retrying',
+  failed: 'The certificate failed. Trying again',
   ready: 'Verified',
 };
 
@@ -310,7 +310,7 @@ export const HOSTNAMES_PANEL_STYLES = `
   align-items: center;
   gap: 8px;
 }
-/* Listener ports — spans both grid columns so the four checkboxes sit on one
+/* Which ports to listen on — spans both grid columns so the four checkboxes sit on one
    row rather than wrapping inside a half-width cell. */
 .hostnames-ports-field {
   grid-column: 1 / -1;
@@ -765,14 +765,14 @@ export const formatCertExpiry = (
   if (expires_at === undefined || expires_at === 0) return { severity: 'none', text: '' };
   if (!Number.isFinite(expires_at)) return { severity: 'none', text: '' };
   const diff = expires_at - now;
-  if (diff <= 0) return { severity: 'expired', text: 'cert expired' };
+  if (diff <= 0) return { severity: 'expired', text: 'the certificate has run out' };
   const days = Math.ceil(diff / DAY_MS);
   const rel =
     days <= 1
-      ? 'expires within a day'
+      ? 'runs out within a day'
       : days < 60
-        ? `expires in ${days} days`
-        : `expires in ${Math.round(days / 30)} months`;
+        ? `runs out in ${days} days`
+        : `runs out in ${Math.round(days / 30)} months`;
   return {
     // Strict `<` so the amber threshold matches the backend renewal
     // trigger EXACTLY (Codex P1 fold): the reconciliation monitor renews
@@ -788,18 +788,18 @@ const proofFailureCopy = (result: Exclude<HostnameOwnershipProofResult, { ok: tr
   if (result.code === 'method_mismatch' && result.expected_method !== undefined) {
     return `Expected ${VERIFICATION_METHOD_LABELS[result.expected_method]}.`;
   }
-  if (result.code === 'recued_acme_preverified') return 'Recued ACME hostnames are already verified.';
+  if (result.code === 'recued_acme_preverified') return 'Recued has already checked the names it looks after.';
   // D-235 § 3.2 — say WHY, not just "incompatible". The user reaching this has
   // a valid certificate in hand and is being told it isn't the right kind of
   // evidence, which is unintuitive without the reason.
   if (result.code === 'cert_proof_insufficient') {
-    return 'Certificate proof cannot authorize Recued to issue a new certificate for a domain you own — '
-      + 'use the DNS TXT or HTTP token challenge instead.';
+    return 'A certificate cannot prove Recued may get a new one for a domain you own. '
+      + 'Use the DNS or the web method instead.';
   }
-  if (result.code === 'missing_token_hash') return 'This hostname does not have a token hash saved.';
-  if (result.code === 'incompatible_proof_method') return 'Proof method is not compatible with this cert source.';
-  if (result.code === 'not_found') return 'Hostname not found.';
-  if (result.code === 'invalid_hostname') return 'Hostname is invalid.';
+  if (result.code === 'missing_token_hash') return 'Recued has no code saved for this name.';
+  if (result.code === 'incompatible_proof_method') return 'You cannot prove it that way for this kind of certificate.';
+  if (result.code === 'not_found') return 'Recued does not know that name.';
+  if (result.code === 'invalid_hostname') return 'That name is not valid.';
   return result.code;
 };
 
@@ -1072,7 +1072,7 @@ export const mountHostnamesPanel = (
     wrap.className = 'hostnames-ports-field';
     const legend = doc.createElement('span');
     legend.className = 'hostnames-field-label';
-    legend.textContent = 'Listener ports';
+    legend.textContent = 'Which ports to listen on';
     wrap.appendChild(legend);
 
     const group = doc.createElement('div');
@@ -1144,13 +1144,13 @@ export const mountHostnamesPanel = (
         }),
       ),
     );
-    grid.appendChild(makeField('Cert source', makeAddCertSourceSelect()));
+    grid.appendChild(makeField('Where the certificate comes from', makeAddCertSourceSelect()));
 
     const methods = compatibleMethodsFor(state.add.values.cert_source);
     if (methods.length > 0) {
       grid.appendChild(
         makeField(
-          'Proof method',
+          'How you prove you own it',
           makeMethodSelect(
             HOSTNAMES_ADD_FIELD_ATTR,
             methods,
@@ -1172,7 +1172,7 @@ export const mountHostnamesPanel = (
       if (state.add.values.verification_method !== 'cert_proof') {
         grid.appendChild(
           makeField(
-            'Token hash',
+            'Proof code',
             makeInput(
               'verification_token_hash',
               state.add.values.verification_token_hash,
@@ -1266,13 +1266,13 @@ export const mountHostnamesPanel = (
 
     const grid = doc.createElement('div');
     grid.className = 'hostnames-form-grid';
-    grid.appendChild(makeField('Cert source', makeUpdateCertSourceSelect()));
+    grid.appendChild(makeField('Where the certificate comes from', makeUpdateCertSourceSelect()));
 
     const methods = compatibleMethodsFor(state.update.values.cert_source);
     if (methods.length > 0) {
       grid.appendChild(
         makeField(
-          'Proof method',
+          'How you prove you own it',
           makeMethodSelect(
             HOSTNAMES_UPDATE_FIELD_ATTR,
             methods,
@@ -1294,7 +1294,7 @@ export const mountHostnamesPanel = (
       if (state.update.values.verification_method !== 'cert_proof') {
         grid.appendChild(
           makeField(
-            'New token hash',
+            'New proof code',
             makeInput(
               'verification_token_hash',
               state.update.values.verification_token_hash,
@@ -1454,14 +1454,14 @@ export const mountHostnamesPanel = (
 
     const title = doc.createElement('h4');
     title.className = 'hostnames-detail-title';
-    title.textContent = 'Hostname detail';
+    title.textContent = 'About this name';
     panel.appendChild(title);
 
     if (state.detail.loading) {
       const p = doc.createElement('p');
       p.className = 'hostnames-muted';
       p.setAttribute(HOSTNAMES_PANEL_STATUS_ATTR, '');
-      p.textContent = 'Loading hostname detail...';
+      p.textContent = 'Loading…';
       panel.appendChild(p);
     } else if (state.detail.error !== null) {
       panel.appendChild(renderError(state.detail.error));
@@ -1469,22 +1469,22 @@ export const mountHostnamesPanel = (
       const p = doc.createElement('p');
       p.className = 'hostnames-muted';
       p.setAttribute(HOSTNAMES_PANEL_STATUS_ATTR, '');
-      p.textContent = 'Hostname not found.';
+      p.textContent = 'Recued does not know that name.';
       panel.appendChild(p);
     } else {
       const detail = state.detail.projection;
       renderCertExpiryChip(panel, detail.cert_expires_at);
       const meta = doc.createElement('div');
       meta.className = 'hostnames-row-meta';
-      renderMeta(meta, 'Hostname id', detail.hostname_id, true);
+      renderMeta(meta, 'Name id', detail.hostname_id, true);
       renderMeta(meta, 'Hostname', detail.hostname);
-      renderMeta(meta, 'Cert source', CERT_SOURCE_LABELS[detail.cert_source]);
+      renderMeta(meta, 'Where the certificate comes from', CERT_SOURCE_LABELS[detail.cert_source]);
       renderMeta(meta, 'Ownership', OWNERSHIP_LABELS[detail.ownership_status]);
-      renderMeta(meta, 'TLS topology', detail.tls_topology);
+      renderMeta(meta, 'How the certificate is served', detail.tls_topology);
       renderMeta(meta, 'Ports', detail.listener_ports.join(', ') || 'none');
       renderMeta(meta, 'Enabled', detail.enabled ? 'yes' : 'no');
-      renderMeta(meta, 'DDNS managed', detail.ddns_managed ? 'yes' : 'no');
-      renderMeta(meta, 'Proof method', detail.verification_method
+      renderMeta(meta, 'Recued keeps the address up to date', detail.ddns_managed ? 'yes' : 'no');
+      renderMeta(meta, 'How you prove you own it', detail.verification_method
         ? VERIFICATION_METHOD_LABELS[detail.verification_method]
         : 'none');
       // A bare "none" told the user nothing about WHY. The enrollment service
@@ -1501,10 +1501,10 @@ export const mountHostnamesPanel = (
               ? 'Ready'
               : 'Unknown',
       );
-      renderMeta(meta, 'Cert fingerprint', detail.cert_fingerprint ?? 'none', true);
-      renderMeta(meta, 'Cert expiry', formatDate(detail.cert_expires_at));
-      renderMeta(meta, 'Cert issuer', detail.cert_chain_metadata?.issuer ?? 'none');
-      renderMeta(meta, 'Cert subject', detail.cert_chain_metadata?.subject ?? 'none');
+      renderMeta(meta, 'Certificate fingerprint', detail.cert_fingerprint ?? 'none', true);
+      renderMeta(meta, 'Certificate runs out', formatDate(detail.cert_expires_at));
+      renderMeta(meta, 'Who issued it', detail.cert_chain_metadata?.issuer ?? 'none');
+      renderMeta(meta, 'Who it is for', detail.cert_chain_metadata?.subject ?? 'none');
       panel.appendChild(meta);
     }
 
@@ -1528,7 +1528,7 @@ export const mountHostnamesPanel = (
     if (state.remove.error !== null) panel.appendChild(renderError(state.remove.error));
     const p = doc.createElement('p');
     p.className = 'hostnames-muted';
-    p.textContent = `Remove ${row.hostname} from the hostname registry?`;
+    p.textContent = `Remove ${row.hostname} from your list of names?`;
     panel.appendChild(p);
 
     const actions = doc.createElement('div');
@@ -1569,14 +1569,14 @@ export const mountHostnamesPanel = (
       p.className = 'hostnames-muted';
       p.setAttribute(HOSTNAMES_PANEL_STATUS_ATTR, '');
       p.textContent = state.verify.result.status === 'verified'
-        ? 'Ownership verified.'
-        : 'Ownership proof failed.';
+        ? 'You own it. Checked.'
+        : 'Recued could not show that you own it.';
       form.appendChild(p);
     } else if (state.verify.saving && opts.runExternalProbe !== undefined) {
       const p = doc.createElement('p');
       p.className = 'hostnames-muted';
       p.setAttribute(HOSTNAMES_VERIFY_AUTO_PROBE_STATUS_ATTR, '');
-      p.textContent = 'Running external proof probe...';
+      p.textContent = 'Checking from the outside…';
       form.appendChild(p);
     }
 
@@ -1584,7 +1584,7 @@ export const mountHostnamesPanel = (
     grid.className = 'hostnames-form-grid';
     grid.appendChild(
       makeField(
-        'Proof method',
+        'How you prove you own it',
         makeMethodSelect(
           HOSTNAMES_VERIFY_FIELD_ATTR,
           methods,
@@ -1625,13 +1625,13 @@ export const mountHostnamesPanel = (
       label.className = 'hostnames-checkbox-label';
       label.appendChild(input);
       const text = doc.createElement('span');
-      text.textContent = 'Certificate matches hostname';
+      text.textContent = 'The certificate matches the name';
       label.appendChild(text);
       grid.appendChild(label);
     } else {
       grid.appendChild(
         makeField(
-          'Observed token hash',
+          'The proof code Recued saw',
           makeVerifyInput(
             'observed_token_hash',
             state.verify.observed_token_hash,
@@ -1660,7 +1660,7 @@ export const mountHostnamesPanel = (
     );
     actions.appendChild(
       makeButton(
-        state.verify.saving ? 'Verifying...' : 'Verify ownership',
+        state.verify.saving ? 'Verifying...' : 'Show that you own it',
         HOSTNAMES_VERIFY_SUBMIT_BTN_ATTR,
         'primary',
         () => {
@@ -1680,7 +1680,7 @@ export const mountHostnamesPanel = (
       const p = doc.createElement('p');
       p.className = 'hostnames-muted';
       p.setAttribute(HOSTNAMES_PANEL_STATUS_ATTR, '');
-      p.textContent = 'Loading hostnames...';
+      p.textContent = 'Loading your names…';
       wrapper.appendChild(p);
       return;
     }
@@ -1688,7 +1688,7 @@ export const mountHostnamesPanel = (
       const p = doc.createElement('p');
       p.className = 'hostnames-muted';
       p.setAttribute(HOSTNAMES_PANEL_EMPTY_ATTR, '');
-      p.textContent = 'No hostnames registered.';
+      p.textContent = 'You have not added any names yet.';
       wrapper.appendChild(p);
       return;
     }
@@ -1727,16 +1727,16 @@ export const mountHostnamesPanel = (
 
       const meta = doc.createElement('div');
       meta.className = 'hostnames-row-meta';
-      renderMeta(meta, 'Cert source', CERT_SOURCE_LABELS[row.cert_source]);
-      renderMeta(meta, 'TLS topology', row.tls_topology);
+      renderMeta(meta, 'Where the certificate comes from', CERT_SOURCE_LABELS[row.cert_source]);
+      renderMeta(meta, 'How the certificate is served', row.tls_topology);
       renderMeta(meta, 'Ports', row.listener_ports.join(', ') || 'none');
       renderMeta(meta, 'Enabled', row.enabled ? 'yes' : 'no');
-      renderMeta(meta, 'DDNS managed', row.ddns_managed ? 'yes' : 'no');
-      renderMeta(meta, 'Proof method', row.verification_method
+      renderMeta(meta, 'Recued keeps the address up to date', row.ddns_managed ? 'yes' : 'no');
+      renderMeta(meta, 'How you prove you own it', row.verification_method
         ? VERIFICATION_METHOD_LABELS[row.verification_method]
         : 'none');
-      renderMeta(meta, 'Cert fingerprint', shortFingerprint(row.cert_fingerprint), true);
-      renderMeta(meta, 'Cert expiry', formatDate(row.cert_expires_at));
+      renderMeta(meta, 'Certificate fingerprint', shortFingerprint(row.cert_fingerprint), true);
+      renderMeta(meta, 'Certificate runs out', formatDate(row.cert_expires_at));
 
       item.appendChild(main);
       item.appendChild(meta);
@@ -1751,8 +1751,8 @@ export const mountHostnamesPanel = (
         hint.className = 'hostnames-muted';
         hint.setAttribute(HOSTNAMES_ROW_NEEDS_CERT_ATTR, row.hostname);
         hint.textContent =
-          'No certificate installed yet. Upload the certificate and private key under Certificates — '
-          + 'until then this hostname cannot serve TLS or pass certificate proof.';
+          'No certificate yet. Upload the certificate and its private key under Certificates. '
+          + 'Until then this name cannot be used safely, and cannot prove itself.';
         item.appendChild(hint);
       }
 
@@ -1850,7 +1850,7 @@ export const mountHostnamesPanel = (
 
     const title = doc.createElement('h3');
     title.className = 'hostnames-local-urls-title';
-    title.textContent = 'Pro web address (DDNS)';
+    title.textContent = 'Your Pro web address';
     section.appendChild(title);
 
     const host = state.ddns.hostname ?? 'Your Pro web address';
@@ -1858,8 +1858,8 @@ export const mountHostnamesPanel = (
     status.className = 'hostnames-muted';
     status.setAttribute(HOSTNAMES_DDNS_STATE_ATTR, state.ddns.enabled ? 'published' : 'paused');
     status.textContent = state.ddns.enabled
-      ? `${host} is published and resolving to this server.`
-      : `${host} is paused — it does not resolve to this server right now.`;
+      ? `${host} is live and points at this server.`
+      : `${host} is paused. It does not point at this server right now.`;
     section.appendChild(status);
 
     if (state.ddns.blockToggle) {
@@ -1867,9 +1867,9 @@ export const mountHostnamesPanel = (
       blocked.className = 'hostnames-muted';
       blocked.setAttribute(HOSTNAMES_DDNS_BLOCKED_ATTR, '');
       blocked.textContent =
-        `Pausing could cut this webclient's connection — it may be reaching your server ` +
+        `Pausing could cut this browser off. It may be reaching your server ` +
         `through ${host}. Switch to another address (a LAN URL or a custom domain) in ` +
-        'Settings → Server URL and reconnect, then you can pause.';
+        'Settings, then Server URL, and reconnect. After that you can pause.';
       section.appendChild(blocked);
       wrapper.appendChild(section);
       return;
@@ -1879,19 +1879,19 @@ export const mountHostnamesPanel = (
       const warn = doc.createElement('p');
       warn.className = 'hostnames-muted';
       warn.textContent =
-        `Pausing stops ${host} from pointing to your server — anything reaching it through ` +
-        'that address (including your own remote access) goes dark until you resume. It does ' +
-        'NOT cancel your Pro subscription: billing continues and a renewal will not un-pause it. ' +
+        `Pausing stops ${host} pointing at your server. Anything reaching it through ` +
+        'that address, including you from somewhere else, goes dark until you start it again. It does ' +
+        'NOT cancel Pro. You keep paying, and paying again will not start it up. ' +
         'Manage billing in the dashboard.';
       section.appendChild(warn);
       section.appendChild(
-        makeButton('Pause DDNS', HOSTNAMES_DDNS_TOGGLE_ATTR, 'danger', () => {
+        makeButton('Pause the address', HOSTNAMES_DDNS_TOGGLE_ATTR, 'danger', () => {
           void doSetDdnsEnabled(false);
         }, state.ddns.busy),
       );
     } else {
       section.appendChild(
-        makeButton('Resume DDNS', HOSTNAMES_DDNS_TOGGLE_ATTR, 'primary', () => {
+        makeButton('Start the address again', HOSTNAMES_DDNS_TOGGLE_ATTR, 'primary', () => {
           void doSetDdnsEnabled(true);
         }, state.ddns.busy),
       );
@@ -1922,7 +1922,7 @@ export const mountHostnamesPanel = (
     const desc = doc.createElement('p');
     desc.className = 'hostnames-muted hostnames-local-urls-desc';
     desc.textContent =
-      'Use these addresses to reach this server from other devices on your LAN.';
+      'Use these to reach this server from other devices on your own network.';
     section.appendChild(desc);
 
     for (const entry of state.localUrls) {
@@ -2048,19 +2048,19 @@ export const mountHostnamesPanel = (
 
   const validateAdd = (): string | null => {
     const values = state.add.values;
-    if (values.hostname.trim() === '') return 'Hostname is required.';
+    if (values.hostname.trim() === '') return 'You need to give a name.';
     if (
       values.cert_source !== 'recued_acme'
       && values.verification_method !== 'cert_proof'
       && values.verification_token_hash.trim() === ''
     ) {
-      return 'Token hash is required for HTTP token and DNS TXT proofs.';
+      return 'Proof code is required for HTTP token and DNS TXT proofs.';
     }
     // ⛔ The server does NOT reject an empty array — `normalizePorts` swaps in
     // `[443]`. So "no ports checked" would save as 443 and the form would have
     // lied about what it did. Block it here, where we can still say so.
     if (values.listener_ports.length === 0) {
-      return 'Select at least one listener port.';
+      return 'Pick at least one port.';
     }
     return null;
   };
@@ -2157,11 +2157,11 @@ export const mountHostnamesPanel = (
 
   const validateUpdate = (): string | null => {
     const row = selectedUpdateRow();
-    if (row === null) return 'Choose a hostname to update.';
+    if (row === null) return 'Pick a name to change.';
     const values = state.update.values;
     const methods = compatibleMethodsFor(values.cert_source);
     if (methods.length > 0 && !methods.includes(values.verification_method)) {
-      return 'Proof method is not compatible with this cert source.';
+      return 'You cannot prove it that way for this kind of certificate.';
     }
     if (
       proofConfigWillChange(row)
@@ -2169,10 +2169,10 @@ export const mountHostnamesPanel = (
       && values.verification_method !== 'cert_proof'
       && values.verification_token_hash.trim() === ''
     ) {
-      return 'Token hash is required when changing to HTTP token or DNS TXT proof.';
+      return 'Proof code is required when changing to HTTP token or DNS TXT proof.';
     }
     if (values.listener_ports.length === 0) {
-      return 'Select at least one listener port.';
+      return 'Pick at least one port.';
     }
     return null;
   };
@@ -2204,7 +2204,7 @@ export const mountHostnamesPanel = (
     if (row === null || validation !== null) {
       state = {
         ...state,
-        update: { ...state.update, error: validation ?? 'Choose a hostname to update.' },
+        update: { ...state.update, error: validation ?? 'Pick a name to change.' },
       };
       render();
       return;
@@ -2350,13 +2350,13 @@ export const mountHostnamesPanel = (
   };
 
   const validateVerify = (): string | null => {
-    if (state.verify.hostname === null) return 'Choose a hostname to verify.';
+    if (state.verify.hostname === null) return 'Pick a name to check.';
     if (
       state.verify.method !== 'cert_proof'
       && state.verify.observed_token_hash.trim() === ''
       && opts.runExternalProbe === undefined
     ) {
-      return 'Observed token hash is required.';
+      return 'The proof code Recued saw is required.';
     }
     return null;
   };
@@ -2386,7 +2386,7 @@ export const mountHostnamesPanel = (
         ...state,
         verify: {
           ...state.verify,
-          error: validation ?? 'Choose a hostname to verify.',
+          error: validation ?? 'Pick a name to check.',
           result: null,
         },
       };
@@ -2418,8 +2418,8 @@ export const mountHostnamesPanel = (
         if (autoRequest === null) {
           throw new Error(
             state.verify.method === 'cert_proof'
-              ? 'External probe did not return TLS proof for this hostname.'
-              : 'External probe did not return an observed token hash for this hostname.',
+              ? 'The outside check found no certificate for this name.'
+              : 'The outside check found no proof code for this name.',
           );
         }
         request = autoRequest;

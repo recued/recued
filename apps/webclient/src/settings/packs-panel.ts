@@ -338,6 +338,7 @@ import type {
 // the view is the surface over it.
 import {
   hasAppSurface,
+  buildPackAppIndex,
   packAppSurface,
   rosterForUsage,
   type PackAppSurface,
@@ -1033,7 +1034,7 @@ export interface PacksPanelMount {
 
 const COPY = {
   loading: 'Loading packs…',
-  error_heading: 'Could not load packs.',
+  error_heading: 'Recued could not load your Packs.',
   retry_label: 'Retry',
   retrying_label: 'Retrying…',
   install_label: 'Install',
@@ -1041,7 +1042,7 @@ const COPY = {
   install_preparing_label: 'Preparing…',
   /** Shown where the consent dialog will appear, when Install was pressed
    *  before the manifest finished loading. */
-  dialog_pending_label: 'Loading pack details…',
+  dialog_pending_label: 'Loading…',
   cancel_label: 'Cancel',
   installed_badge: 'Installed',
   foundation_badge: 'Foundation',
@@ -1053,15 +1054,15 @@ const COPY = {
   detail_tab_label: 'Detail',
   detail_permissions_tab_label: 'Permissions',
   detail_access_tab_label: 'Access',
-  detail_operation_defaults_label: 'Operation defaults',
+  detail_operation_defaults_label: 'What it may do, to start with',
   /** ⚠ The not-installed heading. "Operation defaults" names something that does not
    *  exist yet for an uninstalled pack — there are no defaults to set — so it
    *  contradicted the first line under it ("Not installed — nothing is granted yet").
    *  A section heading that disagrees with its own body is how a reader decides one of
    *  the two is stale. */
   detail_permission_preview_label: 'Before you install',
-  detail_operation_defaults_empty: 'This pack has no operation defaults to customize.',
-  detail_operation_defaults_unavailable: 'Operation defaults are unavailable on this server.',
+  detail_operation_defaults_empty: 'There is nothing to change here for this Pack.',
+  detail_operation_defaults_unavailable: 'This server cannot show what it may do to start with.',
   recipes_label: 'recipes',
   body_grants_label: 'body content',
   publisher_prefix: 'by ',
@@ -1078,11 +1079,11 @@ const COPY = {
   detail_repo_label: 'Repository ↗',
   detail_resolving_label: 'Loading pack…',
   detail_resolve_error_retry_label: 'Try again',
-  detail_unavailable_label: 'This pack isn’t available on this server.',
-  detail_recipes_loading_label: 'Loading what this pack can do…',
-  detail_recipes_error_prefix: 'Could not load what this pack can do.',
+  detail_unavailable_label: 'This server does not have that Pack.',
+  detail_recipes_loading_label: 'Loading what this Pack can do…',
+  detail_recipes_error_prefix: 'Recued could not load what this Pack can do.',
   detail_access_placeholder:
-    'Per-contract access control for this pack will be managed here. Until then, grants live per contract:',
+    'One day you will manage this Pack’s access here. For now, it is set per agreement:',
   detail_access_contracts_label: 'Open Contracts →',
   // Slice G — symmetric uninstall body-grant disclosure. Mirrors the
   // install dialog's body-grants callout (now in `packs-install-dialog.ts`)
@@ -1091,7 +1092,7 @@ const COPY = {
   // the label is the raw closed-list slug from
   // `pack.manifest.mcp_body_visibility_grants`.
   delete_body_grants_label:
-    'This pack will release the following body content:',
+    'This Pack will stop being able to read:',
   // Slice C — cross-pack collision copy (the detail About notice; the
   // install dialog's callout copy lives with the extracted dialog).
   row_collision_prefix: '⚠ Shares ',
@@ -1102,7 +1103,7 @@ const COPY = {
   // per-grant `<li>` suffix is the shared GRANT_OVERLAP_ALSO_VIA_PREFIX so
   // the two surfaces cannot drift.
   delete_grant_overlap_heading:
-    'This body content remains accessible via other installed packs after uninstall:',
+    'Other Packs you have installed can still read this afterwards:',
   // Slice K — post-success runnability disclosure notice. The block
   // headlines + per-recipe detail come from the shared
   // `@recued/ui-shared` builders; only the notice chrome is panel copy.
@@ -1111,7 +1112,7 @@ const COPY = {
   disclosure_dismiss_label: 'Dismiss',
   // Fallback message when a marketplace pack's detail resolve fails without a
   // specific reason (the detail's `ensureDetailResolved` path).
-  add_generic_error: 'Could not resolve that pack.',
+  add_generic_error: 'Recued could not find that Pack.',
 } as const;
 
 /** Slice B — failure-code → copy mapping for `packs.uninstall`. The
@@ -1125,11 +1126,11 @@ const UNINSTALL_FAILURE_COPY: Record<
   string
 > = {
   not_found:
-    'Uninstall rejected: the server could not find this pack on disk.',
+    'Recued did not remove it: your server cannot find it.',
   webhook_cleanup_required:
-    'Uninstall blocked: this operation-bound webhook must remain installed so its workflow can detach provider resources. This release has no cleanup-completion proof that permits removal.',
+    'Recued cannot remove this yet. It has to stay so it can tidy up with the other service first, and Recued has no proof that has happened.',
   unexpected:
-    'Uninstall rejected: an unexpected substrate error occurred.',
+    'Recued did not remove it: something went wrong.',
 };
 
 // ════════════════════════════════════════════════════════════════
@@ -1376,7 +1377,12 @@ export const mountPacksPanel = (
     ) {
       return surfaceMemo.value;
     }
-    const value = packAppSurface(pack, installedRecipes, rosterForUsage(packs));
+    // D-266 follow-up — the index is built here, inside the SAME memo that
+    // already guarded the classification, so the panel's cost is unchanged:
+    // one build per (pack, installed, packs) miss, exactly as before.
+    const value = packAppSurface(
+      pack, buildPackAppIndex(installedRecipes, rosterForUsage(packs)),
+    );
     surfaceMemo = { pack, installed: installedRecipes, packs, value };
     return value;
   };
@@ -2152,7 +2158,7 @@ export const mountPacksPanel = (
         typeof confirm === 'function'
         && !confirm.call(
           doc.defaultView,
-          'A pack action is still in progress. Leave this pack anyway?',
+          'Something is still happening. Leave anyway?',
         )
       ) return;
     }
@@ -2162,7 +2168,7 @@ export const mountPacksPanel = (
         typeof confirm === 'function'
         && !confirm.call(
           doc.defaultView,
-          'This pack result has unsaved table changes. Leave this pack anyway?',
+          'You have changes you have not saved. Leave anyway?',
         )
       ) return;
     }
@@ -2678,9 +2684,9 @@ export const mountPacksPanel = (
             deleteError =
               known !== undefined
                 ? known
-                : `Uninstall rejected: ${code}.`;
+                : `Recued did not remove it: ${code}.`;
           } else {
-            deleteError = 'Uninstall rejected: unknown failure.';
+            deleteError = 'Recued did not remove it, and does not know why.';
           }
           return;
         }

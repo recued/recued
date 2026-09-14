@@ -284,7 +284,7 @@ describe('D-148 § A.6.5 — mountTlsRenewPanel: state machine', () => {
     expect(status).not.toBeNull();
     expect(status?.getAttribute('role')).toBe('alert');
     // Body copy aligns with rotation-center's ROTATION_COPY.tls_renew.
-    expect(status?.textContent).toContain('ACME via the cloud helper');
+    expect(status?.textContent).toContain('Recued gets one for you');
   });
 
   it('transitions confirm → idle on Cancel', () => {

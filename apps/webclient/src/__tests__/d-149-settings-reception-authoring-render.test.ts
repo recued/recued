@@ -391,8 +391,8 @@ describe('D-149 follow-on — renderAuthoringForm: repeater fields', () => {
     // label moved — "Response log only" (the retired `''` sentinel) became
     // "Response list" (a real destination).
     expect(html).toContain('Response list');
-    expect(html).not.toContain('Fields routed into the target entity');
-    expect(html).not.toContain('Fields attached as metadata');
+    expect(html).not.toContain('Boxes saved into the thing you make');
+    expect(html).not.toContain('Boxes kept alongside');
     expect(html).not.toContain(
       'data-field-key="submission_processing_rule.fields_to_include_in_target"',
     );

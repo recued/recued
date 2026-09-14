@@ -658,59 +658,59 @@ describe('D-174 P5 - Runs route', () => {
       {
         status: 'pending',
         tone: 'attention',
-        title: 'Run is waiting to start',
-        detail: 'has not started yet',
-        nextStep: 'before starting another run',
+        title: 'The run is waiting to start',
+        detail: 'it has not started',
+        nextStep: 'before you start another run',
         actionHref: '#logs/active',
       },
       {
         status: 'running',
         tone: 'attention',
-        title: 'Run is still in progress',
-        detail: 'no final outcome',
-        nextStep: 'before starting another run',
+        title: 'The run is still going',
+        detail: 'Nothing has been written down about how it ended',
+        nextStep: 'before you start another run',
         actionHref: '#logs/active',
       },
       {
         status: 'succeeded',
         tone: 'positive',
         title: 'Run completed',
-        detail: 'finished successfully',
+        detail: 'finished, and it worked',
       },
       {
         status: 'failed',
         tone: 'danger',
         title: 'Run failed',
-        detail: 'Earlier steps may still have made changes',
-        nextStep: 'check the affected app or data before trying again',
+        detail: 'Earlier steps may already have changed things',
+        nextStep: 'check the app or data it touched, before you try again',
       },
       {
         status: 'cancelled',
         tone: 'neutral',
         title: 'Run was cancelled',
-        detail: 'Earlier steps may still have made changes',
-        nextStep: 'before starting a new run',
+        detail: 'Earlier steps may already have changed things',
+        nextStep: 'before you run it again',
       },
       {
         status: 'killed',
         tone: 'danger',
         title: 'Run was stopped',
-        detail: 'still active',
-        nextStep: 'Check the affected app or data before trying again',
+        detail: 'still doing something',
+        nextStep: 'Check the app or the data it touched before you try again',
       },
       {
         status: 'in_doubt',
         tone: 'attention',
-        title: 'Outcome needs verification',
-        detail: 'lost confirmation',
-        nextStep: 'will not retry automatically',
+        title: 'Somebody needs to check what happened',
+        detail: 'lost contact',
+        nextStep: 'will not run it again by itself',
       },
       {
         status: 'awaiting_approval',
         tone: 'attention',
-        title: 'Run is waiting for approval',
-        detail: 'That step has not run',
-        nextStep: 'continue or stop the action',
+        title: 'The run is waiting for your yes',
+        detail: 'That step has not happened',
+        nextStep: 'carry on or stop it',
         actionHref: '#approvals/ask-1',
       },
       {
@@ -725,7 +725,7 @@ describe('D-174 P5 - Runs route', () => {
         tone: 'attention',
         title: 'Waiting on a peer',
         detail: 'asking another Recued server',
-        nextStep: 'continues on its own when they answer',
+        nextStep: 'carries on by itself when they answer',
       },
     ];
 
@@ -767,11 +767,11 @@ describe('D-174 P5 - Runs route', () => {
       readonly [HeavyOpErrorCategory, string]
     > = [
       ['timeout', 'Run timed out'],
-      ['oom', 'Run ran out of memory'],
+      ['oom', 'The run ran out of memory'],
       ['crashed', 'Run crashed'],
       ['stalled', 'Run stalled'],
       ['killed', 'Run was stopped'],
-      ['cancelled_before_dispatch', 'Queued action was cancelled'],
+      ['cancelled_before_dispatch', 'A waiting step was cancelled'],
     ];
     for (const [errorCategory, title] of categoryCases) {
       const summary = projectRunOutcomeSummary(
@@ -787,7 +787,7 @@ describe('D-174 P5 - Runs route', () => {
       runDetail('failed', 'denied', { errors: [] }),
     );
     expect(denied.title).toBe('Permission was denied');
-    expect(denied.detail).toContain('denied step was not sent');
+    expect(denied.detail).toContain('step you said no to was not sent');
 
     const policyError = projectRunOutcomeSummary(
       runDetail('failed', 'allowed', {
@@ -813,11 +813,11 @@ describe('D-174 P5 - Runs route', () => {
     expect(blockedAfterDispatch.detail).not.toContain('before it was sent');
 
     const cliCases: ReadonlyArray<readonly [CliFailureReason, string]> = [
-      ['not_found', 'Required tool was not found'],
-      ['spawn_error', 'Required tool could not start'],
-      ['nonzero_exit', 'A required tool returned an error'],
-      ['timeout', 'A required tool timed out'],
-      ['bad_output', 'A required tool returned unreadable output'],
+      ['not_found', 'A tool it needed is missing'],
+      ['spawn_error', 'A tool it needed would not start'],
+      ['nonzero_exit', 'A tool it needed gave an error'],
+      ['timeout', 'A tool it needed took too long'],
+      ['bad_output', 'A tool sent back something Recued could not read'],
     ];
     for (const [reason, title] of cliCases) {
       const summary = projectRunOutcomeSummary(
@@ -851,17 +851,17 @@ describe('D-174 P5 - Runs route', () => {
     );
 
     expect(summary.title).toBe('Run completed');
-    expect(summary.detail).toBe('The run finished successfully.');
+    expect(summary.detail).toBe('The run finished, and it worked.');
     expect(summary.tone).toBe('attention');
-    expect(summary.nextStep).toContain('record warning');
+    expect(summary.nextStep).toContain('Read the warning');
     expect(summary.recordWarnings).toEqual([
       {
         code: 'audit_unwritten',
-        message: 'Part of this run’s history could not be saved.',
+        message: 'Recued could not save part of this run’s story.',
       },
       {
         code: 'provenance_incomplete',
-        message: 'Some links to records affected by this run are missing.',
+        message: 'Some links to what this run touched are missing.',
       },
     ]);
   });
@@ -916,7 +916,7 @@ describe('D-174 P5 - Runs route', () => {
       relationship: 'involved',
       relationshipLabel: 'Involved in change',
       resolution: 'resolve-source',
-      actionLabel: 'Verify before retrying',
+      actionLabel: 'Check before running it again',
     });
     expect(items[0]?.href).toBe(
       '#data/calendar/verify/event-1/relationship/involved/return/logs/'
@@ -1006,7 +1006,7 @@ describe('D-174 P5 - Runs route', () => {
     expect(html).toContain('Check these recorded items before retrying');
     expect(html).toContain('Used by action');
     expect(html).toContain('Involved in change');
-    expect(html).toContain('Verify before retrying');
+    expect(html).toContain('Check before running it again');
     expect(html).toContain(
       'href="#data/mail/verify/message-1/relationship/action/return/logs/'
       + 'run-1/return/chat/session/chat-1/plan/plan-1/answer/answer-1"',
@@ -1076,11 +1076,11 @@ describe('D-174 P5 - Runs route', () => {
     );
     expect(html).toContain('aria-label="Run outcome"');
     expect(html).toContain('Permission was denied');
-    expect(html).toContain('Earlier steps may still have made changes.');
+    expect(html).toContain('Earlier steps may already have changed things.');
     expect(html).toContain(LOGS_ROUTE_DEGRADED_ATTR);
     expect(html).toContain('provenance_incomplete');
     expect(html).toContain(
-      'Some links to records affected by this run are missing.',
+      'Some links to what this run touched are missing.',
     );
     expect(html).not.toContain('Degraded: provenance_incomplete');
     expect(html).toContain(LOGS_ROUTE_REDACTED_IO_ATTR);
@@ -1217,10 +1217,10 @@ describe('D-174 P5 - Runs route', () => {
     // Suppressing the LINK must not blank the pane — the run is still there,
     // and its awaiting status is still what the reader came for.
     expect(html).toContain('awaiting approval');
-    expect(html).toContain('Run is waiting for approval');
-    expect(html).toContain('That step has not run.');
-    expect(html).toContain('This hold is not linked to the approval queue.');
-    expect(html).not.toContain('Review approval');
+    expect(html).toContain('The run is waiting for your yes');
+    expect(html).toContain('That step has not happened.');
+    expect(html).toContain('This is not in your approvals list.');
+    expect(html).not.toContain('Look at this run');
     rig.route.dispose();
   });
 
@@ -1232,7 +1232,7 @@ describe('D-174 P5 - Runs route', () => {
     await rig.route.openRun('run-1');
     const html = rig.root.children[0]?.innerHTML ?? '';
     expect(html).toContain('#approvals/ask-1');
-    expect(html).toContain('Review approval');
+    expect(html).toContain('Look at this run');
     rig.route.dispose();
   });
 
@@ -1653,7 +1653,7 @@ describe('D-181 slice 5b — Runs Active section', () => {
 
     await rig.route.killRun('run-active-1');
 
-    expect(rig.html()).toContain('That run already finished.');
+    expect(rig.html()).toContain('That run has already finished.');
     rig.route.dispose();
   });
 
@@ -1710,7 +1710,7 @@ describe('D-181 slice 5b — Runs Active section', () => {
     cancel.resolve({ status: 'already_dispatched' });
     await pendingCancel;
     expect(cancelCaller).toHaveBeenCalledWith({ queued_call_id: 'call-7' });
-    expect(cancelRig.html()).toContain('That call already started');
+    expect(cancelRig.html()).toContain('That has already started');
     cancelRig.route.dispose();
   });
 
@@ -2479,12 +2479,12 @@ describe('D-237 P2 residual — the all-refused run is visible to a reader', () 
 
     const html = rig.root.children[0]?.innerHTML ?? '';
     expect(html).toContain(`${LOGS_ROUTE_YIELD_ATTR}="all-refused"`);
-    expect(html).toContain('All 12 items this run touched failed.');
+    expect(html).toContain('All 12 things this run touched failed.');
     // The whole point: a green status must not read green here.
     expect(html).toContain(
       `${LOGS_ROUTE_OUTCOME_ATTR}="succeeded" data-tone="attention"`,
     );
-    expect(html).toContain('Check the steps below to see what was refused');
+    expect(html).toContain('Look at the steps below to see what was refused');
 
     rig.route.dispose();
   });
@@ -2506,7 +2506,7 @@ describe('D-237 P2 residual — the all-refused run is visible to a reader', () 
 
     const html = rig.root.children[0]?.innerHTML ?? '';
     expect(html).toContain(`${LOGS_ROUTE_YIELD_ATTR}="partial-failure"`);
-    expect(html).toContain('3 of 400 items failed.');
+    expect(html).toContain('3 of 400 failed.');
     expect(html).toContain(
       `${LOGS_ROUTE_OUTCOME_ATTR}="succeeded" data-tone="positive"`,
     );
@@ -2554,7 +2554,7 @@ describe('D-237 P2 residual — the all-refused run is visible to a reader', () 
     it('flags the all-refused run, and says "the only item" for one', () => {
       expect(projectRunYieldNotice(y(12, 12))?.kind).toBe('all-refused');
       expect(projectRunYieldNotice(y(1, 1))?.message).toContain(
-        'The only item this run touched failed.',
+        'The one thing this run touched failed.',
       );
     });
 

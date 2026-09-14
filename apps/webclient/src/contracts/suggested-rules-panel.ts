@@ -257,7 +257,7 @@ const evidenceLine = (row: DelegationRuleSuggestionRow): string => {
       rejected === undefined
         ? undefined
         : rejected === 0
-          ? 'no rejections'
+          ? 'you never said no'
           : `${rejected} rejection${rejected === 1 ? '' : 's'}`;
     return rejections === undefined
       ? `${approvals} on this form (${uses}), ${range}`
@@ -291,7 +291,7 @@ const doorRidingDisclosure = (row: DelegationRuleSuggestionRow): string | null =
     .map((arg) => (typeof arg.path === 'string' ? arg.path : ''))
     .filter((path) => path.length > 0);
   if (riding.length === 0) return null;
-  return `Visitor-supplied at dispatch: ${riding.join(', ')} — these vary with every submission; everything else is pinned as approved.`;
+  return `What the visitor typed: ${riding.join(', ')} — these change with every answer. Everything else is fixed as you approved it.`;
 };
 
 /** Parse a bounds input value: integer within [1, ceiling] or null (the
@@ -373,7 +373,7 @@ export const mountSuggestedRulesPanel = (
 
     const heading = doc.createElement('div');
     heading.className = 'sr-card-heading';
-    heading.textContent = `Allow without asking: ${
+    heading.textContent = `Let it happen without asking: ${
       row.snapshot.operation_id ?? row.snapshot.ingredient_id
     }`;
     info.appendChild(heading);
@@ -420,7 +420,7 @@ export const mountSuggestedRulesPanel = (
 
       const ttlLabel = doc.createElement('label');
       ttlLabel.className = 'sr-editor-label';
-      ttlLabel.textContent = 'Expires after (days)';
+      ttlLabel.textContent = 'Runs out after (days)';
       const ttlInput = doc.createElement('input');
       ttlInput.setAttribute(SUGGESTED_RULES_TTL_INPUT_ATTR, '');
       ttlInput.setAttribute('type', 'number');
@@ -433,7 +433,7 @@ export const mountSuggestedRulesPanel = (
 
       const usesLabel = doc.createElement('label');
       usesLabel.className = 'sr-editor-label';
-      usesLabel.textContent = 'Use budget';
+      usesLabel.textContent = 'How many times';
       const usesInput = doc.createElement('input');
       usesInput.setAttribute(SUGGESTED_RULES_USES_INPUT_ATTR, '');
       usesInput.setAttribute('type', 'number');
@@ -444,7 +444,7 @@ export const mountSuggestedRulesPanel = (
       usesLabel.appendChild(usesInput);
       editor.appendChild(usesLabel);
 
-      const mint = makeButton(SUGGESTED_RULES_MINT_ATTR, 'sr-mint', 'Mint rule', key);
+      const mint = makeButton(SUGGESTED_RULES_MINT_ATTR, 'sr-mint', 'Make the rule', key);
       mint.addEventListener('click', () => {
         const ttlDays = parseBound((ttlInput as HTMLInputElement).value, TTL_CEILING_DAYS);
         const maxUses = parseBound(
@@ -455,7 +455,7 @@ export const mountSuggestedRulesPanel = (
           const next = new Map(state.cardErrors);
           next.set(
             key,
-            `Bounds must be whole numbers — days 1–${TTL_CEILING_DAYS}, uses 1–${DELEGATION_RULE_MAX_USES} (tighten-only).`,
+            `These have to be whole numbers — days 1–${TTL_CEILING_DAYS}, uses 1–${DELEGATION_RULE_MAX_USES} (tighten-only).`,
           );
           state = { ...state, cardErrors: next };
           render();
@@ -475,7 +475,7 @@ export const mountSuggestedRulesPanel = (
       controls.className = 'sr-confirm';
       const prompt = doc.createElement('span');
       prompt.className = 'sr-confirm-prompt';
-      prompt.textContent = 'Dismiss forever? This exact suggestion never returns.';
+      prompt.textContent = 'Hide this for good? Recued will never suggest it again.';
       controls.appendChild(prompt);
       const confirm = makeButton(
         SUGGESTED_RULES_DISMISS_CONFIRM_ATTR,
@@ -525,7 +525,7 @@ export const mountSuggestedRulesPanel = (
       const line = doc.createElement('div');
       line.setAttribute(SUGGESTED_RULES_ERROR_ATTR, '');
       line.className = 'sr-error';
-      line.textContent = `Could not load suggested rules: ${state.listError}`;
+      line.textContent = `Recued could not load the suggestions: ${state.listError}`;
       root.appendChild(line);
     }
 
@@ -534,13 +534,13 @@ export const mountSuggestedRulesPanel = (
     const heading = doc.createElement('h2');
     heading.setAttribute(SUGGESTED_RULES_HEADING_ATTR, '');
     heading.className = 'sr-heading';
-    heading.textContent = 'Suggested rules';
+    heading.textContent = 'Rules Recued suggests';
     root.appendChild(heading);
 
     const copy = doc.createElement('p');
     copy.className = 'sr-copy';
     copy.textContent =
-      'You approved these exact actions repeatedly across sessions. Accept to mint a bounded, revocable standing rule (it appears in the contract inventory); dismiss to never see this suggestion again.';
+      'You have said yes to exactly these things again and again. Say yes once more and Recued makes a rule that stays, with limits, that you can take back at any time. It shows up with your contracts. Say no and Recued will not suggest it again.';
     root.appendChild(copy);
 
     for (const row of state.suggestions) renderCard(row);

@@ -203,7 +203,7 @@ export interface ServerSwitchConvergenceMount {
 const errorCopy = (error: unknown): string =>
   error instanceof Error && error.message.trim().length > 0
     ? error.message
-    : 'This tab could not switch servers. Try again.';
+    : 'This tab could not change servers. Try again.';
 
 const identityCopy = (identity: ServerSwitchConvergenceIdentity): string =>
   identity.serverUrl.trim().length > 0
@@ -311,29 +311,29 @@ export const mountServerSwitchConvergence = (
     const detail = doc.createElement('p');
     detail.setAttribute('id', detailId);
     detail.textContent = state.workState === 'chat_draft'
-      ? 'Your unsent Chat draft is still only in this tab. Copy it if you need it; Recued will never move it to another server automatically.'
+      ? 'The Chat message you have not sent is only in this tab. Copy it if you need it. Recued will never move it to another server on its own.'
       : state.workState === 'unsaved_changes'
-        ? 'This tab has unsaved changes on the original server. Recued paused the tab so those changes cannot be mixed with another server.'
+        ? 'You have unsaved changes on the first server. Recued paused this tab so they cannot get mixed up with another server.'
         : state.workState === 'in_flight_with_chat_draft'
           ? resultReadyOnly
-            ? 'A result is ready to review on the original server, and this tab has an unsent Chat draft. Leaving now will leave the result there and discard the draft.'
-            : 'Work is still finishing on the original server, and this tab has an unsent Chat draft. Check its status before switching. Leaving now cannot confirm or cancel the work and will discard the draft.'
+            ? 'There is a result waiting on the first server, and a Chat message you have not sent. If you leave now, the result stays there and the message is lost.'
+            : 'The first server is still working, and you have a Chat message you have not sent. Check how it is going before you switch. Leaving now cannot finish or stop the work, and the message is lost.'
           : state.workState === 'in_flight_with_unsaved_changes'
             ? resultReadyOnly
-              ? 'A result is ready to review on the original server, and this tab may also hold unsaved changes. Leaving now will leave the result there and discard changes that have not been saved.'
-              : 'Work is still finishing on the original server, and this tab may also hold unsaved changes. Check its status before switching. Leaving now cannot confirm or cancel work that may already have reached that server.'
+              ? 'There is a result waiting on the first server, and this tab may have unsaved changes. If you leave now, the result stays there and anything unsaved is lost.'
+              : 'The first server is still working, and this tab may have unsaved changes. Check how it is going before you switch. Leaving now cannot finish or stop work that may already have reached it.'
             : state.workState === 'in_flight'
               ? resultReadyOnly
-                ? 'A result is ready to review on the original server. Leaving now will keep that result there.'
-                : 'Work is still finishing on the original server. Check its status before switching. Leaving now cannot confirm or cancel work that may already have reached that server.'
-              : 'Recued paused this tab before it could mix data from two servers.';
+                ? 'There is a result waiting on the first server. If you leave now, it stays there.'
+                : 'The first server is still working. Check how it is going before you switch. Leaving now cannot finish or stop work that may already have reached it.'
+              : 'Recued paused this tab so two servers’ things could not get mixed up.';
     dialog.appendChild(detail);
 
     if (renderedActiveWork.length > 0) {
       const activeWork = doc.createElement('ul');
       activeWork.setAttribute(SERVER_SWITCH_CONVERGENCE_ACTIVE_WORK_ATTR, '');
       activeWork.setAttribute('id', activeWorkId);
-      activeWork.setAttribute('aria-label', 'Source-server work and results');
+      activeWork.setAttribute('aria-label', 'Work and results on the first server');
       for (const work of renderedActiveWork) {
         const item = doc.createElement('li');
         item.setAttribute(SERVER_SWITCH_CONVERGENCE_ACTIVE_WORK_ITEM_ATTR, '');
@@ -350,7 +350,7 @@ export const mountServerSwitchConvergence = (
     ) {
       const label = doc.createElement('label');
       label.setAttribute('for', 'recued-server-switch-convergence-draft');
-      label.textContent = 'Unsent Chat draft';
+      label.textContent = 'A Chat message you have not sent';
       dialog.appendChild(label);
       const draft = doc.createElement('textarea');
       draft.setAttribute('id', 'recued-server-switch-convergence-draft');
@@ -364,8 +364,8 @@ export const mountServerSwitchConvergence = (
     const boundary = doc.createElement('p');
     boundary.setAttribute('id', boundaryId);
     boundary.textContent = isInFlightServerSwitchWorkState(state.workState)
-      ? 'Any outcome or receipt stays on the original server. Return there and verify what happened before retrying. This tab will reopen only the same safe area.'
-      : 'Server-specific chats, records, runs, and detail links stay on their original server. This tab will reopen only the same safe area.';
+      ? 'Whatever happened stays on the first server. Go back and check before you try again. This tab will only reopen the same safe place.'
+      : 'Chats, records, runs and links belong to one server and stay there. This tab will only reopen the same safe place.';
     dialog.appendChild(boundary);
 
     if (state.error !== undefined) {
@@ -404,14 +404,14 @@ export const mountServerSwitchConvergence = (
             ? (text: string) => doc.defaultView!.navigator.clipboard.writeText(text)
             : undefined);
         if (write === undefined) {
-          status.textContent = 'Select the draft above and copy it manually.';
+          status.textContent = 'Select the message above and copy it yourself.';
           focus(focusables[0] ?? null);
           return;
         }
         void write(state.chatDraft ?? '').then(
-          () => { status.textContent = 'Draft copied. It is still not stored on the new server.'; },
+          () => { status.textContent = 'Copied. It is still not saved on the new server.'; },
           () => {
-            status.textContent = 'Couldn’t copy automatically. Select the draft above and copy it manually.';
+            status.textContent = 'Couldn’t copy automatically. Select the message above and copy it yourself.';
             focus(focusables[0] ?? null);
           },
         );
@@ -437,7 +437,7 @@ export const mountServerSwitchConvergence = (
         state = {
           ...state,
           error: undefined,
-          status: 'Checking source-server work…',
+          status: 'Checking the first server…',
         };
         render();
         void Promise.resolve()
@@ -472,13 +472,13 @@ export const mountServerSwitchConvergence = (
       : busy === 'checking'
         ? 'Checking…'
         : state.workState === 'chat_draft'
-          ? 'Switch and discard draft'
+          ? 'Switch, and lose the message'
           : state.workState === 'unsaved_changes'
-            ? 'Switch and discard changes'
+            ? 'Switch, and lose the changes'
             : isInFlightServerSwitchWorkState(state.workState)
               ? resultReadyOnly
-                ? 'Switch and review later'
-                : 'Switch and check later'
+                ? 'Switch, and look later'
+                : 'Switch, and check later'
               : 'Reload this tab';
     if (busy !== null) commit.setAttribute('disabled', '');
     commit.addEventListener('click', () => {
@@ -526,7 +526,7 @@ export const mountServerSwitchConvergence = (
       keyEvent.preventDefault();
       if (statusNode !== null) {
         statusNode.textContent =
-          'Finish switching this tab before returning to Recued.';
+          'Finish changing servers before you go back.';
       }
       return;
     }

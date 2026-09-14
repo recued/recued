@@ -444,6 +444,18 @@ export interface ServerConfig {
    *  declaration here AND the forward, `composeListeners`' spread is silently
    *  dropped (the D-167 P5 Slice 2b trap). */
   cliReachabilityDeps?: import('./cli-reachability-handler.js').CliReachabilityRpcDeps;
+  /** D-269 step 1 — `server.timezone.*` rpc deps: the owner declares whether
+   *  this machine stays put (`fixed`) or travels with them (`follows_host`).
+   *  Same forward-or-dead-rpc trap as `cliReachabilityDeps` — BOTH this
+   *  declaration AND the forward below are required. */
+  serverTimeZoneDeps?: import('./server-timezone-handler.js').ServerTimeZoneRpcDeps;
+  /** D-269 step 2 — `notification.kind_policy.*` rpc deps. Same
+   *  forward-or-dead-rpc trap as `cliReachabilityDeps`: BOTH this declaration
+   *  AND the forward below are required. */
+  notificationKindPolicyDeps?: import('./notification-kind-policy-handler.js').NotificationKindPolicyRpcDeps;
+  /** D-269 step 3 — `notification.quiet_hours.*`. Same forward-or-dead-rpc
+   *  trap: BOTH this declaration AND the forward below are required. */
+  quietHoursDeps?: import('./quiet-hours-handler.js').QuietHoursRpcDeps;
   /** Supervision feature — owner-only `supervision.*` rpc deps (cli-daemon
    *  keep-alive). `composeListeners` builds these from
    *  `collection.supervisionStack`. Same forward-or-dead-rpc trap as
@@ -1507,6 +1519,9 @@ export const createServerHandlerSet = (config: ServerConfig = {}): ServerHandler
     // builds from `app.contractStoreRef`. Same forward-or-dead-rpc trap as
     // `contractDeps` above.
     cliReachabilityDeps: config.cliReachabilityDeps,
+    serverTimeZoneDeps: config.serverTimeZoneDeps,
+    notificationKindPolicyDeps: config.notificationKindPolicyDeps,
+    quietHoursDeps: config.quietHoursDeps,
     // Supervision feature — forward the `supervision.*` deps composeListeners
     // builds from `collection.supervisionStack`. Forward-or-dead-rpc trap.
     supervisionDeps: config.supervisionDeps,

@@ -526,6 +526,33 @@ const formatEgressBytes = (bytes: number): string => {
   return `${rendered} ${units[unit]}`;
 };
 
+/** D-161 Part B (display) — the owner's words for who STARTED a door-origin run.
+ *
+ *  The opening sentence reads identically whether the owner typed the request
+ *  at a paired device or a stranger posted a public form, and nothing else on
+ *  the ask recovers the difference. `preflight_context.origin_actor` is written
+ *  ONLY for a door dispatch (the host gates it on `isDoorDispatchSource`), so a
+ *  PRESENT value is already the signal; this turns it into a sentence.
+ *
+ *  ⛔ AN EXPLICIT TWO-BRANCH FUNCTION, NOT A `Record<string, string>` LOOKUP. A
+ *  closed vocabulary keyed by a widened string fails OPEN — and worse here,
+ *  since the key is read back off persisted JSON: `origin_actor: 'toString'`
+ *  would resolve to a function through the prototype. Branching on the two
+ *  known members cannot do either.
+ *
+ *  ⛔ UNKNOWN VALUE ⇒ NO LINE, DELIBERATELY. `origin_actor` is a widened
+ *  `string` so that an older binary can never reject a checkpoint — and a
+ *  rejected checkpoint is a pending approval the owner loses. The renderer
+ *  completes that contract by staying silent rather than printing a bare enum
+ *  member at someone deciding whether to approve a real action. */
+const startedByPhrase = (actor: string | undefined): string | undefined => {
+  if (actor === 'anonymous') {
+    return 'someone outside this server, through a public door';
+  }
+  if (actor === 'contracted_user') return 'an outside AI, through a door you opened';
+  return undefined;
+};
+
 /** Build the preflight `notification.ask` for one gated run (A.2).
  *
  *  The handler `payload` carries the `checkpoint_id` (the resumable
@@ -581,6 +608,19 @@ export const buildPreflightAsk = (args: {
     clause !== undefined
       ? `${clause}, so Recued held ${count === 1 ? 'it' : 'them'} for you.`
       : `Recued held ${count === 1 ? 'it' : 'them'} for your approval.`;
+
+  // D-161 Part B — WHO started this, when it was not the owner. Flush-left and
+  // `Label: value`, exactly like `Reason:` below.
+  //
+  // ⛔ THE INDENT IS THE CONTRACT, NOT THE WORDING. `projectGeneratedApprovalAsk`
+  // (`packages/ui-shared/src/approval-card/card.ts`) re-reads this body, and its
+  // field rule is `^(\s{2,})([^:]+):\s*(.*)$` — an INDENTED `Started by: …`
+  // would be projected as an operation ARGUMENT, sitting in Technical details
+  // among values the agent actually sent. Flush-left keeps it prose everywhere
+  // and lets the card claim it with a rule of its own.
+  const startedBy = startedByPhrase(checkpoint.preflight_context?.origin_actor);
+  const startedByLine =
+    startedBy !== undefined ? `\n\nStarted by: ${startedBy}.` : '';
 
   // The policy decision's own words, when it had any. Kept on its own
   // labeled line rather than jammed into the sentence as a dash clause —
@@ -662,8 +702,8 @@ export const buildPreflightAsk = (args: {
   const message: NotificationMessage = {
     title,
     text:
-      `${opening}\n${held}${egressBoundLine}${reasonLine}${clampWarning}`
-      + `${itemsBlock}${openBlock}\n\n${question}`,
+      `${opening}\n${held}${startedByLine}${egressBoundLine}${reasonLine}`
+      + `${clampWarning}${itemsBlock}${openBlock}\n\n${question}`,
   };
   const handler: AskHandlerRef = {
     kind: PREFLIGHT_HANDLER_KIND,

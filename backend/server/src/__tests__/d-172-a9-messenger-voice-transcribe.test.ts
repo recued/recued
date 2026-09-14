@@ -279,10 +279,10 @@ describe('D-172 A.9 messenger voice transcription', () => {
     expect(result.userMessage).toMatchObject({
       role: 'user',
       content: 'please schedule the 2 pm demo',
-      attachments: [{ file_id: result.fileId, media_class: 'voice' }],
+      attachments: [{ source_file_id: result.fileId, media_class: 'voice' }],
     });
     expect(JSON.parse(result.attachmentsBlob ?? 'null')).toEqual([
-      { file_id: result.fileId, media_class: 'voice' },
+      { file_id: result.userMessage!.attachments![0]!.file_id, media_class: 'voice' },
     ]);
     expect(Buffer.from(result.transcribeRequests[0]!.audio)).toEqual(bytes);
     expect(result.transcribeRequests[0]).toMatchObject({
@@ -373,7 +373,7 @@ describe('D-172 A.9 messenger voice transcription', () => {
     expect(result.userMessage).toMatchObject({
       role: 'user',
       content: '',
-      attachments: [{ file_id: result.fileId, media_class: 'voice' }],
+      attachments: [{ source_file_id: result.fileId, media_class: 'voice' }],
     });
     expect(result.executeAiCall).not.toHaveBeenCalled();
     expect(result.transcribeRequests).toHaveLength(1);
@@ -398,7 +398,7 @@ describe('D-172 A.9 messenger voice transcription', () => {
     expect(result.userMessage).toMatchObject({
       role: 'user',
       content: '',
-      attachments: [{ file_id: result.fileId, media_class: 'image' }],
+      attachments: [{ source_file_id: result.fileId, media_class: 'image' }],
     });
     expect(result.transcribeRequests).toHaveLength(0);
     // ⛔ ZERO AI CALLS ON A WORDLESS DROP, and this is the assertion that keeps

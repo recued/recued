@@ -22,7 +22,7 @@ export const refPickerShellAttr = (pickerId: string): string =>
 
 /** Deliberately says what was SEARCHED, not just that more exist — the user
  *  needs to know their query was answered against a subset. */
-const DEFAULT_TRUNCATED = 'Only the first page was searched — narrow the query if you expected more.';
+const DEFAULT_TRUNCATED = 'Recued only searched the first page. Try something more specific if you expected more.';
 const DEFAULT_EMPTY = 'No matches.';
 const DEFAULT_LOADING = 'Searching…';
 

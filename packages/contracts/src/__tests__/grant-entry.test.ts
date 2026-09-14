@@ -114,6 +114,10 @@ describe('OWNER-default-only sensitive surfaces (D-187 slice 3b)', () => {
       // `core.memory.audit.read`, which read as part of the knowledge-pool family).
       'core.audit.read',
       'core.contact.engagements.read',
+      // Slice 2 — the Tier-1 calendar writes (owner-on / door-off). They ALSO
+      // carry plan-approval; the grant simply runs first.
+      'core.data.calendar.create',
+      'core.data.calendar.update',
       'core.data.form-response.get',
       'core.data.form-response.list',
       // D-210 A.8 slice 2a — the lifecycle WRITE. A read of visitor answers is
@@ -126,12 +130,26 @@ describe('OWNER-default-only sensitive surfaces (D-187 slice 3b)', () => {
       'core.memory.read',
       'core.memory.write',
       'core.webhook.event.get',
+      // Slice 1 — the Tier-1 `work.create` writes. Same posture as the READ
+      // below and `core.memory.write` above: owner-on, door-off. Per KIND, so
+      // granting a door "may add notes" never also grants "may commit me".
+      'core.work-entity.commitment.create',
+      // Slice 3 — the `work.update` writes, per kind, plus the SEPARATE
+      // completion op: `done` is the completion bit and travels alone.
+      'core.work-entity.commitment.update',
+      'core.work-entity.note.create',
+      'core.work-entity.note.update',
+      'core.work-entity.project.create',
+      'core.work-entity.project.update',
       // 2026-07-16 — the work graph (task/note/commitment/project) behind the
       // Tier-1 `work.search` / `work.read` tools. Their READ had no grant handle
       // at all while all 15 work-entity WRITES had one, so they were default-ON
       // for every door. NB this is the CAPABILITY axis — the `data.<kind>`
       // collections deliberately keep their admit-all default (2026-07-12 ruling).
       'core.work-entity.read',
+      'core.work-entity.task.create',
+      'core.work-entity.task.mark-done',
+      'core.work-entity.task.update',
       'data.form_response',
       'data.webhook',
     ]);

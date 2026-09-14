@@ -290,12 +290,16 @@ export const bootHubSpot = async (
   const hubspotEngagementReconcilers: VendorReconciler[] = [];
   if (deps.engagementStore) {
     const engagementStore = deps.engagementStore;
+    // D-269 — D-139 § A.3.7's third fallback step. Spread into every entity
+    // rather than a few: the step is per-ENGAGEMENT, and wiring it for some
+    // kinds would make `event_at_tz_inferred` mean different things per row.
+    const tz = deps.prefsTimezone ? { prefsTimezone: deps.prefsTimezone } : {};
     const substrate = buildHubSpotEngagementReconcilers({
-      email: { search: { refreshAuth: deps.refreshAuth }, engagementStore },
-      meeting: { search: { refreshAuth: deps.refreshAuth }, engagementStore },
-      note: { search: { refreshAuth: deps.refreshAuth }, engagementStore },
-      call: { search: { refreshAuth: deps.refreshAuth }, engagementStore },
-      task: { search: { refreshAuth: deps.refreshAuth }, engagementStore },
+      email: { search: { refreshAuth: deps.refreshAuth }, engagementStore, ...tz },
+      meeting: { search: { refreshAuth: deps.refreshAuth }, engagementStore, ...tz },
+      note: { search: { refreshAuth: deps.refreshAuth }, engagementStore, ...tz },
+      call: { search: { refreshAuth: deps.refreshAuth }, engagementStore, ...tz },
+      task: { search: { refreshAuth: deps.refreshAuth }, engagementStore, ...tz },
     });
     hubspotEngagementReconcilers.push(
       substrate.email,

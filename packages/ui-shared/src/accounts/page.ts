@@ -162,7 +162,7 @@ export const validateAccountForm = (
     }
     const value = (raw ?? '').trim();
     if (field.type === 'identifier' && !ACCOUNT_SLUG_REGEX.test(value)) {
-      return `${field.label} must be lowercase letters, digits, hyphen or underscore (max 64).`;
+      return `${field.label} has to be lower-case letters, numbers, hyphens or underscores, up to 64.`;
     }
     if (field.type === 'number') {
       const n = Number(value);
@@ -190,7 +190,7 @@ const IMAP_PROVIDER: AccountProvider = {
   id: 'imap',
   label: 'IMAP / SMTP',
   description:
-    'Any mailbox reachable over IMAP, signed in with a username and password (or app password). Add SMTP to send.',
+    'Any mailbox that works over IMAP, signed in with a username and password. Add SMTP if you want to send as well.',
   transport: 'mail-imap',
   fields: [
     {
@@ -198,7 +198,7 @@ const IMAP_PROVIDER: AccountProvider = {
       label: 'Name',
       type: 'identifier',
       placeholder: 'fastmail',
-      help: 'Lowercase identifier for this account (used in recipes).',
+      help: 'A short lower-case name for this account. Recipes use it.',
     },
     { key: 'host', label: 'IMAP Host', type: 'text', placeholder: 'imap.fastmail.com' },
     { key: 'port', label: 'IMAP Port', type: 'number', default: '993', placeholder: '993' },
@@ -207,7 +207,7 @@ const IMAP_PROVIDER: AccountProvider = {
       label: 'Use TLS',
       type: 'boolean',
       default: 'true',
-      help: 'On for port 993 (implicit TLS). Off for STARTTLS on 143.',
+      help: 'On for port 993. Off for port 143.',
     },
     { key: 'username', label: 'Username', type: 'text', placeholder: 'you@fastmail.com' },
     { key: 'password', label: 'Password', type: 'secret', help: 'Use an app password if your provider requires one.' },
@@ -216,7 +216,7 @@ const IMAP_PROVIDER: AccountProvider = {
       label: 'Folders',
       type: 'string-list',
       default: 'INBOX',
-      help: 'Comma-separated mailbox names to sync (e.g. INBOX, Sent).',
+      help: 'Which folders to bring in, separated by commas. For example: INBOX, Sent.',
     },
     {
       key: 'smtp_host',
@@ -224,7 +224,7 @@ const IMAP_PROVIDER: AccountProvider = {
       type: 'text',
       optional: true,
       placeholder: 'smtp.fastmail.com',
-      help: 'Optional. Fill the SMTP fields to make this account send-capable.',
+      help: 'Fill in the SMTP boxes if you want this account to send mail too.',
     },
     { key: 'smtp_port', label: 'SMTP Port', type: 'number', optional: true, placeholder: '465' },
     { key: 'smtp_secure', label: 'SMTP TLS', type: 'boolean', optional: true, default: 'true' },
@@ -240,7 +240,7 @@ const IMAP_PROVIDER: AccountProvider = {
     const siblings = ['smtp_port', 'smtp_username', 'smtp_password', 'smtp_from'];
     const anyFilled = siblings.some((k) => !isBlank(v[k]));
     if (anyFilled && isBlank(v['smtp_host'])) {
-      return 'SMTP Host is required when any SMTP field is set.';
+      return 'If you fill in any SMTP box, you need the SMTP host too.';
     }
     return null;
   },
@@ -291,10 +291,10 @@ const CALENDAR_TOO_FIELD: AccountField = {
   optional: true,
   default: 'false',
   help:
-    'Adds the Calendars.ReadWrite scope to this one sign-in, so no second consent '
-    + 'is needed. It grants read AND write access to your calendar. Also improves '
-    + 'your contact graph, which is built from mail and calendar together. You can '
-    + 'still decline it on the Microsoft consent screen.',
+    'This adds Calendars.ReadWrite to the same sign-in, so you do not have to agree '
+    + 'twice. It lets Recued read AND change your calendar. It also improves '
+    + 'your contacts, which Recued builds from your mail and calendar together. You can '
+    + 'still say no on the Microsoft screen.',
 };
 
 /** Shared field set for the mail OAuth providers — a slug for the mailbox
@@ -309,7 +309,7 @@ const mailOAuthFields = (
     label: 'Mailbox name',
     type: 'identifier',
     placeholder: 'work',
-    help: 'A short name used inside Recued, such as work or personal. Use lowercase letters, numbers, - or _.',
+    help: 'A short name for it inside Recued, like work or personal. Use lower-case letters, numbers, - or _.',
   },
   {
     key: 'send_enabled',
@@ -340,7 +340,7 @@ const GMAIL_PROVIDER: AccountProvider = {
   description: 'Sign in with Google to read — and optionally send — Gmail.',
   transport: 'mail-oauth',
   fields: mailOAuthFields(
-    'Requests the Gmail send scope so recipes can send on your behalf. You can still decline it on the Google consent screen.',
+    'This asks Google for permission to send, so Recipes can send mail for you. You can still say no on the Google screen.',
   ),
   project: projectMailOAuth,
 };
@@ -352,7 +352,7 @@ const MICROSOFT_MAIL_PROVIDER: AccountProvider = {
     'Sign in with Microsoft to read — and optionally send — Outlook / Microsoft 365 mail.',
   transport: 'mail-oauth',
   fields: mailOAuthFields(
-    'Requests the Mail.Send scope so recipes can send on your behalf. You can still decline it on the Microsoft consent screen.',
+    'Requests the Mail.Send scope so recipes can send on your behalf. You can still say no on the Microsoft screen.',
     [CALENDAR_TOO_FIELD],
   ),
   project: projectMailOAuth,
@@ -362,7 +362,7 @@ const FS_PROVIDER: AccountProvider = {
   id: 'fs',
   label: 'Local folder',
   description:
-    'A directory on the machine running your server. Recued reads files from this path.',
+    'A folder on the computer running your server. Recued reads files from there.',
   transport: 'file-enroll',
   fields: [
     { key: 'slug', label: 'Name', type: 'identifier', placeholder: 'documents', help: 'Lowercase identifier for this source.' },
@@ -371,7 +371,7 @@ const FS_PROVIDER: AccountProvider = {
       label: 'Folder path',
       type: 'text',
       placeholder: '/home/me/documents',
-      help: 'Absolute path to an existing directory on the server host.',
+      help: 'The full path to a folder that already exists on that computer.',
     },
   ],
   project: (v) => ({
@@ -385,7 +385,7 @@ const S3_PROVIDER: AccountProvider = {
   id: 's3',
   label: 'S3 bucket',
   description:
-    'An S3-compatible bucket (AWS S3, Cloudflare R2, Backblaze B2, MinIO). Bring your own access keys.',
+    'Storage that works like Amazon S3: AWS S3, Cloudflare R2, Backblaze B2 or MinIO. You bring your own keys.',
   transport: 'file-enroll',
   fields: [
     { key: 'slug', label: 'Name', type: 'identifier', placeholder: 'archive', help: 'Lowercase identifier for this source.' },
@@ -399,7 +399,7 @@ const S3_PROVIDER: AccountProvider = {
       type: 'url',
       optional: true,
       placeholder: 'https://<account>.r2.cloudflarestorage.com',
-      help: 'Optional. Set for R2 / B2 / MinIO; leave blank for AWS S3.',
+      help: 'Fill this in for R2, B2 or MinIO. Leave it empty for AWS S3.',
     },
     {
       key: 'use_path_style',
@@ -408,8 +408,8 @@ const S3_PROVIDER: AccountProvider = {
       optional: true,
       default: 'true',
       help:
-        'On by default for R2 / B2 / MinIO and most custom endpoints. '
-        + 'Turn off only when your endpoint explicitly requires virtual-host-style bucket names.',
+        'On to start with for R2, B2, MinIO and most others. '
+        + 'Only turn it off if yours specifically asks for the other style.',
     },
   ],
   project: (v) => {
@@ -436,7 +436,7 @@ const calendarOAuthFields: readonly AccountField[] = [
     label: 'Calendar name',
     type: 'identifier',
     placeholder: 'work',
-    help: 'A short name used inside Recued, such as work or personal. Use lowercase letters, numbers, - or _.',
+    help: 'A short name for it inside Recued, like work or personal. Use lower-case letters, numbers, - or _.',
   },
 ];
 
@@ -470,7 +470,7 @@ const CALDAV_PROVIDER: AccountProvider = {
   id: 'caldav',
   label: 'CalDAV',
   description:
-    'Any CalDAV server (Fastmail, iCloud, Nextcloud, SOGo, …) with a username and app password.',
+    'Any CalDAV calendar, such as Fastmail, iCloud, Nextcloud or SOGo, with a username and app password.',
   transport: 'calendar-caldav',
   fields: [
     {
@@ -478,7 +478,7 @@ const CALDAV_PROVIDER: AccountProvider = {
       label: 'Calendar account name',
       type: 'identifier',
       placeholder: 'fastmail',
-      help: 'A short id for this calendar (lowercase letters, digits, - and _).',
+      help: 'A short name for this calendar, in lower-case letters, numbers, - and _.',
     },
     {
       key: 'server_url',
@@ -492,21 +492,21 @@ const CALDAV_PROVIDER: AccountProvider = {
       key: 'password',
       label: 'Password / app password',
       type: 'secret',
-      help: 'Stored on your server, never on the calendar config.',
+      help: 'Kept on your server, never with the calendar settings.',
     },
     {
       key: 'calendar_home_url',
       label: 'Calendar home URL',
       type: 'url',
       placeholder: 'https://caldav.fastmail.com/dav/calendars/user/me/',
-      help: 'Your calendar-home collection URL (provider docs call this the principal / calendar URL).',
+      help: 'The address of your calendar. Your provider may call this the principal or calendar URL.',
     },
     {
       key: 'scheduling_outbox_url',
       label: 'Scheduling outbox URL',
       type: 'url',
       optional: true,
-      help: 'Optional — enables RSVP when your server supports iTIP scheduling.',
+      help: 'Turn this on to reply to invitations, if your server supports it.',
     },
   ],
   project: (v) => {
@@ -528,10 +528,10 @@ export const ACCOUNT_LANES: readonly AccountLane[] = [
     id: 'mail',
     label: 'Mail',
     listTitle: 'Mailboxes',
-    blurb: 'Recued can search and use these mailboxes in your work. Sending stays optional.',
+    blurb: 'Recued can search these mailboxes and use them in your work. Sending is up to you.',
     emptyTitle: 'Connect your first mailbox',
     emptyDescription:
-      'Find messages in Chat and let Recued help with inbox work. You choose whether Recued can send.',
+      'Find messages in Chat, and let Recued help with your inbox. You decide whether it can send.',
     addLabel: 'Connect mailbox',
     providers: [IMAP_PROVIDER, GMAIL_PROVIDER, MICROSOFT_MAIL_PROVIDER],
   },
@@ -1217,7 +1217,7 @@ const renderConnectionSuccess = (
     title = `${providerLabel} is ready`;
     badge = 'Ready for Chat';
     description = 'The first sync finished. This account is now available in Chat.';
-    detail = `Last synced ${new Date(row.lastSyncedAt).toLocaleString()}.`;
+    detail = `Last brought in ${new Date(row.lastSyncedAt).toLocaleString()}.`;
   }
 
   const primary = syncState === 'unknown'
@@ -1336,7 +1336,7 @@ const renderOAuthReloadRecovery = (state: AccountsPanelState): string => {
         </div>
         ${checking ? '' : `<div class="accounts-oauth-recovery-actions">
           ${ready ? button({
-            label: 'Restart sign-in',
+            label: 'Start signing in again',
             size: 'sm',
             variant: 'primary',
             action: 'accounts-oauth-recovery-restart',

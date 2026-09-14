@@ -198,30 +198,30 @@ describe('D-149 view-as-visitor — resolvePrivacyInvariantDetail', () => {
 // ────────────────────────────────────────────────────────────────
 
 describe('D-149 view-as-visitor — computePreviewFreshnessLabel', () => {
-  it('a still-valid hash ⇒ "Preview valid for N more minutes" — singular + plural', () => {
+  it('a still-valid hash ⇒ "Preview good for N more minutes" — singular + plural', () => {
     expect(computePreviewFreshnessLabel(NOW + 10 * MINUTE_MS, NOW)).toBe(
-      'Preview valid for 10 more minutes',
+      'Preview good for 10 more minutes',
     );
     expect(computePreviewFreshnessLabel(NOW + MINUTE_MS, NOW)).toBe(
-      'Preview valid for 1 more minute',
+      'Preview good for 1 more minute',
     );
   });
 
   it('ceils a partial minute up', () => {
     expect(computePreviewFreshnessLabel(NOW + 90 * 1000, NOW)).toBe(
-      'Preview valid for 2 more minutes',
+      'Preview good for 2 more minutes',
     );
     expect(computePreviewFreshnessLabel(NOW + 1000, NOW)).toBe(
-      'Preview valid for 1 more minute',
+      'Preview good for 1 more minute',
     );
   });
 
   it('a lapsed hash ⇒ a re-run prompt', () => {
-    expect(computePreviewFreshnessLabel(NOW - MINUTE_MS, NOW)).toContain('re-run');
+    expect(computePreviewFreshnessLabel(NOW - MINUTE_MS, NOW)).toContain('Look as a visitor again');
   });
 
   it('exactly at expiry (remaining 0) ⇒ the expired branch', () => {
-    expect(computePreviewFreshnessLabel(NOW, NOW)).toContain('re-run');
+    expect(computePreviewFreshnessLabel(NOW, NOW)).toContain('Look as a visitor again');
   });
 });
 
@@ -329,7 +329,7 @@ describe('D-149 view-as-visitor — buildViewAsVisitorPanelModel', () => {
     );
     expect(model.invariant_summary.all_satisfied).toBe(true);
     expect(model.invariant_summary.compliance_label).toBe(
-      `All ${RECEPTION_PRIVACY_INVARIANT_LABELS.length} privacy invariants satisfied`,
+      `All ${RECEPTION_PRIVACY_INVARIANT_LABELS.length} privacy promises kept`,
     );
   });
 
@@ -346,7 +346,7 @@ describe('D-149 view-as-visitor — buildViewAsVisitorPanelModel', () => {
     expect(model.invariant_summary.satisfied_count).toBe(
       RECEPTION_PRIVACY_INVARIANT_LABELS.length - 1,
     );
-    expect(model.invariant_summary.compliance_label).toContain('review the flagged 1');
+    expect(model.invariant_summary.compliance_label).toContain('look at the 1 marked');
   });
 
   it('attaches the resolved detail copy to each invariant row', () => {

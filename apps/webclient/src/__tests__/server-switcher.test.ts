@@ -403,7 +403,7 @@ describe('mountProfileList', () => {
 
     expect(onSwitch).not.toHaveBeenCalled();
     expect(subtreeText(findByAttr(host, SERVER_SWITCHER_SWITCH_CONFIRM_ATTR)!))
-      .toContain('Server-specific chats, records, runs, and detail links stay on their original server');
+      .toContain('Chats, records, runs and links belong to one server and stay there');
     findByAttr(host, SERVER_SWITCHER_SWITCH_COMMIT_ATTR)!.click();
     await flush();
     expect(onSwitch).toHaveBeenCalledWith('p2', 'clean');
@@ -417,8 +417,8 @@ describe('mountProfileList', () => {
     findAllByAttr(host, SERVER_SWITCHER_ITEM_ATTR)[1]!.click();
 
     const confirm = findByAttr(host, SERVER_SWITCHER_SWITCH_CONFIRM_ATTR)!;
-    expect(subtreeText(confirm)).toContain('Your unsent Chat draft stays only in this tab');
-    expect(subtreeText(confirm)).toContain('will not be sent to or stored on office.example:8443');
+    expect(subtreeText(confirm)).toContain('The Chat message you have not sent is only in this tab');
+    expect(subtreeText(confirm)).toContain('will never be sent to, or saved on, office.example:8443');
     findByAttr(host, SERVER_SWITCHER_SWITCH_CANCEL_ATTR)!.click();
 
     expect(onSwitch).not.toHaveBeenCalled();
@@ -439,7 +439,7 @@ describe('mountProfileList', () => {
     expect(subtreeText(confirm)).toContain('cannot confirm or cancel it');
     expect(subtreeText(confirm)).toContain('any outcome or receipt will stay there');
     expect(findByAttr(host, SERVER_SWITCHER_SWITCH_COMMIT_ATTR)?.textContent)
-      .toBe('Switch and check later');
+      .toBe('Switch, and check later');
     expect(findByAttr(host, SERVER_SWITCHER_SWITCH_CANCEL_ATTR)?.textContent)
       .toBe('Stay and wait');
 
@@ -523,7 +523,7 @@ describe('mountProfileList', () => {
     findByAttr(host, SERVER_SWITCHER_SWITCH_COMMIT_ATTR)!.click();
     expect(onSwitch).not.toHaveBeenCalled();
     expect(subtreeText(findByAttr(host, SERVER_SWITCHER_SWITCH_CONFIRM_ATTR)!))
-      .toContain('Your unsent Chat draft');
+      .toContain('The Chat message you have not sent');
     expect(dom.activeElement()).toBe(
       findByAttr(host, SERVER_SWITCHER_SWITCH_CONFIRM_ATTR),
     );
@@ -571,7 +571,7 @@ describe('mountProfileList', () => {
     const { host } = setup({ profiles: [], activeProfileId: null });
     expect(findAllByAttr(host, SERVER_SWITCHER_ITEM_ATTR)).toHaveLength(0);
     expect(findByAttr(host, SERVER_SWITCHER_EMPTY_ATTR)?.textContent)
-      .toContain('No servers paired');
+      .toContain('not paired with any server');
   });
 
   describe('unreachable marking', () => {
@@ -611,7 +611,7 @@ describe('mountProfileList', () => {
       expect(findByAttr(host, SERVER_SWITCHER_REMOVE_LOCAL_ATTR)?.textContent)
         .toBe('Forget on this browser');
       expect(findByAttr(host, SERVER_SWITCHER_REMOVE_REVOKE_ATTR)?.textContent)
-        .toBe('Revoke access and forget');
+        .toBe('Take access away and forget');
       expect(findByAttr(host, SERVER_SWITCHER_REMOVE_CANCEL_ATTR)).not.toBeNull();
     });
 

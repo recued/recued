@@ -272,7 +272,7 @@ describe('connection recovery surface', () => {
     fixture.status.set('reconnecting');
     expect(announcer.textContent).toContain('reconnecting');
     fixture.status.set('stalled');
-    expect(announcer.textContent).toContain('not responding');
+    expect(announcer.textContent).toContain('not answering');
     fixture.status.set('connected');
     expect(announcer.textContent).toBe('');
     mount.dispose();
@@ -301,9 +301,9 @@ describe('connection recovery surface', () => {
 
     const action = findByAttr(fixture.bannerHost, CONNECTION_BANNER_ACTION_ATTR)!;
     expect(action.hasAttribute('hidden')).toBe(false);
-    expect(action.textContent).toBe('Review server profiles');
+    expect(action.textContent).toBe('Look at your servers');
     expect(subtreeText(banner)).toContain(
-      'Can’t reach the current server. Recued will keep trying.',
+      'Recued cannot reach this server. It will keep trying.',
     );
     action.click();
     // The banner no longer owns a panel — it points at the account menu, so
@@ -511,7 +511,7 @@ describe('connection recovery surface', () => {
     )!;
 
     expect(mount.showConnectedReceipt({
-      copy: 'Contracts is refreshed and ready.',
+      copy: 'Contracts is up to date and ready.',
       action: { label: 'Continue in Contracts', onSelect },
       afterReconnect: {
         copy: 'Now connected. Review Contracts before continuing.',
@@ -525,7 +525,7 @@ describe('connection recovery surface', () => {
     expect(subtreeText(banner)).toContain(
       'Now connected. Review Contracts before continuing.',
     );
-    expect(subtreeText(banner)).not.toContain('refreshed and ready');
+    expect(subtreeText(banner)).not.toContain('up to date and ready');
 
     fixture.fake.firePage('pagehide');
     expect(banner.getAttribute('data-state')).toBe('ok');

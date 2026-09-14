@@ -198,8 +198,14 @@ describe('D-250 § D7 — metricDeps survives BOTH hops to the ws-server', () =>
   const read = (f: string) =>
     readFileSync(pathJoin(dirname(fileURLToPath(import.meta.url)), '..', f), 'utf8');
 
+  /** ⚠ ASSERT THE BINDING, NOT THE KEY ORDER. This read `/metricDeps:\s*\{\s*db:/` and went red
+   *  the day a second key was added ahead of `db` — a correct change failing a test that had
+   *  pinned incidental formatting. The bounded lazy scan below cannot run away across the file,
+   *  still refuses a bare forward (`metricDeps: config.metricDeps` has no `{`), and now names
+   *  WHERE the handle comes from, which the ordering never did. */
   it('⛔ compose-listeners BUILDS the dep', () => {
-    expect(read('serve/compose-listeners.ts')).toMatch(/metricDeps:\s*\{\s*db:/);
+    expect(read('serve/compose-listeners.ts'))
+      .toMatch(/metricDeps:\s*\{[\s\S]{0,2000}?\bdb:\s*rpc\.housekeepingRpcDeps\.db/);
   });
 
   it('⛔⛔ server.ts FORWARDS it — the hop that is easy to forget', () => {

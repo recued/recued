@@ -9,6 +9,7 @@
 import {
   assessRunTargets,
   deriveRecipeTargeting,
+  DEFAULT_MISSED_SCHEDULE_POLICY,
   type EventTrigger,
   type ServerRecipeListEntry,
   type ServerSchedule,
@@ -92,6 +93,7 @@ export const initialRunModalState = (
   presetExpression: string,
 ): RunModalState => ({
   tab: initialTab,
+  missed_policy: DEFAULT_MISSED_SCHEDULE_POLICY,
   config_text: '{}',
   target_values: {},
   context_values: {},

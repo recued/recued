@@ -30,7 +30,7 @@ const CHOICES: readonly PresetChoice[] = [
   {
     value: 'aggressive',
     label: 'Aggressive',
-    description: 'Continuously when idle for 5 min+, 120 s budget per cycle.',
+    description: 'Whenever nothing else is happening for 5 minutes or more, for up to 2 minutes at a time.',
   },
   {
     value: 'custom',

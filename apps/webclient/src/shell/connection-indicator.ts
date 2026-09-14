@@ -258,7 +258,7 @@ export const mountConnectionIndicator = (
   const bannerAction = doc.createElement('button');
   bannerAction.setAttribute('type', 'button');
   bannerAction.setAttribute(CONNECTION_BANNER_ACTION_ATTR, '');
-  bannerAction.textContent = 'Review server profiles';
+  bannerAction.textContent = 'Look at your servers';
   banner.appendChild(bannerAction);
   opts.bannerHost.appendChild(banner);
 
@@ -335,8 +335,8 @@ export const mountConnectionIndicator = (
       banner.setAttribute('role', 'alert');
       banner.setAttribute('aria-live', 'assertive');
       bannerText.textContent =
-        'Can’t reach the current server. Recued will keep trying.';
-      bannerAction.textContent = 'Review server profiles';
+        'Recued cannot reach this server. It will keep trying.';
+      bannerAction.textContent = 'Look at your servers';
       if (opts.onRecoveryAction === undefined) {
         bannerAction.setAttribute('hidden', '');
       } else {
@@ -411,9 +411,9 @@ export const mountConnectionIndicator = (
     const view = PRESENTATION[status];
     currentStatus = status;
     statusAnnouncer.textContent = status === 'reconnecting'
-      ? 'Connection interrupted. Recued is reconnecting automatically.'
+      ? 'The connection dropped. Recued is reconnecting by itself.'
       : status === 'stalled'
-        ? 'Your server is not responding. Recued is waiting for it to recover.'
+        ? 'Your server is not answering. Recued is waiting for it.'
         : status === 'connecting'
           ? 'Connecting to your server.'
           : '';

@@ -51,8 +51,8 @@ export type {
 const autoRunStateLabel = (state: AutoRunState): string => {
   if (state === 'armed') return 'Armed';
   if (state === 'paused') return 'Paused';
-  if (state === 'tripped') return 'Tripped (auto-disabled after failures)';
-  return 'Not armed';
+  if (state === 'tripped') return 'Switched off by Recued after too many failures';
+  return 'Not switched on';
 };
 
 const displayName = (entry: ServerRecipeListEntry): string =>
@@ -71,6 +71,9 @@ export const RUN_PALETTE_RETRY_ATTR = 'data-recued-run-palette-retry';
 const RECIPE_PICKER_ID = 'run-palette-recipe';
 
 export interface RunPaletteOptions {
+  /** D-269 step 1 — the server's resolved IANA zone, forwarded to the run
+   *  modal's scheduled-activation stamp. Absent ⇒ this browser's, as before. */
+  serverTimeZone?: () => string | undefined;
   document?: Document;
   /** The installed-recipe inventory — full entries (for classification +
    *  the Run modal). */
@@ -291,14 +294,14 @@ export const wireRunPalette = (opts: RunPaletteOptions): RunPaletteHandle => {
   panel.className = 'run-palette-panel';
   panel.setAttribute('role', 'dialog');
   panel.setAttribute('aria-modal', 'true');
-  panel.setAttribute('aria-label', 'Run a recipe');
+  panel.setAttribute('aria-label', 'Run a Recipe');
   panel.setAttribute('tabindex', '-1');
 
   const header = doc.createElement('div');
   header.className = 'run-palette-header';
   const title = doc.createElement('h2');
   title.className = 'run-palette-title';
-  title.textContent = 'Run a recipe';
+  title.textContent = 'Run a Recipe';
   const closeBtn = doc.createElement('button');
   closeBtn.type = 'button';
   closeBtn.setAttribute(RUN_PALETTE_CLOSE_ATTR, '');
@@ -343,18 +346,18 @@ export const wireRunPalette = (opts: RunPaletteOptions): RunPaletteHandle => {
       RefPicker.initialRefPickerState(null),
       {
         pickerId: RECIPE_PICKER_ID,
-        placeholder: 'Search recipes…',
+        placeholder: 'Search Recipes…',
         ariaLabel: 'Recipe',
-        emptyText: 'No matching recipes.',
+        emptyText: 'No Recipes match.',
       },
     );
     refPicker = RefPicker.wireRefPicker(searchHost, {
       search: recipeSearch,
       config: {
         pickerId: RECIPE_PICKER_ID,
-        placeholder: 'Search recipes…',
+        placeholder: 'Search Recipes…',
         ariaLabel: 'Recipe',
-        emptyText: 'No matching recipes.',
+        emptyText: 'No Recipes match.',
       },
       minChars: 0,
       onChange: (selection) => selectRecipe(selection?.id ?? null),
@@ -384,6 +387,7 @@ export const wireRunPalette = (opts: RunPaletteOptions): RunPaletteHandle => {
     focusTrap?.release();
     focusTrap = null;
     childRunModal = RunModal.wireRunModal({
+      ...(opts.serverTimeZone ? { serverTimeZone: opts.serverTimeZone } : {}),
       recipe: entry,
       document: doc,
       initialTab: tab,
@@ -433,7 +437,7 @@ export const wireRunPalette = (opts: RunPaletteOptions): RunPaletteHandle => {
         if (!closed) {
           autoRunNotice = {
             recipeId,
-            text: 'Couldn’t update auto-run. Try again.',
+            text: 'Recued could not change that. Try again.',
           };
         }
       } finally {
@@ -492,12 +496,12 @@ export const wireRunPalette = (opts: RunPaletteOptions): RunPaletteHandle => {
           : 'status',
       );
       note.textContent = inventoryState === 'loading'
-        ? 'Loading recipes…'
+        ? 'Loading Recipes…'
         : inventoryState === 'error'
-          ? 'Couldn’t load recipes.'
+          ? 'Recued could not load your Recipes.'
           : recipes.length === 0
-            ? 'No recipes are installed yet.'
-            : 'Find a recipe to run, schedule, or arm.';
+            ? 'You have no Recipes yet.'
+            : 'Find a Recipe to run now, on a schedule, or when something happens.';
       actionArea.appendChild(note);
       if (inventoryState === 'error') {
         const retry = actionButton(
@@ -520,7 +524,7 @@ export const wireRunPalette = (opts: RunPaletteOptions): RunPaletteHandle => {
         const packs = doc.createElement('a');
         packs.setAttribute(RUN_PALETTE_ACTION_ATTR, 'browse-packs');
         packs.setAttribute('href', opts.packsHref);
-        packs.textContent = 'Browse starter packs →';
+        packs.textContent = 'Look through starter Packs →';
         packs.addEventListener('click', () => closeSelf());
         actionArea.appendChild(packs);
       }

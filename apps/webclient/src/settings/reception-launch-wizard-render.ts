@@ -164,7 +164,7 @@ const renderStepperStep = (
 ): string => {
   const glyph = STEP_STATUS_GLYPH[step.status];
   const hasError = failedSteps.has(step.step_id);
-  const errorBadge = hasError ? badge({ label: 'Needs attention', tone: 'off' }) : '';
+  const errorBadge = hasError ? badge({ label: 'Needs a look', tone: 'off' }) : '';
   const optionalBadge = step.is_optional
     ? badge({ label: 'Optional', tone: 'neutral' })
     : '';
@@ -218,7 +218,7 @@ const renderValidationGate = (
     tone: 'danger',
     title: `Fix ${validation.failures.length} ${
       validation.failures.length === 1 ? 'problem' : 'problems'
-    } before finishing setup`,
+    } before you finish`,
     role: 'alert',
     body: `<ul class="reception-wizard-errors">${validation.failures
       .map(
@@ -264,7 +264,7 @@ const renderProfileGate = (gate: LaunchWizardProfileGate): string =>
       ${
         gate.switch_needed
           ? button({
-              label: 'Switch exposure profile',
+              label: 'Change who can reach it',
               variant: 'primary',
               size: 'sm',
               action: 'reception-wizard-switch-profile',
@@ -282,11 +282,11 @@ const renderDropLinkToggle = (includesDropLink: boolean): string =>
   `<div class="reception-wizard-droptoggle">
     ${inlineHint(
       includesDropLink
-        ? 'A drop link is part of this run. Skip it if you do not need file uploads yet.'
-        : 'This optional step is skipped. Include a drop link to accept file uploads.',
+        ? 'A drop-off link is part of this. Skip it if you do not need people to send you files yet.'
+        : 'You have skipped this one. Put a drop-off link in if you want people to send you files.',
     )}
     ${button({
-      label: includesDropLink ? 'Skip this optional step' : 'Include a drop link',
+      label: includesDropLink ? 'Skip this one' : 'Put a drop-off link in',
       size: 'sm',
       action: 'reception-wizard-toggle-drop-link',
     })}
@@ -365,7 +365,7 @@ const renderPlanPreview = (plan: LaunchWizardPlanModel | null): string => {
   if (plan === null) return '';
   return panel({
     tone: 'info',
-    title: 'What this wizard will set up',
+    title: 'What this will set up for you',
     body: `
       <p class="reception-wizard-plan-summary">${e(plan.summary_label)}</p>
       <div class="reception-wizard-plan-rows">
@@ -402,7 +402,7 @@ const renderNavigation = (
   });
   const forward = stepper.is_last_step
     ? button({
-        label: 'Finish setup',
+        label: 'Finish',
         size: 'sm',
         variant: 'primary',
         action: 'reception-wizard-finish',
@@ -440,7 +440,7 @@ export const renderLaunchWizard = (view: LaunchWizardRenderView): string => {
         <span class="reception-wizard-progress">Step ${stepper.current_position} of ${stepper.total_active_steps}</span>
         <span class="reception-wizard-spacer"></span>
         ${button({
-          label: 'Cancel setup',
+          label: 'Never mind',
           size: 'xs',
           variant: 'danger-text',
           action: 'reception-wizard-cancel',

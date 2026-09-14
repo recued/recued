@@ -793,7 +793,7 @@ describe('D-196 S2 - Settings -> Seller page', () => {
     await mount.whenLoaded();
 
     expect(findByAttr(host, SELLER_ORDERS_ATTR)).toBeNull();
-    expect(textOf(host)).toContain('Orders unavailable');
+    expect(textOf(host)).toContain('Recued cannot show orders');
     mount.dispose();
   });
 
@@ -1017,8 +1017,8 @@ describe('D-196 S2 - Settings -> Seller page', () => {
       /^recued-seller-confirm-body-/,
     );
     const modalText = textOf(modal);
-    expect(modalText).toContain('attesting');
-    expect(modalText).toContain('cannot verify');
+    expect(modalText).toContain('You are the one saying so');
+    expect(modalText).toContain('Recued cannot check');
 
     findByAttr(host, SELLER_MESSAGE_MODAL_CONFIRM_ATTR)!.click();
     await flushAsync();
@@ -1060,7 +1060,7 @@ describe('D-196 S2 - Settings -> Seller page', () => {
 
     const status = findByAttr(host, SELLER_ORDERS_STATUS_ATTR)!;
     expect(status.getAttribute('data-kind')).toBe('error');
-    expect(textOf(status)).toContain('refused');
+    expect(textOf(status)).toContain('said no');
     expect(textOf(status)).not.toContain('Closed');
     mount.dispose();
   });
@@ -1107,7 +1107,7 @@ describe('D-196 S2 - Settings -> Seller page', () => {
     expect(text).toContain('re-issues');
     // It must name WHAT is lost and that swap is the only action that does it.
     expect(text).toContain('Contracts');
-    expect(text).toContain('only swapping');
+    expect(text).toContain('Only moving does this');
     mount.dispose();
   });
 
@@ -1122,7 +1122,7 @@ describe('D-196 S2 - Settings -> Seller page', () => {
     });
     await truncatedMount.whenLoaded();
     expect(textOf(findByAttr(truncatedHost, SELLER_ORDERS_ATTR)!)).toContain(
-      'More orders exist after it.',
+      'There are more after it.',
     );
     truncatedMount.dispose();
 
@@ -1209,16 +1209,16 @@ describe('D-196 S2 - Settings -> Seller page', () => {
     expect(textOf(offerSection!)).toContain('$125.00');
     expect(textOf(offerSection!)).toContain('draft');
     expect(textOf(offerSection!)).toContain('Offer ID: paid-document.outcome');
-    expect(textOf(offerSection!)).toContain('source recipes');
-    expect(textOf(offerSection!)).toContain('records publication intent');
-    expect(textOf(offerSection!)).toContain('does not cancel in-flight orders');
+    expect(textOf(offerSection!)).toContain('the Recipe behind it');
+    expect(textOf(offerSection!)).toContain('is only about showing it');
+    expect(textOf(offerSection!)).toContain('does not cancel orders already going');
     expect(textOf(offerSection!)).toContain(
-      'pause any recipe or intake path that can start a new order',
+      'pause any Recipe or form that could start a new one',
     );
     expect(textOf(offerRow!)).not.toContain('recued-core');
     expect(textOf(offerRow!)).not.toContain('version');
     expect(textOf(accessSection!)).toContain(
-      'separately from one-time outcome offers and orders',
+      'separate from one-off things you sell',
     );
     expect(findByAttr(
       host,
@@ -1239,7 +1239,7 @@ describe('D-196 S2 - Settings -> Seller page', () => {
     expect(definitionLink?.getAttribute('data-recued-reference-id')).toBe(
       'start-paid-document-fulfillment',
     );
-    expect(textOf(definitionLink!)).toContain('Open recorded creator recipe');
+    expect(textOf(definitionLink!)).toContain('Open the Recipe that made it');
     const fulfillmentLink = findByAttr(
       offerRow!,
       SELLER_OFFER_FULFILLMENT_LINK_ATTR,
@@ -1252,7 +1252,7 @@ describe('D-196 S2 - Settings -> Seller page', () => {
     expect(fulfillmentLink?.getAttribute('data-recued-reference-id')).toBe(
       'generate-paid-document',
     );
-    expect(textOf(fulfillmentLink!)).toContain('Open fulfillment recipe');
+    expect(textOf(fulfillmentLink!)).toContain('Open the Recipe that delivers it');
     expect(findByAttr(host, SELLER_OFFER_STATE_ACTION_ATTR)).toBeNull();
 
     mount.dispose();
@@ -1303,7 +1303,7 @@ describe('D-196 S2 - Settings -> Seller page', () => {
 
     expect(textOf(findByAttr(host, SELLER_OFFERS_ATTR)!)).toContain('Archive...');
     expect(textOf(findByAttr(host, SELLER_OFFERS_ATTR)!)).toContain(
-      'Archived offers cannot be restored.',
+      'Once an offer is put away, you cannot bring it back.',
     );
     findByAttr(host, SELLER_OFFER_STATE_ACTION_ATTR, 'active')?.click();
     await flushAsync();
@@ -1361,7 +1361,7 @@ describe('D-196 S2 - Settings -> Seller page', () => {
     await mount.whenLoaded();
 
     expect(textOf(findByAttr(host, SELLER_OFFERS_ATTR)!)).toContain(
-      'Creator not recorded',
+      'Recued did not note who made it',
     );
     expect(textOf(findByAttr(host, SELLER_OFFERS_ATTR)!)).toContain('Not linked');
     expect(findByAttr(host, SELLER_OFFER_DEFINITION_LINK_ATTR)).toBeNull();
@@ -1372,7 +1372,7 @@ describe('D-196 S2 - Settings -> Seller page', () => {
 
     expect(mount.getState().overview?.offers?.[0]?.state).toBe('draft');
     expect(textOf(findByAttr(host, SELLER_OFFER_STATE_STATUS_ATTR)!)).toContain(
-      'unexpected offer transition result',
+      'an answer it did not expect',
     );
 
     mount.dispose();
@@ -1599,7 +1599,7 @@ describe('D-196 S2 - Settings -> Seller page', () => {
 
     expect(findByAttr(host, SELLER_LLM_GATEWAY_ACK_FORM_ATTR)).toBeNull();
     // The read-only row still honestly shows the unacknowledged state.
-    expect(textOf(findByAttr(host, SELLER_LLM_GATEWAY_ATTR)!)).toContain('Not acknowledged');
+    expect(textOf(findByAttr(host, SELLER_LLM_GATEWAY_ATTR)!)).toContain('You have not agreed yet');
     mount.dispose();
   });
 
@@ -1649,7 +1649,7 @@ describe('D-196 S2 - Settings -> Seller page', () => {
     expect(textOf(chooser!)).toContain('owner@example.com (mail-primary)');
     expect(textOf(chooser!)).not.toContain('mail-read-only');
     expect(textOf(findByAttr(host, SELLER_MAIL_CHOOSER_STATUS_ATTR)!)).toContain(
-      'Only send-capable',
+      'Only mailboxes that can send',
     );
     mount.dispose();
   });
@@ -1703,7 +1703,7 @@ describe('D-196 S2 - Settings -> Seller page', () => {
     await flushAsync();
     expect(runUpdateSellerSettings).not.toHaveBeenCalled();
     expect(textOf(findByAttr(host, SELLER_SETTINGS_FORM_STATUS_ATTR)!)).toContain(
-      'Sender mail instance is unavailable',
+      'That mailbox cannot send',
     );
 
     chooser!.value = '';
@@ -1745,7 +1745,7 @@ describe('D-196 S2 - Settings -> Seller page', () => {
     );
     expect(chooser?.children.map((option) => option.value)).toContain('mail-primary');
     expect(textOf(findByAttr(host, SELLER_MAIL_CHOOSER_STATUS_ATTR)!)).toContain(
-      'last known send-capable accounts',
+      'the ones it knew about last',
     );
     mount.dispose();
   });
@@ -1773,7 +1773,7 @@ describe('D-196 S2 - Settings -> Seller page', () => {
     expect(chooser?.children.map((option) => option.value)).toEqual(['']);
     expect(textOf(chooser!)).toContain('No sender');
     expect(textOf(findByAttr(host, SELLER_MAIL_CHOOSER_STATUS_ATTR)!)).toContain(
-      'No send-capable mail accounts',
+      'You have no mailbox that can send',
     );
     mount.dispose();
   });
@@ -1804,7 +1804,7 @@ describe('D-196 S2 - Settings -> Seller page', () => {
     expect(runUpdateSellerSettings).not.toHaveBeenCalled();
     const status = findByAttr(host, SELLER_SETTINGS_FORM_STATUS_ATTR);
     expect(status?.getAttribute('role')).toBe('alert');
-    expect(textOf(status!)).toContain('Status policy must be a JSON object.');
+    expect(textOf(status!)).toContain('Status policy has to be a JSON object.');
 
     statusPolicy.value = '{';
     findByAttr(host, SELLER_SETTINGS_FORM_SUBMIT_ATTR)?.click();
@@ -1812,7 +1812,7 @@ describe('D-196 S2 - Settings -> Seller page', () => {
 
     expect(runUpdateSellerSettings).not.toHaveBeenCalled();
     expect(status?.getAttribute('role')).toBe('alert');
-    expect(textOf(status!)).toContain('Status policy must be valid JSON.');
+    expect(textOf(status!)).toContain('Status policy has to be JSON that Recued can read.');
     mount.dispose();
   });
 
@@ -1896,7 +1896,7 @@ describe('D-196 S2 - Settings -> Seller page', () => {
     expect(textOf(host)).toContain('Consulting Pro');
     const status = findByAttr(host, SELLER_TIER_FORM_STATUS_ATTR);
     expect(status?.getAttribute('data-kind')).toBe('success');
-    expect(textOf(status!)).toContain('Tier saved.');
+    expect(textOf(status!)).toContain('Saved.');
     mount.dispose();
   });
 
@@ -2116,7 +2116,7 @@ describe('D-196 S2 - Settings -> Seller page', () => {
     });
     let status = findByAttr(host, SELLER_TIER_BULK_ADJUST_STATUS_ATTR);
     expect(status?.getAttribute('data-kind')).toBe('success');
-    expect(textOf(status!)).toContain('Tier customers adjusted. 1 adjusted, 0 skipped.');
+    expect(textOf(status!)).toContain('Done. 1 adjusted, 0 skipped.');
 
     const allOpen = findByAttr(
       host,
@@ -2146,7 +2146,7 @@ describe('D-196 S2 - Settings -> Seller page', () => {
     });
     status = findByAttr(host, SELLER_TIER_BULK_ADJUST_STATUS_ATTR);
     expect(status?.getAttribute('data-kind')).toBe('success');
-    expect(textOf(status!)).toContain('Tier customers adjusted. 2 adjusted, 0 skipped.');
+    expect(textOf(status!)).toContain('Done. 2 adjusted, 0 skipped.');
     expect(mount.getState().overview?.counts.customers).toBe(2);
     mount.dispose();
   });
@@ -2190,7 +2190,7 @@ describe('D-196 S2 - Settings -> Seller page', () => {
     expect(runBulkAdjustManualTierCustomers).not.toHaveBeenCalled();
     const status = findByAttr(host, SELLER_TIER_BULK_ADJUST_STATUS_ATTR);
     expect(status?.getAttribute('role')).toBe('alert');
-    expect(textOf(status!)).toContain('Customer IDs must not contain duplicates.');
+    expect(textOf(status!)).toContain('Each customer id can only appear once.');
     mount.dispose();
   });
 
@@ -2288,9 +2288,9 @@ describe('D-196 S2 - Settings -> Seller page', () => {
     expect(findByAttr(host, SELLER_CUSTOMER_ROW_ATTR, 'customer-2')).not.toBeNull();
     const status = findByAttr(host, SELLER_CUSTOMER_FORM_STATUS_ATTR);
     expect(status?.getAttribute('data-kind')).toBe('success');
-    expect(textOf(status!)).toContain('Claim email sent.');
+    expect(textOf(status!)).toContain('The email is on its way.');
     expect(textOf(status!)).toContain(
-      'One-time claim link: https://seller.example/reception/claim?t=short-lived-claim',
+      'Their one-off link: https://seller.example/reception/claim?t=short-lived-claim',
     );
     expect(textOf(status!)).not.toContain('recued_customer_bearer');
     mount.dispose();
@@ -2345,10 +2345,10 @@ describe('D-196 S2 - Settings -> Seller page', () => {
     expect(status?.getAttribute('data-kind')).toBe('error');
     expect(status?.getAttribute('role')).toBe('alert');
     expect(textOf(status!)).toContain(
-      'Claim email failed (MAIL_SEND_NETWORK_FAILED); deliver the link manually.',
+      'Recued could not send the email (MAIL_SEND_NETWORK_FAILED); deliver the link manually.',
     );
     expect(textOf(status!)).toContain(
-      'One-time claim link: https://seller.example/reception/claim?t=failed-mail-claim',
+      'Their one-off link: https://seller.example/reception/claim?t=failed-mail-claim',
     );
     expect(findByAttr(host, SELLER_CUSTOMER_ROW_ATTR, 'customer-mail-failed'))
       .not.toBeNull();
@@ -2447,13 +2447,13 @@ describe('D-196 S2 - Settings -> Seller page', () => {
       return el;
     };
     for (const [name, accessibleName] of [
-      ['extend.customer_id', 'Customer to extend'],
+      ['extend.customer_id', 'Who to give longer'],
       ['extend.email', 'Extension email'],
-      ['extend.current_period_end', 'Extension period end (Unix ms)'],
+      ['extend.current_period_end', 'New end time'],
       ['extend.source_status', 'Extension source status'],
-      ['swap.customer_id', 'Customer to swap'],
-      ['swap.entitlement_key', 'Swap entitlement'],
-      ['swap.current_period_end', 'Swap period end (Unix ms)'],
+      ['swap.customer_id', 'Who to move'],
+      ['swap.entitlement_key', 'Swap what it unlocks'],
+      ['swap.current_period_end', 'New end time'],
       ['swap.source_status', 'Swap source status'],
       ['close.customer_id', 'Customer to close'],
       ['close.reason', 'Close reason'],
@@ -2478,7 +2478,7 @@ describe('D-196 S2 - Settings -> Seller page', () => {
       source_status: 'renewed',
     });
     expect(textOf(findByAttr(host, SELLER_CUSTOMER_LIFECYCLE_STATUS_ATTR)!))
-      .toContain('Customer extended.');
+      .toContain('Their access now lasts longer.');
     expect(textOf(host)).toContain('renewed@example.com');
 
     field('swap.customer_id').value = 'customer-1';
@@ -2495,7 +2495,7 @@ describe('D-196 S2 - Settings -> Seller page', () => {
       source_status: 'upgraded',
     });
     expect(textOf(findByAttr(host, SELLER_CUSTOMER_LIFECYCLE_STATUS_ATTR)!))
-      .toContain('Customer tier swapped.');
+      .toContain('They are on the new package.');
 
     field('reissue.customer_id').value = 'customer-1';
     for (const name of [
@@ -2514,7 +2514,7 @@ describe('D-196 S2 - Settings -> Seller page', () => {
     });
     expect(textOf(findByAttr(host, SELLER_CUSTOMER_LIFECYCLE_STATUS_ATTR)!))
       .toContain(
-        'Customer token reissued. One-time claim link: https://seller.example/reception/claim?t=reissued-short-lived-claim',
+        'Customer token reissued. Their one-off link: https://seller.example/reception/claim?t=reissued-short-lived-claim',
       );
 
     field('close.customer_id').value = 'customer-1';
@@ -2775,7 +2775,7 @@ describe('D-196 S2 - Settings -> Seller page', () => {
     expect(runUpsertManualTier).not.toHaveBeenCalled();
     const status = findByAttr(host, SELLER_TIER_FORM_STATUS_ATTR);
     expect(status?.getAttribute('role')).toBe('alert');
-    expect(textOf(status!)).toContain('Usage policy must be a JSON object.');
+    expect(textOf(status!)).toContain('The usage rules have to be a JSON object.');
     mount.dispose();
   });
 
@@ -3045,7 +3045,7 @@ describe('D-196 consolidation — ONE provider tier synchronization form', () =>
     await t.mount.whenLoaded();
     t.choose('paddle');
     expect(t.submit()?.disabled).toBe(true);
-    expect(t.statusText()).toContain('Paddle synchronization needs a newer paired server.');
+    expect(t.statusText()).toContain('Paddle needs a newer server to bring things in.');
     t.choose('stripe');
     expect(t.submit()?.disabled).toBe(false);
     t.field('door_id').value = 'door-mcp';
@@ -3240,7 +3240,7 @@ describe('Seller polish (2026-09-03) — separate screens, every level addressab
     const { host, mount } = mountAt({ kind: 'create', subpage: 'customers', variant: 'manual' });
     await mount.whenLoaded();
     expect(findByAttr(host, SELLER_CUSTOMER_FORM_ATTR)).toBeNull();
-    expect(textOf(host)).toContain('Issuing unavailable');
+    expect(textOf(host)).toContain('You cannot give one out now');
     expect(findByAttr(host, SELLER_BACK_ATTR)?.getAttribute('href')).toBe('#settings/seller/customers');
     mount.dispose();
   });

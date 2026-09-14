@@ -204,13 +204,13 @@ export interface ClearThisBrowserPanelMount {
 
 const COPY = {
   warning:
-    'This wipes every credential, cache, and key from this browser. You will be logged out and must re-pair from your recued-server to come back.',
+    'This deletes everything Recued keeps in this browser. You will be signed out, and you will have to pair with your server again to get back in.',
   confirm_question:
-    'Are you sure? This browser will lose access to your warehouse until you re-pair.',
+    'Are you sure? This browser will not be able to reach your things until you pair it again.',
   busy: 'Clearing…',
   done_heading: 'This browser has been cleared.',
-  done_subtitle: 'Reload to re-pair from your recued-server.',
-  error_heading: 'Clearing this browser failed partway.',
+  done_subtitle: 'Load the page again to pair with your server.',
+  error_heading: 'Recued did not finish clearing this browser.',
   // Codex slice-109 P2 fold — pre-fold the copy claimed "No state was
   // changed", but `clearThisBrowser` is NOT atomic: an exception thrown
   // *after* `local_store.clear()` succeeds (e.g. a cache-storage delete
@@ -220,15 +220,15 @@ const COPY = {
   // gone. The new copy is honest about that and points the user at
   // the only safe recovery: re-pair.
   error_subtitle:
-    'Some surfaces may have been wiped before the error. Retry to finish the clear, or cancel — you may need to re-pair from your recued-server regardless.',
+    'Some of it may already be gone. Try again to finish, or cancel. You may have to pair again either way.',
 } as const;
 
 const RESULT_ROW_LABELS = {
-  cleared_local_store: 'Local store wiped',
-  cleared_session_storage: 'Session storage cleared',
-  cleared_sw_caches: 'Service-worker caches deleted',
-  cleared_crypto_keys: 'Crypto key store wiped',
-  sw_unregistered: 'Service worker unregistered',
+  cleared_local_store: 'What was saved here is gone',
+  cleared_session_storage: 'This visit’s notes are gone',
+  cleared_sw_caches: 'Saved copies of pages are gone',
+  cleared_crypto_keys: 'Keys kept here are gone',
+  sw_unregistered: 'The background helper is switched off',
 } as const;
 
 // ════════════════════════════════════════════════════════════════
@@ -544,7 +544,7 @@ export const mountClearThisBrowserPanel = (
     actions.className = 'clear-this-browser-actions';
     actions.appendChild(
       makeButton(
-        'Reload to re-pair',
+        'Load the page again to pair',
         CLEAR_THIS_BROWSER_RELOAD_BTN_ATTR,
         'primary',
         runReload,

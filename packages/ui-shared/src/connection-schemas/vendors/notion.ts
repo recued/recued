@@ -33,7 +33,7 @@ const NOTION_FIELDS: readonly ConnectionField[] = [
     key: 'name',
     label: 'Name',
     type: 'identifier',
-    help: 'Lowercase identifier used in recipes (e.g. `notion`).',
+    help: 'A short lower-case name you use in Recipes, such as `notion`).',
     placeholder: 'notion',
   },
   {
@@ -47,7 +47,7 @@ const NOTION_FIELDS: readonly ConnectionField[] = [
     key: 'config.vendor',
     label: 'Vendor',
     type: 'text',
-    help: 'Notion vendor identifier — locked at enrollment.',
+    help: 'Notion sets this when you connect. You cannot change it.',
     placeholder: 'notion',
     hidden: true,
   },

@@ -59,9 +59,9 @@ export type CarriedBriefRenderModel =
   | CarriedBriefLoadingModel;
 
 const CAVEAT =
-  'This is what the assistant is carrying forward, in its own words — not a '
-  + 'record of what you said. It can be incomplete or wrong; your messages '
-  + 'themselves are unaffected.';
+  'This is what Chat is carrying forward, in its own words. It is not a '
+  + 'record of what you said. It can be missing things, or wrong. Your messages '
+  + 'themselves are not changed.';
 
 const asStrings = (v: unknown): readonly string[] =>
   Array.isArray(v)
@@ -107,7 +107,7 @@ export const buildCarriedBriefModel = (
   }
   return {
     kind: 'carrying',
-    heading: 'What the assistant is carrying',
+    heading: 'What Chat is carrying',
     caveat: CAVEAT,
     rows,
   };

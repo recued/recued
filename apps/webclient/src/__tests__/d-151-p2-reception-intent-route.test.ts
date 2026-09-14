@@ -130,7 +130,7 @@ describe('D-151 P2 — mountReceptionRoute: onProposeIntent', () => {
     ) => Promise<any>;
     const result = await onProposeIntent('something');
     expect(result.ok).toBe(false);
-    expect(result.message).toContain('AI configured');
+    expect(result.message).toContain('needs AI set up');
     route.dispose();
   });
 });

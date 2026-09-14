@@ -33,7 +33,7 @@ const DROPBOX_FIELDS: readonly ConnectionField[] = [
     key: 'name',
     label: 'Name',
     type: 'identifier',
-    help: 'Lowercase identifier used in recipes (e.g. `dropbox`, `dropbox-work`).',
+    help: 'A short lower-case name you use in Recipes, such as `dropbox`, `dropbox-work`).',
     placeholder: 'dropbox',
   },
   {
@@ -47,7 +47,7 @@ const DROPBOX_FIELDS: readonly ConnectionField[] = [
     key: 'config.vendor',
     label: 'Vendor',
     type: 'text',
-    help: 'Dropbox vendor identifier — locked at enrollment.',
+    help: 'Dropbox sets this when you connect. You cannot change it.',
     placeholder: 'dropbox',
     hidden: true,
   },
@@ -64,14 +64,14 @@ const DROPBOX_FIELDS: readonly ConnectionField[] = [
   // mirror to a subtree. Empty = mirror the whole account.
   {
     key: 'config.import_scope',
-    label: 'Scope to a subtree (optional)',
+    label: 'Just part of it, if you want',
     type: 'text',
     optional: true,
     placeholder: 'Work/**',
     help:
-      'Optional path glob to limit which files are mirrored — e.g. `Work/**` '
+      'A pattern limiting which files Recued brings in, such as `Work/**` '
       + '(a folder) or `**/*.pdf` (a pattern). Leave blank to mirror the whole '
-      + 'account. Sync mirrors metadata only; contents are fetched lazily only '
+      + 'account. Recued brings in only the details, not the files themselves. It fetches a file only '
       + 'when you explicitly read a file.',
   },
   {
@@ -79,7 +79,7 @@ const DROPBOX_FIELDS: readonly ConnectionField[] = [
     label: 'Auth Type',
     type: 'select',
     options: ['oauth2_refresh'],
-    help: 'Dropbox uses OAuth 2.0 with refresh tokens.',
+    help: 'Dropbox asks you to sign in, and Recued stays signed in for you.',
     hidden: true,
   },
   {
@@ -106,8 +106,8 @@ const DROPBOX_FIELDS: readonly ConnectionField[] = [
     type: 'text',
     optional: true,
     help:
-      'OAuth scopes requested at authorization. Pre-filled from Dropbox\'s '
-      + 'defaults plus the scopes your installed packs need — edit to add or trim.',
+      'What Recued asks permission for. Filled in from Dropbox\'s '
+      + 'own defaults, plus whatever your installed Packs need. You can add or remove.',
   },
   {
     key: 'auth.token_endpoint',

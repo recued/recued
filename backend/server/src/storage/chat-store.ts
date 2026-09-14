@@ -23,6 +23,7 @@
  *  Wired into `bin.ts` boot-time schema pass immediately after
  *  `ensureReceptionSchema`. Idempotent — safe to call on every boot. */
 
+import { createFileAttachmentLifecycle } from './file-attachment-lifecycle.js';
 import type Database from 'better-sqlite3';
 import {
   chatToolCallFromMetadata, createChatToolCallStore, settleChatToolCall,
@@ -41,6 +42,7 @@ import {
   type ChatEgressPacket,
   type ChatMessageAttachment,
   type ChatMessageRole,
+  type ChatReplyReference,
   type ChatModelHint,
   type ChatModelRoutingLayer,
   type ChatModelSourceId,
@@ -267,6 +269,9 @@ export const ensureChatSchema = (db: Database.Database): void => {
       ON chat_messages (session_id, ts);
     CREATE INDEX IF NOT EXISTS idx_chat_messages_role
       ON chat_messages (session_id, role, ts);
+    CREATE INDEX IF NOT EXISTS idx_chat_messages_history_search
+      ON chat_messages (ts DESC, message_id DESC)
+      WHERE role IN ('user', 'assistant');
     CREATE INDEX IF NOT EXISTS idx_chat_messages_target_server
       ON chat_messages (session_id, target_server, ts)
       WHERE target_server != 'self';
@@ -634,7 +639,7 @@ const aadForMessage = (session_id: string, message_id: string): Uint8Array =>
   );
 
 const aadForMessageField = (
-  field: 'candidates' | 'tool_calls',
+  field: 'candidates' | 'tool_calls' | 'reply_to',
   session_id: string,
   message_id: string,
 ): Uint8Array =>
@@ -713,7 +718,7 @@ export const decodeChatContentFromStorage = async (
 
 const encodeChatMessageFieldForStorage = async (
   plaintextValue: string,
-  field: 'candidates' | 'tool_calls',
+  field: 'candidates' | 'tool_calls' | 'reply_to',
   identity: { session_id: string; message_id: string },
   getKey?: ChatKeyProvider,
 ): Promise<string> => {
@@ -730,7 +735,7 @@ const encodeChatMessageFieldForStorage = async (
 
 const decodeChatMessageFieldFromStorage = async (
   blob: string,
-  field: 'candidates' | 'tool_calls',
+  field: 'candidates' | 'tool_calls' | 'reply_to',
   identity: { session_id: string; message_id: string },
   getKey?: ChatKeyProvider,
 ): Promise<string> => {
@@ -1115,6 +1120,21 @@ const parsePickerAtSend = (
   }
 };
 
+const parseReplyReference = (value: unknown): ChatReplyReference | undefined => {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const candidate = value as Record<string, unknown>;
+  const id = (v: unknown): v is string => typeof v === 'string' && v.length > 0 && v.length <= 512;
+  if (id(candidate.message_id) && candidate.native_message_id === undefined && candidate.vendor === undefined) {
+    return { message_id: candidate.message_id };
+  }
+  if ((candidate.message_id === undefined || id(candidate.message_id)) && id(candidate.native_message_id)
+    && typeof candidate.vendor === 'string' && /^[a-z0-9_-]{1,64}$/.test(candidate.vendor)) {
+    return { ...(id(candidate.message_id) ? { message_id: candidate.message_id } : {}),
+      vendor: candidate.vendor, native_message_id: candidate.native_message_id };
+  }
+  return undefined;
+};
+
 /** Per-message decoded view. The store decrypts `content_encrypted`
  *  inline so callers handle one consistent shape; rows whose AAD
  *  doesn't validate surface as empty content rather than throwing, so
@@ -1183,6 +1203,17 @@ const messageFromRow = async (
   const data_diagnosis = parseDataDiagnosis(row.metadata_blob);
   const data_diagnosis_resolution =
     parseDataDiagnosisResolution(row.metadata_blob);
+  let reply_to: ChatReplyReference | undefined;
+  const storedReply = parseMessageMetadataObject(row.metadata_blob).reply_to_encrypted;
+  if (typeof storedReply === 'string') {
+    try {
+      reply_to = parseReplyReference(JSON.parse(await decodeChatMessageFieldFromStorage(
+        storedReply, 'reply_to', { session_id: row.session_id, message_id: row.message_id }, getKey,
+      )));
+    } catch (error) {
+      if (error instanceof ChatVaultLockedError) throw error;
+    }
+  }
   return {
     id: row.message_id,
     session_id: row.session_id,
@@ -1198,6 +1229,7 @@ const messageFromRow = async (
     ...(tool_call ? { tool_call } : {}),
     ...(provenance ? { provenance } : {}),
     ...(attachments ? { attachments } : {}),
+    ...(reply_to ? { reply_to } : {}),
     ...(data_diagnosis ? { data_diagnosis } : {}),
     ...(data_diagnosis_resolution
       ? { data_diagnosis_resolution }
@@ -1230,6 +1262,9 @@ export interface CreateSessionInput {
 /** Input shape for `chatStore.appendMessage`. The caller passes plain
  *  content; the store handles AEAD encryption before insert. */
 export interface AppendMessageInput {
+  /** Host-owned guard checked again after asynchronous encryption, inside commit. */
+  assert_active?: (() => void) | undefined;
+  on_committed?: (() => void) | undefined;
   /** Host-owned lifecycle metadata; payloads stay in encrypted content. */
   tool_call?: StoredChatToolCall;
   /** Atomically close the originating call with this result row. */
@@ -1263,6 +1298,8 @@ export interface AppendMessageInput {
   source_lifecycle?: RecallSourceLifecycle;
   provenance?: ChatProvenanceRef[];
   attachments?: ChatMessageAttachment[];
+  /** Host-validated reference only; previews are resolved from retained rows. */
+  reply_to?: ChatReplyReference;
   /** Server-normalized, evidence-only diagnosis grounding. Stored in the
    * existing message metadata column so both turn rows survive hydration. */
   data_diagnosis?: ChatDataDiagnosisContext;
@@ -1510,6 +1547,8 @@ export interface ChatStore {
   bumpSessionLastActiveAt(session_id: string, now?: number): boolean;
   deleteSession(session_id: string): boolean;
   appendMessage(input: AppendMessageInput): Promise<ChatMessage>;
+  /** Deferred native media becomes immutable before transcription or model work. */
+  retainTurnAttachments?(session: string, turn: string, attachments: readonly ChatMessageAttachment[]): ChatMessageAttachment[];
   /** Record that the owner has now seen this session's messages. Idempotent;
    *  a no-op for a session id that does not exist. */
   markSessionSeen(session_id: string): void;
@@ -1518,11 +1557,21 @@ export interface ChatStore {
     session_id: string,
     limit: number,
     before?: ChatHistoryCursor,
+    position?: { after?: ChatHistoryCursor; around_message_id?: string },
   ): Promise<{
     messages: ChatMessage[];
     has_more: boolean;
     oldest?: ChatHistoryCursor;
+    has_more_after?: boolean;
+    newest?: ChatHistoryCursor;
   }>;
+  /** Paired-owner History only: the same corpus as listSessions/listMessages,
+   * including legacy rows. Never used for model recall or exported as a tool. */
+  scanHistoryMessagesPage?(input: {
+    before?: ChatHistoryCursor;
+    limit: number;
+    session_ids?: readonly string[];
+  }): Promise<ChatRecallSourcePage>;
   listMessages(session_id: string): Promise<ChatMessage[]>;
   /** The most recent `limit` conversational messages, oldest-first.
    *
@@ -1687,6 +1736,8 @@ export const createChatStore = (
   getKey?: ChatKeyProvider,
   getLlmConfig?: () => LLMConfig | undefined,
 ): ChatStore => {
+  const attachmentLifecycle = createFileAttachmentLifecycle(db);
+  attachmentLifecycle.migrateMessages();
   const insertSessionStmt = db.prepare(`
     INSERT INTO chat_sessions (
       session_id, created_at, last_active_at, title,
@@ -1888,6 +1939,32 @@ export const createChatStore = (
       ORDER BY ts DESC, message_id DESC
       LIMIT @limit`,
   );
+  const historyAnchorStmt = db.prepare(`
+    SELECT ts, message_id FROM chat_messages
+    WHERE session_id = @session_id AND message_id = @message_id
+  `);
+  const listMessagesAfterStmt = db.prepare(`
+    SELECT * FROM chat_messages
+    WHERE session_id = @session_id AND (ts, message_id) > (@ts, @message_id)
+    ORDER BY ts ASC, message_id ASC LIMIT @limit
+  `);
+  const listMessagesFromStmt = db.prepare(`
+    SELECT * FROM chat_messages
+    WHERE session_id = @session_id AND (ts, message_id) >= (@ts, @message_id)
+    ORDER BY ts ASC, message_id ASC LIMIT @limit
+  `);
+  const scanHistoryMessagesStmt = db.prepare(`
+    SELECT message_id, session_id, role, ts, content_encrypted
+    FROM chat_messages
+    WHERE role IN ('user', 'assistant')
+      AND (ts, message_id) < (@ts, @message_id)
+    ORDER BY ts DESC, message_id DESC LIMIT @limit
+  `);
+  const scanHistoryMessagesFirstStmt = db.prepare(`
+    SELECT message_id, session_id, role, ts, content_encrypted
+    FROM chat_messages WHERE role IN ('user', 'assistant')
+    ORDER BY ts DESC, message_id DESC LIMIT @limit
+  `);
   // The two-turn window is computed WITHIN the corpus, not across the session.
   // The outer predicate already stops a door reading an owner row (P10), so a
   // session-wide window leaks nothing -- it silently UNDER-reaches: whichever
@@ -2359,8 +2436,77 @@ export const createChatStore = (
     return info.changes > 0;
   };
 
+  const replyRowStmt = db.prepare<{ session_id: string; message_id: string }>(
+    'SELECT * FROM chat_messages WHERE session_id = @session_id AND message_id = @message_id',
+  );
+  /** One level only, with one decryption per distinct target. A quoted message
+   * outside the history window does not pull its own reply chain into the read. */
+  const withReplyPreviews = async (messages: ChatMessage[]): Promise<ChatMessage[]> => {
+    messages = messages.map(message => message.attachments?.length
+      ? { ...message, attachments: message.attachments.map(attachmentLifecycle.describe) } : message);
+    if (!messages.some(message => message.reply_to)) return messages;
+    const key = getKey ? Buffer.from(requireChatKey(getKey, 'read quoted replies')) : undefined;
+    const sourceRows = new Map(messages.filter(message => message.reply_to).map(message => [message.id,
+      replyRowStmt.get({ session_id: message.session_id, message_id: message.id }) as MessageRow | undefined]));
+    const targets = new Map<string, Promise<{ row: MessageRow; message: ChatMessage } | undefined>>();
+    const targetRows = new Map<string, MessageRow>();
+    const result = await Promise.all(messages.map(async message => {
+      const reference = message.reply_to && parseReplyReference(message.reply_to);
+      if (!reference) return message;
+      if (!('message_id' in reference)) return { ...message, reply_to: reference };
+      const identity = { session_id: message.session_id, message_id: reference.message_id };
+      const cacheKey = JSON.stringify(identity);
+      let target = targets.get(cacheKey);
+      if (!target) {
+        const row = replyRowStmt.get(identity) as MessageRow | undefined;
+        target = row && row.message_id !== message.id && (row.role === 'user' || row.role === 'assistant')
+          ? messageFromRow(row, getKey).then(message => ({ row, message })) : Promise.resolve(undefined);
+        targets.set(cacheKey, target);
+      }
+      const found = await target;
+      if (!found) return { ...message, reply_to: reference };
+      targetRows.set(cacheKey, found.row);
+      const text = found.message.content.replace(/\s+/gu, ' ').trim()
+        || (found.message.attachments?.length ? 'Attachment' : 'Message text unavailable');
+      const chars = Array.from(text);
+      return { ...message, reply_to: { ...reference, preview: {
+        role: found.message.role === 'user' ? 'user' as const : 'assistant' as const,
+        text: chars.slice(0, 240).join('') + (chars.length > 240 ? '…' : ''),
+      } } };
+    }));
+    if (getKey && (!key || !key.equals(Buffer.from(requireChatKey(getKey, 'read quoted replies'))))) {
+      throw new ChatVaultLockedError('read quoted replies after a key change');
+    }
+    for (const message of messages) if (message.reply_to) {
+      const source = sourceRows.get(message.id);
+      const current = replyRowStmt.get({ session_id: message.session_id, message_id: message.id }) as MessageRow | undefined;
+      if (!source || current?.content_encrypted !== source.content_encrypted
+        || parseMessageMetadataObject(current.metadata_blob).reply_to_encrypted
+          !== parseMessageMetadataObject(source.metadata_blob).reply_to_encrypted) {
+        throw new Error('Conversation changed while reading quoted replies.');
+      }
+    }
+    // Validate every target after all decryptions settle: another target's
+    // decryption must not leave an earlier, now-retired preview in this page.
+    return result.map(message => {
+      const reference = message.reply_to && parseReplyReference(message.reply_to);
+      if (!reference || !('message_id' in reference)) return message;
+      const identity = { session_id: message.session_id, message_id: reference.message_id };
+      const row = targetRows.get(JSON.stringify(identity));
+      const current = replyRowStmt.get(identity) as MessageRow | undefined;
+      return row && current?.content_encrypted === row.content_encrypted && current.role === row.role
+        ? message : { ...message, reply_to: reference };
+    });
+  };
+
   const appendMessage = async (input: AppendMessageInput): Promise<ChatMessage> => {
-    const ts = input.ts ?? Date.now();
+    const preparedAttachments = attachmentLifecycle.prepare(input.attachments ?? []);
+    if (preparedAttachments.error) throw preparedAttachments.error;
+    if (preparedAttachments.files.length) input = { ...input, attachments: preparedAttachments.files.map(f => f.attachment) };
+    const reply_to = input.reply_to === undefined ? undefined : parseReplyReference(input.reply_to);
+    if (input.reply_to !== undefined && (!reply_to || !['user', 'assistant'].includes(input.role)
+      || ('message_id' in reply_to && reply_to.message_id === input.id))) throw new Error('Invalid quoted reply reference.');
+    let ts = input.ts ?? Date.now();
     // D-177 5.f — the contributor stamp is SERVER-derived here at the one
     // persistence point, never caller-supplied: role fully determines the
     // contributor for every row shape the store accepts today.
@@ -2461,6 +2607,9 @@ export const createChatStore = (
           getKey,
         )
       : null;
+    const reply_to_encrypted = reply_to ? await encodeChatMessageFieldForStorage(
+      JSON.stringify(reply_to), 'reply_to', identity, getKey,
+    ) : undefined;
     const row = {
       message_id: input.id,
       session_id: input.session_id,
@@ -2480,10 +2629,11 @@ export const createChatStore = (
       attachments_blob: input.attachments && input.attachments.length > 0
         ? JSON.stringify(input.attachments)
         : null,
-      metadata_blob: input.data_diagnosis || input.tool_call
+      metadata_blob: input.data_diagnosis || input.tool_call || reply_to_encrypted
         ? JSON.stringify({
             ...(input.data_diagnosis ? { data_diagnosis: input.data_diagnosis } : {}),
             ...(input.tool_call ? { tool_call: input.tool_call } : {}),
+            ...(reply_to_encrypted ? { reply_to_encrypted } : {}),
           })
         : null,
       contributor,
@@ -2493,7 +2643,15 @@ export const createChatStore = (
       turn_id: input.turn_id ?? null,
     };
     db.transaction(() => {
+      input.assert_active?.();
+      if (input.assert_active) {
+        const last = db.prepare('SELECT MAX(ts) AS ts FROM chat_messages WHERE session_id = ?').get(input.session_id) as { ts: number | null };
+        ts = Math.max(ts, (last.ts ?? -1) + 1);
+        row.ts = ts;
+      }
       insertMessageStmt.run(row);
+      attachmentLifecycle.bind('message', input.id, input.session_id, preparedAttachments);
+      input.on_committed?.();
       for (const settlement of input.tool_call_settlements ?? []) {
         settleChatToolCall(db, input.session_id, settlement, ts);
       }
@@ -2505,7 +2663,7 @@ export const createChatStore = (
     if (source_lifecycle === 'pending') {
       ownedPendingMessageIds.add(input.id);
     }
-    return {
+    const message: ChatMessage = {
       id: input.id,
       session_id: input.session_id,
       role: input.role,
@@ -2521,10 +2679,12 @@ export const createChatStore = (
       ...(input.data_diagnosis
         ? { data_diagnosis: input.data_diagnosis }
         : {}),
+      ...(reply_to ? { reply_to } : {}),
       contributor,
       ...(input.turn_id ? { turn_id: input.turn_id } : {}),
       ts,
     };
+    return (await withReplyPreviews([message]))[0]!;
   };
 
   const markSessionSeen = (session_id: string): void => {
@@ -2533,7 +2693,7 @@ export const createChatStore = (
 
   const listMessages = async (session_id: string): Promise<ChatMessage[]> => {
     const rows = listMessagesStmt.all({ session_id }) as MessageRow[];
-    return Promise.all(rows.map((row) => messageFromRow(row, getKey)));
+    return withReplyPreviews(await Promise.all(rows.map((row) => messageFromRow(row, getKey))));
   };
 
   /** One page of a conversation, newest-last, plus whether older rows exist.
@@ -2548,11 +2708,41 @@ export const createChatStore = (
     session_id: string,
     limit: number,
     before?: ChatHistoryCursor,
+    position?: { after?: ChatHistoryCursor; around_message_id?: string },
   ): Promise<{
     messages: ChatMessage[];
     has_more: boolean;
     oldest?: ChatHistoryCursor;
+    has_more_after?: boolean;
+    newest?: ChatHistoryCursor;
   }> => {
+    const anchor = position?.around_message_id === undefined
+      ? undefined
+      : historyAnchorStmt.get({
+          session_id, message_id: position.around_message_id,
+        }) as ChatHistoryCursor | undefined;
+    if (anchor !== undefined || position?.after !== undefined) {
+      const cursor = anchor ?? position!.after!;
+      const olderLimit = anchor === undefined ? 0 : Math.floor(limit / 2);
+      const older = anchor === undefined ? [] : listMessagesBeforeStmt.all({
+        session_id, ...cursor, limit: olderLimit + 1,
+      }) as MessageRow[];
+      const newerLimit = limit - Math.min(older.length, olderLimit);
+      const newer = (anchor === undefined ? listMessagesAfterStmt : listMessagesFromStmt)
+        .all({ session_id, ...cursor, limit: newerLimit + 1 }) as MessageRow[];
+      const ordered = [
+        ...older.slice(0, olderLimit).reverse(), ...newer.slice(0, newerLimit),
+      ];
+      const oldest = ordered.at(0);
+      const newest = ordered.at(-1);
+      return {
+        messages: await withReplyPreviews(await Promise.all(ordered.map((row) => messageFromRow(row, getKey)))),
+        has_more: anchor === undefined || older.length > olderLimit,
+        has_more_after: newer.length > newerLimit,
+        ...(oldest ? { oldest: { ts: oldest.ts, message_id: oldest.message_id } } : {}),
+        ...(newest ? { newest: { ts: newest.ts, message_id: newest.message_id } } : {}),
+      };
+    }
     const probe = limit + 1;
     const rows = (before === undefined
       ? listMessagesTailStmt.all({ session_id, limit: probe })
@@ -2572,7 +2762,7 @@ export const createChatStore = (
     );
     const oldestRow = ordered[0];
     return {
-      messages,
+      messages: await withReplyPreviews(messages),
       has_more,
       ...(oldestRow === undefined
         ? {}
@@ -2941,6 +3131,38 @@ export const createChatStore = (
     }
   };
 
+  const scanHistoryMessagesPage = async (input: {
+    before?: ChatHistoryCursor;
+    limit: number;
+    session_ids?: readonly string[];
+  }): Promise<ChatRecallSourcePage> => {
+    const limit = Math.max(1, Math.min(Math.floor(input.limit), 256));
+    // JSON membership avoids SQLite's parameter ceiling for a large history.
+    // Selection precedes LIMIT and decryption; an empty selection never widens.
+    if (input.session_ids?.length === 0) return { rows: [] };
+    // Keep the ordered cursor scan. SQLite otherwise chooses the session/role
+    // index and sorts the entire selected history again for every small page.
+    const raw = (input.session_ids !== undefined
+      ? db.prepare(`SELECT message_id, session_id, role, ts, content_encrypted FROM chat_messages
+          INDEXED BY idx_chat_messages_history_search
+          WHERE role IN ('user', 'assistant') AND session_id IN (SELECT value FROM json_each(@sessions))
+          ${input.before ? 'AND (ts, message_id) < (@ts, @message_id)' : ''}
+          ORDER BY ts DESC, message_id DESC LIMIT @limit`).all({
+            sessions: JSON.stringify(input.session_ids), limit: limit + 1, ...(input.before ?? {}),
+          })
+      : input.before === undefined
+      ? scanHistoryMessagesFirstStmt.all({ limit: limit + 1 })
+      : scanHistoryMessagesStmt.all({ ...input.before, limit: limit + 1 })) as RecallMessageRow[];
+    const page = raw.slice(0, limit);
+    const last = page.at(-1);
+    return {
+      rows: await Promise.all(page.map(decodeRecallSourceRow)),
+      ...(raw.length > limit && last
+        ? { next_cursor: { ts: last.ts, message_id: last.message_id } }
+        : {}),
+    };
+  };
+
   const listRecallableToolPointers = async (
     input: ChatRecallCorpusSelector & {
       readonly exclude_turn_id?: string | null;
@@ -3178,8 +3400,14 @@ export const createChatStore = (
     bumpSessionLastActiveAt,
     deleteSession,
     appendMessage,
+    retainTurnAttachments: (session, turn, attachments) => db.transaction(() => {
+      const prepared = attachmentLifecycle.prepare(attachments);
+      attachmentLifecycle.bind('queue', turn, session, prepared);
+      return prepared.files.length ? prepared.files.map(f => f.attachment) : [...attachments];
+    }).immediate(),
     listMessages,
     listMessagePage,
+    scanHistoryMessagesPage,
     markSessionSeen,
     listRecentConversational,
     finalizeMessageSource,

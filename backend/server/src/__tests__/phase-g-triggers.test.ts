@@ -438,7 +438,14 @@ describe('event triggers — dispatcher', () => {
   it('captures last_error on failure and keeps the trigger enabled below the cap', async () => {
     const store = createEventTriggersStore(db);
     const bus = createWarehouseEventBus();
-    const runRecipe = vi.fn().mockRejectedValue(new Error('boom'));
+    // ⛔ D-268 — A BARE `Error` IS NOW "UNCLASSIFIED", WHICH DISARMS AT THE FIRST
+    // FAILURE (fail closed: nobody has decided whether waiting would help). The
+    // subject of THIS test is the 24h cap, so it needs a failure that earns the
+    // wait — the composition root attaches the run's real code exactly so this
+    // distinction reaches here.
+    const runRecipe = vi.fn().mockRejectedValue(
+      Object.assign(new Error('boom'), { code: 'NETWORK_ERROR' }),
+    );
 
     store.create({
       trigger_id: 't-1',

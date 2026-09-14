@@ -93,6 +93,9 @@ export interface SharedStore {
     opts: WriteOptions,
   ): Promise<SharedCompareAndSetResult>;
   read(key: string): Promise<SharedRecord | null>;
+  /** `''` lists the whole durable tier (what the rpc's `data.shared.` root
+   *  browse strips to). Any other prefix is exact-or-descendant; a trailing
+   *  dot means descendants only. */
   list(prefix: string): Promise<SharedListRow[]>;
   search(scope: string, query: string, limit?: number): Promise<SharedSearchRow[]>;
   /** Deletes a legacy LWW row; revision-controlled rows conflict closed. */
@@ -405,6 +408,12 @@ export const createSharedStore = (opts: CreateSharedStoreOptions): SharedStore =
     `SELECT key, value_inline, blob_hash FROM ${TABLE}
      WHERE key >= ? AND key < ?
      ORDER BY key`,
+  );
+
+  // The whole durable tier, for the root browse (`list('')`). No range at all
+  // — a root prefix has no upper bound to compute.
+  const listAllStmt = db.prepare(
+    `SELECT key, value_inline, blob_hash FROM ${TABLE} ORDER BY key`,
   );
 
   const deleteStmt = db.prepare(`DELETE FROM ${TABLE} WHERE key = ?`);
@@ -772,6 +781,37 @@ export const createSharedStore = (opts: CreateSharedStoreOptions): SharedStore =
     },
 
     async list(prefix) {
+      // ⛔ THE WHOLE-TIER BROWSE IS SPELLED `''`, AND IT IS LIST-ONLY.
+      // `shared.list({ prefix: 'data.shared.' })` — the Data → Storage tab's
+      // root browse — strips the whole `data.shared.` prefix at the rpc
+      // boundary and arrives here as the empty string, which
+      // `normalizeNamespacePrefix` rejects with `key must be a non-empty
+      // string`. That error was the ONLY thing that tab ever rendered.
+      //
+      // ⚠ `deleteByPrefix` deliberately does NOT get this branch: it keeps
+      // going through `normalizeNamespacePrefix`, so no caller can wipe the
+      // durable tier by handing it a root prefix. Read-widening and
+      // delete-widening are separate decisions; only the read is widened here.
+      //
+      // ⚠ `search` is the third sibling and is NOT fixed here: an empty scope
+      // reaches `@recued/fts` as a literal `key = ''` match (whole-tier there
+      // is spelled `'*'`, and `shared.search` cannot express it — `scope:
+      // 'data.shared.*'` is rejected by the rpc, `scope: 'data.shared.'`
+      // returns zero matches). Verified, not assumed. It fails SILENTLY, so it
+      // has no visible surface today; fixing it changes recipe-facing FTS
+      // reach and is its own decision.
+      if (prefix === '') {
+        const rows = listAllStmt.all() as Array<{
+          key: string;
+          value_inline: string | null;
+          blob_hash: string | null;
+        }>;
+        const all: SharedListRow[] = [];
+        for (const row of rows) {
+          all.push({ key: row.key, value: await resolveValue(row.value_inline, row.blob_hash) });
+        }
+        return all;
+      }
       const { key: normalizedPrefix, descendantsOnly } = normalizeNamespacePrefix(prefix);
       // The descendant set is exactly the keys starting with `<prefix>.` — a
       // half-open range over that, rather than a LIKE pattern.

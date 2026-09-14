@@ -366,9 +366,9 @@ describe('recipe-editor step inspector route', () => {
     expect(findByAttr(root, RECIPE_EDITOR_ROUTE_ATTR)).toBeDefined();
     expect(findAllByAttr(root, RECIPE_EDITOR_ROW_ATTR)).toHaveLength(0);
     expect(findByAttr(root, RECIPE_EDITOR_SAVE_ATTR)?.textContent).toBe('Save');
-    expect(findByAttrValue(root, 'aria-label', 'Recipe editor controls')).toBeDefined();
+    expect(findByAttrValue(root, 'aria-label', 'Recipe editor buttons')).toBeDefined();
     expect(textOf(root)).toContain('Recipe workspace Recipe editor');
-    expect(textOf(root)).toContain('Build, validate, and save this automation.');
+    expect(textOf(root)).toContain('Build it, check it, and save it.');
     expect(doc.activeElement).toBe(findByAttr(root, RECIPE_EDITOR_HEADING_ATTR));
     expect(textOf(root)).toContain('Add a step Steps run in order, from top to bottom.');
     expect(textOf(root)).toContain('No steps yet');
@@ -655,7 +655,7 @@ describe('recipe-editor step inspector route', () => {
     expect(issue?.getAttribute('data-severity')).toBe('error');
     expect(textOf(issue!)).toContain('unknown transform');
     expect(findByAttr(root, RECIPE_EDITOR_STATUS_ATTR)?.textContent).toContain(
-      'Validation failed',
+      'Check failed',
     );
     expect(doc.activeElement).toBe(
       findByAttr(root, RECIPE_EDITOR_VALIDATE_ATTR),
@@ -691,7 +691,7 @@ describe('recipe-editor step inspector route', () => {
     expect(route.hasUnsavedChanges()).toBe(true);
     expect(findByAttr(root, RECIPE_EDITOR_DIRTY_ATTR)?.textContent).toBe('Unsaved');
     expect(findByAttr(root, RECIPE_EDITOR_STATUS_ATTR)?.textContent)
-      .toBe('Validation finished — newer edits pending');
+      .toBe('Checked, but you have changed things since');
     expect(findByAttr(root, RECIPE_EDITOR_ISSUE_ATTR)).toBeUndefined();
     expect(textOf(root)).not.toContain('This belongs to the older snapshot');
     expect(doc.activeElement).toBe(
@@ -846,13 +846,13 @@ describe('recipe-editor step inspector route', () => {
     expect(armed).toBe(true);
     expect(findByAttr(root, RECIPE_EDITOR_WEBHOOK_DISARM_ATTR)).toBeDefined();
     expect(findByAttr(root, RECIPE_EDITOR_WEBHOOK_STATUS_ATTR)?.textContent)
-      .toContain('Future admitted deliveries');
+      .toContain('Anything let through from now on');
 
     setValue(findByAttr(root, RECIPE_EDITOR_RECIPE_ID_ATTR), 'forked-webhook-recipe');
     findByAttr(root, RECIPE_EDITOR_SAVE_ATTR)?.click();
     expect(saved).toHaveLength(1);
     expect(findByAttr(root, RECIPE_EDITOR_STATUS_ATTR)?.textContent)
-      .toContain('Disarm the saved webhook');
+      .toContain('Switch off the saved webhook');
     findByAttr(root, RECIPE_EDITOR_WEBHOOK_DISARM_ATTR)?.click();
     await tick();
     expect(armed).toBe(false);
@@ -918,7 +918,7 @@ describe('recipe-editor step inspector route', () => {
     arm.click();
     const busyArm = findByAttr(root, RECIPE_EDITOR_WEBHOOK_ARM_ATTR)!;
     expect(busyArm).not.toBe(arm);
-    expect(busyArm.textContent).toBe('Arming…');
+    expect(busyArm.textContent).toBe('Switching on…');
     expect(busyArm.disabled).toBe(false);
     expect(busyArm.getAttribute('aria-disabled')).toBe('true');
     expect(busyArm.getAttribute('aria-busy')).toBe('true');
@@ -930,13 +930,13 @@ describe('recipe-editor step inspector route', () => {
     webhookGate.finish?.();
     await tick();
     const disarm = findByAttr(root, RECIPE_EDITOR_WEBHOOK_DISARM_ATTR)!;
-    expect(disarm.textContent).toBe('Disarm webhook');
+    expect(disarm.textContent).toBe('Switch off webhook');
     expect(doc.activeElement).toBe(disarm);
 
     disarm.click();
     const busyDisarm = findByAttr(root, RECIPE_EDITOR_WEBHOOK_DISARM_ATTR)!;
     expect(busyDisarm).not.toBe(disarm);
-    expect(busyDisarm.textContent).toBe('Disarming…');
+    expect(busyDisarm.textContent).toBe('Switching off…');
     expect(busyDisarm.disabled).toBe(false);
     expect(busyDisarm.getAttribute('aria-disabled')).toBe('true');
     expect(busyDisarm.getAttribute('aria-busy')).toBe('true');
@@ -978,7 +978,7 @@ describe('recipe-editor step inspector route', () => {
     });
 
     expect(textOf(findByAttr(root, RECIPE_EDITOR_WEBHOOKS_ATTR)!))
-      .toContain('decoded payload access');
+      .toContain('can read what was sent');
     expect(findByAttr(root, RECIPE_EDITOR_WEBHOOK_ARM_ATTR)?.disabled).toBe(true);
     expect(findByAttr(root, RECIPE_EDITOR_WEBHOOK_REMOVE_ATTR)).toBeDefined();
     expect(findByAttr(root, RECIPE_EDITOR_WEBHOOK_STATUS_ATTR)?.textContent)
@@ -1032,10 +1032,10 @@ describe('recipe-editor step inspector route', () => {
       const block = findByAttrValue(root, RECIPE_EDITOR_WEBHOOK_DOOR_ATTR, 'minted');
       expect(block).toBeDefined();
       const text = textOf(block!);
-      expect(text).toContain('Once armed, an admitted delivery may:');
+      expect(text).toContain('Once this is on, anything let through may:');
       expect(text).toContain('core.mail.send');
       expect(text).toContain('recued-core/hubspot-catalog.deal.create');
-      expect(text).toContain('arming is that approval');
+      expect(text).toContain('Switching it on is your yes');
       expect(findByAttr(root, RECIPE_EDITOR_WEBHOOK_ARM_ATTR)?.disabled).toBe(false);
     });
 
@@ -1050,7 +1050,7 @@ describe('recipe-editor step inspector route', () => {
       });
 
       const block = findByAttrValue(root, RECIPE_EDITOR_WEBHOOK_DOOR_ATTR, 'minted');
-      expect(textOf(block!)).toContain('the door grants nothing');
+      expect(textOf(block!)).toContain('the door gives nothing away');
     });
 
     it('renders the re-save capability diff, removed ops included — until the draft goes dirty', () => {
@@ -1066,7 +1066,7 @@ describe('recipe-editor step inspector route', () => {
       });
 
       const text = textOf(findByAttrValue(root, RECIPE_EDITOR_WEBHOOK_DOOR_ATTR, 'minted')!);
-      expect(text).toContain('changed the webhook’s authority');
+      expect(text).toContain('changed what this webhook may do');
       expect(text).toContain('+ core.mail.send');
       expect(text).toContain('− core.task.delete');
 
@@ -1078,7 +1078,7 @@ describe('recipe-editor step inspector route', () => {
       // for those until the next structural pass).
       findByAttr(root, RECIPE_EDITOR_ADD_ATTR)?.click();
       const dirtyText = textOf(findByAttrValue(root, RECIPE_EDITOR_WEBHOOK_DOOR_ATTR, 'minted')!);
-      expect(dirtyText).not.toContain('changed the webhook’s authority');
+      expect(dirtyText).not.toContain('changed what this webhook may do');
       expect(dirtyText).toContain('core.mail.send');
     });
 
@@ -1093,9 +1093,9 @@ describe('recipe-editor step inspector route', () => {
       });
 
       const text = textOf(findByAttrValue(root, RECIPE_EDITOR_WEBHOOK_DOOR_ATTR, 'minted')!);
-      expect(text).toContain('An admitted delivery may:');
-      expect(text).not.toContain('Once armed');
-      expect(text).toContain('arming was that approval');
+      expect(text).toContain('Anything let through may:');
+      expect(text).not.toContain('Once this is on');
+      expect(text).toContain('Switching it on was your yes');
     });
 
     it('disables Arm on a missing door and names the remedy', () => {
@@ -1107,7 +1107,7 @@ describe('recipe-editor step inspector route', () => {
       expect(findByAttrValue(root, RECIPE_EDITOR_WEBHOOK_DOOR_ATTR, 'missing')).toBeDefined();
       expect(findByAttr(root, RECIPE_EDITOR_WEBHOOK_ARM_ATTR)?.disabled).toBe(true);
       expect(findByAttr(root, RECIPE_EDITOR_WEBHOOK_STATUS_ATTR)?.textContent)
-        .toContain('re-save the recipe to mint it');
+        .toContain('Save the Recipe again to make one');
     });
 
     it('disables Arm on a refused door and shows the refusal', () => {
@@ -1125,7 +1125,7 @@ describe('recipe-editor step inspector route', () => {
 
       const block = findByAttrValue(root, RECIPE_EDITOR_WEBHOOK_DOOR_ATTR, 'refused');
       const text = textOf(block!);
-      expect(text).toContain('cannot run from a webhook');
+      expect(text).toContain('A webhook cannot start this Recipe');
       expect(text).toContain('dynamic dispatch via run-ingredient');
       expect(text).toContain('(step step_3)');
       expect(findByAttr(root, RECIPE_EDITOR_WEBHOOK_ARM_ATTR)?.disabled).toBe(true);
@@ -1179,7 +1179,7 @@ describe('recipe-editor step inspector route', () => {
 
     // The guidance notice points at the connection-slot requirement.
     expect(findByAttr(root, RECIPE_EDITOR_OP_NOTICE_ATTR)?.textContent).toContain(
-      'connection variable',
+      'connection input',
     );
   });
 
@@ -1843,7 +1843,7 @@ describe('recipe-editor step inspector route', () => {
 
     setValue(
       findByAttr(root, RECIPE_EDITOR_TRIGGER_ADD_KIND_ATTR),
-      'Custom event pattern',
+      'Your own event pattern',
     );
     const add = findByAttr(root, RECIPE_EDITOR_TRIGGER_ADD_ATTR);
     expect(add?.disabled).toBe(true);
@@ -2033,7 +2033,7 @@ describe('execution-case draft route: iterative refinement', () => {
     const editor = findByAttr(host, RECIPE_EDITOR_ROUTE_ATTR)!;
 
     expect(host.children.indexOf(panel)).toBeLessThan(host.children.indexOf(editor));
-    expect(panel.getAttribute('aria-label')).toBe('Refine AI draft');
+    expect(panel.getAttribute('aria-label')).toBe('Change the AI draft');
     expect(box(h.root).getAttribute('aria-label')).toBe('What should change?');
     expect(note(h.root).getAttribute('role')).toBe('status');
     expect(h.doc.styleElements.some((style) =>
@@ -2118,7 +2118,7 @@ describe('execution-case draft route: iterative refinement', () => {
     btn(h.root).click();
     btn(h.root).click();
     await h.route.whenRefineSettled();
-    expect(note(h.root).textContent).toContain('not a valid recipe');
+    expect(note(h.root).textContent).toContain('not a working Recipe');
     expect(h.refined).toEqual([]);
     h.route.dispose();
   });

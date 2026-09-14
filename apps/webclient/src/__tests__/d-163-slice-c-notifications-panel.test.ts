@@ -194,6 +194,10 @@ const findAxisToggle = (
   return null;
 };
 
+/** Whole-subtree text, for "this row does not say X" assertions. */
+const allText = (root: FakeElement): string =>
+  root.textContent + root.children.map(allText).join(' ');
+
 const findRowByChannel = (
   root: FakeElement,
   channel: NotificationChannelName,
@@ -246,6 +250,22 @@ const bridgeReadyRow: NotificationChannelToggleView = {
   approval: false,
   notification_togglable: true,
   approval_togglable: false,
+  ready: true,
+};
+
+/** ⛔ THE GENERIC "a ready, togglable row" FIXTURE. These tests used
+ *  `bridgeReadyRow` for that, incidentally — the bridge happened to be the handy
+ *  ready row. D-269 REV 25 made the bridge's notification axis a FIXED indicator
+ *  (it never decided anything: `settings.bridge` is consulted only while zero
+ *  bridges are paired, and the per-bridge rows decide from the first one on), so
+ *  the bridge is no longer an example of a switch. Slack is. */
+const slackReadyRow: NotificationChannelToggleView = {
+  channel: 'slack',
+  capability: 'inline',
+  notification: false,
+  approval: false,
+  notification_togglable: true,
+  approval_togglable: true,
   ready: true,
 };
 
@@ -451,7 +471,7 @@ describe('mountNotificationsPanel', () => {
     };
     // Delivery-language copy, not the pre-R31 "…approvals" wording.
     expect(badge('slack').textContent).toBe('Answer here'); // inline
-    expect(badge('email').textContent).toBe('Answer via link'); // landing-page
+    expect(badge('email').textContent).toBe('Answer through a link'); // landing-page
     expect(badge('bridge').textContent).toBe('Notify only'); // notify-only
     // Three DISTINCT tone classes — pre-R31 inline + landing-page shared
     // the identical filled accent pill.
@@ -496,7 +516,7 @@ describe('mountNotificationsPanel', () => {
         rows: [
           uiRow,
           bridgeReadyRow,
-          slackNotReadyRow,
+          slackReadyRow,
           telegramNotReadyRow,
           emailNotReadyRow,
         ],
@@ -504,15 +524,15 @@ describe('mountNotificationsPanel', () => {
       runSetChannel: setChannel,
     });
     await panel.whenLoaded();
-    await panel.clickAxis('bridge', 'notification');
+    await panel.clickAxis('slack', 'notification');
     expect(setChannel).toHaveBeenCalledWith({
-      channel: 'bridge',
+      channel: 'slack',
       patch: { notification: true },
     });
-    const updated = panel.getRows().find((r) => r.channel === 'bridge');
+    const updated = panel.getRows().find((r) => r.channel === 'slack');
     expect(updated?.notification).toBe(true);
-    expect(panel.getTogglingAxes().has('bridge::notification')).toBe(false);
-    expect(panel.getRowError('bridge')).toBeUndefined();
+    expect(panel.getTogglingAxes().has('slack::notification')).toBe(false);
+    expect(panel.getRowError('slack')).toBeUndefined();
   });
 
   it('gives matrix switches and verification controls stable contextual names', async () => {
@@ -534,12 +554,20 @@ describe('mountNotificationsPanel', () => {
         reason: 'too_long',
         max: 80,
       }),
+      // ⚠ REQUIRED for the per-instance rule to apply: the toggle is suppressed
+      // only where the sub-rows that replace it actually render (REV 28).
+      runDescribeBridges: (async () => ({ rows: [] })) as never,
     });
     await panel.whenLoaded();
 
+    // ⚠ The bridge's notification axis is a FIXED indicator since REV 25, so it
+    // carries a descriptive label rather than a switch name. (This assertion was
+    // briefly corrupted into a duplicate slack check by a blanket rename —
+    // a batch edit over test source is a migration, and this is what it costs.)
     expect(
-      findAxisToggle(host, 'bridge', 'notification')?.getAttribute('aria-label'),
-    ).toBe('Browser Bridge OS notifications');
+      findByAttr(findRowByChannel(host, 'bridge')!, NOTIFICATIONS_AXIS_FIXED_ATTR)
+        ?.getAttribute('aria-label'),
+    ).toContain('Each paired bridge has its own switch');
     expect(
       findAxisToggle(host, 'slack', 'notification')?.getAttribute('aria-label'),
     ).toBe('Slack notifications');
@@ -550,12 +578,12 @@ describe('mountNotificationsPanel', () => {
       findByAttr(host, NOTIFICATIONS_PHRASE_INPUT_ATTR)?.getAttribute(
         'aria-label',
       ),
-    ).toBe('Anti-phishing phrase');
+    ).toBe('Your secret phrase');
     expect(
       findByAttr(host, NOTIFICATIONS_PHRASE_SAVE_ATTR)?.getAttribute(
         'aria-label',
       ),
-    ).toBe('Save anti-phishing phrase');
+    ).toBe('Save your secret phrase');
     expect(findByClass(host, 'notif-phrase-heading')?.tagName).toBe('H3');
   });
 
@@ -607,47 +635,95 @@ describe('mountNotificationsPanel', () => {
     expect(updated?.notification).toBe(false);
   });
 
-  it('R31 — notify-only bridge: notification cell toggles, approval cell is a fixed non-toggle', async () => {
+  it('R31/REV25 — the bridge row has NO switch on either axis', async () => {
+    // ⛔⛔ THIS TEST ASSERTED THE OPPOSITE ON THE NOTIFICATION AXIS ("notification
+    // cell toggles"), and that was true when written. REV 24 traced that the
+    // channel-level bridge value never changes what a person receives —
+    // `settings.bridge` is read only while ZERO bridges are paired, where it
+    // gates delivery to nobody, and from the first paired bridge both dispatch
+    // paths skip the channel loop for `bridge` entirely. ⇒ Owner's call: render
+    // it as a fixed indicator pointing at the per-bridge rows that DO decide.
+    //
+    // ⚠ The approval axis was ALREADY fixed (notify-only, D-163 I-1). Now both
+    // are, for two different reasons: approval because the bridge cannot carry
+    // one, notification because the value has no effect.
     const host = makeFakeElement('div');
     const doc = makeFakeDocument();
-    const setChannel = vi.fn(
-      async () =>
-        ({
-          ok: true,
-          settings: {
-            ui: true,
-            bridge: true,
-            slack: { notification: false, approval: false, messenger: false },
-            telegram: { notification: false, approval: false, messenger: false },
-            whatsapp: { notification: false, approval: false, messenger: false },
-            discord: { notification: false, approval: false, messenger: false },
-            teams: { notification: false, approval: false, messenger: false },
-            email: { notification: false, approval: false, messenger: false },
-          },
-        }) satisfies NotificationSetChannelResult,
-    );
+    const setChannel = vi.fn();
     const panel = mountNotificationsPanel({
       host: host as unknown as HTMLElement,
       document: doc as unknown as Document,
       runDescribe: async () => ({ rows: [uiRow, bridgeReadyRow] }),
-      runSetChannel: setChannel,
+      runSetChannel: setChannel as never,
+      // ⚠ REQUIRED for the per-instance rule to apply: the toggle is suppressed
+      // only where the sub-rows that replace it actually render (REV 28).
+      runDescribeBridges: (async () => ({ rows: [] })) as never,
     });
     await panel.whenLoaded();
-    // The approval axis on a notify-only channel has no toggle button —
-    // clicking it is a no-op (defense against `approval_unsupported`).
+
+    // Neither axis is clickable, and neither reaches the rpc.
+    await panel.clickAxis('bridge', 'notification');
     await panel.clickAxis('bridge', 'approval');
     expect(setChannel).not.toHaveBeenCalled();
-    // The notification axis IS a toggle.
-    await panel.clickAxis('bridge', 'notification');
-    expect(setChannel).toHaveBeenCalledWith({
-      channel: 'bridge',
-      patch: { notification: true },
-    });
-    // The bridge row renders a fixed approval indicator, not a switch.
+
     const bridgeRowEl = findRowByChannel(host, 'bridge')!;
-    const fixed = findByAttr(bridgeRowEl, NOTIFICATIONS_AXIS_FIXED_ATTR);
-    expect(fixed).not.toBeNull();
-    expect(fixed!.getAttribute(NOTIFICATIONS_AXIS_ATTR)).toBe('approval');
+    const axes: Array<string | null> = [];
+    const walk = (n: FakeElement): void => {
+      if (n.attrs.has(NOTIFICATIONS_AXIS_FIXED_ATTR)) {
+        axes.push(n.getAttribute(NOTIFICATIONS_AXIS_ATTR));
+      }
+      for (const c of n.children) walk(c);
+    };
+    walk(bridgeRowEl);
+    expect(new Set(axes)).toEqual(new Set(['notification', 'approval']));
+    // …and no switch survives anywhere on the row.
+    expect(findByAttr(bridgeRowEl, NOTIFICATIONS_ROW_TOGGLE_BTN_ATTR)).toBeNull();
+  });
+
+  it('⛔⛔ with NO per-bridge caller the toggle COMES BACK — never both hidden', async () => {
+    // The rule: a channel row carries no toggle on an axis its own per-instance
+    // rows govern. The converse has to hold too, or the rule becomes a hole —
+    // REV 25 suppressed the bridge toggle unconditionally while the sub-rows
+    // render only when `runDescribeBridges` is wired, which the bootstrap
+    // supplies CONDITIONALLY. Against a server without those rpcs the owner got
+    // no toggle AND no sub-rows: a channel they could not control at all.
+    const host = makeFakeElement('div');
+    const doc = makeFakeDocument();
+    const panel = mountNotificationsPanel({
+      host: host as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      runDescribe: async () => ({ rows: [uiRow, bridgeReadyRow] }),
+      runSetChannel: (async () => ({ ok: true })) as never,
+      // ⚠ no runDescribeBridges — the pre-D-169 / unwired-rpc shape.
+    });
+    await panel.whenLoaded();
+    const rowEl = findRowByChannel(host, 'bridge')!;
+    expect(findByAttr(rowEl, NOTIFICATIONS_ROW_TOGGLE_BTN_ATTR)).not.toBeNull();
+    expect(allText(rowEl)).not.toContain('Per device');
+    // ⚠ And no EMPTY sub-row container either — the predicate governs both
+    // sites, so "no per-instance rows" must mean no group, not a hollow one
+    // waiting for a future empty-state to leak into.
+    expect(findByClass(rowEl, 'notif-bridge-group')).toBeNull();
+  });
+
+  it('⚠ with NO bridge paired the cell says "—", not "Per device"', async () => {
+    // "Per device" points at rows that do not exist yet. The row's own status
+    // line already carries the whole message there — "Not set up — Install
+    // Browser Bridge" — and the axis cell should not imply there are devices.
+    const host = makeFakeElement('div');
+    const doc = makeFakeDocument();
+    const panel = mountNotificationsPanel({
+      host: host as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      runDescribe: async () => ({ rows: [uiRow, { ...bridgeReadyRow, ready: false }] }),
+      runSetChannel: (async () => ({ ok: true })) as never,
+      // ⚠ Present, so the per-instance rule applies and the cell is the indicator.
+      runDescribeBridges: (async () => ({ rows: [] })) as never,
+    });
+    await panel.whenLoaded();
+    const rowEl = findRowByChannel(host, 'bridge')!;
+    expect(allText(rowEl)).not.toContain('Per device');
+    expect(allText(rowEl)).toContain('Install Browser Bridge');
   });
 
   it('R31 — verification phrase seeds from describe + saves via the caller', async () => {
@@ -846,12 +922,12 @@ describe('mountNotificationsPanel', () => {
       runSetChannel: setChannel,
     });
     await panel.whenLoaded();
-    await panel.clickAxis('bridge', 'notification');
-    const err = panel.getRowError('bridge');
+    await panel.clickAxis('slack', 'notification');
+    const err = panel.getRowError('slack');
     expect(err).toBeDefined();
     expect(err).toMatch(/Not set up yet/);
     // After the chip surfaces, the row's notification axis is unchanged
-    const bridge = panel.getRows().find((r) => r.channel === 'bridge');
+    const bridge = panel.getRows().find((r) => r.channel === 'slack');
     expect(bridge?.notification).toBe(false);
   });
 
@@ -872,8 +948,8 @@ describe('mountNotificationsPanel', () => {
     // The ui row's toggle button is disabled, so a UI click won't fire
     // setChannel. Drive it via a non-ui channel that the test forces to
     // return ui_fixed (defense-in-depth path).
-    await panel.clickAxis('bridge', 'notification');
-    expect(panel.getRowError('bridge')).toMatch(/always on/);
+    await panel.clickAxis('slack', 'notification');
+    expect(panel.getRowError('slack')).toMatch(/always on/);
   });
 
   it('rpc throw surfaces row chip with the error message', async () => {
@@ -886,7 +962,7 @@ describe('mountNotificationsPanel', () => {
         rows: [
           uiRow,
           bridgeReadyRow,
-          slackNotReadyRow,
+          slackReadyRow,
           telegramNotReadyRow,
           emailNotReadyRow,
         ],
@@ -896,8 +972,8 @@ describe('mountNotificationsPanel', () => {
       },
     });
     await panel.whenLoaded();
-    await panel.clickAxis('bridge', 'notification');
-    expect(panel.getRowError('bridge')).toBe('network drop');
+    await panel.clickAxis('slack', 'notification');
+    expect(panel.getRowError('slack')).toBe('network drop');
   });
 
   it('runDescribe throw transitions to error + paints chip + retry recovers', async () => {
@@ -998,7 +1074,7 @@ describe('mountNotificationsPanel', () => {
         rows: [
           uiRow,
           bridgeReadyRow,
-          slackNotReadyRow,
+          slackReadyRow,
           telegramNotReadyRow,
           emailNotReadyRow,
         ],
@@ -1006,15 +1082,15 @@ describe('mountNotificationsPanel', () => {
       runSetChannel: setChannel,
     });
     await panel.whenLoaded();
-    const first = panel.clickAxis('bridge', 'notification');
+    const first = panel.clickAxis('slack', 'notification');
     expect(panel.hasInFlightWork()).toBe(true);
-    const busy = findAxisToggle(host, 'bridge', 'notification');
+    const busy = findAxisToggle(host, 'slack', 'notification');
     expect(busy?.disabled).toBe(false);
     expect(busy?.getAttribute('aria-disabled')).toBe('true');
     expect(busy?.getAttribute('aria-busy')).toBe('true');
     // The replacement stays focusable; its handler and the pending-promise
     // map remain the single-flight authority for a second activation.
-    const second = panel.clickAxis('bridge', 'notification');
+    const second = panel.clickAxis('slack', 'notification');
     dispatch.resolve({
       ok: true,
       settings: {
@@ -1043,7 +1119,7 @@ describe('mountNotificationsPanel', () => {
         rows: [
           uiRow,
           bridgeReadyRow,
-          slackNotReadyRow,
+          slackReadyRow,
           telegramNotReadyRow,
           emailNotReadyRow,
         ],
@@ -1051,13 +1127,15 @@ describe('mountNotificationsPanel', () => {
       runSetChannel: async () => ({ ok: false, reason: 'ui_fixed' }),
     });
     await panel.whenLoaded();
-    const bridgeBtn = findByAttr(
-      findRowByChannel(host, 'bridge')!,
+    // ⚠ Slack, not the bridge: REV 25 made the bridge's notification axis a
+    // fixed indicator, so it has no switch to carry switch semantics.
+    const slackBtn = findByAttr(
+      findRowByChannel(host, 'slack')!,
       NOTIFICATIONS_ROW_TOGGLE_BTN_ATTR,
     )!;
-    expect(bridgeBtn.getAttribute('role')).toBe('switch');
-    expect(bridgeBtn.getAttribute('aria-checked')).toBe('false');
-    expect(bridgeBtn.getAttribute('aria-pressed')).toBeNull();
+    expect(slackBtn.getAttribute('role')).toBe('switch');
+    expect(slackBtn.getAttribute('aria-checked')).toBe('false');
+    expect(slackBtn.getAttribute('aria-pressed')).toBeNull();
   });
 
   it('row error chip carries role=alert for screen reader announcement', async () => {
@@ -1070,7 +1148,7 @@ describe('mountNotificationsPanel', () => {
         rows: [
           uiRow,
           bridgeReadyRow,
-          slackNotReadyRow,
+          slackReadyRow,
           telegramNotReadyRow,
           emailNotReadyRow,
         ],
@@ -1082,7 +1160,7 @@ describe('mountNotificationsPanel', () => {
       }),
     });
     await panel.whenLoaded();
-    await panel.clickAxis('bridge', 'notification');
+    await panel.clickAxis('slack', 'notification');
     const chip = findByAttr(host, NOTIFICATIONS_ROW_ERROR_ATTR);
     expect(chip).not.toBeNull();
     expect(chip!.getAttribute('role')).toBe('alert');

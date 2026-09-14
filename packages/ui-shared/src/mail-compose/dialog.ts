@@ -20,6 +20,7 @@
  *
  *  Spec: D-145 § A.5 (Email compose UI). */
 
+import { describePickedInstantOnServer } from '../two-clock.js';
 import type {
   FormDefinition,
   MailComposeAttachment,
@@ -93,24 +94,67 @@ export interface MailComposeDialogProps {
   /** The host is resolving an attachment choice. Sending and AI rewriting stay
    * locked until the chosen ids are reflected in the draft. */
   attachmentBusy?: boolean;
-  savedDraft?: { status: string; scheduling: boolean; runAt: string; busyLabel?: string };
+  savedDraft?: {
+    status: string; scheduling: boolean; runAt: string; busyLabel?: string;
+    /** D-269 — the SERVER's resolved zone, so "Send at" can say what the picked
+     *  time means on the machine that will dispatch it.
+     *
+     *  ⚠ The send's EXECUTION is not wrong: `runAt` becomes an absolute instant
+     *  and the mail goes exactly then. What was missing is the sentence naming
+     *  the clock, which matters once the server may keep a different one.
+     *  Absent ⇒ no line, rather than a guessed zone. */
+    serverTimeZone?: string;
+    /** D-264 — replaces the Save-to-mailbox label while that write is in
+     *  flight, and after it lands. The draft stays open, so the outcome has
+     *  to be visible on the control itself. */
+    mailboxStatus?: string;
+  };
 }
 
 const dialogTitle = (mode: MailComposeDialogState['mode']): string =>
   mode === 'reply' ? 'Reply' : 'New mail';
 
+/** D-264 — locator for the draft-only notice. Exported so a test finds it the
+ *  way the DOM does rather than matching prose that can be reworded. */
+export const SEND_UNAVAILABLE_ATTR = 'data-mail-compose-send-unavailable';
+
 export const renderMailComposeDialog = (
   props: MailComposeDialogProps,
 ): string => {
-  const sendCapable = props.sources.filter((s) => s.send_capable === true);
+  // D-264 — the picker lists every Source this dialog can do ANYTHING with.
+  const composable = props.sources.filter(
+    (s) => s.send_capable === true || s.draft_capable === true,
+  );
   const senderPicker = renderSenderSourcePicker(
     props.state.values.sender_source,
-    sendCapable,
+    composable,
   );
-  // No send-capable Source registered → submit must stay disabled
-  // regardless of submitting state (defense-in-depth — page-level
-  // gate normally hides the compose entry point in this state).
-  const cannotSubmit = sendCapable.length === 0;
+  /** The Send gate is PER-SOURCE, not per-install. With a mixed set — one
+   *  mailbox that sends, one that only drafts — an install-level check would
+   *  leave Send enabled while a draft-only Source is selected, and the press
+   *  would die at `composeStateToSendPayload`'s sender check instead. That is
+   *  the refusing-button failure D-264 exists to avoid, moved one layer down.
+   *
+   *  With nothing selected yet, fall back to the install-level question, which
+   *  is what shipped before this change. */
+  const selectedSource = composable.find(
+    (s) => s.id === props.state.values.sender_source,
+  ) ?? null;
+  const cannotSubmit = selectedSource === null
+    ? composable.every((s) => s.send_capable !== true)
+    : selectedSource.send_capable !== true;
+  /** Saving a draft is NOT a send. It writes to `mail_drafts` and touches no
+   *  provider, so it is gated on whether ANY Source can hold one — never on
+   *  `cannotSubmit`, which is the whole point of the split. */
+  const cannotDraft = composable.length === 0;
+  /** D-264 — writing the draft into the mail account's own Drafts folder needs
+   *  the SELECTED source to support it, for the same per-source reason Send
+   *  does: an install-level check would leave the control live while a source
+   *  that cannot hold a mailbox copy is chosen, and the press would die at the
+   *  provider. With nothing selected yet, fall back to the install question. */
+  const cannotSaveToMailbox = selectedSource === null
+    ? composable.every((s) => s.draft_capable !== true)
+    : selectedSource.draft_capable !== true;
   const assistBusy = props.aiAssist?.busyAction !== undefined
     && props.aiAssist.busyAction !== null;
   const attachmentBusy = props.attachmentBusy === true;
@@ -119,9 +163,29 @@ export const renderMailComposeDialog = (
     || assistBusy
     || attachmentBusy;
   const submittingAttr = submitDisabled ? ' disabled' : '';
+  const draftDisabled = props.state.submitting === true
+    || cannotDraft
+    || assistBusy
+    || attachmentBusy;
+  const draftAttr = draftDisabled ? ' disabled' : '';
+  const mailboxDisabled = props.state.submitting === true
+    || cannotSaveToMailbox
+    || assistBusy
+    || attachmentBusy;
+  const mailboxAttr = mailboxDisabled ? ' disabled' : '';
   const submitLabel = props.state.submitting === true ? props.savedDraft?.busyLabel ?? 'Sending…' : 'Send';
   const submitError = props.state.submit_error
     ? `<div class="mail-compose-submit-error" role="alert">${e(props.state.submit_error)}</div>`
+    : '';
+  /** D-264 — say WHY Send is off. A disabled control with no explanation reads
+   *  as a broken surface; this is the one state where the dialog is fully
+   *  usable for drafting and cannot send, so it is named rather than implied.
+   *  Only shown when drafting actually works — `cannotDraft` means the dialog
+   *  should not have opened, and the route's own empty state covers that. */
+  const sendUnavailable = cannotSubmit && !cannotDraft
+    ? `<p class="mail-compose-send-unavailable" role="status" ${SEND_UNAVAILABLE_ATTR}>`
+      + `This mailbox can save drafts but cannot send. `
+      + `Save this message, then connect outbound sending to send it.</p>`
     : '';
   // Lock close while sending — the rpc is in flight, dismissing would
   // strand the request mid-call.
@@ -162,11 +226,29 @@ export const renderMailComposeDialog = (
               submitting: props.state.submitting || assistBusy || attachmentBusy,
             })}
             ${submitError}
+            ${sendUnavailable}
             ${props.savedDraft ? `<p role="status" data-mail-draft-status>${e(props.savedDraft.status)}</p>
               ${props.savedDraft.scheduling ? `<label>Send at <input type="datetime-local" data-mail-draft-time value="${e(props.savedDraft.runAt)}"${submittingAttr}></label>
+                ${((): string => {
+                  // D-269 — a `datetime-local` is read in the BROWSER's zone and
+                  // the send is dispatched by the SERVER. The instant is right;
+                  // the sentence saying which clock was missing. Silent when the
+                  // two agree.
+                  const picked = Date.parse(props.savedDraft!.runAt);
+                  if (!Number.isFinite(picked)) return '';
+                  const note = describePickedInstantOnServer(
+                    picked, props.savedDraft!.serverTimeZone,
+                  );
+                  return note === null ? '' : `<p data-mail-draft-server-time>${e(note)}</p>`;
+                })()}
                 <p>You will review the complete message and timing before approving the scheduled send.</p>` : ''}` : ''}
             <footer class="mail-compose-actions">
-              ${props.savedDraft ? `<button type="button" data-action="save-mail-draft"${submittingAttr}>Save draft</button>
+              ${props.savedDraft ? `<button type="button" data-action="save-mail-draft"${draftAttr}>Save draft</button>
+                <button type="button" data-action="save-mail-draft-to-mailbox"${mailboxAttr} title="${
+                  cannotSaveToMailbox
+                    ? 'This mailbox cannot keep drafts in its own Drafts folder.'
+                    : 'Save a copy into this account&#39;s Drafts folder so you can finish it in your mail app.'
+                }">${props.savedDraft.mailboxStatus ?? 'Save to mailbox'}</button>
                 <button type="button" data-action="schedule-mail-draft"${submittingAttr}>${props.savedDraft.scheduling ? 'Review scheduled send' : 'Schedule…'}</button>` : ''}
               <button
                 type="button"
@@ -190,6 +272,9 @@ export const renderMailComposeDialog = (
   `;
 };
 
+/** D-264 — takes every COMPOSABLE Source (send- or draft-capable), not the
+ *  send-capable subset. A mailbox that can only hold a draft still belongs in
+ *  the From list; what it cannot do is gated on the Send button instead. */
 const renderSenderSourcePicker = (
   selected_source_id: string,
   sendCapable: readonly MailSenderSourceOption[],

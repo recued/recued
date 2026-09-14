@@ -18,7 +18,7 @@ test('Today merges all kinds, exposes source freshness, and renders within a mob
   await expect(today).toContainText('Deliver the draft to Maya');
   await expect(today).toContainText('Design review');
   await expect(today).toContainText('All day · In progress');
-  await expect(today).toContainText('Sync stale');
+  await expect(today).toContainText('Out of date');
   await expect(today).toContainText('work-calendar');
   await expect(page.locator('[data-today-group="next"]')).toContainText('Prepare the demo');
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
@@ -96,4 +96,30 @@ test('Today can be saved and reopens the relative view after reload', async ({ p
   await expect(page).toHaveURL(/#data\/view\//);
   await page.reload();
   await expect(page.locator('[data-today-view]')).toContainText('Deliver the draft to Maya');
+});
+
+test('a SLOW calendar still shows tasks and commitments, and claims nothing while it waits', async ({ page }) => {
+  // ⛔ THE DISTINCTION IS THE POINT. `today_failure=1` (above) covers a source
+  // that ERRORS, which `loadToday` already handled. This covers a source that
+  // is merely SLOW — held, never answered — which used to blank the entire
+  // view behind a bare "Loading Today…" even though tasks and commitments had
+  // already returned. Measured before the fix: 0 rows, 0 groups.
+  await page.clock.install({ time: new Date('2026-09-08T12:00:00-07:00') });
+  await page.goto(`${base}&hold_rpc=collection.list#data/today`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const view = page.locator('[data-today-view]');
+  await expect(page.getByRole('link', { name: 'Review the brief', exact: true })).toBeVisible();
+  await expect(view).not.toContainText('Loading Today');
+
+  // ⛔ AND IT MAKES NO FINISHED-READ CLAIM WHILE A SOURCE IS STILL OUT. "No
+  // overdue tasks" and "Nothing due in the next seven days" are statements
+  // about a COMPLETED read; asserting them here would be a lie told to a fresh
+  // install whose sources have not answered.
+  await expect(view).toContainText('Still reading your sources');
+  await expect(view).not.toContainText('Nothing due in the next seven days');
+  await expect(view).toHaveAttribute('aria-busy', 'true');
+
+  // The calendar event is not invented while its source is silent.
+  await expect(page.getByRole('link', { name: 'Design review', exact: true })).toHaveCount(0);
 });

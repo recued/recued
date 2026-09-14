@@ -33,9 +33,9 @@ const HARNESS_ORIGIN = 'http://127.0.0.1:4319';
 const HARNESS_URL = `${HARNESS_ORIGIN}/full-app-harness.html`;
 const ARTIFACTS = 'apps/webclient/e2e/.playwright-artifacts';
 const STARTUP_RECOVERY_RETURN_RECEIPT_COPY =
-  'Startup recovered. Secure access is still saved, and your page is ready.';
+  'Recued started up again. Your sign-in is still saved, and your page is ready.';
 const STARTUP_RECOVERY_DRAFT_RETURN_RECEIPT_COPY =
-  'Startup recovered. Secure access is still saved, and your unsent Chat draft is ready.';
+  'Recued started up again. Your sign-in is still saved, and the Chat message you had not sent is ready.';
 const STARTUP_RELOAD_RECOVERY_SESSION_KEY =
   'recued.webclient.startup-reload-recovery.v1';
 const RECOVERY_REENTRY_SESSION_KEY =
@@ -1170,10 +1170,10 @@ test('bounded verification lands on one exact Account diagnosis and returns expl
   await expect(controlReceipt).toHaveAttribute('data-action', 'pause');
   await expect(controlReceipt).toHaveAttribute('data-phase', 'confirmed');
   await expect(controlReceipt).toContainText(
-    'Pause completed. The server confirmed execution is paused.',
+    'Pause completed. The server confirmed work is paused.',
   );
   await expect(controlReceipt).toContainText(
-    'This server result does not verify Contracts.',
+    'This answer from the server does not prove Contracts.',
   );
   const resumeServer = serverControls.getByRole('button', { name: 'Resume' });
   await expect(resumeServer).toBeFocused();
@@ -1246,10 +1246,10 @@ test('bounded verification lands on one exact Account diagnosis and returns expl
   }));
   await expect(controlReceipt).toHaveAttribute('data-phase', 'superseded');
   await expect(controlReceipt).toContainText(
-    'a newer server status now reports that execution is running',
+    'a newer status from the server says work is running',
   );
   await expect(controlReceipt).toContainText(
-    'does not verify Contracts',
+    'does not prove Contracts',
   );
   await expect(reportOutcome).toBeFocused();
 
@@ -1289,7 +1289,7 @@ test('bounded verification lands on one exact Account diagnosis and returns expl
     '[data-phase="awaiting_review_outcome"][data-review-target="server"]',
   )).toBeVisible();
   await expect(page.locator(`[${ATTENTION_DIALOG}]`)).toContainText(
-    'What happened after reviewing',
+    'What happened after you looked at',
   );
   expect(await page.evaluate(
     (key) => window.sessionStorage.getItem(key),
@@ -1353,14 +1353,14 @@ test('carries a safe server receipt into Attention without replaying it after re
   await expect(outcome).toBeVisible();
   await expect(outcome).toContainText('Pause completed');
   await expect(outcome).toContainText(
-    'Latest known state: execution is paused.',
+    'Last known state: work is paused.',
   );
   await expect(outcome).toContainText(
-    'This server result does not verify Contracts.',
+    'This answer from the server does not prove Contracts.',
   );
   await expect(outcome).toContainText('Pause will not replay.');
   await expect(outcome).not.toContainText(
-    'What happened after reviewing',
+    'What happened after you looked at',
   );
   const verify = outcome.getByRole('button', {
     name: /Verify Contracts on .* then choose again; Pause will not replay/,
@@ -1413,7 +1413,7 @@ test('carries a safe server receipt into Attention without replaying it after re
   await expect(restoredAttention).not.toContainText('Pause completed');
   await expect(restoredAttention).not.toContainText('Pause will not replay');
   await expect(restoredAttention).toContainText(
-    'Review the connection before another check',
+    'Look at the connection before checking again',
   );
   expect(await page.evaluate(() =>
     window.__app.rpcCallCount('server.setPaused'))).toBe(0);
@@ -1459,7 +1459,7 @@ test('reconciles an unresolved receipt with current server state without replayi
   await serverControls.getByRole('button', { name: 'Confirm pause' }).click();
   await expect(diagnosisReceipt).toHaveAttribute('data-action', 'pause');
   await expect(diagnosisReceipt).toHaveAttribute('data-phase', 'pending');
-  await expect(diagnosisReceipt).toContainText('Pause requested');
+  await expect(diagnosisReceipt).toContainText('Pause asked for');
   expect(await page.evaluate(() =>
     window.__app.rpcCallCount('server.setPaused'))).toBe(1);
 
@@ -1507,7 +1507,7 @@ test('reconciles an unresolved receipt with current server state without replayi
   await expect(diagnosisReceipt).toHaveAttribute('data-phase', 'pending');
   await expect(serverControls).toBeVisible();
   await expect(serverControls).toContainText(
-    'Pause is still awaiting a server response.',
+    'Pause is still waiting for your server to answer.',
   );
   await expect(serverControls.getByRole('button', {
     name: 'Pause server',
@@ -1522,7 +1522,7 @@ test('reconciles an unresolved receipt with current server state without replayi
   const reconcile = diagnosis.locator(
     `[${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RECONCILE}]`,
   );
-  await expect(reconcile).toHaveText('Waiting for current server state…');
+  await expect(reconcile).toHaveText('Waiting to hear how the server is doing…');
   await expect(reconcile).toBeDisabled();
   expect(await page.evaluate(
     (key) => window.sessionStorage.getItem(key),
@@ -1548,7 +1548,7 @@ test('reconciles an unresolved receipt with current server state without replayi
       supervisor_mode: 'systemd',
     },
   }));
-  await expect(reconcile).toHaveText('Use current server state');
+  await expect(reconcile).toHaveText('Use what the server says now');
   await expect(reconcile).toBeEnabled();
   expect(await page.evaluate(
     (key) => window.sessionStorage.getItem(key),
@@ -1560,7 +1560,7 @@ test('reconciles an unresolved receipt with current server state without replayi
     'stable current state ready to reconcile with the last receipt',
   );
   await expect(diagnosisReceipt).toContainText(
-    /^Last receipt — Pause requested/,
+    /^Last receipt — Pause asked for/,
   );
 
   await page.keyboard.press('Escape');
@@ -1574,9 +1574,9 @@ test('reconciles an unresolved receipt with current server state without replayi
       + '[data-server-control-action="pause"]',
   );
   await expect(reconciled).toBeVisible();
-  await expect(reconciled).toContainText('Current server state: paused');
+  await expect(reconciled).toContainText('Your server right now: paused');
   await expect(reconciled).toContainText(
-    'without claiming the earlier Pause request caused it',
+    'It does not claim the earlier Pause caused it',
   );
   await expect(reconciled.getByRole('button', {
     name: /Review the exact active-server controls/,
@@ -1624,10 +1624,10 @@ test('reconciles an unresolved receipt with current server state without replayi
   await expect(readyCheck).toBeVisible();
   await expect(readyCheck).toContainText('Finish checking Contracts');
   await expect(readyCheck).toContainText(
-    'The server re-review finished, but the final Contracts check did not.',
+    'The server finished looking, but the last Contracts check did not.',
   );
   await expect(readyCheck).toContainText(
-    'restored only where to return and that you wanted to choose again',
+    'only remembered where to go back to, and that you wanted to choose again',
   );
   await expect(readyCheck).toContainText(
     'not the server action, receipt, current state, or credentials',
@@ -1639,7 +1639,7 @@ test('reconciles an unresolved receipt with current server state without replayi
     `[${ATTENTION_RECOVERY_INTENT_SERVER_STATE}]`,
   )).toHaveCount(0);
   await expect(readyCheck).not.toContainText('Pause was still pending');
-  await expect(readyCheck).not.toContainText('Current server state: paused');
+  await expect(readyCheck).not.toContainText('Your server right now: paused');
   const resumedVerify = readyCheck.getByRole('button', {
     name: /Check Contracts now on .* no prior action or receipt will replay/,
   });
@@ -1704,7 +1704,7 @@ test('reconciles an unresolved receipt with current server state without replayi
   await restoredBell.click();
   await expect(readyCheck).toBeVisible();
   await expect(readyCheck).toHaveAttribute('data-deferred', 'true');
-  await expect(readyCheck).toContainText('Contracts check kept for later');
+  await expect(readyCheck).toContainText('Contracts check saved for later');
   await expect(readyCheck).toContainText(
     'Kept for later just now · expires in 30 min',
   );
@@ -1996,7 +1996,7 @@ test('keeps one quiet route-owned retry when an expired current-area review is u
   await bell.click();
   await expect(expiry).toHaveAttribute('data-phase', 'retry');
   await expect(expiry).toHaveAttribute('data-retry-reason', 'unavailable');
-  await expect(expiry).toContainText('Contracts couldn’t be refreshed');
+  await expect(expiry).toContainText('Contracts could not be brought up to date');
   await expect(expiry).toContainText('Try the current area again');
   await expect(expiry).not.toContainText('private harness current-area failure');
   const retry = expiry.getByRole('button', {
@@ -2262,11 +2262,11 @@ test('bounds a repeated offline expired-area retry to exact server diagnosis', a
   );
   await expect(diagnosis.locator(
     `[${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_STATUS}]`,
-  )).toContainText('is not reachable');
+  )).toContainText('cannot be reached');
   const finish = diagnosis.locator(
     `[${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RETURN}]`,
   );
-  await expect(finish).toHaveText('Choose check or close');
+  await expect(finish).toHaveText('Choose: check, or close');
   await page.screenshot({
     path: `${ARTIFACTS}/full-app-attention-expired-review-server-diagnosis-mobile.png`,
     fullPage: false,
@@ -2430,7 +2430,7 @@ test('Account server profiles own connection status, recovery, and the return on
   const banner = page.locator(`[${CONNECTION_BANNER}]`);
   const announcer = page.locator(`[${CONNECTION_STATUS_ANNOUNCER}]`);
   await expect(account).toBeVisible();
-  await expect(account).toHaveAccessibleName('Account and server profiles');
+  await expect(account).toHaveAccessibleName('Your account and servers');
   const accountTarget = await account.evaluate((node) => {
     const rect = node.getBoundingClientRect();
     return { width: rect.width, height: rect.height };
@@ -2533,7 +2533,7 @@ test('Account server profiles own connection status, recovery, and the return on
   await expect(account).toBeFocused();
 
   await page.evaluate(() => window.__app.fireState('reconnecting'));
-  await expect(announcer).toContainText('reconnecting automatically');
+  await expect(announcer).toContainText('reconnecting by itself');
   await expect(banner).toHaveAttribute('data-state', 'ok');
 
   await page.evaluate(() => {
@@ -2543,13 +2543,13 @@ test('Account server profiles own connection status, recovery, and the return on
   await expect(banner).toBeVisible();
   await expect(banner).toHaveAttribute('role', 'alert');
   await expect(banner).toContainText(
-    'Can’t reach the current server. Recued will keep trying.',
+    'Recued cannot reach this server. It will keep trying.',
   );
   await expect(
     banner.locator(`[${CONNECTION_BANNER_ACTION}]`),
-  ).toHaveText('Review server profiles');
+  ).toHaveText('Look at your servers');
   await expect(account).toHaveAccessibleName(
-    'Account and server profiles. Current server is not reachable',
+    'Your account and servers. Recued cannot reach this server',
   );
   await expect(
     page.locator(`[${ACCOUNT_MENU_BADGE}]`),
@@ -2565,7 +2565,7 @@ test('Account server profiles own connection status, recovery, and the return on
   await expect(
     recovery.locator(`[${ACCOUNT_MENU_RECOVERY_STEPS}] li`),
   ).toHaveCount(2);
-  await expect(recovery).toContainText('switch to another saved profile');
+  await expect(recovery).toContainText('pick another saved server');
   await expect(currentProfile).toHaveAttribute('data-unreachable', 'true');
   await expect(currentProfile).toContainText('not reachable');
   await expect(dialog).toContainText('Work server');
@@ -2624,7 +2624,7 @@ test('Account server profiles own connection status, recovery, and the return on
   await expect(banner).toContainText(
     'Back online. Your server is reachable again.',
   );
-  await expect(account).toHaveAccessibleName('Account and server profiles');
+  await expect(account).toHaveAccessibleName('Your account and servers');
   await expect(recovery).toBeHidden();
   await expect(dialog).toBeFocused();
   await expect(currentProfile).not.toHaveAttribute('data-unreachable', 'true');
@@ -2693,9 +2693,9 @@ test('a deliberate server switch protects the draft boundary and returns to a cl
   const review = accountDialog.locator(`[${SERVER_PROFILE_SWITCH_CONFIRM}]`);
   await expect(review).toBeVisible();
   await expect(review).toHaveAccessibleName('Switch to Office server?');
-  await expect(review).toContainText('Your unsent Chat draft stays only in this tab');
+  await expect(review).toContainText('The Chat message you have not sent is only in this tab');
   await expect(review).toContainText(
-    'Server-specific chats, records, runs, and detail links stay on their original server',
+    'Chats, records, runs and links belong to one server and stay there',
   );
   await page.screenshot({
     path: `${ARTIFACTS}/full-app-deliberate-server-switch-mobile.png`,
@@ -2824,10 +2824,10 @@ test('a deliberate server switch converges clean and dirty sibling tabs without 
     );
     await expect(workingHandoff).toBeVisible();
     await expect(workingHandoff).toContainText(
-      'Work is still finishing on the original server',
+      'The first server is still working',
     );
     await expect(workingHandoff).toContainText(
-      'Any outcome or receipt stays on the original server',
+      'Whatever happened stays on the first server',
     );
     const checkWork = workingHandoff.locator(
       `[${SERVER_SWITCH_CONVERGENCE_CHECK}]`,
@@ -2835,7 +2835,7 @@ test('a deliberate server switch converges clean and dirty sibling tabs without 
     await expect(checkWork).toHaveText('Check status');
     await expect(workingHandoff.locator(
       `[${SERVER_SWITCH_CONVERGENCE_COMMIT}]`,
-    )).toHaveText('Switch and check later');
+    )).toHaveText('Switch, and check later');
     await checkWork.click();
     await expect(workingHandoff.locator(
       `[${SERVER_SWITCH_CONVERGENCE_STATUS}]`,
@@ -2898,7 +2898,7 @@ test('a deliberate server switch converges clean and dirty sibling tabs without 
     await expect(handoff).toBeVisible();
     await expect(handoff).toHaveAccessibleName('Server changed in another tab');
     await expect(handoff).toHaveAccessibleDescription(
-      /This tab is still showing.+Another tab selected.+Your unsent Chat draft.+Server-specific chats, records, runs, and detail links stay on their original server/,
+      /This tab is still showing.+Another tab selected.+Chat message.+Chats, records, runs and links belong to one server and stay there/,
     );
     await expect(handoff).toContainText('wss://alice.recued.cloud:8443/ws');
     await expect(handoff).toContainText('Office server');
@@ -2911,7 +2911,7 @@ test('a deliberate server switch converges clean and dirty sibling tabs without 
     await dirty.keyboard.press('Escape');
     await expect(handoff).toBeVisible();
     await expect(handoff.locator(`[${SERVER_SWITCH_CONVERGENCE_STATUS}]`))
-      .toContainText('Finish switching this tab');
+      .toContainText('Finish changing servers');
     await dirty.keyboard.press('Shift+Tab');
     await expect(continueSwitch).toBeFocused();
     const target = await continueSwitch.evaluate((button) => {
@@ -2992,10 +2992,10 @@ test('cold-start credential corruption becomes a safe guided repair and exact re
 
   await expect(page).toHaveURL(target);
   await expect(repair).toContainText(
-    'This tab reloaded, but this browser’s saved access still needs repair.',
+    'This tab reloaded, but this browser’s saved sign-in still needs fixing.',
   );
   await expect(repair).toContainText(
-    'exact page you opened is still selected',
+    'page you opened is still chosen',
   );
   await expect(page.locator(`[${SHELL_HOST}]`)).toHaveCount(0);
   await expect(page.locator(`[${CONNECTION_BANNER}]`)).toHaveCount(0);
@@ -3053,12 +3053,12 @@ test('cold-start credential corruption becomes a safe guided repair and exact re
   const pairForm = page.locator('#webclient-pair-code-input-form');
   await expect(pairForm).toBeVisible();
   const notice = pairForm.locator(`[${PAIR_REAUTH_NOTICE}]`);
-  await expect(notice).toContainText('Unreadable local access cleared');
+  await expect(notice).toContainText('A sign-in Recued could not read has been cleared');
   await expect(notice).toContainText(
     'This browser could not unlock its saved sign-in',
   );
   await expect(notice).not.toContainText(
-    "Your server no longer accepts this browser's saved access",
+    "Your server will not take the sign-in saved in this browser any more",
   );
   await expect(
     pairForm.locator('#webclient-pair-code-input-server-url'),
@@ -3135,10 +3135,10 @@ test('partial local access becomes an explained repair with preserved context', 
 
   await expect(page).toHaveURL(target);
   await expect(repair).toContainText(
-    'This tab reloaded, but this browser’s saved access still needs repair.',
+    'This tab reloaded, but this browser’s saved sign-in still needs fixing.',
   );
   await expect(repair).toContainText(
-    'exact page you opened is still selected',
+    'page you opened is still chosen',
   );
   await expect(page.locator(`[${SHELL_HOST}]`)).toHaveCount(0);
   await expect(page.locator(`[${CONNECTION_BANNER}]`)).toHaveCount(0);
@@ -3196,12 +3196,12 @@ test('partial local access becomes an explained repair with preserved context', 
   const pairForm = page.locator('#webclient-pair-code-input-form');
   await expect(pairForm).toBeVisible();
   const notice = pairForm.locator(`[${PAIR_REAUTH_NOTICE}]`);
-  await expect(notice).toContainText('Incomplete browser setup cleared');
+  await expect(notice).toContainText('An unfinished setup has been cleared');
   await expect(notice).toContainText(
-    'A previous setup stopped before every local access detail was saved.',
+    'An earlier setup stopped before everything was saved here.',
   );
   await expect(notice).not.toContainText(
-    "Your server no longer accepts this browser's saved access",
+    "Your server will not take the sign-in saved in this browser any more",
   );
   await expect(
     pairForm.locator('#webclient-pair-code-input-server-url'),
@@ -3269,7 +3269,7 @@ test('a credential-repair reload that recovers confirms once on the exact route'
   await expect(page).toHaveURL(target);
   await expect(page.locator(`[${CONNECTIONS_ROUTE}]`)).toBeVisible();
   await expect(receipt).toHaveAttribute('data-state', 'ok');
-  await expect(receipt).not.toContainText('Startup recovered');
+  await expect(receipt).not.toContainText('Recued started up again');
   expect(pageErrors).toHaveLength(0);
 });
 
@@ -3333,7 +3333,7 @@ test('persistent-storage startup failure guides an in-place retry and exact retu
     page.getByRole('region', { name: 'Make room for browser storage' }),
   ).toBeVisible();
   await expect(recovery.getByRole('alert')).toContainText(
-    'Storage is still full.',
+    'There is still no room.',
   );
   await expect(retry).toBeFocused();
 
@@ -3370,7 +3370,7 @@ test('persistent-storage reload that stays blocked preserves recovery context an
     'This tab reloaded, but browser storage still did not open.',
   );
   await expect(recovery).toContainText(
-    'exact page you opened is still selected',
+    'page you opened is still chosen',
   );
   await expect(page.locator(`[${SHELL_HOST}]`)).toHaveCount(0);
   await expect(page.locator(`[${CONNECTION_BANNER}]`)).toHaveCount(0);
@@ -3420,7 +3420,7 @@ test('persistent-storage reload that stays blocked preserves recovery context an
 
   await retry.click();
   await expect(recovery.getByRole('alert')).toContainText(
-    'Storage is still full.',
+    'There is still no room.',
   );
   await expect(retry).toBeFocused();
   await retry.click();
@@ -3472,7 +3472,7 @@ test('persistent-storage reload recovery confirms once on the exact route', asyn
   await expect(page).toHaveURL(target);
   await expect(page.locator(`[${CONNECTIONS_ROUTE}]`)).toBeVisible();
   await expect(receipt).toHaveAttribute('data-state', 'ok');
-  await expect(receipt).not.toContainText('Startup recovered');
+  await expect(receipt).not.toContainText('Recued started up again');
   expect(pageErrors).toHaveLength(0);
 });
 
@@ -3579,7 +3579,7 @@ test("insecure HTTP resumes pairing at the chosen page's own secure origin", asy
   await httpsInput.fill('http://alice.recued.cloud');
   await handoff.getByRole('button', { name: 'Open secure page' }).click();
   await expect(handoff.getByRole('alert')).toHaveText(
-    'Use a trusted address that starts with https://.',
+    'Use a safe address. It has to start with https://.',
   );
   await expect(httpsInput).toHaveAttribute('aria-invalid', 'true');
   await expect(httpsInput).toHaveAttribute(
@@ -3608,7 +3608,7 @@ test("insecure HTTP resumes pairing at the chosen page's own secure origin", asy
     "Recued will pair with this page's own address: https://alice.recued.cloud:8443",
   );
   await expect(pairForm.locator(`[${PAIR_SECURE_RESUME_NOTICE}]`)).toContainText(
-    'Your pairing code is ready too. Continue with your recovery key.',
+    'Your pairing code is ready too. Carry on with your recovery key.',
   );
   await expect(pairForm).not.toContainText('attacker.example');
   const serverUrl = pairForm.locator('#webclient-pair-code-input-server-url');
@@ -3727,7 +3727,7 @@ test('recovery generation keeps every action full-sized', async ({ page }) => {
 
   const form = page.getByRole('form', { name: 'Pair this browser' });
   await form.getByRole('button', {
-    name: 'Generate a new one',
+    name: 'Make a new one',
     exact: true,
   }).click();
   const generate = form.getByRole('button', {
@@ -3814,7 +3814,7 @@ test('successful secure pairing stays clean through reload, Back, and Forward', 
   await expect(receipt).toHaveAttribute('data-state', 'restored');
   await expect(receipt).toHaveAttribute('role', 'status');
   await expect(receipt).toContainText(
-    'Browser paired. Secure access is saved here, and your page is ready.',
+    'This browser is paired. Your sign-in is saved here, and your page is ready.',
   );
   const narrowLayout = await page.evaluate((bannerSelector) => {
     const banner = document.querySelector(bannerSelector);
@@ -3856,7 +3856,7 @@ test('successful secure pairing stays clean through reload, Back, and Forward', 
   await expect(page.locator(`[${CONNECTION_BANNER}]`))
     .toHaveAttribute('data-state', 'ok');
   await expect(page.locator(`[${CONNECTION_BANNER}]`))
-    .not.toContainText('Browser paired');
+    .not.toContainText('This browser is paired');
 
   // Install before the next document starts so even a one-frame pair form or
   // visible loading splash is observable. The static harness mirrors the
@@ -3911,7 +3911,7 @@ test('successful secure pairing stays clean through reload, Back, and Forward', 
   await expect(page.locator(`[${CONNECTION_BANNER}]`))
     .toHaveAttribute('data-state', 'ok');
   await expect(page.locator(`[${CONNECTION_BANNER}]`))
-    .not.toContainText('Browser paired');
+    .not.toContainText('This browser is paired');
   expect(await page.evaluate(() => (
     window as unknown as {
       __postPairContinuityProbe: {
@@ -3942,7 +3942,7 @@ test('successful secure pairing stays clean through reload, Back, and Forward', 
   await expect(page.locator(`[${CONNECTION_BANNER}]`))
     .toHaveAttribute('data-state', 'ok');
   await expect(page.locator(`[${CONNECTION_BANNER}]`))
-    .not.toContainText('Browser paired');
+    .not.toContainText('This browser is paired');
 });
 
 test('a sibling pair form adopts another tab success at its own exact route', async ({
@@ -4011,7 +4011,7 @@ test('a sibling pair form adopts another tab success at its own exact route', as
     await expect(sibling.locator(`[${CONNECTION_BANNER}]`))
       .toHaveAttribute('data-state', 'ok');
     await expect(sibling.locator(`[${CONNECTION_BANNER}]`))
-      .not.toContainText('Browser paired');
+      .not.toContainText('This browser is paired');
     await expect(page.locator(`[${CONNECTION_BANNER}]`))
       .toHaveAttribute('data-state', 'restored');
     expect(await page.evaluate(() => window.__app.pairSubmitCount?.()))
@@ -4111,13 +4111,13 @@ test('credential loss in one tab converges every sibling through one guided re-p
     const siblingNotice = siblingForm.locator(`[${PAIR_REAUTH_NOTICE}]`);
     await expect(siblingNotice).toHaveAttribute('role', 'status');
     await expect(siblingNotice).toContainText(
-      'Saved access changed in another tab',
+      'Another tab changed your saved sign-in',
     );
     await expect(siblingNotice).toContainText(
-      'This tab stopped using the old session.',
+      'This tab stopped using the old one.',
     );
     await expect(siblingNotice).toContainText(
-      'Your current page and unsent Chat draft are held in this tab.',
+      'Your page and the Chat message you had not sent are still in this tab.',
     );
     await expect(
       siblingForm.locator('#webclient-pair-code-input-server-url'),
@@ -4182,10 +4182,10 @@ test('credential loss in one tab converges every sibling through one guided re-p
       'Another tab is reconnecting',
     );
     await expect(siblingInterrupted).toContainText(
-      'return to your current page and unsent Chat draft automatically when the other tab finishes',
+      'go back to your page and the Chat message you had not sent by itself once the other tab finishes',
     );
     await expect(siblingInterrupted).toContainText(
-      'Your recovery-key entry stays here',
+      'What you typed as your recovery key stays here',
     );
     await expect(siblingPairingCode).toHaveValue('');
     await expect(siblingRecoveryWord).toHaveValue('zoo');
@@ -4228,7 +4228,7 @@ test('credential loss in one tab converges every sibling through one guided re-p
     await expect(sibling.locator(`[${CONNECTION_BANNER}]`))
       .not.toContainText('Reconnected');
     await expect(sibling.locator(`[${CONNECTION_BANNER}]`))
-      .not.toContainText('Browser paired');
+      .not.toContainText('This browser is paired');
     await expect(page.locator(`[${CONNECTION_BANNER}]`))
       .toHaveAttribute('data-state', 'restored');
     await expect(page.locator(`[${CONNECTION_BANNER}]`))
@@ -4394,7 +4394,7 @@ test('a stalled sibling reconnect becomes one safe exact-work takeover', async (
       'webclient-pair-code-input-interrupted-notice',
     );
     await expect(siblingForm).toContainText(
-      'Recued will offer a safe takeover if it does not finish.',
+      'Recued lets only one carry on and brings the others back by itself.',
     );
 
     await expect(siblingInterrupted).toHaveAttribute(
@@ -4405,10 +4405,10 @@ test('a stalled sibling reconnect becomes one safe exact-work takeover', async (
       'The other tab is taking longer',
     );
     await expect(siblingInterrupted).toContainText(
-      'Recued lets only one continue and returns the others automatically',
+      'Recued lets only one carry on and brings the others back by itself',
     );
     await expect(siblingInterrupted).toContainText(
-      'recovery key, current page, and unsent Chat draft stay here',
+      'recovery key, your page, and the Chat message you had not sent stay here',
     );
     await expect(siblingRecovery).toBeFocused();
     await expect(siblingRecovery).toHaveValue('abandon');
@@ -4482,7 +4482,7 @@ test('a stalled sibling reconnect becomes one safe exact-work takeover', async (
     await expect(sibling.locator(`[${CONNECTION_BANNER}]`))
       .toContainText('Reconnected. Your Chat draft is ready where you left it.');
     await expect(sibling.locator(`[${CONNECTION_BANNER}]`))
-      .not.toContainText('Browser paired');
+      .not.toContainText('This browser is paired');
     expect(siblingErrors).toHaveLength(0);
   } finally {
     await sibling.close();
@@ -4656,7 +4656,7 @@ test('simultaneous safe takeovers choose one visible winner and converge every t
     await expect(winnerNotice).toHaveAttribute(PAIR_TAKEOVER_OWNER, '');
     await expect(winnerNotice).toContainText('This tab is reconnecting');
     await expect(winnerNotice).toContainText(
-      'If it succeeds, other open tabs will adopt its saved access without sending their pairing codes',
+      'If it works, your other tabs will use the same sign-in without sending their pairing codes',
     );
     const winnerProgress = winnerForm.getByRole('button', {
       name: 'Reconnecting from this tab…',
@@ -4665,12 +4665,12 @@ test('simultaneous safe takeovers choose one visible winner and converge every t
     await expect(winnerProgress).toBeFocused();
     await expect(loserForm).toHaveAttribute('aria-busy', 'true');
     await expect(loserNotice).not.toHaveAttribute(PAIR_TAKEOVER_OWNER, '');
-    await expect(loserNotice).toContainText('Choosing one tab safely');
+    await expect(loserNotice).toContainText('Picking one tab');
     await expect(loserNotice).toContainText(
-      'return automatically without sending its pairing code',
+      'comes back by itself and never sends its pairing code',
     );
     const loserProgress = loserForm.getByRole('button', {
-      name: 'Choosing one tab…',
+      name: 'Picking one tab…',
     });
     await expect(loserProgress).toBeDisabled();
     await expect(loserProgress).toBeFocused();
@@ -4710,7 +4710,7 @@ test('simultaneous safe takeovers choose one visible winner and converge every t
       .not.toContainText('Reconnected');
     for (const tab of [page, first, second]) {
       await expect(tab.locator(`[${CONNECTION_BANNER}]`))
-        .not.toContainText('Browser paired');
+        .not.toContainText('This browser is paired');
     }
     expect(firstErrors).toHaveLength(0);
     expect(secondErrors).toHaveLength(0);
@@ -4949,7 +4949,7 @@ test('a failed takeover owner yields its exact retry to the queued successor', a
       .not.toContainText('Reconnected');
     for (const tab of [page, first, second]) {
       await expect(tab.locator(`[${CONNECTION_BANNER}]`))
-        .not.toContainText('Browser paired');
+        .not.toContainText('This browser is paired');
     }
     expect(firstErrors).toHaveLength(0);
     expect(secondErrors).toHaveLength(0);
@@ -5123,8 +5123,8 @@ test('a lost recovery owner hands one survivor the exact retry', async ({
     await expect(recoveryNotice).toHaveAttribute(PAIR_RECOVERY_OWNER, '', {
       timeout: 7_000,
     });
-    await expect(recoveryNotice).toContainText('This tab needs attention');
-    await expect(recoveryNotice).toContainText('only one retry to manage');
+    await expect(recoveryNotice).toContainText('This tab needs you');
+    await expect(recoveryNotice).toContainText('only one to deal with');
     await expect(recoveryForm.locator(
       '[data-error="invalid_code"]',
     )).toBeVisible();
@@ -5139,7 +5139,7 @@ test('a lost recovery owner hands one survivor the exact retry', async ({
       '',
     );
     await expect(priorNotice).toContainText(
-      'Continue in the tab that needs attention',
+      'Carry on in the tab that needs you',
     );
     await expect(priorForm.locator('[data-error="invalid_code"]'))
       .toHaveCount(0);
@@ -5199,26 +5199,26 @@ test('a lost recovery owner hands one survivor the exact retry', async ({
     const priorUrl = firstIsRecoveryOwner ? secondUrl : firstUrl;
     const priorDraft = firstIsRecoveryOwner ? secondDraft : firstDraft;
 
-    await expect(successorNotice).toContainText('Recovery moved to this tab');
-    await expect(successorNotice).toContainText('only safe successor');
+    await expect(successorNotice).toContainText('Recued moved to this tab');
+    await expect(successorNotice).toContainText('picked this tab to carry on');
     if (sourceIsSuccessor) {
       await expect(successorNotice).toContainText(
-        'will not contact the pairing endpoint again',
+        'will not ask to pair again',
       );
     }
     await expect(successorForm.locator('[data-error]')).toBeVisible();
     const successorAction = successorForm.getByRole('button', {
       name: sourceIsSuccessor
-        ? 'Finish saving access'
-        : 'Continue recovery here',
+        ? 'Finish saving your sign-in'
+        : 'Carry on here',
     });
     await expect(successorAction).toBeEnabled();
     await expect(successorAction).toBeFocused();
 
     await expect(passiveNotice).toContainText(
-      'Recovery continued in another tab',
+      'Another tab is carrying on',
     );
-    await expect(passiveNotice).toContainText('remains safely paused');
+    await expect(passiveNotice).toContainText('stays paused');
     await expect(passiveForm.getByRole('button', {
       name: 'Waiting for recovery tab…',
     })).toBeDisabled();
@@ -5348,18 +5348,18 @@ test('the last recovery document re-enters one clean reconnect on its exact rout
     await expect(form).toBeVisible();
     const reentryNotice = form.locator(`[${PAIR_REAUTH_NOTICE}]`);
     await expect(reentryNotice).toHaveAttribute('role', 'status');
-    await expect(reentryNotice).toContainText('Recovery resumed in this tab');
+    await expect(reentryNotice).toContainText('Carrying on in this tab');
     await expect(reentryNotice).toContainText(
-      'You do not need to wait for that page.',
+      'You do not need to wait for it.',
     );
     await expect(reentryNotice).toContainText(
-      'The exact page you were returning to is still selected.',
+      'The page you were going back to is still chosen.',
     );
     await expect(reentryNotice).toContainText(
-      'Pairing details are not restored',
+      'Your pairing details are not kept',
     );
     await expect(reentryNotice).toContainText(
-      're-enter any missing server address, pairing code, and recovery key',
+      'Type any missing server address, pairing code, and recovery key again',
     );
     await expect(form.locator(`[${PAIR_INTERRUPTED_NOTICE}]`)).toHaveCount(0);
     await expect(form).not.toContainText('another tab');
@@ -5462,7 +5462,7 @@ test('the last recovery document re-enters one clean reconnect on its exact rout
     await expect(page.locator(`[${CONNECTION_BANNER}]`))
       .not.toContainText('Reconnected');
     await expect(page.locator(`[${CONNECTION_BANNER}]`))
-      .not.toContainText('Browser paired');
+      .not.toContainText('This browser is paired');
     expect(await page.evaluate(
       (key) => window.sessionStorage.getItem(key),
       RECOVERY_REENTRY_SESSION_KEY,
@@ -5570,7 +5570,7 @@ test('a third tab arriving and reloading mid-pair waits for one clean exact-rout
     await arrival.goto(arrivalUrl);
     await arrival.waitForTimeout(300);
     const arrivalCheck = arrival.locator('#webclient-boot-splash-message');
-    await expect(arrivalCheck).toHaveText('Checking saved access…');
+    await expect(arrivalCheck).toHaveText('Checking your saved sign-in…');
     await expect(arrivalCheck).toHaveAttribute('role', 'status');
     await expect(arrivalCheck).toHaveAttribute('aria-live', 'polite');
     await expect(arrival.locator('#webclient-pair-code-input-form'))
@@ -5595,7 +5595,7 @@ test('a third tab arriving and reloading mid-pair waits for one clean exact-rout
     await arrival.reload();
     await arrival.waitForTimeout(300);
     await expect(arrival).toHaveURL(arrivalUrl);
-    await expect(arrivalCheck).toHaveText('Checking saved access…');
+    await expect(arrivalCheck).toHaveText('Checking your saved sign-in…');
     await expect(arrivalCheck).toHaveAttribute('role', 'status');
     await expect(arrival.locator('#webclient-pair-code-input-form'))
       .toHaveCount(0);
@@ -5633,7 +5633,7 @@ test('a third tab arriving and reloading mid-pair waits for one clean exact-rout
     await expect(arrival.locator(`[${CONNECTION_BANNER}]`))
       .not.toContainText('Reconnected');
     await expect(arrival.locator(`[${CONNECTION_BANNER}]`))
-      .not.toContainText('Browser paired');
+      .not.toContainText('This browser is paired');
     await expect(sibling.locator(`[${CONNECTION_BANNER}]`))
       .not.toContainText('Reconnected');
     await expect(page.locator(`[${CONNECTION_BANNER}]`))
@@ -5750,13 +5750,13 @@ test('an interrupted pair save keeps sibling context through triage and credenti
     await expect(sourceInterrupted).toBeVisible();
     await expect(sourceInterrupted).toContainText('Server pairing is complete');
     await expect(sourceInterrupted).toContainText(
-      'will not contact the pairing endpoint again',
+      'will not ask to pair again',
     );
     await expect(
       sourceForm.locator('#webclient-pair-code-input-status'),
     ).not.toContainText('Reload');
     const finish = sourceForm.getByRole('button', {
-      name: 'Finish saving access',
+      name: 'Finish saving your sign-in',
     });
     await expect(finish).toBeFocused();
     await expect(sourceForm.getByRole('button', {
@@ -5804,7 +5804,7 @@ test('an interrupted pair save keeps sibling context through triage and credenti
     await expect(arrival).toHaveURL(arrivalUrl);
     await expect(arrivalRepair).toBeVisible();
     await expect(arrivalRepair).toContainText(
-      'This tab reloaded, but this browser’s saved access still needs repair.',
+      'This tab reloaded, but this browser’s saved sign-in still needs fixing.',
     );
     await expect(arrivalRepair).toContainText(
       'another tab is still finishing that save',
@@ -5862,16 +5862,16 @@ test('an interrupted pair save keeps sibling context through triage and credenti
     await expect(arrivalStartupRecovery).toBeVisible();
     await expect(arrivalStartupRecovery).toHaveAttribute('role', 'region');
     await expect(arrivalStartupRecovery).toContainText(
-      'Access saved in another tab',
+      'Sign-in saved in another tab',
     );
     await expect(arrivalStartupRecovery).toContainText(
       'Finish opening this tab',
     );
     await expect(arrivalStartupRecovery).toContainText(
-      'Pairing is already finished.',
+      'This browser is already paired.',
     );
     await expect(arrivalStartupRecovery).toContainText(
-      'Your exact page is still held in this tab.',
+      'Your page is still here.',
     );
     await expect(arrival).toHaveURL(arrivalUrl);
     await expect(arrivalRepair).toHaveCount(0);
@@ -5926,19 +5926,19 @@ test('an interrupted pair save keeps sibling context through triage and credenti
     const arrivalTriage = arrival.locator(`[${STARTUP_FAILURE_TRIAGE}]`);
     await expect(arrivalTriage).toBeVisible();
     await expect(arrivalTriage).toHaveAttribute('role', 'region');
-    await expect(arrivalTriage).toContainText('Access saved in another tab');
+    await expect(arrivalTriage).toContainText('Sign-in saved in another tab');
     await expect(arrivalTriage).toContainText(
-      'Another tab already finished saving secure access',
+      'Another tab has already saved the sign-in',
     );
     await expect(arrivalTriage).toContainText(
       'Recued can’t reach your server',
     );
-    await expect(arrivalTriage).toContainText('Pairing is still complete.');
+    await expect(arrivalTriage).toContainText('This browser is still paired.');
     await expect(arrivalTriage).toContainText(
-      'Only this tab is retrying startup.',
+      'Only this tab is trying again.',
     );
     await expect(arrivalTriage).toContainText(
-      'completed pairing does not need to be repeated',
+      'You do not need to pair again',
     );
     await expect(
       arrivalTriage.locator(`[${STARTUP_FAILURE_TRIAGE_RELOAD}]`),
@@ -6011,7 +6011,7 @@ test('an interrupted pair save keeps sibling context through triage and credenti
       'Startup attempts in this tab: 2',
     );
     await expect(diagnosticSummary).toContainText(
-      'Saved browser access: Verified present',
+      'Saved sign-in on this browser: Verified present',
     );
     await expect(diagnosticSummary).toContainText(
       'Server host: alice.recued.cloud:8443',
@@ -6024,7 +6024,7 @@ test('an interrupted pair save keeps sibling context through triage and credenti
     await diagnostic.locator(`[${STARTUP_FAILURE_DIAGNOSTIC_COPY}]`).click();
     await expect(
       diagnostic.locator(`[${STARTUP_FAILURE_DIAGNOSTIC_STATUS}]`),
-    ).toContainText('Safe diagnostic copied');
+    ).toContainText('Paste it wherever you are getting help');
     expect(await arrival.evaluate(
       () => window.__app.startupDiagnosticText?.(),
     )).toBe(reviewedDiagnostic);
@@ -6048,18 +6048,18 @@ test('an interrupted pair save keeps sibling context through triage and credenti
     const arrivalNotice = arrivalForm.locator(`[${PAIR_REAUTH_NOTICE}]`);
     await expect(arrivalNotice).toHaveAttribute('role', 'status');
     await expect(arrivalNotice).toContainText(
-      'Access changed while this tab was recovering',
+      'Your sign-in changed while this tab was still working',
     );
     await expect(arrivalNotice).toContainText(
-      'cleared or replaced the saved access this startup retry was using',
+      'cleared or replaced the sign-in this tab was using',
     );
     await expect(arrivalNotice).toContainText(
-      'stopped that stale retry before it could open your page',
+      'stopped the old attempt before it could open your page',
     );
     await expect(arrivalNotice).toContainText(
-      'Your current page is held in this tab.',
+      'Your page is still in this tab.',
     );
-    await expect(arrivalForm).not.toContainText('Pairing is still complete');
+    await expect(arrivalForm).not.toContainText('This browser is still paired');
     await expect(
       arrivalForm.locator('#webclient-pair-code-input-server-url'),
     ).toHaveValue('https://alice.recued.cloud:8443');
@@ -6100,13 +6100,13 @@ test('an interrupted pair save keeps sibling context through triage and credenti
       name: 'Reconnect this browser',
     }).click();
     const arrivalFinish = arrivalForm.getByRole('button', {
-      name: 'Finish saving access',
+      name: 'Finish saving your sign-in',
     });
     await expect(arrivalFinish).toBeVisible();
     await expect(arrivalFinish).toBeFocused();
     await expect(arrivalForm).toContainText('Server pairing is complete');
     await expect(arrivalForm).toContainText(
-      'will not contact the pairing endpoint again',
+      'will not ask to pair again',
     );
     expect(await arrival.evaluate(() => window.__app.pairSubmitCount?.()))
       .toBe(1);
@@ -6161,7 +6161,7 @@ test('an interrupted pair save keeps sibling context through triage and credenti
     await expect(arrival.locator(`[${CONNECTION_BANNER}]`))
       .not.toContainText(STARTUP_RECOVERY_DRAFT_RETURN_RECEIPT_COPY);
     await expect(arrival.locator(`[${CONNECTION_BANNER}]`))
-      .not.toContainText('Browser paired');
+      .not.toContainText('This browser is paired');
     expect(siblingErrors).toHaveLength(0);
     expect(arrivalErrors).toHaveLength(0);
   } finally {
@@ -6198,17 +6198,17 @@ test('reauth guides a secure re-pair and returns to the exact unsent Chat work',
   ).toBeVisible();
   const notice = pairForm.locator(`[${PAIR_REAUTH_NOTICE}]`);
   await expect(notice).toHaveAttribute('role', 'status');
-  await expect(notice).toContainText('Saved access needs attention');
+  await expect(notice).toContainText('Your saved sign-in needs a look');
   await expect(notice).toContainText(
-    'Your current page and unsent Chat draft are held in this tab.',
+    'Your page and the Chat message you had not sent are still in this tab.',
   );
-  await expect(notice).toContainText('return where you left off');
+  await expect(notice).toContainText('go back to where you were');
   await expect(
     pairForm.locator('#webclient-pair-code-input-server-url'),
   ).toHaveValue('https://alice.recued.cloud:8443');
   await expect(pairForm).toContainText('recued pair');
   await expect(
-    pairForm.getByRole('button', { name: 'Generate a new one' }),
+    pairForm.getByRole('button', { name: 'Make a new one' }),
   ).toHaveCount(0);
   await expect(
     pairForm.getByRole('button', { name: 'Restore a backup' }),
@@ -6309,7 +6309,7 @@ test('a rejected recovery key guides correction without losing the exact return 
   await reconnect.click();
 
   const error = form.locator('[data-error="recovery_key_invalid"]');
-  await expect(error).toContainText("doesn't match the one your server has");
+  await expect(error).toContainText("do not match what your server has");
   const correction = form.locator(`[${PAIR_RECOVERY_CORRECTION}]`);
   await expect(correction).toBeVisible();
   await expect(form.locator(`[${PAIR_RECOVERY_TRIAGE}]`)).toHaveCount(0);
@@ -6329,7 +6329,7 @@ test('a rejected recovery key guides correction without losing the exact return 
   await expect(lastRecoveryWord).toHaveValue('art');
   await expect(reconnect).toBeDisabled();
   await expect(form).toContainText(
-    'Review the server address or re-enter the recovery key before retrying.',
+    'Check the server address, or type the recovery key again, before trying once more.',
   );
   expect(await page.evaluate(() => window.__app.pairSubmitCount?.())).toBe(1);
   await page.screenshot({
@@ -6430,19 +6430,19 @@ test('a rejected recovery key guides correction without losing the exact return 
     `[${PAIR_RECOVERY_DIAGNOSTIC_SUMMARY}]`,
   );
   await expect(diagnostic.getByText(
-    'Details to share with the server owner',
+    'Details to show the server owner',
     { exact: true },
   )).toBeVisible();
   await diagnostic.getByText(
-    'Details to share with the server owner',
+    'Details to show the server owner',
     { exact: true },
   ).click();
   await expect(diagnostic).toHaveAttribute('open', '');
   await expect(diagnosticSummary).toContainText(
-    'Latest server origin tried: https://alice.recued.cloud:8443',
+    'Last server address tried: https://alice.recued.cloud:8443',
   );
   await expect(diagnosticSummary).toContainText(
-    'Origin comparison: matches previously paired origin',
+    'Do the addresses match: matches the server this browser paired with before',
   );
   await expect(diagnosticSummary).not.toContainText('abandon');
   await expect(diagnosticSummary).not.toContainText('FRESH-CODE');
@@ -6492,7 +6492,7 @@ test('a rejected recovery key guides correction without losing the exact return 
     name: 'I confirmed the server — I can’t find the key',
   }).click();
   const pausedForm = page.getByRole('form', {
-    name: 'Recovery paused safely',
+    name: 'Paused, and nothing was lost',
   });
   const recoveryStop = pausedForm.locator(`[${PAIR_RECOVERY_STOP}]`);
   const pausedServer = pausedForm.locator(
@@ -6526,7 +6526,7 @@ test('a rejected recovery key guides correction without losing the exact return 
     'The rejected recovery words and pairing code were cleared from this form.',
   );
   await expect(recoveryStop).toContainText(
-    'Your exact page and unsent Chat draft are still held here.',
+    'Your page and the Chat message you had not sent are still here.',
   );
   await expect(recoveryStop).toContainText(
     'The person who has it should enter it only in this browser, never include it in the handoff.',
@@ -6556,11 +6556,11 @@ test('a rejected recovery key guides correction without losing the exact return 
   );
   await expect(pausedDiagnostic).toHaveAttribute('open', '');
   await expect(pausedDiagnostic.getByText(
-    'Safe details for the server owner',
+    'Details for the server owner, with nothing private in them',
     { exact: true },
   )).toBeVisible();
   await expect(pausedDiagnosticSummary).toContainText(
-    'Requested owner check: confirm this server origin and whether the server was replaced or reset; do not request the recovery key',
+    'What to ask the server owner: is this the right address, and was the server replaced or reset? Do not ask them for the recovery key.',
   );
   await expect(pausedDiagnosticSummary).not.toContainText('abandon');
   await expect(pausedDiagnosticSummary).not.toContainText('FRESH-CODE');
@@ -6692,7 +6692,7 @@ test('an admin-confirmed server replacement reloads safely and completes one ver
   }).click();
 
   await expect(page.getByRole('form', {
-    name: 'Recovery paused safely',
+    name: 'Paused, and nothing was lost',
   })).toBeVisible();
   expect(await page.evaluate(
     (key) => window.sessionStorage.getItem(key),
@@ -6717,7 +6717,7 @@ test('an admin-confirmed server replacement reloads safely and completes one ver
   await page.waitForFunction(() => window.__app?.ready === true);
 
   await expect(page).toHaveURL(exactUrl);
-  form = page.getByRole('form', { name: 'Recovery still paused' });
+  form = page.getByRole('form', { name: 'Still paused' });
   await expect(form).toBeVisible();
   const stop = form.locator(`[${PAIR_RECOVERY_STOP}]`);
   await expect(stop).toHaveAttribute(PAIR_RECOVERY_STOP_REENTRY, '');
@@ -6741,7 +6741,7 @@ test('an admin-confirmed server replacement reloads safely and completes one ver
   await expect(form.locator(`[${PAIR_RECOVERY_DIAGNOSTIC}]`)).toHaveCount(0);
   await expect(form.locator(`[${PAIR_RECOVERY_CORRECTION}]`)).toHaveCount(0);
   await expect(form.locator(`[${PAIR_REAUTH_NOTICE}]`)).toHaveCount(0);
-  await expect(form).not.toContainText('Format-valid key rejections');
+  await expect(form).not.toContainText('Keys that looked right but were refused');
   await expect(form).not.toContainText('https://alice.recued.cloud:8443');
   await expect(form).not.toContainText('STALE-IN-ADDRESS');
   await expect(form).not.toContainText(draft);
@@ -6812,7 +6812,7 @@ test('an admin-confirmed server replacement reloads safely and completes one ver
   await stop.getByRole('button', {
     name: 'The server changed or was reset',
   }).click();
-  form = page.getByRole('form', { name: 'Review the current server' });
+  form = page.getByRole('form', { name: 'Look at this server' });
   await expect(form).toBeVisible();
   await expect(stop).toHaveCount(0);
   const resumeNotice = form.locator(`[${PAIR_RECOVERY_RESUME_NOTICE}]`);
@@ -6856,7 +6856,7 @@ test('an admin-confirmed server replacement reloads safely and completes one ver
   await page.waitForFunction(() => window.__app?.ready === true);
 
   await expect(page).toHaveURL(exactUrl);
-  form = page.getByRole('form', { name: 'Review the current server' });
+  form = page.getByRole('form', { name: 'Look at this server' });
   await expect(form).toBeVisible();
   server = form.locator('#webclient-pair-code-input-server-url');
   pairingCode = form.locator('#webclient-pair-code-input-code');
@@ -6882,7 +6882,7 @@ test('an admin-confirmed server replacement reloads safely and completes one ver
   // after the exact server has been chosen.
   await pairingCode.fill(freshCode);
   const reviewCurrentServer = form.getByRole('button', {
-    name: 'Review current server',
+    name: 'Check this server',
   });
   await expect(reviewCurrentServer).toBeEnabled();
   await reviewCurrentServer.click();
@@ -6947,14 +6947,14 @@ test('an admin-confirmed server replacement reloads safely and completes one ver
     name: 'Start fresh on this server',
   }).click();
 
-  form = page.getByRole('form', { name: 'Set up the current server' });
+  form = page.getByRole('form', { name: 'Set up this server' });
   const replacementConfirmed =
     form.locator(`[${PAIR_REPLACEMENT_CONFIRMED}]`);
   await expect(replacementConfirmed).toContainText(
-    'Fresh start confirmed for this server',
+    'You have chosen a fresh start for this server',
   );
   await expect(replacementConfirmed).toContainText(
-    'The old server’s key cannot be entered in this path',
+    'You cannot use the old server’s key here',
   );
   await expect(form.locator('#webclient-pair-code-input-server-url'))
     .toHaveValue('');
@@ -6978,7 +6978,7 @@ test('an admin-confirmed server replacement reloads safely and completes one ver
     form.locator('#webclient-pair-code-input-recovery-0');
   await newRecoveryInput.fill(newRecoveryKey);
   const pairFreshServer = form.getByRole('button', {
-    name: 'Pair with this fresh server',
+    name: 'Pair with this new server',
   });
   await expect(pairFreshServer).toBeEnabled();
   await pairFreshServer.click();
@@ -6988,9 +6988,9 @@ test('an admin-confirmed server replacement reloads safely and completes one ver
   const receipt = page.locator(`[${CONNECTION_BANNER}]`);
   await expect(receipt).toHaveAttribute('role', 'status');
   await expect(receipt).toHaveAttribute('data-state', 'restored');
-  await expect(receipt).toContainText('Fresh pairing verified.');
+  await expect(receipt).toContainText('The new link is checked and saved,');
   await expect(receipt).toContainText(
-    'Data from the previous server was not restored.',
+    'Nothing was brought over from the old server.',
   );
   await expect(page.locator(`[${CHAT_INPUT}]`)).toHaveValue('');
   expect(await page.evaluate(() => window.__app.pairSubmitCount?.() ?? 0))
@@ -7027,12 +7027,12 @@ test('an admin-confirmed server replacement reloads safely and completes one ver
   await expect(page).toHaveURL(exactUrl);
   await page.waitForFunction(() => window.__app.activeRoute() === 'chat');
   await expect(page.getByRole('form', {
-    name: 'Review the current server',
+    name: 'Look at this server',
   })).toHaveCount(0);
   await expect(page.locator(`[${CONNECTION_BANNER}]`))
     .toHaveAttribute('data-state', 'ok');
   await expect(page.locator(`[${CONNECTION_BANNER}]`))
-    .not.toContainText('Fresh pairing verified');
+    .not.toContainText('The new link is checked and saved');
   expect(await page.evaluate(() => window.__app.pairSubmitCount?.() ?? 0))
     .toBe(0);
   expect(pageErrors).toHaveLength(0);
@@ -7068,12 +7068,12 @@ test('durable reconnect access retries only app startup and returns to exact uns
   const startupRecovery = page.locator(`[${POST_PAIR_STARTUP_RECOVERY}]`);
   await expect(startupRecovery).toBeVisible();
   await expect(startupRecovery).toHaveAttribute('role', 'region');
-  await expect(startupRecovery).toContainText('Secure access saved');
+  await expect(startupRecovery).toContainText('Sign-in saved');
   await expect(startupRecovery).toContainText(
     'You do not need to pair this browser again.',
   );
   await expect(startupRecovery).toContainText(
-    'exact page and unsent Chat draft',
+    'page and the Chat message you had not sent are still here',
   );
   await expect(pairForm).toHaveCount(0);
   expect(await page.evaluate(() => window.__app.pairSubmitCount?.())).toBe(1);
@@ -7132,7 +7132,7 @@ test('durable reconnect access retries only app startup and returns to exact uns
     STARTUP_RECOVERY_DRAFT_RETURN_RECEIPT_COPY,
   );
   await expect(receipt).not.toContainText('Reconnected');
-  await expect(receipt).not.toContainText('Browser paired');
+  await expect(receipt).not.toContainText('This browser is paired');
   const receiptLayout = await receipt.evaluate((surface) => {
     const rect = surface.getBoundingClientRect();
     return {
@@ -7164,14 +7164,14 @@ test('durable reconnect access retries only app startup and returns to exact uns
   await expect(page).toHaveURL(target);
   await page.waitForFunction(() => window.__app.activeRoute() === 'chat');
   await expect(receipt).toHaveAttribute('data-state', 'ok');
-  await expect(receipt).not.toContainText('Startup recovered');
+  await expect(receipt).not.toContainText('Recued started up again');
 
   await page.reload();
   await page.waitForFunction(() => window.__app?.ready === true);
   await expect(page).toHaveURL(target);
   await page.waitForFunction(() => window.__app.activeRoute() === 'chat');
   await expect(receipt).toHaveAttribute('data-state', 'ok');
-  await expect(receipt).not.toContainText('Startup recovered');
+  await expect(receipt).not.toContainText('Recued started up again');
   expect(pageErrors).toHaveLength(0);
 });
 
@@ -7210,10 +7210,10 @@ test('repeated reconnect startup failure becomes guided triage without risking t
 
   const triage = page.locator(`[${STARTUP_FAILURE_TRIAGE}]`);
   await expect(triage).toBeVisible();
-  await expect(triage).toContainText('Startup still needs attention');
+  await expect(triage).toContainText('Recued still needs your help to start');
   await expect(triage).toContainText('Recued can’t reach your server');
   await expect(triage).toContainText(
-    'exact page and unsent Chat draft',
+    'page and the Chat message you had not sent are still here',
   );
   await expect(triage.locator(`[${STARTUP_FAILURE_TRIAGE_RELOAD}]`))
     .toHaveCount(0);
@@ -7259,7 +7259,7 @@ test('repeated reconnect startup failure becomes guided triage without risking t
     'Server host: alice.recued.cloud:8443',
   );
   await expect(diagnosticSummary).toContainText(
-    'URL paths, query parameters, and fragments are not included',
+    'leaves out error details, sign-in details, pairing codes',
   );
   await expect(diagnosticSummary).not.toContainText(draft);
   await expect(diagnosticSummary).not.toContainText('abandon');
@@ -7270,7 +7270,7 @@ test('repeated reconnect startup failure becomes guided triage without risking t
   await diagnostic.locator(`[${STARTUP_FAILURE_DIAGNOSTIC_COPY}]`).click();
   await expect(
     diagnostic.locator(`[${STARTUP_FAILURE_DIAGNOSTIC_STATUS}]`),
-  ).toContainText('Safe diagnostic copied');
+  ).toContainText('Paste it wherever you are getting help');
   expect(await page.evaluate(() => window.__app.startupDiagnosticText?.()))
     .toBe(reviewedSummary);
 
@@ -7291,7 +7291,7 @@ test('repeated reconnect startup failure becomes guided triage without risking t
   await expect(page.locator(`[${CONNECTION_BANNER}]`))
     .not.toContainText('Reconnected');
   await expect(page.locator(`[${CONNECTION_BANNER}]`))
-    .not.toContainText('Browser paired');
+    .not.toContainText('This browser is paired');
   expect(pageErrors).toHaveLength(0);
 });
 
@@ -7310,10 +7310,10 @@ test('paired cold-start failures stay on cause-aware retry until the exact page 
   await expect(triage).toBeVisible();
   await expect(triage).toHaveAttribute('role', 'region');
   await expect(triage).toHaveAttribute('aria-busy', 'false');
-  await expect(triage).toContainText('Startup needs attention');
+  await expect(triage).toContainText('Recued needs your help to start');
   await expect(triage).toContainText('Recued can’t reach your server');
-  await expect(triage).toContainText('Your saved access is still here.');
-  await expect(triage).toContainText('exact page you opened');
+  await expect(triage).toContainText('Your saved sign-in is still here.');
+  await expect(triage).toContainText('page you opened is still chosen');
   await expect(page.getByRole('form')).toHaveCount(0);
   await expect(page).toHaveURL(target);
   expect(await page.evaluate(() => window.__app.pairSubmitCount?.())).toBe(0);
@@ -7356,14 +7356,14 @@ test('paired cold-start failures stay on cause-aware retry until the exact page 
   await expect(triage.locator(`[${STARTUP_FAILURE_TRIAGE_STATUS}]`))
     .toHaveAttribute('role', 'alert');
   await expect(triage.locator(`[${STARTUP_FAILURE_TRIAGE_STATUS}]`))
-    .toContainText('still can’t reach your server');
+    .toContainText('still cannot reach your server');
   expect(await page.evaluate(() => window.__app.startupAttemptCount?.()))
     .toBe(2);
 
   const diagnosticAction = triage.locator(
     `[${STARTUP_FAILURE_DIAGNOSTIC_ACTION}]`,
   );
-  await expect(triage).toContainText('Startup still needs attention');
+  await expect(triage).toContainText('Recued still needs your help to start');
   await expect(diagnosticAction).toBeVisible();
   expect(await page.evaluate(() => window.__app.startupDiagnosticText?.()))
     .toBeNull();
@@ -7402,7 +7402,7 @@ test('paired cold-start failures stay on cause-aware retry until the exact page 
   await diagnostic.locator(`[${STARTUP_FAILURE_DIAGNOSTIC_COPY}]`).click();
   await expect(
     diagnostic.locator(`[${STARTUP_FAILURE_DIAGNOSTIC_STATUS}]`),
-  ).toContainText('Safe diagnostic copied');
+  ).toContainText('Paste it wherever you are getting help');
   expect(await page.evaluate(() => window.__app.startupDiagnosticText?.()))
     .toBe(reviewedSummary);
   await page.screenshot({
@@ -7426,7 +7426,7 @@ test('paired cold-start failures stay on cause-aware retry until the exact page 
     STARTUP_RECOVERY_RETURN_RECEIPT_COPY,
   );
   await expect(page.locator(`[${CONNECTION_BANNER}]`))
-    .not.toContainText('Browser paired');
+    .not.toContainText('This browser is paired');
   await expect(page.locator(`[${CONNECTION_BANNER}]`))
     .not.toContainText('Reconnected');
   expect(pageErrors).toHaveLength(0);
@@ -7444,7 +7444,7 @@ test('a startup reload that still fails preserves repeated triage and the exact 
   await page.waitForFunction(() => window.__app?.ready === true);
 
   const triage = page.locator(`[${STARTUP_FAILURE_TRIAGE}]`);
-  await expect(triage).toContainText('Startup needs attention');
+  await expect(triage).toContainText('Recued needs your help to start');
   await expect(
     triage.locator(`[${STARTUP_FAILURE_DIAGNOSTIC_ACTION}]`),
   ).toHaveCount(0);
@@ -7459,12 +7459,12 @@ test('a startup reload that still fails preserves repeated triage and the exact 
   await expect(triage).toBeVisible();
   await expect(triage).toHaveAttribute('role', 'region');
   await expect(triage).toHaveAttribute('aria-busy', 'false');
-  await expect(triage).toContainText('Startup still needs attention');
+  await expect(triage).toContainText('Recued still needs your help to start');
   await expect(triage).toContainText(
-    'This tab reloaded, but startup still did not finish.',
+    'This tab reloaded, but Recued still did not finish opening.',
   );
   await expect(triage).toContainText(
-    'exact page you opened is still selected',
+    'page you opened is still chosen',
   );
   await expect(page.locator(`[${CONNECTIONS_ROUTE}]`)).toHaveCount(0);
   await expect(page.getByRole('form')).toHaveCount(0);
@@ -7527,7 +7527,7 @@ test('a startup reload that still fails preserves repeated triage and the exact 
   await diagnostic.locator(`[${STARTUP_FAILURE_DIAGNOSTIC_COPY}]`).click();
   await expect(
     diagnostic.locator(`[${STARTUP_FAILURE_DIAGNOSTIC_STATUS}]`),
-  ).toContainText('Safe diagnostic copied');
+  ).toContainText('Paste it wherever you are getting help');
   expect(await page.evaluate(() => window.__app.startupDiagnosticText?.()))
     .toBe(reviewedSummary);
   await retry.click();
@@ -7632,7 +7632,7 @@ test('an intentional startup reload returns to the exact page with one recovery 
     () => window.__app.activeRoute() === 'connections',
   );
   await expect(receipt).toHaveAttribute('data-state', 'ok');
-  await expect(receipt).not.toContainText('Startup recovered');
+  await expect(receipt).not.toContainText('Recued started up again');
 
   await page.reload();
   await page.waitForFunction(() => window.__app?.ready === true);
@@ -7641,7 +7641,7 @@ test('an intentional startup reload returns to the exact page with one recovery 
     () => window.__app.activeRoute() === 'connections',
   );
   await expect(receipt).toHaveAttribute('data-state', 'ok');
-  await expect(receipt).not.toContainText('Startup recovered');
+  await expect(receipt).not.toContainText('Recued started up again');
   expect(pageErrors).toHaveLength(0);
 });
 
@@ -7650,10 +7650,29 @@ test('the first-run Chat landing offers outcomes and seeds a prompt without send
   await page.waitForFunction(() => window.__app?.ready === true);
   const activation = page.locator(`[${CHAT_ACTIVATION}]`);
   await expect(activation).toBeVisible();
-  await expect(activation.locator(`[${CHAT_ACTIVATION_CARD}]`)).toHaveCount(3);
+  // ⛔ D-267 — FOUR, and the ORDER is the assertion. `capture` leads because it
+  // is the only card with no precondition: the other three each need a model,
+  // an account, or a recipe, so before it a fresh install had nothing on this
+  // screen it could actually do. ⚠ The vitest suite cannot catch a regression
+  // here — its chat mount wires no upsert caller, so the fourth card never
+  // appears there and a count ratchet stays green either way. This is the only
+  // layer that runs the real composition with real callers.
+  await expect(activation.locator(`[${CHAT_ACTIVATION_CARD}]`)).toHaveCount(4);
+  await expect(
+    activation.locator(`[${CHAT_ACTIVATION_CARD}]`).first(),
+  ).toHaveAttribute(CHAT_ACTIVATION_CARD, 'capture');
+  await expect(activation).toContainText('Start with your own');
+  await expect(activation).toContainText('No setup needed');
   await expect(activation).toContainText('Ask Recued');
   await expect(activation).toContainText('Connect my work');
   await expect(activation).toContainText('Automate a task');
+  // The grid must not orphan the fourth card onto a row of its own: the column
+  // count follows the card count, so four render as 2×2 on a wide viewport.
+  const rows = await activation
+    .locator(`[${CHAT_ACTIVATION_CARD}]`)
+    .evaluateAll((cards) =>
+      new Set(cards.map((card) => Math.round(card.getBoundingClientRect().top))).size);
+  expect(rows).toBe(2);
 
   await expect(
     activation.locator(`[${CHAT_ACTIVATION_ACTION}="connect"]`),
@@ -7699,7 +7718,7 @@ test('Set up Chat saves a model, returns to Chat, and focuses the starter prompt
   const setup = page.locator(`[${CHAT_SETUP}]`);
   await expect(setup).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Set up Chat' })).toBeVisible();
-  await expect(setup).toContainText('Connect a model to start chatting');
+  await expect(setup).toContainText('Connect an AI to start chatting');
   await expect(
     setup.getByRole('combobox', { name: 'Provider', exact: true }),
   ).toHaveValue('openai');
@@ -7800,7 +7819,7 @@ test('Set up Chat owns its two-stage model handoff', async ({ page }) => {
   const finishing = page.locator(
     '[data-recued-ai-models-chat-setup-status="saving"]',
   );
-  await expect(finishing).toHaveText('Finishing Chat setup…');
+  await expect(finishing).toHaveText('Finishing off…');
   await expect(finishing).toHaveAttribute('tabindex', '-1');
   await expect(finishing).toBeFocused();
   await expect.poll(
@@ -7869,14 +7888,14 @@ test('Set up Chat returns a rejected default handoff to its surviving action', a
   const finishing = page.locator(
     '[data-recued-ai-models-chat-setup-status="saving"]',
   );
-  await expect(finishing).toHaveText('Finishing Chat setup…');
+  await expect(finishing).toHaveText('Finishing off…');
   await expect(finishing).toBeFocused();
 
   await expect(page.locator(
     '[data-recued-ai-models-chat-setup-error="save"]',
   )).toHaveText('Default model preference unavailable.');
   const retry = page.locator(`[${CHAT_SETUP_SUBMIT}="existing"]`);
-  await expect(retry).toHaveText('Use this model and start chatting');
+  await expect(retry).toHaveText('Use this one and start chatting');
   await expect(retry).toBeEnabled();
   await expect(retry).toBeFocused();
   await expect(page).toHaveURL(/#settings\/ai-models\/setup\/start$/);
@@ -7951,7 +7970,7 @@ test('Chat keeps an explicit source check focused through readiness', async ({ p
 
   await expect(handoff).toHaveAttribute('data-state', 'ready');
   await expect(handoff.getByRole('button', {
-    name: 'Review first question',
+    name: 'Read the first question',
   })).toBeFocused();
 });
 
@@ -8453,7 +8472,7 @@ test('Chat keeps a pending delete confirmation focused and single-flight', async
   const html = page.locator('html');
   await expect(html).toHaveAttribute(
     'data-audit-confirm-message',
-    'A chat history action is still in progress. Leave Chat anyway?',
+    'Something is still happening in your chat history. Leave anyway?',
   );
   await expect.poll(
     () => page.evaluate(() => window.location.hash),
@@ -8475,7 +8494,7 @@ test('Chat returns rejected history actions to visible retry controls', async ({
   await exportAction.click();
 
   await expect(page.getByRole('alert')).toContainText(
-    "Couldn't export this chat",
+    "Recued could not save this chat to a file",
   );
   await expect(actions).toHaveAttribute('open', '');
   await expect(exportAction).toBeFocused();
@@ -8489,7 +8508,7 @@ test('Chat returns rejected history actions to visible retry controls', async ({
   await confirm.click();
 
   await expect(page.getByRole('alert')).toContainText(
-    "Couldn't delete this chat",
+    "Recued could not delete this chat",
   );
   await expect(actions).toHaveAttribute('open', '');
   await expect(deleteAction).toBeFocused();
@@ -8681,7 +8700,7 @@ test('Chat retains a model change across tab and route leave', async ({ page }) 
   const html = page.locator('html');
   await expect(html).toHaveAttribute(
     'data-audit-confirm-message',
-    'A Chat model change is still in progress. Leave Chat anyway?',
+    'Recued is still changing which AI you use. Leave anyway?',
   );
   await expect.poll(() => page.evaluate(() => window.location.hash))
     .toBe('#chat/session/chat_1');
@@ -9032,16 +9051,16 @@ test('the docked Chat composer action menu dismisses predictably', async ({ page
   const more = page.locator(`[${CHAT_COMPOSER_MORE}]`);
   const trigger = more.locator('summary');
   await expect(more).toBeVisible();
-  await expect(more).toHaveAccessibleName('Chat composer actions');
-  await expect(trigger).toHaveAccessibleName('More Chat composer actions');
+  await expect(more).toHaveAccessibleName('Things you can do here');
+  await expect(trigger).toHaveAccessibleName('More Things you can do here');
   expect((await trigger.boundingBox())?.height).toBeGreaterThanOrEqual(36);
-  await expect(more).toContainText('Run a recipe');
+  await expect(more).toContainText('Run a Recipe');
   await expect(more).toContainText('Create');
 
   await trigger.click();
   await expect(more).toHaveJSProperty('open', true);
   await expect(more.getByRole('button', {
-    name: 'Run a recipe',
+    name: 'Run a Recipe',
     exact: true,
   })).toHaveCount(1);
   await expect(more.getByRole('button', {
@@ -9173,7 +9192,7 @@ test('Chat contains long reviewed-action identifiers on a narrow phone', async (
   const card = page.locator(
     `[${CHAT_PLAN_CARD}][data-plan-id="plan_long_identifiers_1"]`,
   );
-  await expect(card).toContainText('Review required');
+  await expect(card).toContainText('Needs a look');
   await card.locator('.chat-plan-card-technical summary').click();
   const geometry = await card.evaluate((node) => {
     const route = node.closest<HTMLElement>('[data-recued-chat-route]');
@@ -9284,11 +9303,11 @@ test('a reviewed write stays explicit from approval through the Chat handoff', a
   );
   await expect(card).toBeVisible();
   await expect(card).toHaveAttribute('data-status', 'proposed');
-  await expect(card).toContainText('Review required');
+  await expect(card).toContainText('Needs a look');
   await expect(card).toContainText('Send email');
   await expect(card).toContainText(
-    'Approving gives Chat one-time permission for these exact details; '
-    + 'it does not run the action.',
+    'Saying yes lets Chat do it once, with exactly these details. '
+    + 'It does not run it yet.',
   );
   await expect(card.locator('.chat-plan-card-detail')).toHaveCount(3);
   await expect(card).toContainText('mary@example.com');
@@ -9306,7 +9325,7 @@ test('a reviewed write stays explicit from approval through the Chat handoff', a
   await expect(technical).not.toHaveAttribute('open', '');
   await expect(technicalTrigger).toBeFocused();
   await expect(card).toContainText('Tool: mail.send · Tier 2');
-  await expect(card.getByRole('button', { name: 'Approve once' })).toBeVisible();
+  await expect(card.getByRole('button', { name: 'Say yes, once' })).toBeVisible();
   await expect(
     card.getByRole('button', { name: 'Don’t approve' }),
   ).toBeVisible();
@@ -9337,7 +9356,7 @@ test('a reviewed write stays explicit from approval through the Chat handoff', a
   await expect(card).toHaveAttribute('data-status', 'approved');
   await expect(card).toContainText('Approved once');
   await expect(card).toContainText(
-    'Continue in Chat when you’re ready to ask Chat to carry it out.',
+    'Carry on in Chat when you are ready to ask Chat to do it.',
   );
   await expect(page.locator(`[${CHAT_PLAN_CONTEXT}]`)).toHaveCount(0);
   await expect(card.locator(`[${CHAT_PLAN_CONTINUE}]`)).toBeFocused();
@@ -9364,11 +9383,11 @@ test('a reviewed write stays explicit from approval through the Chat handoff', a
   await expect(context).toBeVisible();
   await expect(context).toContainText('Send email · approved once');
   await expect(context).toContainText(
-    'If the action changes, you’ll review it again.',
+    'If what it wants to do changes, you will see it again.',
   );
   await expect(page.locator(`[${CHAT_SEND}]`)).toHaveText('Continue');
   await expect(card).toContainText(
-    'A continuation is ready in the composer.',
+    'A message is ready in the box. Read it, then send it when you are ready.',
   );
   await page.screenshot({
     path: `${ARTIFACTS}/full-app-chat-plan-continuation-mobile.png`,
@@ -9379,8 +9398,8 @@ test('a reviewed write stays explicit from approval through the Chat handoff', a
   await expect(context).toHaveCount(0);
   await expect(card.locator(`[${CHAT_PLAN_CONTINUE}]`)).toHaveCount(0);
   await expect(card).toContainText(
-    'Continuation sent to Chat. If the action changes, Chat will '
-    + 'ask for a new approval.',
+    'Sent to Chat. If what it wants to do changes, Chat will '
+    + 'ask you again.',
   );
 });
 
@@ -9504,10 +9523,17 @@ test('Data collection tabs form one arrow-key keyboard stop', async ({ page }) =
   await expect(tablist).toBeVisible();
   await expect(tabs).toHaveCount(18);
   await expect(tablist.locator('[tabindex="0"]')).toHaveCount(1);
-  await expect(contacts).toHaveAttribute('aria-selected', 'true');
+  // ⚠ D-267 — a tabless `#data` resolves to Today, not Contacts. This test is
+  // about the ARROW-KEY STOP, and it was reading the landing tab as a stand-in
+  // for "a tab is selected" — which quietly pinned the old default from a file
+  // about keyboard navigation. Assert the real landing, then drive the keyboard
+  // from Contacts explicitly (which the next line already did).
+  await expect(page.locator(`[${DATA_TAB}="today"]`))
+    .toHaveAttribute('aria-selected', 'true');
+  await expect(contacts).toHaveAttribute('aria-selected', 'false');
   await expect(contacts).toHaveAccessibleDescription('Owned');
   await expect(records).toHaveAccessibleDescription('Records');
-  await expect(page.getByRole('tabpanel', { name: 'Contacts' })).toBeVisible();
+  await expect(page.getByRole('tabpanel', { name: 'Today' })).toBeVisible();
 
   await contacts.focus();
   await page.keyboard.press('ArrowRight');
@@ -9763,7 +9789,7 @@ test('Data keeps a merge decision owned through queue reconciliation', async ({ 
 
   const receipt = page.locator(`[${DATA_MERGE_RESULT}]`);
   await expect(receipt).toContainText('Marked as different');
-  await expect(receipt).toContainText('Review queue refreshed');
+  await expect(receipt).toContainText('The list is up to date');
   await expect(receipt).toHaveAttribute('role', 'status');
   await expect(receipt).toHaveAttribute('tabindex', '-1');
   await expect(receipt).toBeFocused();
@@ -10339,7 +10365,7 @@ test('Data retains a Contact save across tab and route leave', async ({ page }) 
   const html = page.locator('html');
   await expect(html).toHaveAttribute(
     'data-audit-confirm-message',
-    'A Data action is still in progress. Leave Data anyway?',
+    'Something is still happening. Leave Data anyway?',
   );
   await expect.poll(() => page.evaluate(() => window.location.hash))
     .toBe('#data/contact');
@@ -11333,7 +11359,7 @@ test('Data advances owned focus into form-response automation discovery', async 
   await discover.focus();
   await page.keyboard.press('Enter');
 
-  await expect(discover).toHaveText('Finding automations…');
+  await expect(discover).toHaveText('Looking for things that can run…');
   await expect(discover).toHaveAttribute('aria-disabled', 'true');
   await expect(discover).toHaveAttribute('aria-busy', 'true');
   await expect(discover).not.toHaveAttribute('disabled');
@@ -11366,11 +11392,11 @@ test('Data distinguishes form-response run actions and retains modal ownership',
   await page.locator(`[${DATA_FORM_RESPONSE_RUN}]`).click();
 
   const exactForm = page.getByRole('button', {
-    name: 'Review and run Review project intake (project-intake-review)',
+    name: 'Look at it and run Review project intake (project-intake-review)',
     exact: true,
   });
   const allForms = page.getByRole('button', {
-    name: 'Review and run Review every intake (all-intakes-review)',
+    name: 'Look at it and run Review every intake (all-intakes-review)',
     exact: true,
   });
   await expect(exactForm).toHaveCount(1);
@@ -11378,7 +11404,7 @@ test('Data distinguishes form-response run actions and retains modal ownership',
 
   await allForms.focus();
   await page.keyboard.press('Enter');
-  const dialog = page.getByRole('dialog', { name: 'Run a recipe' });
+  const dialog = page.getByRole('dialog', { name: 'Run a Recipe' });
   await expect(dialog).toBeFocused();
   await expect(dialog).toContainText('Review every intake');
   const context = dialog.locator('[data-recued-run-modal-context]');
@@ -11445,7 +11471,7 @@ test('Data preserves form-response drafts and save ownership', async ({ page }) 
   await save.focus();
   await page.keyboard.press('Enter');
   await expect(page.getByRole('alert')).toContainText(
-    'Answers must be a JSON object',
+    'Answers have to be a JSON object',
   );
   await expect(values).toHaveValue('["not an object"]');
   await expect(values).toBeFocused();
@@ -12687,7 +12713,7 @@ test('Data keeps a Records delete owned and reconciles its list once', async ({ 
   const html = page.locator('html');
   await expect(html).toHaveAttribute(
     'data-audit-confirm-message',
-    'A Records action is still in progress. Leave Data anyway?',
+    'Something is still happening in Records. Leave Data anyway?',
   );
   await expect(page).toHaveURL(/#data\/records$/);
   await expect(confirm).toBeFocused();
@@ -12877,7 +12903,7 @@ test('Data keeps Records outbox refresh focused and single-flight', async ({ pag
     () => page.evaluate(() => window.__app.rpcCallCount('records.outbox.list')),
   ).toBe(2);
 
-  await expect(refresh).toHaveText('Refresh drain status');
+  await expect(refresh).toHaveText('Check again');
   await expect(refresh).not.toHaveAttribute('aria-disabled');
   await expect(refresh).not.toHaveAttribute('aria-busy');
   await expect(refresh).toBeFocused();
@@ -12888,7 +12914,7 @@ test('Data keeps Records outbox refresh focused and single-flight', async ({ pag
   await page.keyboard.press('Enter');
   await expect(outbox).not.toHaveAttribute('open');
   await expect(summary).toBeFocused();
-  await expect(refresh).toHaveText('Refresh drain status');
+  await expect(refresh).toHaveText('Check again');
   await expect(summary).toBeFocused();
   await expect.poll(
     () => page.evaluate(() => window.__app.rpcCallCount('records.outbox.list')),
@@ -13644,7 +13670,7 @@ test('Automation contains its narrow authoring picker and modal header', async (
   )).toBe(true);
 
   await option.click();
-  const dialog = page.getByRole('dialog', { name: 'Run a recipe' });
+  const dialog = page.getByRole('dialog', { name: 'Run a Recipe' });
   await expect(dialog).toBeVisible();
   const headerOwners = dialog.locator(
     '.run-modal-header, .run-modal-title, .run-modal-recipe-id, '
@@ -14044,7 +14070,7 @@ test('Automation keeps focus on its recipe filter after keyboard selection', asy
   )).toBeVisible();
 
   const picker = page.getByRole('combobox', {
-    name: 'Filter automation by recipe',
+    name: 'Show only one Recipe',
   });
   await picker.focus();
   await expect(page.getByRole('option', { name: 'daily-brief', exact: true })).toBeVisible();
@@ -14104,7 +14130,7 @@ test('Automation preserves a recipe query and caret through live refresh', async
   )).toBeVisible();
 
   const picker = page.getByRole('combobox', {
-    name: 'Filter automation by recipe',
+    name: 'Show only one Recipe',
   });
   await picker.fill('daily');
   await picker.evaluate((input) => {
@@ -14175,7 +14201,7 @@ test('Automation Add inventory retry stays explicit, single-flight, and focus-ow
   await expect(failure).toContainText(
     'Installed recipes are temporarily unavailable.',
   );
-  await expect(page.getByText('No installed recipes match.')).toHaveCount(0);
+  await expect(page.getByText('No installed Recipes match.')).toHaveCount(0);
   await expect(page.getByRole('combobox', {
     name: 'Choose a recipe to automate',
   })).toHaveCount(0);
@@ -14217,7 +14243,7 @@ test('Automation returns schedule-modal focus to its Add trigger', async ({ page
   await picker.fill('Watch pipeline');
   await page.getByRole('option', { name: /Watch pipeline/ }).click();
 
-  const dialog = page.getByRole('dialog', { name: 'Run a recipe' });
+  const dialog = page.getByRole('dialog', { name: 'Run a Recipe' });
   await expect(dialog.getByRole('tab', { name: 'Schedule' }))
     .toHaveAttribute('aria-selected', 'true');
   const close = dialog.getByRole('button', { name: 'Close', exact: true });
@@ -14243,7 +14269,7 @@ test('Automation keeps its create modal owned until the command settles', async 
   await picker.fill('Watch pipeline');
   await page.getByRole('option', { name: /Watch pipeline/ }).click();
 
-  const dialog = page.getByRole('dialog', { name: 'Run a recipe' });
+  const dialog = page.getByRole('dialog', { name: 'Run a Recipe' });
   await dialog.locator('[data-recued-run-modal-pattern]').fill('data.mail.**');
   const add = dialog.getByRole('button', { name: 'Add trigger' });
   await page.evaluate(() => {
@@ -14264,7 +14290,7 @@ test('Automation keeps its create modal owned until the command settles', async 
   const html = page.locator('html');
   await expect(html).toHaveAttribute(
     'data-audit-confirm-message',
-    'An automation action is still in progress. Leave Automation anyway?',
+    'Something is still happening here. Leave anyway?',
   );
   await expect(page).toHaveURL(/#automation\/triggers$/);
   await expect(dialog).toBeVisible();
@@ -14420,7 +14446,7 @@ test('Automation keeps manual watch runs owned through reconciliation', async ({
   const html = page.locator('html');
   await expect(html).toHaveAttribute(
     'data-audit-confirm-message',
-    'An automation action is still in progress. Leave Automation anyway?',
+    'Something is still happening here. Leave anyway?',
   );
   await expect(page).toHaveURL(/#automation\/triggers$/);
   await expect(runNow).toBeFocused();
@@ -14901,11 +14927,11 @@ test('Packs recovers its Use roster without retrying or losing focus on its own'
   await page.waitForFunction(() => window.__app?.ready === true);
 
   const status = page.locator('[data-recued-packs-detail-recipes-status]');
-  await expect(status).toHaveText('Loading what this pack can do…');
+  await expect(status).toHaveText('Loading what this Pack can do…');
 
   const error = page.locator('[data-recued-packs-detail-recipes-error]');
   await expect(error).toHaveText(
-    'Could not load what this pack can do. Pack actions are temporarily unavailable.',
+    'Recued could not load what this Pack can do. Pack actions are temporarily unavailable.',
   );
   await expect(status).toHaveCount(0);
   await expect.poll(
@@ -15240,7 +15266,7 @@ test('copyable run results stay usable across Packs and Recipes', async ({ page 
   await packApp.locator(
     '[data-recued-pack-app-operation="installed-mail-digest"]',
   ).click();
-  const runDialog = page.getByRole('dialog', { name: 'Run a recipe' });
+  const runDialog = page.getByRole('dialog', { name: 'Run a Recipe' });
   await runDialog.getByRole('button', { name: 'Run', exact: true }).click();
   await expect(runDialog.getByRole('status')).toContainText('Run completed');
   await runDialog.getByRole('button', { name: 'Close' }).click();
@@ -15317,7 +15343,7 @@ test('JSON run results stay operable and contained across Packs and Recipes', as
   await packApp.locator(
     '[data-recued-pack-app-operation="installed-mail-digest"]',
   ).click();
-  const runDialog = page.getByRole('dialog', { name: 'Run a recipe' });
+  const runDialog = page.getByRole('dialog', { name: 'Run a Recipe' });
   await runDialog.getByRole('button', { name: 'Run', exact: true }).click();
   await expect(runDialog.getByRole('status')).toContainText('Run completed');
   await runDialog.getByRole('button', { name: 'Close' }).click();
@@ -15515,7 +15541,7 @@ test('AI-analysis run results stay structured and contained across Packs and Rec
   await packApp.locator(
     '[data-recued-pack-app-operation="installed-mail-digest"]',
   ).click();
-  const runDialog = page.getByRole('dialog', { name: 'Run a recipe' });
+  const runDialog = page.getByRole('dialog', { name: 'Run a Recipe' });
   await runDialog.getByRole('button', { name: 'Run', exact: true }).click();
   await expect(runDialog.getByRole('status')).toContainText('Run completed');
   await runDialog.getByRole('button', { name: 'Close' }).click();
@@ -15627,7 +15653,7 @@ test('link-button run results stay safe and usable across Packs and Recipes', as
   await packApp.locator(
     '[data-recued-pack-app-operation="installed-mail-digest"]',
   ).click();
-  const runDialog = page.getByRole('dialog', { name: 'Run a recipe' });
+  const runDialog = page.getByRole('dialog', { name: 'Run a Recipe' });
   await runDialog.getByRole('button', { name: 'Run', exact: true }).click();
   await expect(runDialog.getByRole('status')).toContainText('Run completed');
   await runDialog.getByRole('button', { name: 'Close' }).click();
@@ -15743,7 +15769,7 @@ test('file-artifact run results keep exact identity contained across Packs and R
   await packApp.locator(
     '[data-recued-pack-app-operation="installed-mail-digest"]',
   ).click();
-  const runDialog = page.getByRole('dialog', { name: 'Run a recipe' });
+  const runDialog = page.getByRole('dialog', { name: 'Run a Recipe' });
   await runDialog.getByRole('button', { name: 'Run', exact: true }).click();
   await expect(runDialog.getByRole('status')).toContainText('Run completed');
   await runDialog.getByRole('button', { name: 'Close' }).click();
@@ -15879,7 +15905,7 @@ test('Pack Use keeps editable result Save focused through its repaint', async ({
   const html = page.locator('html');
   await expect(html).toHaveAttribute(
     'data-audit-confirm-message',
-    'This pack result has unsaved table changes. Leave this pack anyway?',
+    'You have changes you have not saved. Leave anyway?',
   );
   await expect(page).toHaveURL(
     /#packs\/installed-mail\/use\/installed-mail-digest$/,
@@ -15981,7 +16007,7 @@ test('Pack Use keeps result paging owned across its repaint', async ({ page }) =
   const html = page.locator('html');
   await expect(html).toHaveAttribute(
     'data-audit-confirm-message',
-    'A pack action is still in progress. Leave this pack anyway?',
+    'Something is still happening. Leave anyway?',
   );
   await expect(page).toHaveURL(
     /#packs\/installed-mail\/use\/installed-mail-digest$/,
@@ -16268,8 +16294,8 @@ test('Packs keeps long uninstall failures readable and retry-owned', async ({ pa
 
   const footer = panel.locator('.packs-row-footer');
   const error = panel.locator('[data-recued-packs-row-delete-error]');
-  await expect(error).toContainText('must remain installed');
-  await expect(error).toContainText('no cleanup-completion proof');
+  await expect(error).toContainText('has to stay so it can tidy up');
+  await expect(error).toContainText('no proof that has happened');
   await expect(error).toHaveAttribute('role', 'alert');
   await expect(confirm).toBeFocused();
   expect(await footer.evaluate(
@@ -16721,7 +16747,17 @@ test('Kitchen recipe steps keep desktop row actions full-sized', async ({ page }
     const rect = button.getBoundingClientRect();
     return { width: rect.width, height: rect.height };
   }));
-  expect(sizes).toHaveLength(3);
+  // ⚠ This pinned `3` and went red on 2026-09-09 when `ce3dca96d` added a
+  // Duplicate action — a stale COUNT, while the thing the test is actually for
+  // (every row action stays a full-sized target) passed the whole time. Assert
+  // the floor and NAME the actions, so a button that disappears still fails
+  // while one that is added is simply measured like the rest.
+  expect(sizes.length).toBeGreaterThanOrEqual(3);
+  for (const name of ['Duplicate', 'Remove']) {
+    await expect(
+      editor.locator('.recipe-editor-step-actions').getByRole('button', { name }),
+    ).toHaveCount(1);
+  }
   expect(Math.min(...sizes.map(({ width }) => width)))
     .toBeGreaterThanOrEqual(36);
   expect(Math.min(...sizes.map(({ height }) => height)))
@@ -16827,7 +16863,7 @@ test('Recipes gives list Open and Run separate focus ownership', async ({ page }
   await run.focus();
   await page.keyboard.press('Enter');
 
-  const dialog = page.getByRole('dialog', { name: 'Run a recipe' });
+  const dialog = page.getByRole('dialog', { name: 'Run a Recipe' });
   await expect(dialog).toBeVisible();
   await expect(dialog).toBeFocused();
   await page.keyboard.press('Escape');
@@ -16863,7 +16899,7 @@ test('Recipes offers a missing pack before Run and recovers live', async ({ page
   }));
 
   await expect(card.locator('.recipes-runnability-pill')).toHaveText(
-    'Blocked — install a pack',
+    'Cannot run. Install a Pack',
   );
   await expect(card).toContainText(
     'Install the officecli pack to make this recipe work.',
@@ -16969,7 +17005,7 @@ test('Recipes preserves direct default Run focus through execution', async ({ pa
   const html = page.locator('html');
   await expect(html).toHaveAttribute(
     'data-audit-confirm-message',
-    'A recipe action is still in progress. Leave this recipe anyway?',
+    'Something is still happening. Leave anyway?',
   );
   await expect(detail).toBeVisible();
   await expect(defaultRun).toBeFocused();
@@ -16977,7 +17013,7 @@ test('Recipes preserves direct default Run focus through execution', async ({ pa
   await page.evaluate(() => window.__app.setHash('#data'));
   await expect(html).toHaveAttribute(
     'data-audit-confirm-message',
-    'A recipe action is still in progress. Leave Recipes anyway?',
+    'Something is still happening. Leave anyway?',
   );
   await expect(page).toHaveURL(/#recipes\/autorun-live-1$/);
   await expect(detail).toBeVisible();
@@ -17006,7 +17042,7 @@ test('Recipes keeps the audit-backed Run facts receipt in modal and result', asy
   await detail.locator('[data-recued-recipes-action="open-run"]')
     .filter({ hasText: /^Run$/ })
     .click();
-  const dialog = page.getByRole('dialog', { name: 'Run a recipe' });
+  const dialog = page.getByRole('dialog', { name: 'Run a Recipe' });
   await dialog.getByRole('button', { name: 'Run', exact: true }).click();
 
   const receipt =
@@ -17030,7 +17066,7 @@ test('Recipes protects editable result work through its save', async ({ page }) 
   await detail.locator('[data-recued-recipes-action="open-run"]')
     .filter({ hasText: /^Run$/ })
     .click();
-  const dialog = page.getByRole('dialog', { name: 'Run a recipe' });
+  const dialog = page.getByRole('dialog', { name: 'Run a Recipe' });
   await dialog.getByRole('button', { name: 'Run', exact: true }).click();
   await expect(detail.locator('[data-recued-recipes-result-panel]'))
     .toContainText('Save what arrived');
@@ -17061,7 +17097,7 @@ test('Recipes protects editable result work through its save', async ({ page }) 
   const html = page.locator('html');
   await expect(html).toHaveAttribute(
     'data-audit-confirm-message',
-    'This recipe result has unsaved table changes. Leave this recipe anyway?',
+    'You have changes you have not saved. Leave anyway?',
   );
   await expect(detail).toBeVisible();
   await expect(amount).toHaveValue('800.00');
@@ -17069,7 +17105,7 @@ test('Recipes protects editable result work through its save', async ({ page }) 
   await page.evaluate(() => window.__app.setHash('#data'));
   await expect(html).toHaveAttribute(
     'data-audit-confirm-message',
-    'This recipe result has unsaved table changes. Leave Recipes anyway?',
+    'You have changes you have not saved. Leave anyway?',
   );
   await expect(page).toHaveURL(/#recipes\/autorun-live-1$/);
   await expect(amount).toHaveValue('800.00');
@@ -17097,14 +17133,14 @@ test('Recipes protects editable result work through its save', async ({ page }) 
   });
   await expect(html).toHaveAttribute(
     'data-audit-confirm-message',
-    'A recipe action is still in progress. Leave this recipe anyway?',
+    'Something is still happening. Leave anyway?',
   );
   await expect(detail).toBeVisible();
 
   await page.evaluate(() => window.__app.setHash('#data'));
   await expect(html).toHaveAttribute(
     'data-audit-confirm-message',
-    'A recipe action is still in progress. Leave Recipes anyway?',
+    'Something is still happening. Leave anyway?',
   );
   await expect(page).toHaveURL(/#recipes\/autorun-live-1$/);
   await expect(detail).toBeVisible();
@@ -17138,7 +17174,7 @@ test('Recipes owns result search and paging through every repaint', async ({ pag
   await detail.locator('[data-recued-recipes-action="open-run"]')
     .filter({ hasText: /^Run$/ })
     .click();
-  const dialog = page.getByRole('dialog', { name: 'Run a recipe' });
+  const dialog = page.getByRole('dialog', { name: 'Run a Recipe' });
   await dialog.getByRole('button', { name: 'Run', exact: true }).click();
   await expect(detail.getByText('page-one-row', { exact: true })).toBeVisible();
   await dialog.getByRole('button', { name: 'Close', exact: true }).click();
@@ -17173,14 +17209,14 @@ test('Recipes owns result search and paging through every repaint', async ({ pag
   const html = page.locator('html');
   await expect(html).toHaveAttribute(
     'data-audit-confirm-message',
-    'A recipe action is still in progress. Leave this recipe anyway?',
+    'Something is still happening. Leave anyway?',
   );
   await expect(search).toBeFocused();
 
   await page.evaluate(() => window.__app.setHash('#data'));
   await expect(html).toHaveAttribute(
     'data-audit-confirm-message',
-    'A recipe action is still in progress. Leave Recipes anyway?',
+    'Something is still happening. Leave anyway?',
   );
   await expect(page).toHaveURL(/#recipes\/autorun-live-1$/);
   await expect(search).toBeFocused();
@@ -17229,7 +17265,7 @@ test('the shared Run modal leaves composing Escape to its config editor', async 
 
   const opener = page.locator('[data-recued-recipes-run-button]').first();
   await opener.click();
-  const dialog = page.getByRole('dialog', { name: 'Run a recipe' });
+  const dialog = page.getByRole('dialog', { name: 'Run a Recipe' });
   const config = dialog.locator('[data-recued-run-modal-config]');
   await config.fill('{"名前":"レポート"}');
   await config.focus();
@@ -17264,7 +17300,7 @@ test('the shared Run modal preserves focus across execution repaints', async ({ 
 
   const opener = page.locator('[data-recued-recipes-run-button]').first();
   await opener.click();
-  const dialog = page.getByRole('dialog', { name: 'Run a recipe' });
+  const dialog = page.getByRole('dialog', { name: 'Run a Recipe' });
   await expect(dialog).toBeFocused();
 
   await dialog.getByRole('button', { name: 'Run', exact: true }).click();
@@ -17311,7 +17347,7 @@ test('the shared Run modal retains execution ownership across route leave', asyn
   await page.evaluate(() => window.__app.setHash('#recipes'));
 
   await page.locator('[data-recued-recipes-run-button]').first().click();
-  const dialog = page.getByRole('dialog', { name: 'Run a recipe' });
+  const dialog = page.getByRole('dialog', { name: 'Run a Recipe' });
   await dialog.getByRole('button', { name: 'Run', exact: true }).click();
   const running = dialog.getByRole('button', { name: 'Running...' });
   await expect(running).toHaveAttribute('aria-disabled', 'true');
@@ -17332,7 +17368,7 @@ test('the shared Run modal retains execution ownership across route leave', asyn
   const html = page.locator('html');
   await expect(html).toHaveAttribute(
     'data-audit-confirm-message',
-    'A recipe action is still in progress. Leave Recipes anyway?',
+    'Something is still happening. Leave anyway?',
   );
   await expect(page).toHaveURL(/#recipes$/);
   await expect(dialog).toBeVisible();
@@ -17359,7 +17395,7 @@ test('Recipes restores the replaced detail Run opener after execution', async ({
   await opener.focus();
   await page.keyboard.press('Enter');
 
-  const dialog = page.getByRole('dialog', { name: 'Run a recipe' });
+  const dialog = page.getByRole('dialog', { name: 'Run a Recipe' });
   await expect(dialog).toBeFocused();
   await dialog.getByRole('button', { name: 'Run', exact: true }).click();
   await expect(dialog.locator('[data-recued-run-modal-result]'))
@@ -17393,7 +17429,7 @@ test('Recipes keeps Config owned while loading its editor', async ({ page }) => 
   await config.focus();
   await page.keyboard.press('Enter');
 
-  await expect(config).toHaveText('Loading config…');
+  await expect(config).toHaveText('Loading settings…');
   await expect(config).toHaveAttribute('aria-disabled', 'true');
   await expect(config).toHaveAttribute('aria-busy', 'true');
   await expect(config).not.toHaveAttribute('disabled');
@@ -17484,13 +17520,13 @@ test('Recipes returns a failed Config read to its action with a retryable error'
   await config.focus();
   await page.keyboard.press('Enter');
 
-  await expect(config).toHaveText('Loading config…');
+  await expect(config).toHaveText('Loading settings…');
   await expect(config).toHaveAttribute('aria-disabled', 'true');
   await expect(config).toHaveAttribute('aria-busy', 'true');
   await expect(config).toBeFocused();
 
   await expect(detail.getByRole('alert')).toHaveText(
-    "Couldn't load config: Recipe config is temporarily unavailable. Try Config again.",
+    "Recued could not load the settings: Recipe config is temporarily unavailable. Try again.",
   );
   await expect(config).toHaveText('Config');
   await expect(config).not.toHaveAttribute('aria-disabled');
@@ -17562,14 +17598,14 @@ test('Recipes keeps Config save owned through failure and retry', async ({ page 
   const html = page.locator('html');
   await expect(html).toHaveAttribute(
     'data-audit-confirm-message',
-    'A recipe action is still in progress. Leave Recipes anyway?',
+    'Something is still happening. Leave anyway?',
   );
   await expect(page).toHaveURL(/#recipes\/autorun-live-1$/);
   await expect(editor).toBeVisible();
   await expect(save).toBeFocused();
 
   await expect(editor.getByRole('alert')).toHaveText(
-    "Couldn't save config. Your edits are still here. Try again.",
+    "Recued could not save that. What you typed is still here. Try again.",
   );
   await expect(limit).toHaveValue('40');
   await expect(limit).toBeEnabled();
@@ -17657,9 +17693,9 @@ test('Recipes preserves related auto-run action ownership', async ({ page }) => 
   await pause.focus();
   await page.keyboard.press('Enter');
 
-  await expect(pause).toHaveText('Pausing auto-run…');
+  await expect(pause).toHaveText('Pausing…');
   await expect(pause).toHaveAccessibleName(
-    'Pausing auto-run… Close action (close-action)',
+    'Pausing… Close action (close-action)',
   );
   await expect(pause).toHaveAttribute('aria-disabled', 'true');
   await expect(pause).toHaveAttribute('aria-busy', 'true');
@@ -17687,7 +17723,7 @@ test('Recipes preserves related auto-run action ownership', async ({ page }) => 
   const html = page.locator('html');
   await expect(html).toHaveAttribute(
     'data-audit-confirm-message',
-    'A recipe action is still in progress. Leave this recipe anyway?',
+    'Something is still happening. Leave anyway?',
   );
   await expect(row).toBeVisible();
   await expect(pause).toBeFocused();
@@ -17695,7 +17731,7 @@ test('Recipes preserves related auto-run action ownership', async ({ page }) => 
   await page.evaluate(() => window.__app.setHash('#data'));
   await expect(html).toHaveAttribute(
     'data-audit-confirm-message',
-    'A recipe action is still in progress. Leave Recipes anyway?',
+    'Something is still happening. Leave anyway?',
   );
   await expect(page).toHaveURL(/#recipes\/autorun-live-1$/);
   await expect(row).toBeVisible();
@@ -17711,7 +17747,7 @@ test('Recipes preserves related auto-run action ownership', async ({ page }) => 
   await expect(arm).toBeFocused();
 
   await page.keyboard.press('Enter');
-  await expect(arm).toHaveText('Arming auto-run…');
+  await expect(arm).toHaveText('Setting it to run on its own…');
   const logs = row.locator('[data-recued-recipes-runs-link]');
   await logs.focus();
   await expect(row.locator(
@@ -17828,7 +17864,7 @@ test('Recipes keeps workflow-pack recovery focused and single-flight', async ({ 
   const workflowPack = page.locator(
     '[data-recued-recipes-bundle-pack="pipeline-response"]',
   );
-  await expect(workflowPack).toHaveText('View workflow pack');
+  await expect(workflowPack).toHaveText('See the whole Pack');
   await expect(status).toHaveCount(0);
   await expect(workflowPack).toBeFocused();
   expect(membershipCalls).toBe(2);
@@ -17840,7 +17876,7 @@ test('the shared Run modal tabs form one arrow-key keyboard stop', async ({ page
   await page.evaluate(() => window.__app.setHash('#recipes'));
   await page.locator('[data-recued-recipes-run-button]').first().click();
 
-  const dialog = page.getByRole('dialog', { name: 'Run a recipe' });
+  const dialog = page.getByRole('dialog', { name: 'Run a Recipe' });
   const tabs = dialog.getByRole('tab');
   const run = tabs.getByText('Run', { exact: true });
   const schedule = tabs.getByText('Schedule', { exact: true });
@@ -17870,7 +17906,7 @@ test('the shared Run modal stays contained with usable mobile targets', async ({
   await page.evaluate(() => window.__app.setHash('#recipes'));
   await page.locator('[data-recued-recipes-run-button]').first().click();
 
-  const dialog = page.getByRole('dialog', { name: 'Run a recipe' });
+  const dialog = page.getByRole('dialog', { name: 'Run a Recipe' });
   const geometry = await dialog.evaluate((node) => {
     const rect = node.getBoundingClientRect();
     return {
@@ -17927,7 +17963,7 @@ test('the shared Run modal preserves Repeat focus while cadence controls swap', 
   await page.evaluate(() => window.__app.setHash('#recipes'));
   await page.locator('[data-recued-recipes-run-button]').first().click();
 
-  const dialog = page.getByRole('dialog', { name: 'Run a recipe' });
+  const dialog = page.getByRole('dialog', { name: 'Run a Recipe' });
   await dialog.getByRole('tab', { name: 'Schedule' }).click();
   const repeat = dialog.getByRole('checkbox', { name: 'Repeat' });
   await expect(repeat).toBeChecked();
@@ -17950,7 +17986,7 @@ test('the shared Run modal preserves Schedule once validation focus', async ({ p
   await page.evaluate(() => window.__app.setHash('#recipes'));
   await page.locator('[data-recued-recipes-run-button]').first().click();
 
-  const dialog = page.getByRole('dialog', { name: 'Run a recipe' });
+  const dialog = page.getByRole('dialog', { name: 'Run a Recipe' });
   await dialog.getByRole('tab', { name: 'Schedule' }).click();
   await dialog.getByRole('checkbox', { name: 'Repeat' }).uncheck();
   const scheduleOnce = dialog.getByRole('button', { name: 'Schedule once' });
@@ -17972,7 +18008,7 @@ test('the shared Run modal keeps Add schedule focused while creating', async ({ 
   await page.evaluate(() => window.__app.setHash('#recipes'));
   await page.locator('[data-recued-recipes-run-button]').first().click();
 
-  const dialog = page.getByRole('dialog', { name: 'Run a recipe' });
+  const dialog = page.getByRole('dialog', { name: 'Run a Recipe' });
   await dialog.getByRole('tab', { name: 'Schedule' }).click();
   const add = dialog.getByRole('button', { name: 'Add schedule' });
   await add.click();
@@ -17993,7 +18029,7 @@ test('the shared Run modal distinguishes repeated schedule actions', async ({ pa
   await page.evaluate(() => window.__app.setHash('#recipes'));
   await page.locator('[data-recued-recipes-run-button]').first().click();
 
-  const dialog = page.getByRole('dialog', { name: 'Run a recipe' });
+  const dialog = page.getByRole('dialog', { name: 'Run a Recipe' });
   await dialog.getByRole('tab', { name: 'Schedule' }).click();
   const add = dialog.getByRole('button', { name: 'Add schedule' });
   await add.click();
@@ -18037,7 +18073,7 @@ test('the shared Run modal preserves schedule row action ownership', async ({ pa
   await page.evaluate(() => window.__app.setHash('#recipes'));
   await page.locator('[data-recued-recipes-run-button]').first().click();
 
-  const dialog = page.getByRole('dialog', { name: 'Run a recipe' });
+  const dialog = page.getByRole('dialog', { name: 'Run a Recipe' });
   await dialog.getByRole('tab', { name: 'Schedule' }).click();
   const add = dialog.getByRole('button', { name: 'Add schedule' });
   await add.click();
@@ -18079,7 +18115,7 @@ test('the shared Run modal preserves trigger action ownership', async ({ page })
   await picker.fill('Watch pipeline');
   await page.getByRole('option', { name: /Watch pipeline/ }).click();
 
-  const dialog = page.getByRole('dialog', { name: 'Run a recipe' });
+  const dialog = page.getByRole('dialog', { name: 'Run a Recipe' });
   await expect(dialog.getByRole('tab', { name: 'Trigger' }))
     .toHaveAttribute('aria-selected', 'true');
   const pattern = dialog.locator('[data-recued-run-modal-pattern]');
@@ -18141,7 +18177,7 @@ test('the shared Run modal returns nested trigger config focus', async ({ page }
   await picker.fill('Watch pipeline');
   await page.getByRole('option', { name: /Watch pipeline/ }).click();
 
-  const dialog = page.getByRole('dialog', { name: 'Run a recipe' });
+  const dialog = page.getByRole('dialog', { name: 'Run a Recipe' });
   await dialog.locator('[data-recued-run-modal-pattern]').fill('data.mail.**');
   await dialog.getByRole('button', { name: 'Add trigger' }).click();
   const row = dialog.locator('.run-modal-rule-row');
@@ -19112,7 +19148,7 @@ test('Logs preserves filter focus and caret through feed repaints', async ({ pag
   await expect(status).toHaveValue('in_doubt');
   await expect(status).toBeFocused();
 
-  const picker = page.getByRole('combobox', { name: 'Filter by recipe' });
+  const picker = page.getByRole('combobox', { name: 'Show only one Recipe' });
   await picker.fill('calendar');
   await picker.evaluate((input) => {
     (input as HTMLInputElement).setSelectionRange(3, 3);
@@ -19243,11 +19279,11 @@ test('Live bubble restores interrupted calls on load and reconnect without resta
   await expect(toggle).toHaveText('◉ 1');
   await toggle.click();
   const row = page.locator('[data-recued-live-control-tool-row="tool-recovered"]');
-  await expect(row).toContainText('Interrupted — outcome unconfirmed');
+  await expect(row).toContainText('Stopped part-way. Recued does not know what happened');
   await expect(row).toContainText('last progress');
   await expect(row.locator(`[${LIVE_CONTROL_RUN_CONTROL}]`)).toHaveCount(0);
   await expect(row.getByRole('link', { name: 'Open chat' })).toHaveAttribute('href', '#chat/session/chat_1');
-  const reviewBounds = await row.getByRole('button', { name: /Mark reviewed/ }).boundingBox();
+  const reviewBounds = await row.getByRole('button', { name: /Mark as looked at/ }).boundingBox();
   expect(reviewBounds).not.toBeNull();
   expect(reviewBounds!.x).toBeGreaterThanOrEqual(0);
   expect(reviewBounds!.x + reviewBounds!.width).toBeLessThanOrEqual(320);
@@ -19255,13 +19291,13 @@ test('Live bubble restores interrupted calls on load and reconnect without resta
   const before = await page.evaluate(() => window.__app.rpcCallCount('execution.active'));
   await page.evaluate(() => { window.__app.fireState('reconnecting'); window.__app.fireState('connected'); });
   await expect.poll(() => page.evaluate(() => window.__app.rpcCallCount('execution.active'))).toBeGreaterThan(before);
-  await expect(row).toContainText('Interrupted — outcome unconfirmed');
+  await expect(row).toContainText('Stopped part-way. Recued does not know what happened');
   await expect(row.getByRole('link', { name: 'Open chat' })).toBeFocused();
   await page.reload();
   await page.waitForFunction(() => window.__app?.ready === true);
   await expect(toggle).toHaveText('◉ 1');
   await toggle.click();
-  await row.getByRole('button', { name: /Mark reviewed/ }).click();
+  await row.getByRole('button', { name: /Mark as looked at/ }).click();
   await expect(toggle).toHaveCount(0);
   expect(await page.evaluate(() => window.__app.rpcCallCount('execution.tool_call.dismiss'))).toBe(1);
   expect(await page.evaluate(() => window.__app.rpcCallCount('execution.kill'))).toBe(0);
@@ -19763,7 +19799,7 @@ test('Approvals keeps a slow gate decision focus-owned and attached', async ({ p
   const html = page.locator('html');
   await expect(html).toHaveAttribute(
     'data-audit-confirm-message',
-    'An approval action is still in progress. Leave Approvals anyway?',
+    'Something is still happening here. Leave anyway?',
   );
   await expect(page).toHaveURL(/#approvals$/);
   await expect(approving).toBeFocused();
@@ -19857,7 +19893,7 @@ test('Approvals keeps a slow ask answer focus-owned and attached', async ({ page
   const html = page.locator('html');
   await expect(html).toHaveAttribute(
     'data-audit-confirm-message',
-    'An approval action is still in progress. Leave Approvals anyway?',
+    'Something is still happening here. Leave anyway?',
   );
   await expect(page).toHaveURL(/#approvals$/);
   await expect(approving).toBeFocused();
@@ -19922,14 +19958,14 @@ test('Approvals keeps a slow Chat plan decision focus-owned and attached', async
   const html = page.locator('html');
   await expect(html).toHaveAttribute(
     'data-audit-confirm-message',
-    'An approval action is still in progress. Leave Approvals anyway?',
+    'Something is still happening here. Leave anyway?',
   );
   await expect(page).toHaveURL(/#approvals$/);
   await expect(approving).toBeFocused();
 
   await expect(plan).toHaveCount(0);
   const continuation = page.getByRole('link', {
-    name: 'Continue in Chat',
+    name: 'Carry on in Chat',
     exact: true,
   });
   const planReceipt = page.locator('.approvals-plan-resolution');
@@ -20066,7 +20102,7 @@ test('Approvals returns a rejected ask answer to its exact retry option', async 
   await page.keyboard.press('Enter');
 
   await expect(ask.getByRole('alert')).toHaveText(
-    'Could not submit — try again.',
+    'Recued could not send that. Try again.',
   );
   await expect(reject).toBeEnabled();
   await expect(reject).toBeFocused();
@@ -20274,7 +20310,7 @@ test('Reception recovers destination inventory without losing query ownership', 
   await picker.evaluate((input) => {
     (input as HTMLInputElement).setSelectionRange(2, 2);
   });
-  await expect(page.getByText('No destinations match.')).toHaveCount(0);
+  await expect(page.getByText('Nothing matches.')).toHaveCount(0);
   expect(await page.evaluate(
     () => window.__app.releaseRpcResponses?.('work_entity.source.list'),
   )).toBe(1);
@@ -20283,7 +20319,7 @@ test('Reception recovers destination inventory without losing query ownership', 
     `[${RECEPTION_INBOX_DESTINATION_ERROR}="source_id"]`,
   );
   await expect(failure).toHaveAttribute('role', 'alert');
-  await expect(failure).toContainText('Could not load destinations:');
+  await expect(failure).toContainText('Recued could not load where it can go:');
   await expect(picker).toHaveCount(0);
   const retry = page.locator(
     `[${RECEPTION_INBOX_DESTINATION_RETRY}="source_id"]`,
@@ -20366,7 +20402,7 @@ test('Reception preserves an unsaved decision draft through refresh', async ({ p
   await page.evaluate(() => window.__app.setHash('#reception'));
 
   const title = page.getByLabel('Title', { exact: true });
-  const reason = page.getByLabel('Reject reason', { exact: true });
+  const reason = page.getByLabel('Why you are saying no', { exact: true });
   await expect(title).toBeVisible();
   await expect(reason).toBeVisible();
   await title.fill('Follow up with Morgan after review');
@@ -20487,7 +20523,7 @@ test('Reception keeps an acknowledged decision settled when refresh fails', asyn
 
   await expect(firstRow).toHaveCount(0);
   await expect(page.getByRole('alert')).toHaveText(
-    "Decision saved, but the inbox couldn't refresh: Reception refresh unavailable.",
+    "Saved. Recued could not reload your inbox: Reception refresh unavailable.",
   );
   const nextRow = page.locator(
     `[${RECEPTION_INBOX_ROW}="hold-reception-2"]`,
@@ -20849,7 +20885,7 @@ test('Reception Responses advances focus into the automation picker', async ({ p
     document.querySelector<HTMLElement>(selector)?.click();
   }, 'data-recued-reception-response-action');
 
-  await expect(discover).toHaveText('Finding automations…');
+  await expect(discover).toHaveText('Looking for things that can run…');
   await expect(discover).toHaveAttribute('aria-disabled', 'true');
   await expect(discover).toHaveAttribute('aria-busy', 'true');
   await expect(discover).not.toHaveAttribute('disabled');
@@ -20882,11 +20918,11 @@ test('Reception Responses distinguishes automation actions and restores their fo
   ).click();
 
   const exactForm = page.getByRole('button', {
-    name: 'Review and run Review project intake (project-intake-review)',
+    name: 'Look at it and run Review project intake (project-intake-review)',
     exact: true,
   });
   const allForms = page.getByRole('button', {
-    name: 'Review and run Review every intake (all-intakes-review)',
+    name: 'Look at it and run Review every intake (all-intakes-review)',
     exact: true,
   });
   await expect(exactForm).toHaveCount(1);
@@ -20902,7 +20938,7 @@ test('Reception Responses distinguishes automation actions and restores their fo
 
   await allForms.focus();
   await page.keyboard.press('Enter');
-  const dialog = page.getByRole('dialog', { name: 'Run a recipe' });
+  const dialog = page.getByRole('dialog', { name: 'Run a Recipe' });
   await expect(dialog).toBeFocused();
   await expect(dialog).toContainText('Review every intake');
   await dialog.getByRole('button', { name: 'Close' }).click();
@@ -21101,7 +21137,7 @@ test('Settings Backup & Recovery hands focus into and back from each entry flow'
   await expect(page.getByLabel('Upload a backup file from this device'))
     .toHaveAttribute(ARCHIVE_RESTORE_UPLOAD_INPUT, '');
   await expect(page.getByRole('textbox', {
-    name: 'Or path to a backup already on your server',
+    name: 'Or where to find one already on your server',
   })).toHaveAttribute(ARCHIVE_RESTORE_PATH, '');
   await expect(page.getByRole('textbox', {
     name: 'Recovery key for this backup',
@@ -21191,7 +21227,7 @@ test('Settings Restore keeps a keyboard-owned commit on truthful live status', a
   await page.keyboard.press('Enter');
 
   const busy = page.locator(`[${ARCHIVE_BACKUP_BUSY}]`);
-  await expect(busy).toHaveText('Restoring the backup…');
+  await expect(busy).toHaveText('Putting the backup back…');
   await expect(busy).toHaveAttribute('tabindex', '-1');
   await expect(busy).toBeFocused();
 });
@@ -21204,7 +21240,7 @@ test('Settings Passport keeps its keyboard-owned export on live status', async (
   await page.keyboard.press('Enter');
 
   const busy = page.locator(`[${ARCHIVE_BACKUP_BUSY}]`);
-  await expect(busy).toHaveText('Signing your identity passport…');
+  await expect(busy).toHaveText('Saving this server’s identity…');
   await expect(busy).toHaveAttribute('tabindex', '-1');
   await expect(busy).toBeFocused();
 });
@@ -21312,18 +21348,18 @@ test('Settings Learning identifies repeated case actions by their owning case', 
   const firstDraft = page.locator(`[${LEARNING_DRAFT}="learning-case-1"]`);
   const secondDraft = page.locator(`[${LEARNING_DRAFT}="learning-case-2"]`);
   await expect(firstDraft).toHaveAccessibleName(
-    'Make a recipe from learned case: send the quarterly report (learning-case-1)',
+    'Make a Recipe from what it learned: send the quarterly report (learning-case-1)',
   );
   await expect(secondDraft).toHaveAccessibleName(
-    'Make a recipe from learned case: schedule the weekly inventory digest (learning-case-2)',
+    'Make a Recipe from what it learned: schedule the weekly inventory digest (learning-case-2)',
   );
   await expect(page.locator(`[${LEARNING_FORGET}="learning-case-1"]`))
     .toHaveAccessibleName(
-      'Forget learned case: send the quarterly report (learning-case-1)',
+      'Forget what it learned: send the quarterly report (learning-case-1)',
     );
   await expect(page.locator(`[${LEARNING_FORGET}="learning-case-2"]`))
     .toHaveAccessibleName(
-      'Forget learned case: schedule the weekly inventory digest (learning-case-2)',
+      'Forget what it learned: schedule the weekly inventory digest (learning-case-2)',
     );
   const actionHeights = await page
     .locator(`[${LEARNING_DRAFT}], [${LEARNING_FORGET}]`)
@@ -21357,14 +21393,14 @@ test('Settings Learning owns a keyboard Forget through confirmation and removal'
 
   await expect(forget).toHaveText('Tap again to forget');
   await expect(forget).toHaveAccessibleName(
-    'Confirm forgetting learned case: send the quarterly report (learning-case-1)',
+    'Confirm forgetting what it learned: send the quarterly report (learning-case-1)',
   );
   await expect(forget).toBeFocused();
   await page.keyboard.press('Enter');
 
   await expect(forget).toHaveText('Forgetting...');
   await expect(forget).toHaveAccessibleName(
-    'Forgetting learned case: send the quarterly report (learning-case-1)',
+    'Forgetting what it learned: send the quarterly report (learning-case-1)',
   );
   await expect(forget).toHaveAttribute('aria-disabled', 'true');
   await expect(forget).toHaveAttribute('aria-busy', 'true');
@@ -21431,7 +21467,7 @@ test('Settings Learning keeps a failed Forget beside its focused case', async ({
   await expect(page.locator(`[${LEARNING_CASES_ERROR}]`)).toHaveCount(0);
   await expect(forget).toHaveText('Tap again to forget');
   await expect(forget).toHaveAccessibleName(
-    'Confirm forgetting learned case: send the quarterly report (learning-case-1)',
+    'Confirm forgetting what it learned: send the quarterly report (learning-case-1)',
   );
   await expect(forget).toBeFocused();
   await expect.poll(
@@ -21454,21 +21490,21 @@ test('Settings Learning retains a keyboard-owned recipe draft through failure', 
   await expect(page.locator(`[${LEARNING_DRAFT_CONFIRM}]`)).toBeVisible();
   await expect(draft).toHaveText('Yes, write the draft');
   await expect(draft).toHaveAccessibleName(
-    'Confirm recipe draft from learned case: send the quarterly report (learning-case-1)',
+    'Say yes to the Recipe from what it learned: send the quarterly report (learning-case-1)',
   );
   await expect(draft).toBeFocused();
 
   const prompt = page.locator(`[${LEARNING_DRAFT_PROMPT}]`);
   await expect(prompt).toHaveAccessibleName(
-    'Recipe instructions for learned case: send the quarterly report (learning-case-1)',
+    'What the Recipe should do, for what it learned: send the quarterly report (learning-case-1)',
   );
   await prompt.fill('Run it every Monday');
   await draft.focus();
   await page.keyboard.press('Enter');
 
-  await expect(draft).toHaveText('Asking your AI...');
+  await expect(draft).toHaveText('Asking your AI…');
   await expect(draft).toHaveAccessibleName(
-    'Asking your AI to draft a recipe from learned case: send the quarterly report (learning-case-1)',
+    'Asking your AI to write a Recipe from what it learned: send the quarterly report (learning-case-1)',
   );
   await expect(draft).toHaveAttribute('aria-disabled', 'true');
   await expect(draft).toHaveAttribute('aria-busy', 'true');
@@ -21504,7 +21540,7 @@ test('Settings Learning retains a keyboard-owned recipe draft through failure', 
   );
   await expect(draft).toHaveText('Yes, write the draft');
   await expect(draft).toHaveAccessibleName(
-    'Confirm recipe draft from learned case: send the quarterly report (learning-case-1)',
+    'Say yes to the Recipe from what it learned: send the quarterly report (learning-case-1)',
   );
   await expect(draft).toBeFocused();
   await expect(prompt).toHaveValue('Run it every Monday');
@@ -21527,7 +21563,7 @@ test('Settings Learning retries a finished draft handoff without asking AI again
   );
   await expect(draft).toHaveText('Open finished draft');
   await expect(draft).toHaveAccessibleName(
-    'Open finished draft from learned case: send the quarterly report (learning-case-1)',
+    'Open finished draft from what it learned: send the quarterly report (learning-case-1)',
   );
   await expect(draft).toBeFocused();
   await expect.poll(
@@ -21595,7 +21631,7 @@ test('Settings Privacy owns browser clearing through live completion', async ({ 
   await expect(status).toHaveAttribute('tabindex', '-1');
   await expect(status).toBeFocused();
 
-  await expect(status).toContainText('Reload to re-pair');
+  await expect(status).toContainText('Load the page again to pair');
   await expect(status).toHaveAttribute('role', 'status');
   await expect(status).toBeFocused();
   await expect(page.locator(`[${CLEAR_THIS_BROWSER_RELOAD}]`)).toBeVisible();
@@ -22072,7 +22108,7 @@ test('Settings Seller customer lifecycle distinguishes repeated fields', async (
     window.__app.setHash('#settings/seller/customers/detail/customer-1');
   });
   await expect(page.getByRole('heading', {
-    name: 'Manage customer access',
+    name: 'Look after someone’s access',
   })).toBeVisible();
   await page.locator(
     '[data-recued-seller-collection-detail="customer-1"] details',
@@ -22084,13 +22120,13 @@ test('Settings Seller customer lifecycle distinguishes repeated fields', async (
     `[data-recued-seller-customer-lifecycle-field="${name}"]`,
   );
   for (const [name, accessibleName] of [
-    ['extend.customer_id', 'Customer to extend'],
-    ['swap.customer_id', 'Customer to swap'],
+    ['extend.customer_id', 'Who to give longer'],
+    ['swap.customer_id', 'Who to move'],
     ['close.customer_id', 'Customer to close'],
     ['reissue.customer_id', 'Customer to reissue'],
     ['message.customer_id', 'Customer to message'],
-    ['extend.current_period_end', 'Extension period end (Unix ms)'],
-    ['swap.current_period_end', 'Swap period end (Unix ms)'],
+    ['extend.current_period_end', 'New end time'],
+    ['swap.current_period_end', 'New end time'],
     ['extend.source_status', 'Extension source status'],
     ['swap.source_status', 'Swap source status'],
     ['close.source_status', 'Close source status'],
@@ -22165,10 +22201,10 @@ test('Settings Server Key Health states the unsealed backup boundary', async ({ 
   );
   const consequence = posture.getByRole('alert');
   await expect(consequence).toContainText(
-    'anyone who copies that whole directory gets everything in it',
+    'anyone who copies that whole folder gets everything in it',
   );
   await expect(consequence).toContainText(
-    'Only copies that omit the keyfile',
+    'Only a copy that leaves the keyfile out',
   );
   await expect(consequence).toContainText('database-only backup');
 });
@@ -22437,12 +22473,12 @@ test('Settings Account Connect owns its pending command and refreshed binding', 
     () => page.evaluate(() => window.__app.rpcCallCount('account.bind')),
   ).toBe(1);
 
-  await expect(connect).toHaveText('Refresh binding');
+  await expect(connect).toHaveText('Check the connection again');
   await expect(connect).not.toHaveAttribute('aria-disabled');
   await expect(connect).not.toHaveAttribute('aria-busy');
   await expect(connect).toBeFocused();
   await expect(page.locator('[data-recued-account-binding-action-message]'))
-    .toHaveText('Server bound to this recued.com account.');
+    .toHaveText('Your server is hooked up to this recued.com account.');
   await page.evaluate(() => window.__app.setHash('#chat'));
   await expect(page).toHaveURL(/#chat$/);
   await expect(html).toHaveAttribute('data-audit-confirm-count', '1');
@@ -22470,18 +22506,18 @@ test('Settings Account Connect failures return to the exact command', async ({ p
   await expect(connect).toBeFocused();
 });
 
-test('Settings Account conflicts start safely and Cancel returns to Refresh binding', async ({ page }) => {
+test('Settings Account conflicts start safely and Cancel returns to Check the connection again', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`${HARNESS_URL}?account=conflict`);
   await page.waitForFunction(() => window.__app?.ready === true);
   await page.evaluate(() => window.__app.setHash('#settings/account'));
 
   const connect = page.locator('[data-recued-account-binding-connect]');
-  await expect(connect).toHaveText('Refresh binding');
+  await expect(connect).toHaveText('Check the connection again');
   await connect.focus();
   await page.keyboard.press('Enter');
 
-  const dialog = page.getByRole('alertdialog', { name: 'Binding conflict' });
+  const dialog = page.getByRole('alertdialog', { name: 'Two accounts want this server' });
   const cancel = dialog.getByRole('button', { name: 'Cancel' });
   await expect(dialog).toBeVisible();
   await expect(cancel).toBeFocused();
@@ -22490,10 +22526,10 @@ test('Settings Account conflicts start safely and Cancel returns to Refresh bind
   await expect(dialog).toHaveCount(0);
   await expect(connect).toBeFocused();
   await expect(page.locator('[data-recued-account-binding-action-message]'))
-    .toHaveText('Rebind cancelled.');
+    .toHaveText('Nothing was moved.');
 });
 
-test('Settings Account Confirm rebind owns its pending command and refreshed binding', async ({ page }) => {
+test('Settings Account Yes, move it owns its pending command and refreshed binding', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(
     `${HARNESS_URL}?account=conflict&account_rebind_response=slow`,
@@ -22505,7 +22541,7 @@ test('Settings Account Confirm rebind owns its pending command and refreshed bin
   await connect.focus();
   await page.keyboard.press('Enter');
 
-  const dialog = page.getByRole('alertdialog', { name: 'Binding conflict' });
+  const dialog = page.getByRole('alertdialog', { name: 'Two accounts want this server' });
   const confirm = dialog.locator(
     '[data-recued-account-binding-confirm-rebind]',
   );
@@ -22530,13 +22566,13 @@ test('Settings Account Confirm rebind owns its pending command and refreshed bin
   ).toBe(2);
 
   await expect(dialog).toHaveCount(0);
-  await expect(connect).toHaveText('Refresh binding');
+  await expect(connect).toHaveText('Check the connection again');
   await expect(connect).toBeFocused();
   await expect(page.locator('[data-recued-account-binding-action-message]'))
-    .toHaveText('Server rebound to this recued.com account.');
+    .toHaveText('Your server now belongs to this recued.com account.');
 });
 
-test('Settings Account Confirm rebind failures return to the exact command', async ({ page }) => {
+test('Settings Account Yes, move it failures return to the exact command', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(
     `${HARNESS_URL}?account=conflict&account_rebind_response=fail-slow`,
@@ -22548,7 +22584,7 @@ test('Settings Account Confirm rebind failures return to the exact command', asy
   await connect.focus();
   await page.keyboard.press('Enter');
 
-  const dialog = page.getByRole('alertdialog', { name: 'Binding conflict' });
+  const dialog = page.getByRole('alertdialog', { name: 'Two accounts want this server' });
   const confirm = dialog.locator(
     '[data-recued-account-binding-confirm-rebind]',
   );
@@ -22560,7 +22596,7 @@ test('Settings Account Confirm rebind failures return to the exact command', asy
   await expect(page.locator('[data-recued-account-binding-error="action"]'))
     .toHaveText('Account rebind unavailable.');
   await expect(dialog).toBeVisible();
-  await expect(confirm).toHaveText('Confirm rebind');
+  await expect(confirm).toHaveText('Yes, move it');
   await expect(confirm).not.toHaveAttribute('aria-disabled');
   await expect(confirm).not.toHaveAttribute('aria-busy');
   await expect(confirm).not.toHaveAttribute('disabled');
@@ -22585,7 +22621,7 @@ test('Settings Account Disconnect starts safely and Cancel returns to its comman
   );
   await expect(dialog).toBeVisible();
   await expect(dialog).toContainText(
-    'Your browser stays signed in, and you can reconnect the server later.',
+    'This browser stays signed in, and you can hook the server back up later.',
   );
   await expect(cancel).toBeFocused();
   expect(await page.evaluate(
@@ -22640,7 +22676,7 @@ test('Settings Account Confirm Disconnect owns its pending command and next acti
   await expect(connect).toHaveText('Connect your recued.com account');
   await expect(connect).toBeFocused();
   await expect(page.locator('[data-recued-account-binding-action-message]'))
-    .toHaveText('Server disconnected from recued.com.');
+    .toHaveText('Your server is no longer hooked up to recued.com.');
   await expect(page.locator('[data-recued-account-binding-session]'))
     .toHaveText('Signed in as morgan@example.test');
 });
@@ -22709,7 +22745,7 @@ test('Settings Account Sign out owns its pending command and next action', async
     .toHaveCount(0);
   await expect(page.locator('[data-recued-account-binding-action-message]'))
     .toHaveText(
-      'Signed out of recued.com on this browser. Your server pairing is unchanged.',
+      'Signed out of recued.com in this browser. Your server is still paired.',
     );
 });
 
@@ -22762,7 +22798,7 @@ test('Settings Account read failures gate mutations and recover in place', async
   const retry = page.locator('[data-recued-account-binding-retry]');
   await retry.focus();
   await page.keyboard.press('Enter');
-  await expect(retry).toHaveText('Retrying account status…');
+  await expect(retry).toHaveText('Checking your account again…');
   await expect(retry).toHaveAttribute('aria-disabled', 'true');
   await expect(retry).toHaveAttribute('aria-busy', 'true');
   await expect(retry).not.toHaveAttribute('disabled');
@@ -22807,14 +22843,14 @@ test('Settings Account retry failures return to the exact recovery command', asy
   const retry = page.locator('[data-recued-account-binding-retry]');
   await retry.focus();
   await page.keyboard.press('Enter');
-  await expect(retry).toHaveText('Retrying account status…');
+  await expect(retry).toHaveText('Checking your account again…');
   await expect(retry).toBeFocused();
 
   await expect(errors).toHaveCount(1);
   await expect(errors.filter({
     hasText: 'Account binding status unavailable.',
   })).toHaveCount(1);
-  await expect(retry).toHaveText('Retry account status');
+  await expect(retry).toHaveText('Check your account again');
   await expect(retry).not.toHaveAttribute('aria-disabled');
   await expect(retry).not.toHaveAttribute('aria-busy');
   await expect(retry).not.toHaveAttribute('disabled');
@@ -22910,7 +22946,7 @@ test('Settings device revoke owns its pending command and success receipt', asyn
   const html = page.locator('html');
   await expect(html).toHaveAttribute(
     'data-audit-confirm-message',
-    'A device revoke is still updating. Leave Settings anyway?',
+    'Recued is still shutting a device out. Leave Settings anyway?',
   );
   await expect(page).toHaveURL(/#settings\/devices$/);
   await confirm.evaluate((button: HTMLElement) => {
@@ -22923,7 +22959,7 @@ test('Settings device revoke owns its pending command and success receipt', asyn
 
   await expect(revoke).toHaveCount(0);
   const receipt = page.locator('[data-device-revoke-success]');
-  await expect(receipt).toContainText('Device revoked.');
+  await expect(receipt).toContainText('Done. That device can no longer reach this server.');
   await expect(receipt).toBeFocused();
   await page.evaluate(() => window.__app.setHash('#chat'));
   await expect(page).toHaveURL(/#chat$/);
@@ -22950,8 +22986,8 @@ test('Settings failed device revokes return to the exact retry action', async ({
 
   await expect(page.locator('.account-devices-confirm-error'))
     .toHaveText(
-      'Could not revoke this device: Device revoke unavailable. '
-        + 'Try again, or revoke from a different paired device.',
+      'Recued could not shut this device out: Device revoke unavailable. '
+        + 'Try again, or do it from another device you have paired.',
     );
   await expect(confirm).toContainText('Yes, revoke');
   await expect(confirm).not.toHaveAttribute('aria-disabled');
@@ -23018,7 +23054,7 @@ test('Settings notification switches retain exact mutation ownership', async ({ 
   await page.evaluate(() => window.__app.setHash('#settings/notifications'));
 
   const toggle = page.getByRole('switch', {
-    name: 'Browser Bridge OS notifications',
+    name: 'Browser Bridge, on your desktop notifications',
     exact: true,
   });
   await expect(toggle).toHaveText('Off');
@@ -23185,15 +23221,15 @@ test('Settings notification phrase Save retains mutation ownership', async ({ pa
   await page.evaluate(() => window.__app.setHash('#settings/notifications'));
 
   await expect(page.getByRole('heading', {
-    name: 'Anti-phishing phrase',
+    name: 'Your secret phrase',
     level: 3,
   })).toBeVisible();
   const input = page.getByRole('textbox', {
-    name: 'Anti-phishing phrase',
+    name: 'Your secret phrase',
     exact: true,
   });
   const save = page.getByRole('button', {
-    name: 'Save anti-phishing phrase',
+    name: 'Save your secret phrase',
     exact: true,
   });
   await input.fill('green fox');
@@ -23382,7 +23418,7 @@ test('Settings Exposure confirmations own keyboard focus', async ({ page }) => {
   const trigger = page.locator(`[${EXPOSURE_PUBLIC_MCP}]`);
   await trigger.click();
 
-  const dialog = page.getByRole('dialog', { name: 'Enable public MCP?' });
+  const dialog = page.getByRole('dialog', { name: 'Let AI apps in from outside?' });
   const phrase = dialog.getByRole('textbox', {
     name: 'Type "enable public MCP" to confirm',
   });
@@ -23414,7 +23450,7 @@ test('Settings Exposure confirmations own keyboard focus', async ({ page }) => {
   const wsTrigger = page.locator(`[${EXPOSURE_CELL}="ws.lan"]`);
   await wsTrigger.click();
   const wsDialog = page.getByRole('dialog', {
-    name: 'Disconnect this webclient?',
+    name: 'Cut this browser off?',
   });
   await expect(wsDialog.getByRole('textbox', {
     name: 'Type "disconnect webclients" to confirm',
@@ -23485,7 +23521,7 @@ test('Settings AI Models provider controls expose their owning source', async ({
 
   for (const name of [
     'Slot 1: fast provider',
-    'Slot 2: quality / thinking provider',
+    'Slot 2: better, slower thinking provider',
     'Embeddings slot provider',
     'New free-pool entry provider',
   ]) {
@@ -23494,8 +23530,8 @@ test('Settings AI Models provider controls expose their owning source', async ({
   for (const name of [
     'Save Slot 1: fast',
     'Clear Slot 1: fast',
-    'Save Slot 2: quality / thinking',
-    'Clear Slot 2: quality / thinking',
+    'Save Slot 2: better, slower thinking',
+    'Clear Slot 2: better, slower thinking',
     'Save Embeddings slot',
     'Clear Embeddings slot',
     'Disable free-pool entry groq',
@@ -23506,7 +23542,7 @@ test('Settings AI Models provider controls expose their owning source', async ({
   }
   for (const name of [
     'Slot 1: fast chat tool catalog',
-    'Slot 2: quality / thinking chat tool catalog',
+    'Slot 2: better, slower thinking chat tool catalog',
     'Free pool chat tool catalog',
   ]) {
     await expect(page.getByRole('combobox', { name, exact: true })).toHaveCount(1);
@@ -23710,14 +23746,14 @@ test('Settings AI Models usage actions preserve the budget draft and focus', asy
   const policy = page.locator(
     '[data-recued-ai-models-control="ai_policy"]',
   );
-  const allow = policy.getByRole('button', { name: 'Allow background BYOK' });
+  const allow = policy.getByRole('button', { name: 'May spend my key on its own' });
   await allow.focus();
   await page.keyboard.press('Enter');
   await page.waitForFunction(
     () => window.__app.rpcCallCount('housekeeping.config.write') === 1,
   );
   const disable = policy.getByRole('button', {
-    name: 'Disable background BYOK',
+    name: 'Do not spend my key on its own',
   });
   await expect(budget).toHaveValue('1234');
   await expect(disable).toBeFocused();
@@ -23746,7 +23782,7 @@ test('Settings AI Models usage actions preserve the budget draft and focus', asy
   await page.waitForFunction(
     () => window.__app.rpcCallCount('housekeeping.config.write') === 3,
   );
-  await expect(policy).toContainText('Pause-AI: not active.');
+  await expect(policy).toContainText('AI is not paused.');
   await expect(resume).toBeFocused();
 });
 
@@ -23767,7 +23803,7 @@ test('Settings AI Models policy actions serialize their shared configuration', a
   await allow.focus();
   await page.keyboard.press('Enter');
 
-  await expect(allow).toHaveText('Updating background BYOK…');
+  await expect(allow).toHaveText('Changing…');
   await expect(allow).toHaveAttribute('aria-disabled', 'true');
   await expect(allow).toHaveAttribute('aria-busy', 'true');
   await expect(allow).not.toHaveAttribute('disabled');
@@ -23783,7 +23819,7 @@ test('Settings AI Models policy actions serialize their shared configuration', a
     ),
   ).toBe(1);
 
-  await expect(allow).toHaveText('Disable background BYOK');
+  await expect(allow).toHaveText('Do not spend my key on its own');
   await expect(allow).not.toHaveAttribute('aria-disabled');
   await expect(allow).not.toHaveAttribute('aria-busy');
   await expect(pause).not.toHaveAttribute('aria-disabled');
@@ -23817,7 +23853,7 @@ test('Settings AI Models policy actions serialize their shared configuration', a
       () => window.__app.rpcCallCount('housekeeping.config.write'),
     ),
   ).toBe(3);
-  await expect(policy).toContainText('Pause-AI: not active.');
+  await expect(policy).toContainText('AI is not paused.');
   await expect(resume).toHaveText('Resume AI');
   await expect(resume).not.toHaveAttribute('aria-busy');
   await expect(resume).toBeFocused();
@@ -23839,13 +23875,13 @@ test('Settings AI Models policy failures return to the exact command', async ({ 
   );
   await allow.focus();
   await page.keyboard.press('Enter');
-  await expect(allow).toHaveText('Updating background BYOK…');
+  await expect(allow).toHaveText('Changing…');
   await expect(allow).toBeFocused();
 
   await expect(page.locator('[data-recued-ai-models-action-error]'))
     .toHaveText('AI usage policy update unavailable.');
-  await expect(policy).toContainText('Background BYOK: free pool only.');
-  await expect(allow).toHaveText('Allow background BYOK');
+  await expect(policy).toContainText('Spending your paid key on its own: free pool only.');
+  await expect(allow).toHaveText('May spend my key on its own');
   await expect(allow).not.toHaveAttribute('aria-disabled');
   await expect(allow).not.toHaveAttribute('aria-busy');
   await expect(allow).not.toHaveAttribute('disabled');
@@ -23952,7 +23988,7 @@ test('Settings AI Models prompt editing preserves focus and caret', async ({ pag
   // The status line is mutated in place on input — it must NOT have cost the
   // caret, which is the whole reason typing does not re-render.
   await expect(page.locator(`[${AI_MODELS_PROMPT_STATUS}="chat"]`))
-    .toHaveText('Unsaved changes — Save to put this in force.');
+    .toHaveText('You have not saved yet. Save to make this happen.');
   await expect(prompt).toBeFocused();
   expect(await prompt.evaluate((element: HTMLTextAreaElement) => element.selectionStart)).toBe(5);
 
@@ -23982,7 +24018,7 @@ test('Settings AI Models prompt Save owns its reload round trip', async ({ page 
   const loadDefault = page.locator(`[${AI_MODELS_PROMPT_LOAD_DEFAULT}="chat"]`);
   const status = page.locator(`[${AI_MODELS_PROMPT_STATUS}="chat"]`);
   await prompt.fill('A durable owner-authored prompt.');
-  await expect(status).toHaveText('Unsaved changes — Save to put this in force.');
+  await expect(status).toHaveText('You have not saved yet. Save to make this happen.');
   await save.focus();
   await page.keyboard.press('Enter');
 
@@ -24013,7 +24049,7 @@ test('Settings AI Models prompt Save owns its reload round trip', async ({ page 
   )).toBeVisible();
   await expect(prompt).toHaveValue('A durable owner-authored prompt.');
   await expect(prompt).not.toHaveAttribute('readonly');
-  await expect(status).toHaveText('Showing your saved prompt, in force now.');
+  await expect(status).toHaveText('This is yours. It is in use now.');
   await expect(save).toHaveText('Save');
   await expect(save).not.toHaveAttribute('aria-disabled');
   await expect(save).not.toHaveAttribute('aria-busy');
@@ -24026,7 +24062,7 @@ test('Settings AI Models prompt Save owns its reload round trip', async ({ page 
   await expect(prompt).toHaveValue(
     'You are Recued. You speak in plain, calm prose.',
   );
-  await expect(status).toHaveText('Unsaved changes — Save to put this in force.');
+  await expect(status).toHaveText('You have not saved yet. Save to make this happen.');
   await expect(loadDefault).toBeFocused();
   expect(await page.evaluate(
     () => window.__app.rpcCallCount('server.setLlmPrompt'),
@@ -24048,8 +24084,8 @@ test('Settings AI Models prompt Save owns its reload round trip', async ({ page 
     'You are Recued. You speak in plain, calm prose.',
   );
   await expect(prompt).not.toHaveAttribute('readonly');
-  await expect(status).toHaveText('Showing the built-in default, in force now.');
-  await expect(loadDefault).toHaveText('Load default');
+  await expect(status).toHaveText('This is the one Recued comes with. It is in use now.');
+  await expect(loadDefault).toHaveText('Use the one Recued comes with');
   await expect(loadDefault).not.toHaveAttribute('aria-disabled');
 });
 
@@ -24074,7 +24110,7 @@ test('Settings AI Models prompt failures preserve the exact retry draft', async 
   await expect(prompt).not.toHaveAttribute('readonly');
   // The draft survived, so it is still unsaved — the status line has to keep
   // saying so, or a failed save reads as a successful one.
-  await expect(status).toHaveText('Unsaved changes — Save to put this in force.');
+  await expect(status).toHaveText('You have not saved yet. Save to make this happen.');
   await expect(save).toHaveText('Save');
   await expect(save).not.toHaveAttribute('aria-disabled');
   await expect(save).not.toHaveAttribute('aria-busy');
@@ -24169,7 +24205,7 @@ test('Settings AI Models slot actions preserve sibling drafts and action focus',
   )).toBe(2);
   await expect(clearDialog).toBeVisible();
   await expect(clearDialog).toHaveCount(0);
-  await expect(slotOne).toContainText('Not configured.');
+  await expect(slotOne).toContainText('Not set up.');
   await expect(siblingDraft).toHaveValue('draft-model-id');
   await expect(clear).toBeFocused();
 });
@@ -24190,7 +24226,7 @@ test('Settings AI Models Clear slot starts safely and Cancel returns to its comm
   await expect(dialog).toHaveRole('alertdialog');
   await expect(dialog).toHaveAccessibleName('Clear Slot 1: fast?');
   await expect(dialog).toContainText(
-    'This removes the saved provider settings and API key from this Recued server.',
+    'This deletes the settings and the key from this Recued server.',
   );
   const cancel = dialog.locator(
     `[${AI_MODELS_SLOT_CLEAR_CANCEL}="slot_1"]`,
@@ -24250,7 +24286,7 @@ test('Settings AI Models failed Clear slot stays owned and retryable', async ({ 
   await expect(confirm).not.toHaveAttribute('aria-busy');
   await expect(confirm).not.toHaveAttribute('disabled');
   await expect(confirm).toBeFocused();
-  await expect(slot).not.toContainText('Not configured.');
+  await expect(slot).not.toContainText('Not set up.');
 
   await cancel.click();
   await expect(dialog).toHaveCount(0);
@@ -24698,7 +24734,7 @@ test('Settings AI Models embeddings Clear is confirmed and mutation-owned', asyn
   await expect(dialog).toHaveRole('alertdialog');
   await expect(dialog).toHaveAccessibleName('Clear Embeddings slot?');
   await expect(dialog).toContainText(
-    'This removes the saved provider settings and API key from this Recued server.',
+    'This deletes the settings and the key from this Recued server.',
   );
   const cancel = dialog.locator(
     `[${AI_MODELS_SLOT_CLEAR_CANCEL}="embeddings_slot"]`,
@@ -24742,7 +24778,7 @@ test('Settings AI Models embeddings Clear is confirmed and mutation-owned', asyn
     () => window.__app.rpcCallCount('server.setEmbeddingsSlot'),
   )).toBe(2);
   await expect(dialog).toHaveCount(0);
-  await expect(embeddings).toContainText('Not configured.');
+  await expect(embeddings).toContainText('Not set up.');
   await expect(clear).toBeFocused();
 });
 
@@ -24794,7 +24830,7 @@ test('Settings AI Models failed embeddings Clear stays owned and retryable', asy
   await expect(confirm).not.toHaveAttribute('aria-busy');
   await expect(confirm).not.toHaveAttribute('disabled');
   await expect(confirm).toBeFocused();
-  await expect(embeddings).not.toContainText('Not configured.');
+  await expect(embeddings).not.toContainText('Not set up.');
   expect(await page.evaluate(
     () => window.__app.rpcCallCount('server.setEmbeddingsSlot'),
   )).toBe(2);
@@ -24932,7 +24968,7 @@ test('Contracts category tabs form one arrow-key keyboard stop', async ({ page }
   await expect(builtIn).toHaveAttribute('tabindex', '0');
   await expect(builtIn).toBeFocused();
   await expect(page.locator('[data-recued-contracts-page-status]')).toHaveText(
-    'No managed access contracts on this page',
+    'No agreements you look after on this page',
   );
 
   await page.keyboard.press('End');
@@ -25220,7 +25256,7 @@ test('Contracts contains page failures and preserves the exact retry', async ({ 
   const failureId = `page_${'P'.repeat(220)}`;
   const error = body.locator('[data-recued-contracts-error]');
   await expect(error).toHaveText(
-    `Some contracts could not be loaded: Contract page unavailable for cursor `
+    `Recued could not load some of your agreements: Contract page unavailable for cursor `
       + `${failureId}. Retry this page.`,
   );
   await expect(status).toHaveText('Showing 1–25 of 26');
@@ -25321,7 +25357,7 @@ test('Contracts contains revoke failures and preserves a safe retry', async ({ p
   const failureId = `revoke_${'E'.repeat(220)}`;
   const error = detail.locator('[data-recued-contracts-head-error]');
   await expect(error).toHaveText(
-    `Could not revoke: Contract revoke unavailable for request ${failureId}. `
+    `Recued could not turn it off: Contract revoke unavailable for request ${failureId}. `
       + 'Retry from this contract.',
   );
   await expect(revoke).toHaveText('Revoke');
@@ -25383,12 +25419,12 @@ test('Contracts Connect renders a full-size mobile credential editor', async ({ 
     'Claude Desktop',
     'Cursor',
     'Codex',
-    'Custom MCP client',
+    'Another AI app',
   ]);
 
   const form = page.locator('[data-recued-permissions-create]');
   const save = form.locator('[data-recued-permissions-create-save]');
-  await expect(save).toHaveText('Add override');
+  await expect(save).toHaveText('Add the rule');
   expect(await form.evaluate(
     (element) => getComputedStyle(element).flexDirection,
   )).toBe('column');
@@ -25565,7 +25601,7 @@ test('Contracts keeps an operation grant toggle focused and single-flight', asyn
   const html = page.locator('html');
   await expect(html).toHaveAttribute(
     'data-audit-confirm-message',
-    'A contract action is still in progress. Leave Contracts anyway?',
+    'Something is still happening. Leave anyway?',
   );
   await expect(page).toHaveURL(/#contracts\/door_paged_01\/ops$/);
   await expect(toggle).not.toHaveAttribute('disabled');
@@ -25602,7 +25638,7 @@ test('an uncertain run lands on its exact record with readable dark-theme next s
 
   const outcome = page.locator(`[${LOGS_OUTCOME}]`);
   await expect(outcome).toBeVisible();
-  await expect(outcome).toContainText('Outcome needs verification');
+  await expect(outcome).toContainText('Somebody needs to check what happened');
   await expect(outcome).toBeFocused();
   const openRun = page.getByRole('button', {
     name: 'Open run detail for Schedule customer review (run-verify)',
@@ -25621,7 +25657,7 @@ test('an uncertain run lands on its exact record with readable dark-theme next s
 
   const affected = page.locator(`[${LOGS_AFFECTED_ITEMS}]`);
   const verify = affected.getByRole('link', {
-    name: 'Verify before retrying',
+    name: 'Check before running it again',
   });
   await expect(verify).toBeVisible();
   await verify.click();
@@ -25731,7 +25767,7 @@ test('an uncertain run lands on its exact record with readable dark-theme next s
   );
   await expect(page.locator('[data-recued-chat-route]')).toBeVisible();
   const runOutcome = page.locator('.chat-data-verification-run');
-  await expect(runOutcome).toHaveText('View run outcome →');
+  await expect(runOutcome).toHaveText('See how the run ended →');
   expect((await runOutcome.boundingBox())?.height).toBeGreaterThanOrEqual(36);
   await runOutcome.focus();
   await expect(runOutcome).toBeFocused();
@@ -25826,12 +25862,12 @@ test('the first-run recipe handoff traps focus and recovers an empty inventory',
   await automate.click();
 
   const overlay = page.locator(`[${RUN_PALETTE}]`);
-  const dialog = page.getByRole('dialog', { name: 'Run a recipe' });
+  const dialog = page.getByRole('dialog', { name: 'Run a Recipe' });
   await expect(overlay).toBeVisible();
   await expect(dialog).toBeFocused();
-  await expect(dialog).toContainText('No recipes are installed yet.');
+  await expect(dialog).toContainText('You have no Recipes yet.');
   await expect(dialog.getByRole('combobox', { name: 'Recipe' })).toHaveCount(0);
-  await expect(dialog.getByRole('link', { name: /Browse starter packs/ }))
+  await expect(dialog.getByRole('link', { name: /Look through starter Packs/ }))
     .toHaveAttribute('href', '#packs');
 
   const close = page.locator(`[${RUN_PALETTE_CLOSE}]`);
@@ -25854,7 +25890,7 @@ test('the Run palette stays contained with usable mobile targets', async ({ page
   // Installed recipes retire Chat's first-run card; the shell launcher stays.
   await page.locator(`[${GLOBAL_RUN_PALETTE_TRIGGER}]`).click();
 
-  const dialog = page.getByRole('dialog', { name: 'Run a recipe' });
+  const dialog = page.getByRole('dialog', { name: 'Run a Recipe' });
   const geometry = await dialog.evaluate((node) => {
     const rect = node.getBoundingClientRect();
     return {
@@ -25908,7 +25944,7 @@ test('the Run palette contains a long installed recipe after selection', async (
   await page.waitForFunction(() => window.__app?.ready === true);
   await page.locator(`[${GLOBAL_RUN_PALETTE_TRIGGER}]`).click();
 
-  const dialog = page.getByRole('dialog', { name: 'Run a recipe' });
+  const dialog = page.getByRole('dialog', { name: 'Run a Recipe' });
   const picker = dialog.getByRole('combobox', { name: 'Recipe' });
   await picker.fill('RecipeNN');
   const option = dialog.locator('.ref-picker-option').first();
@@ -26000,8 +26036,8 @@ test('the Run palette keeps inventory recovery focused and single-flight', async
     () => window.__app.releaseRpcResponses?.('recipe.list'),
   )).toBe(1);
 
-  const dialog = page.getByRole('dialog', { name: 'Run a recipe' });
-  await expect(dialog.getByRole('alert')).toHaveText('Couldn’t load recipes.');
+  const dialog = page.getByRole('dialog', { name: 'Run a Recipe' });
+  await expect(dialog.getByRole('alert')).toHaveText('Recued could not load your Recipes.');
   const retry = page.locator(`[${RUN_PALETTE_RETRY}]`);
   const before = await page.evaluate(
     () => window.__app.rpcCallCount('recipe.list'),
@@ -26201,7 +26237,7 @@ test('the Run palette reports a failed auto-run update in place', async ({ page 
 
   const result = page.locator(`[${RUN_PALETTE_RESULT}]`);
   await expect(result).toHaveAttribute('role', 'status');
-  await expect(result).toContainText('Couldn’t update auto-run');
+  await expect(result).toContainText('Recued could not change that');
   await expect(pause).toBeFocused();
 });
 
@@ -26342,8 +26378,8 @@ test('a Connections account detail returns focus to its exact row', async ({ pag
   await expect(route.getByRole('heading', { name: 'Mailboxes', level: 2 }))
     .toBeVisible();
   await expect(route.locator('.accounts-blurb')).toHaveText(
-    'Recued can search and use these mailboxes in your work. '
-      + 'Sending stays optional.',
+    'Recued can search these mailboxes and use them in your work. '
+      + 'Sending is up to you.',
   );
   await account.focus();
   await page.keyboard.press('Enter');
@@ -26495,7 +26531,7 @@ test('Connections webhook writes retain their exact action focus and stay single
   ).toBe(callsBefore + 1);
 
   await expect(card.locator(`[${WEBHOOKS_TEST_DELIVERY}]`)).toContainText(
-    'was durably accepted',
+    'arrived and was kept at',
   );
   await expect(sendTest).toBeFocused();
   await expect(sendTest).not.toHaveAttribute('aria-disabled');
@@ -26522,7 +26558,7 @@ test('Connections webhook disclosures hand focus to their logical destination', 
 
   const deliveries = card.locator(`[${WEBHOOKS_ACTION}="deliveries"]`);
   await deliveries.click();
-  await expect(deliveries).toHaveText('Hide accepted deliveries');
+  await expect(deliveries).toHaveText('Hide the messages that got through');
   await expect(deliveries).toBeFocused();
 
   const deliveriesList = card.locator(`[${WEBHOOKS_DELIVERY}]`);
@@ -26572,19 +26608,19 @@ test('Connections webhook terminal writes hand focus to durable context', async 
   });
   await expect(originalCard.locator(`[${WEBHOOKS_ACTION}="credentials"]`))
     .toHaveAccessibleName(
-      /^Rotate credentials for Signed test deliveries \(whi_/,
+      /^Swap the keys for Signed test deliveries \(whi_/,
     );
   await expect(createdCard.locator(`[${WEBHOOKS_ACTION}="credentials"]`))
     .toHaveAccessibleName(
-      /^Rotate credentials for Browser-created webhook \(whi_/,
+      /^Swap the keys for Browser-created webhook \(whi_/,
     );
   await expect(originalCard.locator(`[${WEBHOOKS_ACTION}="deliveries"]`))
     .toHaveAccessibleName(
-      /^View accepted deliveries for Signed test deliveries \(whi_/,
+      /^See the messages that got through for Signed test deliveries \(whi_/,
     );
   await expect(createdCard.locator(`[${WEBHOOKS_ACTION}="deliveries"]`))
     .toHaveAccessibleName(
-      /^View accepted deliveries for Browser-created webhook \(whi_/,
+      /^See the messages that got through for Browser-created webhook \(whi_/,
     );
   await originalCard.locator(`[${WEBHOOKS_ACTION}="disable"]`).click();
   await expect(originalCard.locator(`[${WEBHOOKS_ACTION}="enable"]`)).toBeFocused();
@@ -26922,7 +26958,7 @@ test('Connections recovers pack usage and setup context explicitly', async ({ pa
   const recovery = route.locator(`[${CONNECTIONS_PACK_INVENTORY}]`);
   await expect(recovery).toHaveAttribute(CONNECTIONS_PACK_INVENTORY, 'error');
   await expect(recovery).toHaveAttribute('role', 'alert');
-  await expect(recovery).toContainText('Pack context unavailable');
+  await expect(recovery).toContainText('Recued cannot read the Pack details');
 
   const retry = recovery.locator(`[${CONNECTIONS_PACK_INVENTORY_RETRY}]`);
   await retry.focus();
@@ -27064,7 +27100,7 @@ test('a Connections account removal dialog owns and restores focus', async ({ pa
   const html = page.locator('html');
   await expect(html).toHaveAttribute(
     'data-audit-confirm-message',
-    'A connection action is still in progress. Leave Connections anyway?',
+    'Connections is still doing something. Leave anyway?',
   );
   // Declining the route leave keeps the pending command on its exact account
   // detail. Completion then closes into the canonical Mail collection, which
@@ -27278,7 +27314,7 @@ test('a connected mailbox hands its first useful question into Chat', async ({ p
   await expect(handoff).toBeFocused();
   await expect(handoff.getByRole('heading', { name: 'Gmail is connected' })).toBeVisible();
   await expect(handoff).toContainText('person@example.com');
-  await expect(handoff).toContainText('prepare a useful first question');
+  await expect(handoff).toContainText('we will suggest a first question');
   await expect(page.locator(`[${CHAT_ACTIVATION}]`)).toHaveCount(0);
   await expect(page.locator(`[${CHAT_INPUT}]`)).toHaveValue('');
   await page.screenshot({
@@ -27292,7 +27328,7 @@ test('a connected mailbox hands its first useful question into Chat', async ({ p
   await expect(handoff).toHaveAttribute('data-state', 'ready');
   await expect(handoff).toBeFocused();
   await expect(handoff.getByRole('heading', { name: 'Gmail is ready for Chat' })).toBeVisible();
-  await expect(handoff).toContainText('A useful first question is ready below');
+  await expect(handoff).toContainText('Here is a first question you could ask');
   await expect(page.locator(`[${CHAT_INPUT}]`)).toHaveValue(
     'Using my work mailbox, summarize what needs my attention and suggest the next three actions.',
   );
@@ -27307,7 +27343,7 @@ test('a connected mailbox hands its first useful question into Chat', async ({ p
   });
 
   await handoff.getByRole('button', {
-    name: 'Use Chat without this account',
+    name: 'Use Chat without it',
   }).click();
   await expect(page).toHaveURL(/#chat$/);
   await expect(handoff).toHaveCount(0);
@@ -27337,7 +27373,7 @@ test('a connected-source answer stays source-aware through its first follow-up',
   await expect(answer).toHaveAttribute('data-state', 'preparing');
   await expect(answer).toContainText('Gmail · person@example.com');
   await expect(answer.locator(`[${CHAT_SOURCE_ANSWER_RECEIPT}]`))
-    .toHaveText('Checking activity');
+    .toHaveText('Checking what it did');
   await expect(page.locator(`[${CHAT_ANSWER_WAITING}]`))
     .toHaveText('Preparing your answer…');
   await expect(
@@ -27465,9 +27501,9 @@ test('a connected-source answer stays source-aware through its first follow-up',
 
   await expect(answer).toHaveAttribute('data-state', 'search_complete');
   await expect(answer.locator(`[${CHAT_SOURCE_ANSWER_RECEIPT}]`))
-    .toHaveText('Mail search completed');
+    .toHaveText('Mail search finished');
   await expect(answer).toContainText(
-    'The receipt does not show which records, if any, informed the answer.',
+    'It does not say which records, if any, went into the answer.',
   );
   const references = answer.locator(`[${CHAT_SOURCE_REFERENCES}]`);
   await expect(references).toHaveAttribute(SHARED_REFERENCE_DISCLOSURE, '');
@@ -27476,7 +27512,7 @@ test('a connected-source answer stays source-aware through its first follow-up',
   );
   await expect(referencesToggle).toContainText('2 recorded references');
   await expect(referencesToggle).toContainText(
-    'Source and exact record IDs',
+    'Where it came from, and which records',
   );
   await expect(referencesToggle).toHaveAttribute('aria-expanded', 'false');
   await expect(references.locator(`[${CHAT_SOURCE_REFERENCE}]`)).toHaveCount(0);
@@ -27484,7 +27520,7 @@ test('a connected-source answer stays source-aware through its first follow-up',
   await expect(referencesToggle).toBeFocused();
   await expect(referencesToggle).toHaveAttribute('aria-expanded', 'true');
   await expect(references).toContainText(
-    'They are not yet linked to individual sentences.',
+    'They are not tied to any one sentence yet.',
   );
   await expect(references.locator(`[${CHAT_SOURCE_REFERENCE}]`)).toHaveCount(2);
   await expect(references.locator(`[${SHARED_REFERENCE_ITEM}]`)).toHaveCount(2);
@@ -27521,8 +27557,8 @@ test('a connected-source answer stays source-aware through its first follow-up',
   await expect(references.getByRole('link', { name: 'Browse mail in Data' }))
     .toHaveAttribute('href', '#data/mail');
   await expect(answer).toContainText(
-    'Choose a next step to review it in the composer. '
-    + 'These shortcuts do not send email or change your data.',
+    'Pick what to do next and Recued will put it in the message box. '
+    + 'None of these send email or change your things.',
   );
   await expect(page.locator(`[${CHAT_ANSWER_WAITING}]`)).toHaveCount(0);
   await expect(
@@ -27537,7 +27573,7 @@ test('a connected-source answer stays source-aware through its first follow-up',
   );
   expect(readingOrder).toEqual(['answer', 'source-check']);
   await expect(answer.locator(`[${CHAT_SOURCE_ANSWER_ACTION}="draft"]`))
-    .toHaveText(['Draft the replies', 'Make an action list']);
+    .toHaveText(['Write the replies', 'Make a to-do list']);
   await expect(answer.locator(`[${CHAT_SOURCE_ANSWER_ACTION}="connection"]`))
     .toHaveText('View mailbox');
 
@@ -27558,7 +27594,7 @@ test('a connected-source answer stays source-aware through its first follow-up',
   await expect(referencesToggle).toBeFocused();
   await expect(referencesToggle).toHaveAttribute('aria-expanded', 'false');
 
-  await answer.getByRole('button', { name: 'Draft the replies' }).click();
+  await answer.getByRole('button', { name: 'Write the replies' }).click();
   await expect(input).toHaveValue(
     'Search my connected mail again for the messages that need my response, '
     + 'then draft concise replies. Do not send anything.',
@@ -27574,13 +27610,13 @@ test('a connected-source answer stays source-aware through its first follow-up',
     'Reply drafts · Gmail · person@example.com',
   );
   await expect(followupContext).toContainText('Gmail · person@example.com');
-  await expect(followupContext).toContainText('Requests a new mail search');
+  await expect(followupContext).toContainText('Asks for a new mail search');
   await expect(followupContext).toContainText(
-    'If you ask it to send email, you’ll review and approve that separately.',
+    'If you ask it to send email, you will say yes separately.',
   );
   await expect(input).toHaveAttribute(
     'placeholder',
-    'Review or edit this request...',
+    'Read or change this…',
   );
   await expect(page.locator(`[${CHAT_SEND}]`)).toHaveText('Ask Chat');
   const followupDescriptionId = await input.getAttribute('aria-describedby');
@@ -27588,7 +27624,7 @@ test('a connected-source answer stays source-aware through its first follow-up',
     throw new Error('source-aware follow-up did not describe the composer');
   }
   await expect(page.locator(`#${followupDescriptionId}`)).toContainText(
-    'Requests a new mail search',
+    'Asks for a new mail search',
   );
   await expect(
     followupContext.locator(`[${CHAT_FOLLOWUP_CONTEXT_CLEAR}]`),
@@ -27608,7 +27644,7 @@ test('a connected-source answer stays source-aware through its first follow-up',
   await expect(input).toHaveAttribute('placeholder', 'Ask Recued...');
   await expect(page.locator(`[${CHAT_SEND}]`)).toHaveText('Send');
 
-  await answer.getByRole('button', { name: 'Make an action list' }).click();
+  await answer.getByRole('button', { name: 'Make a to-do list' }).click();
   await expect(input).toHaveValue(
     'Using the previous mailbox summary, turn the action items into '
     + 'a prioritized task list.',
@@ -27619,13 +27655,13 @@ test('a connected-source answer stays source-aware through its first follow-up',
     'context',
   );
   await expect(followupContext).toContainText(
-    'Continues from the previous answer · no new search requested',
+    'Carries on from the last answer · nothing new searched',
   );
   await expect(followupContext).toContainText(
-    'Prioritized action list · Gmail · person@example.com',
+    'To-do list, most important first · Gmail · person@example.com',
   );
   await expect(followupContext).toContainText(
-    'If you ask it to create tasks, you’ll review and approve that separately.',
+    'If you ask it to make tasks, you will say yes separately.',
   );
   await expect(page.locator(`[${CHAT_SEND}]`)).toHaveText('Ask Chat');
   await page.locator(`[${CHAT_SEND}]`).click();
@@ -27641,10 +27677,10 @@ test('a connected-source answer stays source-aware through its first follow-up',
     'continuing',
   );
   await expect(sourceAnswers.nth(1)).toContainText(
-    'Prioritized action list · Gmail · person@example.com',
+    'To-do list, most important first · Gmail · person@example.com',
   );
   await expect(page.locator(`[${CHAT_ANSWER_WAITING}]`))
-    .toHaveText('Continuing from the previous answer…');
+    .toHaveText('Carrying on from the last answer…');
   await expect(followupContext).toHaveCount(0);
   await expect(
     page.locator(`[${CHAT_MESSAGE}][data-role="user"]`),
@@ -27707,16 +27743,16 @@ test('a connected-source answer stays source-aware through its first follow-up',
   );
   await expect(
     sourceAnswers.nth(1).locator(`[${CHAT_SOURCE_ANSWER_RECEIPT}]`),
-  ).toHaveText('No new search');
+  ).toHaveText('Nothing new was searched');
   await expect(sourceAnswers.nth(1)).toContainText(
-    'No new mail search was recorded.',
+    'No new mail search was noted.',
   );
   await expect(
     sourceAnswers.nth(0).locator(`[${CHAT_SOURCE_ANSWER_ACTION}]`),
   ).toHaveCount(0);
   await expect(
     sourceAnswers.nth(1).locator(`[${CHAT_SOURCE_ANSWER_ACTION}="draft"]`),
-  ).toHaveText(['Draft the replies']);
+  ).toHaveText(['Write the replies']);
   await expect(page.locator(`[${CHAT_ANSWER_WAITING}]`)).toHaveCount(0);
   const followupGeometry = await sourceAnswers.nth(1).evaluate((node) => ({
     left: node.getBoundingClientRect().left,
@@ -28159,7 +28195,15 @@ test('Create keeps every action target usable on a narrow viewport', async ({ pa
       return { width: rect.width, height: rect.height };
     }),
   );
-  expect(actionSizes).toHaveLength(7);
+  // ⚠ The RELATIONSHIP, not a magic number. This pinned `7` and went stale the
+  // moment a sixth capture target shipped — the same shape as the other count
+  // ratchets this file carries, and it says nothing about what the test is for.
+  // Every target chip is a button, and the overlay adds exactly two more
+  // (Close and Commit); a chip that failed to render as a button still fails.
+  const chipCount = await overlay.locator('[data-recued-compose-target]:visible').count();
+  expect(chipCount).toBeGreaterThanOrEqual(5);
+  expect(actionSizes).toHaveLength(chipCount + 2);
+  // THE POINT: at 320px every one of them is still a usable tap target.
   expect(Math.min(...actionSizes.map(({ width }) => width)))
     .toBeGreaterThanOrEqual(36);
   expect(Math.min(...actionSizes.map(({ height }) => height)))
@@ -28288,7 +28332,7 @@ test('Create protects unfinished capture from dismissal', async ({ page }) => {
   await expect(overlay).toBeVisible();
   await expect(guard).toHaveAttribute('role', 'alertdialog');
   await expect(guard).toBeFocused();
-  await expect(guard).toContainText('Discard this unfinished item?');
+  await expect(guard).toContainText('Throw this away?');
 
   await page.keyboard.press('Escape');
   await expect(guard).toHaveCount(0);
@@ -28306,7 +28350,7 @@ test('Create protects unfinished capture from dismissal', async ({ page }) => {
   await page.keyboard.press('Enter');
   await expect(guard).toBeFocused();
   const discard = page.locator(`[${CREATE_OVERLAY_DISCARD_COMMIT}]`);
-  await expect(discard).toHaveText('Discard item');
+  await expect(discard).toHaveText('Throw it away');
   await discard.click();
   await expect(overlay).toHaveCount(0);
 });
@@ -28413,7 +28457,7 @@ test('Chat Create retains an unfinished item across tab and route leave', async 
   const html = page.locator('html');
   await expect(html).toHaveAttribute(
     'data-audit-confirm-message',
-    'Discard this unfinished Create item?',
+    'Throw away this unfinished item?',
   );
   await expect.poll(() => page.evaluate(() => window.location.hash))
     .toBe('#chat/session/chat_1');
@@ -28465,7 +28509,7 @@ test('Chat Create retains an unresolved save across tab and route leave', async 
   const overlay = page.locator(`[${CREATE_OVERLAY}]`);
   await expect(html).toHaveAttribute(
     'data-audit-confirm-message',
-    'A Create save is still in progress. Leave Chat anyway?',
+    'Recued is still saving. Leave anyway?',
   );
   await expect.poll(() => page.evaluate(() => window.location.hash))
     .toBe('#chat/session/chat_1');
@@ -28568,4 +28612,124 @@ test('the open navigation drawer contains keyboard focus and inerts the page', a
   await expect(page.locator(`[${SHELL_HOST}][${DRAWER_OPEN}]`)).toHaveCount(0);
   await expect(page.locator(`[${SHELL_TOPBAR}]`)).not.toHaveAttribute('inert', '');
   await expect(page.locator(`[${DRAWER_TOGGLE}]`)).toBeFocused();
+});
+
+test('every Create target COMPLETES a commit and the confirmation names it', async ({ page }) => {
+  // ⛔⛔ THE GAP THIS FILLS. The shipped Create commit test drives the CONTACT
+  // target and asserts only the PENDING state before escaping — it never
+  // completes a commit. So when `work_entity.upsert` went unanswered in this
+  // harness, all five work-entity captures sat on "Saving…" forever
+  // and nothing reported it: a whole confirmation path was untested here while
+  // 6,363 unit tests stayed green.
+  const targets: ReadonlyArray<[string, Record<string, string>, string]> = [
+    ['task', { title: 'Ship the thing' }, 'Ship the thing'],
+    ['note', { body: 'A thought worth keeping' }, 'A thought worth keeping'],
+    ['commitment', { statement: 'Send Maya the draft' }, 'Send Maya the draft'],
+    ['project', { title: 'Q4 rollout' }, 'Q4 rollout'],
+    ['booking', {
+      title: 'Haircut',
+      slot_start_at: '2026-09-14T10:00',
+      slot_end_at: '2026-09-14T11:00',
+    }, 'Haircut'],
+  ];
+
+  for (const [target, fields, label] of targets) {
+    await page.goto(HARNESS_URL);
+    await page.waitForFunction(() => window.__app?.ready === true);
+    await page.locator(`[${DRAWER_TOGGLE}]`).click();
+    await page.locator(`[${DRAWER_ACTION}="create"]`).click();
+    await page.locator(`[data-recued-compose-target="${target}"]`).click();
+    for (const [key, value] of Object.entries(fields)) {
+      await page.locator(`[data-recued-compose-field="${key}"]`).fill(value);
+    }
+    await page.locator('[data-recued-compose-commit]').click();
+
+    // ⚠ Asserts the LABEL, not merely that a confirmation appeared: the
+    // overlay reads it off the returned row, so a commit that succeeded while
+    // losing what was captured would still show a confirmation.
+    const confirmation = page.locator('[data-recued-compose-confirmation]');
+    await expect(confirmation).toBeVisible();
+    await expect(confirmation).toContainText(label);
+    await expect(page.locator('[data-recued-create-overlay]')).not.toContainText('Committing');
+  }
+});
+
+test('a drawer seat renders the height it declares, not that plus its padding', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.locator(`[${DRAWER_TOGGLE}]`).click();
+
+  const measured = await page.locator(`[${DRAWER_LINK}]`).evaluateAll((seats) =>
+    seats.map((seat) => {
+      const style = getComputedStyle(seat);
+      return {
+        rendered: Math.round(seat.getBoundingClientRect().height),
+        declared: parseFloat(style.minHeight),
+        boxSizing: style.boxSizing,
+      };
+    }));
+  expect(measured.length).toBeGreaterThanOrEqual(10);
+
+  // ⛔ THE RULE, NOT A HEIGHT. These seats were `content-box`, so
+  // `min-height: 40px` reserved 40px of CONTENT and the 8px+8px padding sat on
+  // top — every seat rendered 56px for a label needing 16px. Across 19 seats
+  // that was 304px, which is why the menu was 1,235px tall, overflowed every
+  // viewport, and had no room for the seats the owner asked for. Pinning the
+  // RULE survives adding seats; pinning a total height would not.
+  for (const seat of measured) {
+    expect(seat.boxSizing).toBe('border-box');
+    expect(seat.rendered).toBe(seat.declared);
+    // And it is still a usable target — the floor this suite asserts elsewhere.
+    expect(seat.rendered).toBeGreaterThanOrEqual(36);
+  }
+
+  // The consequence worth keeping: the foot of the menu is reachable without
+  // hunting. Account is the last seat, and on a desktop viewport the config
+  // tier is no longer hundreds of pixels below the fold.
+  const foot = await page.locator(`[${DRAWER}]`).evaluate((node) => {
+    const account = node.querySelector('[data-recued-webclient-drawer-link="account"]')!;
+    return Math.round(account.getBoundingClientRect().bottom - node.getBoundingClientRect().bottom);
+  });
+  expect(foot).toBeLessThan(120);
+});
+
+test('the drawer foot clears the real connection banner, not a stubbed height', async ({ page }) => {
+  // ⛔⛔ THE JOIN, WHICH NOTHING DROVE. The writer has unit tests (publishes 0
+  // while hidden, the measured height once up, 0 again when it retires) and
+  // there is a ratchet that the drawer's padding is expressed as
+  // `calc(... + var(--wc-connection-banner-h, 0px))` rather than a literal.
+  // Both halves, separately — and a CSS string containing a var name is a
+  // DEFINITION check, not evidence that the value ever arrives. This raises the
+  // real banner and measures the real last seat.
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.evaluate(() => {
+    window.__app.setServerAvailable(false);
+    window.__app.fireState('closed');
+  });
+  // ⚠ The offline state is behind a grace window on purpose — `reconnecting`
+  // and `stalled` stay quiet because they self-heal. Wait for the state, do not
+  // guess a delay.
+  const banner = page.locator(`[${CONNECTION_BANNER}][data-state="offline"]`);
+  await expect(banner).toBeVisible();
+
+  await page.locator(`[${DRAWER_TOGGLE}]`).click();
+  const geometry = await page.locator(`[${DRAWER}]`).evaluate((drawer, bannerAttr) => {
+    drawer.scrollTop = drawer.scrollHeight;            // the foot of the menu
+    const account = drawer.querySelector(
+      '[data-recued-webclient-drawer-link="account"]',
+    )!.getBoundingClientRect();
+    const bar = document.querySelector(`[${bannerAttr}]`)!.getBoundingClientRect();
+    return {
+      bannerHeight: Math.round(bar.height),
+      clearance: Math.round(bar.top - account.bottom),
+      published: getComputedStyle(drawer)
+        .getPropertyValue('--wc-connection-banner-h').trim(),
+    };
+  }, CONNECTION_BANNER);
+
+  // ⚠ At this width the banner wraps to two lines — which is the case its own
+  // resize listener exists for, and the worst one to get wrong.
+  expect(geometry.bannerHeight).toBeGreaterThan(40);
+  expect(geometry.published).toBe(`${geometry.bannerHeight}px`);
+  // The last seat ends ABOVE the banner, not underneath it.
+  expect(geometry.clearance).toBeGreaterThanOrEqual(0);
 });

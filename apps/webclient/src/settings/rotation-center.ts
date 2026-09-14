@@ -48,19 +48,19 @@ export const ROTATION_COPY: Record<
   { confirm_title: string; confirm_body: string; success_title: string }
 > = {
   master_dek_rotate: {
-    confirm_title: 'Rotate the master DEK?',
+    confirm_title: 'Replace the main key?',
     confirm_body:
-      'Every encrypted blob in your warehouse will be re-encrypted under a fresh master DEK. The active path is paused during rotation; new writes resume automatically when the rotation completes.',
-    success_title: 'Master DEK rotated.',
+      'Everything you have stored will be locked again with a new main key. Recued pauses while it works, and carries on by itself when it is done.',
+    success_title: 'Your main key has been replaced.',
   },
   server_identity_rotate: {
-    confirm_title: 'Rotate the server identity key?',
+    confirm_title: 'Replace the key that proves this is your server?',
     confirm_body:
-      'Every paired client (bridge + webclient) will be required to re-pair against the new identity. Plan a maintenance window — clients pinned to the old identity will refuse to connect until you walk them through the re-pair flow.',
-    success_title: 'Server identity rotated. Re-pair every client to restore connections.',
+      'Every device you have paired will have to pair again. Pick a time when that is fine. Until you do it, they will refuse to connect.',
+    success_title: 'Done. Pair every device again to get them back.',
   },
   publisher_identity_rotate: {
-    confirm_title: 'Rotate the publisher identity key?',
+    confirm_title: 'Replace the key you sign Recipes with?',
     confirm_body:
       'Every recipe you have published will be re-signed under the new publisher identity + re-uploaded to the marketplace. Consumers who pinned the previous publisher_id will see a "publisher key rotated" badge until they accept the new key.',
     success_title: 'Publisher identity rotated. Marketplace will surface the rotated badge.',
@@ -68,7 +68,7 @@ export const ROTATION_COPY: Record<
   tls_renew: {
     confirm_title: 'Renew the TLS cert?',
     confirm_body:
-      'Pro tier triggers ACME via the cloud helper. Free tier drives certbot/caddy locally. The substrate broadcasts a signed rotation notice so pinned clients accept the new fingerprint without re-pair.',
+      'Pro tier triggers Recued gets one for you. Free tier drives certbot/caddy locally. The substrate broadcasts a signed rotation notice so pinned clients accept the new fingerprint without re-pair.',
     success_title: 'TLS cert renewed.',
   },
   // D-169 P0 Slice 2B — single client-token rotation copy covers both
@@ -79,14 +79,14 @@ export const ROTATION_COPY: Record<
   webclient_token_rotate: {
     confirm_title: 'Rotate this client token?',
     confirm_body:
-      'The selected paired client (bridge or webclient) will be revoked + a fresh bearer issued. The client will be redirected to the pairing flow on its next request — make sure you have access to the device.',
+      'The device you picked loses its access and gets a new key. Next time it asks for anything it will be sent back to pairing, so make sure you can reach that device.',
     success_title: 'Client token rotated. Re-pair the client to restore the connection.',
   },
   webhook_secret_rotate: {
     confirm_title: 'Rotate this webhook secret?',
     confirm_body:
-      'Pending unverified inbound webhooks (any HMAC computed against the old secret) will fail verification. Update the vendor configuration with the new secret as soon as the rotation completes to avoid missed deliveries.',
-    success_title: 'Webhook secret rotated. Update the vendor configuration with the new secret.',
+      'Any webhook still on its way, signed with the old secret, will be turned away. Put the new secret into the other service as soon as this finishes, so nothing is missed.',
+    success_title: 'The webhook secret is swapped. Put the new one into the other service.',
   },
   mark_compromised: {
     confirm_title: 'Mark this key class as compromised?',
@@ -110,15 +110,15 @@ export const ROTATION_ERROR_COPY: Record<RotationErrorCode, string> = {
   acme_helper_unavailable:
     'ACME helper is unreachable. Check Settings → Server → Pro DDNS, or fall back to the local certbot/caddy hook.',
   subscription_required:
-    'A Pro subscription is required for the cloud ACME helper. Switch to BYO certbot/caddy or upgrade.',
+    'You need Pro for the cloud to get certificates for you. Use your own certbot or caddy instead, or move to Pro.',
   target_not_found: 'No client/vendor matched the rotation target. Refresh the panel + retry.',
   database_rekey_unsupported:
     'This build cannot rotate the master key: your realm database is encrypted from it, and rotating without re-keying the database would leave it unreadable by both your keyfile and your recovery key. Nothing was changed.',
   forbidden: 'You do not have permission to rotate this key. Sign in as the owning admin.',
   unsigned_notice:
-    'A cert rotation notice arrived without a valid signature + was rejected. Review Settings → Server → Reachability for cert rotation status.',
+    'A message about swapping your certificate arrived unsigned, so Recued threw it away. Look in Settings, then Server, then Reachability.',
   storage_io_error:
-    'The rotation could not persist the new key material. Check disk space + filesystem permissions.',
+    'Recued could not save the new key. Check there is room on the disk, and that it is allowed to write there.',
   // ⛔ SAY "NOTHING IS WRONG" FIRST. Every other line here describes a fault
   //    the operator must go fix; these two describe a healthy server
   //    declining to spend certificate quota. Copy that opened with the

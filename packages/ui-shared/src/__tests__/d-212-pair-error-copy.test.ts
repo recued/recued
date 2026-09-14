@@ -62,17 +62,17 @@ describe('D-212 tail #6 — the codes that used to render as "check the URL"', (
     // most likely to creep back in during a copy edit.
     for (const code of THE_FOUR_THAT_WERE_MUTE) {
       const { copy } = describePairServerError(code, 'raw server text');
-      expect(copy).not.toMatch(/check the url/i);
+      expect(copy).not.toMatch(/check the address/i);
       expect(copy.length).toBeGreaterThan(20);
     }
-    expect(PAIR_SERVER_REFUSED_COPY).not.toMatch(/check the url/i);
+    expect(PAIR_SERVER_REFUSED_COPY).not.toMatch(/check the address/i);
   });
 
   it('keeps "check the URL" for the one code where it IS the advice', () => {
     // Something answered but does not serve the endpoint — an old server,
     // or not a recued-server at all. Here the URL genuinely is the suspect,
     // and dropping this would over-correct the fix.
-    expect(describePairServerError('not_found').copy).toMatch(/check the url/i);
+    expect(describePairServerError('not_found').copy).toMatch(/check the address/i);
   });
 
   it('treats a missing recovery verifier as server setup, not a code refresh', () => {

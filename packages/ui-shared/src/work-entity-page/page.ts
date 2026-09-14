@@ -70,6 +70,9 @@ export interface WorkEntityPageProps {
   opening_entity_id?: string;
   /** Forwarded to an open dialog when user dismissal needs confirmation. */
   discard_guard?: boolean;
+  /** D-267 — pre-rendered provenance feed for the open EDIT dialog. Passed
+   *  straight through; the page knows nothing about its contents. */
+  history_html?: string;
 }
 
 export const renderWorkEntityPage = (props: WorkEntityPageProps): string => {
@@ -129,6 +132,9 @@ export const renderWorkEntityPage = (props: WorkEntityPageProps): string => {
           sources: props.source_options,
           ref_picker: props.ref_picker === true,
           discard_guard: props.discard_guard === true,
+          ...(props.history_html !== undefined
+            ? { history_html: props.history_html }
+            : {}),
         });
 
   return `

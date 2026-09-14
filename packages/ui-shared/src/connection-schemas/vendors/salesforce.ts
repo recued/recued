@@ -50,7 +50,7 @@ const SALESFORCE_FIELDS: readonly ConnectionField[] = [
     key: 'name',
     label: 'Name',
     type: 'identifier',
-    help: 'Lowercase identifier used in recipes (e.g. `salesforce`, `salesforce-sandbox`).',
+    help: 'A short lower-case name you use in Recipes, such as `salesforce`, `salesforce-sandbox`).',
     placeholder: 'salesforce',
   },
   {
@@ -67,7 +67,7 @@ const SALESFORCE_FIELDS: readonly ConnectionField[] = [
     key: 'config.vendor',
     label: 'Vendor',
     type: 'text',
-    help: 'Salesforce vendor identifier — locked at enrollment.',
+    help: 'Salesforce sets this when you connect. You cannot change it.',
     placeholder: 'salesforce',
     hidden: true,
   },
@@ -97,7 +97,7 @@ const SALESFORCE_FIELDS: readonly ConnectionField[] = [
     label: 'Auth Type',
     type: 'select',
     options: ['oauth2_refresh'],
-    help: 'Salesforce uses OAuth 2.0 with refresh tokens.',
+    help: 'Salesforce asks you to sign in, and Recued stays signed in for you.',
     hidden: true,
   },
   {
@@ -122,8 +122,8 @@ const SALESFORCE_FIELDS: readonly ConnectionField[] = [
     type: 'text',
     optional: true,
     help:
-      'OAuth scopes requested at authorization. Pre-filled from Salesforce\'s '
-      + 'defaults plus the scopes your installed packs need — edit to add or trim.',
+      'What Recued asks permission for. Filled in from Salesforce\'s '
+      + 'own defaults, plus whatever your installed Packs need. You can add or remove.',
   },
   // Token endpoint — paired with `config.sandbox`. The renderer
   // shows whichever row matches the active sandbox-flag value.

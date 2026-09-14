@@ -127,8 +127,10 @@ export interface AuditEntry {
   /** Smart Backfill metadata (Phase 5). Set when `trigger_source ===
    *  'backfill'` so the consolidated audit UI can render
    *  "47 cycles missed since 9:42am" inline without scanning two
-   *  rows. `missed_cycles: 'unknown'` for the first catch-up after
-   *  schedule creation when there's no observed-cadence sample yet. */
+   *  rows. `missed_cycles: 'unknown'` only when the cron expression
+   *  cannot be read — it used to also mean "no observed-cadence sample
+   *  yet", which stopped being a thing when the count became a tally of
+   *  cron occurrences rather than a division. */
   backfill?: {
     missed_cycles: number | 'unknown';
     last_run_at_before: number;
@@ -537,6 +539,16 @@ export type ActivityAction =
   // mail-send is a recipe-driven deliverable while notification is the
   // fan-out channel — the audit feed surfaces them separately.
   | 'mail_send'
+  // D-264 — one row per `core.mail.draft.save-to-mailbox`: a message parked in the
+  // owner's own Drafts folder. `detail` is JSON-encoded `{ subject, body_bytes,
+  // recipient_count, draft_source_id, replaced_prior, success, warnings?,
+  // error?, recipe_id?, step_id? }`.
+  //
+  // ⚠ SEPARATE FROM `mail_send`, and the separation is the point: the feed must
+  // never read "Recued emailed these people" for a message nobody received.
+  // Recipients are counted, never listed — a parked draft has not disclosed an
+  // address to anyone, so the audit row need not either.
+  | 'mail_draft_saved_to_mailbox'
   // D-123 Phase 7 — one row per housekeeping cycle. Target is
   // `'system'`; `detail` is JSON-encoded
   // `{ preset, duration_ms, tasks_stepped, tasks_complete,

@@ -237,7 +237,7 @@ const pairErrorCopy = (error: unknown): string | null => {
   // Do not leak method names or store diagnostics from an unexpected server
   // error into owner-facing copy. The connection classifier already gives
   // safe, specific copy for offline / timeout / in-doubt failures.
-  return 'Could not load or update this intake-form recipe pair. Refresh and try again.';
+  return 'Recued could not load or change what this form is joined to. Refresh and try again.';
 };
 
 const bindingOf = (
@@ -258,23 +258,23 @@ const CLAIM_CONFIGURATION_BLOCKER_COPY: Record<
   ReceptionIntakeRecipePairClaimConfigurationBlockerCode,
   string
 > = {
-  claim_configuration_missing: 'Recipe claim configuration is missing',
-  claim_configuration_invalid: 'Recipe claim configuration is invalid',
-  stripe_connection_lookup_unavailable: 'Stripe connection inventory is unavailable',
-  stripe_connection_missing: 'The exact Stripe connection is not enrolled',
-  stripe_connection_source_mismatch: 'Connection inventory returned a different source',
-  stripe_connection_not_stripe: 'The named API connection is not a Stripe connection',
-  template_lookup_unavailable: 'Local template inventory is unavailable',
-  template_missing: 'The exact local template no longer exists',
-  template_not_local: 'The template record is not backed by local durable storage',
-  template_mime_unsupported: 'The template is not Markdown or plain text',
-  template_too_large: 'The template exceeds the one MiB source limit',
-  template_source_mismatch: 'The template bytes and durable metadata do not match',
-  template_unreadable: 'The exact local template bytes cannot be read',
-  seller_offer_lookup_unavailable: 'Core Seller offer inventory is unavailable',
-  seller_offer_missing: 'The exact core Seller offer no longer exists',
-  seller_offer_source_mismatch: 'Core Seller returned an invalid or different offer source',
-  seller_offer_recipe_mismatch: 'This recipe neither created nor fulfills the core Seller offer',
+  claim_configuration_missing: 'The payment set-up for this Recipe is missing',
+  claim_configuration_invalid: 'The payment set-up for this Recipe is wrong',
+  stripe_connection_lookup_unavailable: 'Recued cannot see your Stripe Connections',
+  stripe_connection_missing: 'That exact Stripe Connection is not set up',
+  stripe_connection_source_mismatch: 'The Connection list came back about something else',
+  stripe_connection_not_stripe: 'That Connection is not a Stripe one',
+  template_lookup_unavailable: 'Recued cannot see your templates',
+  template_missing: 'That template is gone',
+  template_not_local: 'That template is not saved on your own server',
+  template_mime_unsupported: 'The template has to be Markdown or plain text',
+  template_too_large: 'The template is bigger than 1 MiB',
+  template_source_mismatch: 'The template file and what your server says about it do not match',
+  template_unreadable: 'Recued cannot read that template',
+  seller_offer_lookup_unavailable: 'Recued cannot see your Seller offers',
+  seller_offer_missing: 'That Seller offer is gone',
+  seller_offer_source_mismatch: 'Seller came back with a different offer',
+  seller_offer_recipe_mismatch: 'This Recipe did not make that Seller offer, and does not fill it',
 };
 
 const statusBadge = (
@@ -283,7 +283,7 @@ const statusBadge = (
   authorityCurrent: boolean,
 ): string => {
   if (loading) return badge({ label: 'Loading', tone: 'idle' });
-  if (!authorityCurrent) return badge({ label: 'Refresh required', tone: 'off' });
+  if (!authorityCurrent) return badge({ label: 'Needs a refresh', tone: 'off' });
   if (pair === null) {
     return badge({ label: 'Unavailable', tone: 'off' });
   }
@@ -317,25 +317,27 @@ const claimConfigurationReadinessSummary = (
         <div><dt>Seller outcome offer</dt><dd>${configuration.version
           === PAID_DOCUMENT_DIRECT_CHECKOUT_SELLER_ASSOCIATION_CONFIGURATION_VERSION
           ? `<code>${e(configuration.seller_offer_id)}</code>`
-          : 'Not associated'}</dd></div>
+          : 'Not joined up'}</dd></div>
       </dl>
     `;
   if (readiness.status === 'ready') {
     const sourceCopy = configuration?.version
       === PAID_DOCUMENT_DIRECT_CHECKOUT_SELLER_ASSOCIATION_CONFIGURATION_VERSION
       ? `
-          The exact recipe-pinned Stripe connection, durable template, core
-          Seller row, and recipe route are present now. Mapped offer terms are
-          rechecked from the actual submission before task, state, or provider
-          writes. This does not authorize a provider attempt or redirect.
+          The exact Stripe Connection, template, Seller row and Recipe route
+          this Recipe pins are all here now. What the offer says is looked at
+          again from the real answer before Recued makes a task, saves
+          anything, or writes to the service. This does not say yes to taking
+          a payment, or to sending anyone anywhere.
         `
       : `
-          The exact recipe-pinned Stripe connection and durable template are
-          present now. This does not authorize a provider attempt or redirect.
+          The exact Stripe Connection and template this Recipe pins are here
+          now. This does not say yes to taking a payment, or to sending anyone
+          anywhere.
         `;
     return `
       <div class="reception-pair-readiness" data-claim-configuration-readiness="ready">
-        ${badge({ label: 'Claim sources ready', tone: 'ok' })}
+        ${badge({ label: 'Everything the payment needs is ready', tone: 'ok' })}
         <p class="reception-pair-help">${sourceCopy}</p>
         ${configurationDetails}
       </div>
@@ -346,7 +348,7 @@ const claimConfigurationReadinessSummary = (
   ).join('');
   return `
     <div class="reception-pair-readiness" data-claim-configuration-readiness="blocked">
-      ${badge({ label: 'Claim setup incomplete', tone: 'off' })}
+      ${badge({ label: 'The payment set-up is not finished', tone: 'off' })}
       <p class="reception-pair-help">
         This exact pair remains saved. Its recipe-local deployment sources must
         be fixed before a direct Checkout claim can be created.
@@ -364,8 +366,8 @@ const pairSummary = (
 ): string => {
   if (pair === null) {
     return `<p class="reception-pair-copy">${loading
-      ? 'Loading the current pair…'
-      : 'The current pair is unavailable. Refresh to try again.'}</p>`;
+      ? 'Loading what this form is joined to…'
+      : 'Recued cannot show what this form is joined to. Refresh to try again.'}</p>`;
   }
   if (!authorityCurrent) {
     if (pair.binding === null) {
@@ -378,7 +380,7 @@ const pairSummary = (
         <div><dt>Pair revision</dt><dd><code>${e(pair.binding.pair_revision)}</code></dd></div>
         <div><dt>Seller outcome offer</dt><dd>${'seller_offer_id' in pair.binding
           ? `<code>${e(pair.binding.seller_offer_id)}</code>`
-          : 'Not associated'}</dd></div>
+          : 'Not joined up'}</dd></div>
       </dl>
     `;
   }
@@ -394,8 +396,8 @@ const pairSummary = (
   }
   const binding = pair.binding;
   const headline = pair.status === 'ready'
-    ? 'The current form and saved recipe still match this exact pair.'
-    : 'The form or saved recipe has changed since this pair was bound.';
+    ? 'This form and the saved Recipe still match.'
+    : 'The form or the saved Recipe has changed since you joined them.';
   return `
     <p class="reception-pair-copy">${headline}</p>
     <dl class="reception-pair-binding">
@@ -403,7 +405,7 @@ const pairSummary = (
       <div><dt>Pair revision</dt><dd><code>${e(binding.pair_revision)}</code></dd></div>
       <div><dt>Seller outcome offer</dt><dd>${'seller_offer_id' in binding
         ? `<code>${e(binding.seller_offer_id)}</code>`
-        : 'Not associated'}</dd></div>
+        : 'Not joined up'}</dd></div>
     </dl>
     ${pair.status === 'ready' && pair.pair_subject === 'form' ? `
       ${claimConfigurationReadinessSummary(pair)}
@@ -423,7 +425,7 @@ const claimConfigurationAuthoringPanel = (
   if (authoring.status === 'fork_required') {
     return panel({
       tone: 'warn',
-      title: 'Configure a local fork',
+      title: 'Set up your own copy',
       body: `
         <p class="reception-pair-copy" data-claim-configuration-authoring="fork_required">
           This exact recipe is owned by a pack or bundled read-only. Create a
@@ -436,11 +438,11 @@ const claimConfigurationAuthoringPanel = (
   if (authoring.status === 'unavailable') {
     return panel({
       tone: 'info',
-      title: 'Configuration is read-only',
+      title: 'You can look, but not change',
       body: `
         <p class="reception-pair-copy" data-claim-configuration-authoring="unavailable">
-          Core cannot prove an effective persistent local recipe row for this
-          pair. Refresh or save a new local fork before configuring checkout.
+          Your server cannot find a saved Recipe of your own for this.
+          Refresh, or save your own copy, before you set up checkout.
         </p>
       `,
     });
@@ -450,23 +452,23 @@ const claimConfigurationAuthoringPanel = (
   const configuration = claimConfigurationFromDraft(draft);
   const disabled = state.loading || state.pairRefreshing || state.saving;
   return panel({
-    title: 'Claim configuration',
+    title: 'Payment set-up',
     body: `
       <div data-claim-configuration-authoring="editable">
         <p class="reception-pair-copy">
-          These are local deployment locators only. Product, amount, currency,
-          and submitted-field validation remain in the paired recipe. An
-          optional Seller offer id is navigation intent only; it does not prove
-          the row, price, payment, or fulfillment.
+          These only say where things are on your server. What is sold, how
+          much, in what money, and which answers are looked at all stay in the
+          Recipe. A Seller offer id only points somewhere — it does not prove
+          the offer, the price, the payment, or that anything was sent.
         </p>
         <div class="reception-pair-config-grid">
           <label class="reception-pair-label">
-            Stripe connection name
+            Stripe Connection name
             <input class="reception-pair-input" data-action="reception-pair-config-connection"
               value="${e(draft.stripeConnectionName)}" ${disabled ? 'disabled' : ''}>
           </label>
           <label class="reception-pair-label">
-            Template file ref
+            Which template file
             <input class="reception-pair-input" data-action="reception-pair-config-template-ref"
               value="${e(draft.templateFileRef)}" placeholder="file:32-lowercase-hex"
               ${disabled ? 'disabled' : ''}>
@@ -510,7 +512,7 @@ const claimConfigurationAuthoringPanel = (
         ${actionBar({
           gap: 4,
           children: [button({
-            label: state.saving ? 'Saving…' : 'Save claim configuration',
+            label: state.saving ? 'Saving…' : 'Save the payment set-up',
             action: 'reception-pair-config-save',
             variant: 'primary',
             size: 'sm',
@@ -551,14 +553,14 @@ const renderPairSection = (
     && pair !== null
     && pair.status !== 'unpaired';
   const bindLabel = pair === null || pair.status === 'unpaired'
-    ? 'Bind recipe'
-    : 'Rebind recipe';
+    ? 'Join a Recipe'
+    : 'Join it again';
 
   const feedback = state.error !== null
     ? panel({
         tone: 'danger',
         role: 'alert',
-        title: 'Pair update failed',
+        title: 'That change did not work',
         body: `<p class="reception-pair-feedback">${e(state.error)}</p>`,
       })
     : state.notice !== null
@@ -573,7 +575,7 @@ const renderPairSection = (
     ? emptyHint({
         message: state.loading
           ? 'Loading saved recipes…'
-          : 'No saved recipes are available. Install or save a recipe, then refresh.',
+          : 'You have no saved Recipes. Install or save one, then refresh.',
       })
     : `
       <label class="reception-pair-label" for="reception-pair-recipe">Saved recipe</label>
@@ -621,7 +623,7 @@ const renderPairSection = (
                        .map((op) => `<code>${e(op)}</code>`).join(', ')}.`
                    : ''
                }`
-            : `Actions that write still need your approval each time; reads do not.`}
+            : `Anything that changes something still asks you every time. Just looking does not.`}
           The form will not run until you allow this.
         </p>
         <label class="reception-pair-help reception-door-consent-standing">
@@ -634,8 +636,8 @@ const renderPairSection = (
             ? `You are approving the list above ONCE instead of once per submission.
                <strong>Only this form</strong> — another form, or this one re-bound to a
                recipe that needs something new, asks you again.`
-            : `Leave this off and every write pauses for you — right for a form you want to
-               watch, and unworkable for one that takes hundreds of submissions a day.`}
+            : `Leave this off and everything that changes something waits for you — good for a
+               form you want to watch, hopeless for one that gets hundreds of answers a day.`}
         </p>
         ${actionBar({
           gap: 4,
@@ -668,14 +670,14 @@ const renderPairSection = (
             gap: 4,
             children: [
               button({
-                label: 'Confirm clear',
+                label: 'Yes, unjoin them',
                 action: 'reception-pair-clear-confirm',
                 variant: 'danger',
                 size: 'sm',
                 disabled: !canClear,
               }),
               button({
-                label: 'Keep pair',
+                label: 'Keep them joined',
                 action: 'reception-pair-clear-cancel',
                 size: 'sm',
                 disabled: state.saving,
@@ -705,7 +707,7 @@ const renderPairSection = (
       ${state.loading || state.pairRefreshing ? '<div class="reception-loading-bar" role="status" aria-label="Loading pair…"></div>' : ''}
       ${feedback}
       ${panel({
-        title: 'Current pair',
+        title: 'Joined to',
         body: pairSummary(
           pair,
           state.loading || state.pairRefreshing,
@@ -714,7 +716,7 @@ const renderPairSection = (
       })}
       ${claimConfigurationAuthoringPanel(state)}
       ${panel({
-        title: 'Select the recipe source',
+        title: 'Pick where the Recipe comes from',
         body: `
           <p class="reception-pair-copy">
             The intake form and recipe are designed as one exact pair. The recipe owns
@@ -744,7 +746,7 @@ const renderPairSection = (
                 disabled: state.loading || state.pairRefreshing || state.saving,
               }),
               button({
-                label: 'Clear pair',
+                label: 'Unjoin them',
                 action: 'reception-pair-clear-request',
                 variant: 'danger-text',
                 size: 'sm',
@@ -1017,18 +1019,18 @@ export const mountReceptionIntakeRecipePairSection = (
           pendingDoorConsent: null,
           standingClosure: false,
           notice: null,
-          error: `This recipe cannot run on a public form: ${door.detail}`,
+          error: `This Recipe cannot run on a form anyone can see: ${door.detail}`,
         };
         return;
       }
 
       const pairCopy = result.outcome === 'created'
-        ? 'Recipe paired with this intake form.'
+        ? 'The Recipe is joined to this form.'
         : result.outcome === 'updated'
-          ? 'Intake-form recipe pair updated.'
-          : 'This exact pair was already current.';
+          ? 'Changed what this form is joined to.'
+          : 'They were already joined like this.';
       const doorCopy = door.operation_ids.length === 0
-        ? ' The form is live. It performs no actions on its own.'
+        ? ' The form is live. It does nothing on its own.'
         : ` The form is live and may: ${door.operation_ids.join(', ')}.`;
       state = { ...state, pendingDoorConsent: null, notice: `${pairCopy}${doorCopy}`, error: null };
     } catch (error) {
@@ -1056,7 +1058,7 @@ export const mountReceptionIntakeRecipePairSection = (
       state = {
         ...state,
         error:
-          'Complete the canonical connection, HTTPS URLs, expiry, local template ref, and optional lowercase Seller offer id before saving.',
+          'Fill in the Connection, the https addresses, when it runs out, the template, and a Seller offer id if you want one, before you save.',
         notice: null,
       };
       render();
@@ -1080,8 +1082,8 @@ export const mountReceptionIntakeRecipePairSection = (
       });
       if (disposed) return;
       const notice = result.outcome === 'updated'
-        ? 'Claim configuration saved. Rebind this recipe to pin its new pair revision.'
-        : 'This exact claim configuration was already current.';
+        ? 'Payment set-up saved. Join this Recipe again to pin the new version.'
+        : 'That payment set-up was already what you had.';
       try {
         const pair = await conn('reception.intake_recipe_pair.get', {
           endpoint_id: endpointId,
@@ -1095,7 +1097,7 @@ export const mountReceptionIntakeRecipePairSection = (
           ...state,
           authorityCurrent: false,
           error:
-            'The configuration save completed, but the current pair could not be refreshed. Refresh before making another change.',
+            'Recued saved it, but could not show you the new state. Refresh before you change anything else.',
           notice,
         };
       }
@@ -1132,8 +1134,8 @@ export const mountReceptionIntakeRecipePairSection = (
       // anyway so the rendered state is server authority, including the
       // idempotent `removed:false` path.
       const notice = result.removed
-        ? 'Pair cleared. This endpoint remains a generic intake form.'
-        : 'The endpoint was already unpaired.';
+        ? 'They are no longer joined. This stays an ordinary form.'
+        : 'They were not joined anyway.';
       try {
         const pair = await conn('reception.intake_recipe_pair.get', {
           endpoint_id: endpointId,
@@ -1153,7 +1155,7 @@ export const mountReceptionIntakeRecipePairSection = (
           authorityCurrent: false,
           confirmingClear: false,
           error:
-            'The pair clear completed, but its current state could not be refreshed. Refresh before making another change.',
+            'Recued unjoined them, but could not show you the new state. Refresh before you change anything else.',
           notice,
         };
       }
@@ -1255,7 +1257,7 @@ export const mountReceptionIntakeRecipePairSection = (
         ...state,
         pendingDoorConsent: null,
         standingClosure: false,
-        notice: 'Not allowed. This form is paired but will not run until you allow it.',
+        notice: 'Not allowed yet. This form is joined to a Recipe, but nothing runs until you allow it.',
       };
       render();
     },

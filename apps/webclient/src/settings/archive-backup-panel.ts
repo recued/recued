@@ -379,23 +379,23 @@ export interface ArchiveBackupPanelMount {
 
 const COPY = {
   menu_body:
-    'Back up everything Recued holds for you — your warehouse, contacts, memory, connections and settings — into one encrypted archive on your server, or restore your server from a previous backup. Backups are sealed with your 24-word recovery key.',
+    'Copy everything Recued holds for you into one locked file on your server. That is your things, your contacts, your memories, your connections and your settings. You can also put an old backup back. Backups are locked with your 24-word recovery key.',
   backup_cta: 'Back up all my data',
   restore_cta: 'Restore from a backup',
-  passport_only_cta: 'Export identity passport only',
+  passport_only_cta: 'Save just this server’s identity',
 
   // Export
   export_body:
-    'Enter your 24-word recovery key to seal the backup. The key is sent only to your server and never stored here.',
+    'Type your 24 words to lock the backup. They go only to your server, and are never kept here.',
   export_key_label: '24-word recovery key',
-  include_blobs_label: 'Include attached files and large records',
-  include_passport_label: 'Include identity passport (for migrating to a new server)',
+  include_blobs_label: 'Include files and big records',
+  include_passport_label: 'Include this server’s identity, so you can move to a new server',
   run_backup_cta: 'Start backup',
   export_running: 'Backing up your data…',
   export_done_prefix: 'Backup ready:',
   export_done_download_by: 'download by',
   export_expired:
-    'That backup is no longer available — it expired or was cleaned up. Run a new backup.',
+    'That backup is gone. It ran out, or it was tidied away. Make a new one.',
   download_cta: 'Download to this device',
   download_pending: 'Downloading…',
   download_done: 'Downloaded to this device.',
@@ -403,9 +403,9 @@ const COPY = {
 
   // Restore
   restore_body:
-    'Restore replaces ALL current data on this server with the snapshot inside a backup file. Upload a backup file from this device (or give a path to one already on your server), enter your 24-word recovery key, then preview before confirming.',
+    'This REPLACES everything on this server with what is inside the backup. Upload a backup file from this device, or say where one already is on your server. Type your 24 words. Then look at what will happen before you say yes.',
   restore_upload_label: 'Upload a backup file from this device',
-  restore_path_label: 'Or path to a backup already on your server',
+  restore_path_label: 'Or where to find one already on your server',
   restore_key_label: 'Recovery key for this backup',
   restore_path_placeholder: 'exports/recued-2026-06-25.recued.archive',
   restore_uploading: 'Uploading your backup…',
@@ -415,29 +415,29 @@ const COPY = {
   restore_upload_failed: 'Upload failed:',
   preview_cta: 'Preview backup',
   restore_preview_busy: 'Reading the backup…',
-  restore_commit_busy: 'Restoring the backup…',
+  restore_commit_busy: 'Putting the backup back…',
   restore_arm_label:
-    'I understand this REPLACES all current data on this server with the snapshot.',
+    'I understand this REPLACES everything on this server.',
   restore_arm_label_cross:
-    'I understand this REPLACES all current data on this server with the snapshot — and gives this server a new identity.',
+    'I understand this REPLACES everything on this server, and gives the server a new identity.',
   restore_arm_confirm: 'Yes, replace everything.',
   restore_arm_confirm_cross: 'Yes, replace everything and its identity.',
-  commit_cta: 'Restore (replace everything)',
+  commit_cta: 'Put it back, and replace everything',
   restore_committed:
-    'Restore committed — the server is restarting to load the snapshot. Reconnecting…',
+    'Done. The server is restarting to load it. Reconnecting…',
   // Q2 cross-realm
   cross_realm_warning:
-    'This backup belongs to a different identity than this server. Restoring it gives this server that identity — your other paired devices will need to be re-paired afterward. Confirm with THIS server’s current recovery key to authorize the change.',
+    'This backup belongs to a different server. Putting it back gives this server that identity. Your other paired devices would all have to pair again. Type THIS server’s current 24 words to allow it.',
   realm_key_label: 'This server’s current recovery key',
   realm_mismatch:
-    "That isn't this server's current recovery key, so this foreign backup can't be authorized. Check your written copy and try again.",
+    "Those are not this server’s current 24 words, so Recued cannot allow this. Check what you wrote down and try again.",
 
   // Passport-only export
-  passport_busy: 'Signing your identity passport…',
-  passport_done: 'Identity passport exported (support / audit).',
-  passport_json_label: 'Exported identity passport JSON',
+  passport_busy: 'Saving this server’s identity…',
+  passport_done: 'Saved. Use it for support or checking.',
+  passport_json_label: 'This server’s identity, as a file',
   passport_download_cta: 'Download .json',
-  passport_failed: 'The passport export failed.',
+  passport_failed: 'Recued could not save it.',
 
   // Shared
   mnemonic_placeholder: 'word1 word2 word3 … word24',
@@ -451,7 +451,7 @@ const COPY = {
     "That doesn't look like a valid 24-word recovery key for this server. Check for typos or missing words.",
   missing_path: 'Enter the path to the backup file on your server.',
   key_mismatch:
-    "That recovery key doesn't match this archive. Check your written copy and try again.",
+    "Those words do not match this backup. Check what you wrote down and try again.",
   export_failed: 'The backup failed.',
   export_recheck_cta: 'Check backup again',
   export_resume_body:

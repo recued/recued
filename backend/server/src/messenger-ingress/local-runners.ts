@@ -503,14 +503,17 @@ export const createDiscordGatewayRunner = (
   let fatal: string | null = null;
   let requestedRetryDelayMs = 0;
 
-  const persistResume = (): void => {
+  const persistResume = (next: DiscordResumeState): void => {
     options.stateStore.put({
       vendor: 'discord',
       connection_name: options.connectionName,
       mode: 'socket',
       credential_fingerprint: options.credentialFingerprint,
-      state: { ...resume },
+      state: { ...next },
     });
+    // Reconnect in this process must use the same committed cursor a restarted
+    // process would read. A failed put must not advance the in-memory cursor.
+    resume = next;
   };
 
   const fetchGateway = async (): Promise<string> => {
@@ -587,6 +590,7 @@ export const createDiscordGatewayRunner = (
       // crash during dispatch into an acknowledged/lost event.
       let latestReceivedSequence = resume.sequence;
       let lastError: Error | null = null;
+      let dispatchFailed = false;
       let settled = false;
 
       const clearHeartbeat = (): void => {
@@ -720,43 +724,23 @@ export const createDiscordGatewayRunner = (
         latestReceivedSequence = sequence;
         if (data === null || typeof data !== 'object' || Array.isArray(data)) return;
         const payload = data as Record<string, unknown>;
+        // READY is the first dispatch on a new session. Keep its identity
+        // commit synchronous so an immediate non-resumable close can clear it.
+        // RESUMED, in contrast, follows replayed events and is queued below.
         if (eventType === 'READY') {
-          if (
-            typeof payload.session_id !== 'string'
-            || typeof payload.resume_gateway_url !== 'string'
-          ) {
-            lastError = new Error('Discord READY omitted resume state');
-            ws.close(4000, 'invalid READY');
-            return;
-          }
-          resume = {
-            sequence,
-            session_id: payload.session_id,
-            resume_gateway_url: payload.resume_gateway_url,
-          };
           try {
-            persistResume();
+            if (typeof payload.session_id !== 'string' || typeof payload.resume_gateway_url !== 'string') {
+              throw new Error('Discord READY omitted resume state');
+            }
+            persistResume({ sequence, session_id: payload.session_id, resume_gateway_url: payload.resume_gateway_url });
+            options.onState?.('active');
           } catch (error) {
+            dispatchFailed = true;
             lastError = error instanceof Error ? error : new Error(String(error));
             ws.close(4000, 'resume state write failed');
-            return;
           }
-          options.onState?.('active');
           return;
         }
-        if (eventType === 'RESUMED') {
-          resume.sequence = sequence;
-          try {
-            persistResume();
-          } catch (error) {
-            lastError = error instanceof Error ? error : new Error(String(error));
-            ws.close(4000, 'resume state write failed');
-            return;
-          }
-          options.onState?.('active');
-          return;
-        }
-
         // The bound-conversation filter, applied at the ingress boundary so a
         // guild's traffic never enters the messenger layer at all. Interactions
         // are deliberately NOT filtered: one can only exist on a prompt Recued
@@ -787,6 +771,10 @@ export const createDiscordGatewayRunner = (
           }
         }).catch(() => undefined);
         queue = queue.then(async () => {
+          // A cumulative resume cursor cannot cross a failed admission. The
+          // socket close is asynchronous: later messages, filtered events and
+          // RESUMED may already be queued when the first dispatch rejects.
+          if (dispatchFailed) return;
           // The callback request is already in flight and independently
           // observed above. Business dispatch and its durable sequence fence
           // must not wait up to the HTTP timeout for Discord's empty response.
@@ -801,9 +789,10 @@ export const createDiscordGatewayRunner = (
                 : String(sequence),
             } as Parameters<MessengerWebhookDispatch>[0]);
           }
-          resume.sequence = sequence;
-          persistResume();
+          persistResume({ ...resume, sequence });
+          if (eventType === 'RESUMED') options.onState?.('active');
         }).catch((error) => {
+          dispatchFailed = true;
           lastError = error instanceof Error ? error : new Error(String(error));
           if (ws.readyState === WS_OPEN || ws.readyState === WS_CONNECTING) {
             ws.close(4000, 'dispatch failed');

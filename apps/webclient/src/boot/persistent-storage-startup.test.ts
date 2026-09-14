@@ -267,7 +267,7 @@ describe('mountPersistentStorageRecoveryHost', () => {
     expect(dom.getHtml()).toContain(
       'This tab reloaded, but browser storage still did not open.',
     );
-    expect(dom.getHtml()).toContain('exact page you opened is still selected');
+    expect(dom.getHtml()).toContain('page you opened is still chosen');
     expect(dom.getHtml()).toContain(
       'aria-describedby="webclient-persistent-storage-recovery-safety webclient-persistent-storage-recovery-context"',
     );
@@ -295,7 +295,7 @@ describe('mountPersistentStorageRecoveryHost', () => {
 
     await host.retry();
     expect(dom.getHtml()).toContain('Make room for browser storage');
-    expect(dom.getHtml()).toContain('Storage is still full');
+    expect(dom.getHtml()).toContain('There is still no room');
     expect(dom.retryFocus).toHaveBeenCalledTimes(2);
 
     await host.retry();
@@ -316,7 +316,7 @@ describe('mountPersistentStorageRecoveryHost', () => {
     });
 
     expect(dom.getHtml()).toContain('Reload the latest Recued');
-    expect(dom.getHtml()).toContain('older Recued version');
+    expect(dom.getHtml()).toContain('older Recued than the one that saved data');
     expect(dom.getHtml().indexOf(PERSISTENT_STORAGE_RELOAD_ATTR)).toBeLessThan(
       dom.getHtml().indexOf(PERSISTENT_STORAGE_RETRY_ATTR),
     );
@@ -409,7 +409,7 @@ describe('openPersistentStorageWithRecovery', () => {
       openStorage,
     });
     await vi.waitFor(() => {
-      expect(dom.getHtml()).toContain('continues automatically');
+      expect(dom.getHtml()).toContain('carries on by itself');
     });
 
     resolveBlocked(storage);

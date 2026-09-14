@@ -263,7 +263,7 @@ export const buildMcpClientSnippets = (
     },
     {
       id: 'custom',
-      label: 'Custom MCP client',
+      label: 'Another AI app',
       body: [
         `url: ${endpoint}`,
         `Authorization: Bearer ${TOKEN_PLACEHOLDER}`,
@@ -1146,15 +1146,15 @@ const DERIVED_DOOR_BADGES: Record<DerivedDoorType, string> = {
   webhook: 'Webhook',
 };
 const DERIVED_DOOR_META: Record<DerivedDoorType, string> = {
-  reception: 'Runs its bound recipe for anonymous form visitors · capped by its granted ops',
-  webhook: 'Runs its enrolled recipe on vendor deliveries · capped by its granted ops',
+  reception: 'Runs its Recipe for people filling in your form · only what you allow',
+  webhook: 'Runs its Recipe when a service sends something · only what you allow',
 };
 
 /** One-line "limits" summary for the row meta + detail header. */
 const limitsSummary = (row: ContractRowVM): string => {
-  if (row.is_self) return 'Standing authority — no expiry, no usage cap';
+  if (row.is_self) return 'Always allowed. It never runs out, and there is no limit';
   if (isCustomerTemplateRow(row)) {
-    return 'Customer template · stamped when access is issued';
+    return 'A customer template. It is copied when you give someone access';
   }
   // A derived door has no uses/expiry knobs — what bounds it is the recipe it
   // was derived from and the granted op closure. Saying "unlimited uses · no
@@ -1170,7 +1170,7 @@ const limitsSummary = (row: ContractRowVM): string => {
     const remaining = row.uses_remaining ?? row.max_uses;
     parts.push([String(remaining), 'of', String(row.max_uses), 'uses left'].join(' '));
   } else {
-    parts.push('unlimited uses');
+    parts.push('as many times as you like');
   }
   parts.push(
     row.expiry_at !== undefined
@@ -1213,13 +1213,13 @@ const tabsFor = (row: ContractRowVM): ReadonlyArray<TabSpec> =>
 const tabPlaceholder = (id: string): string => {
   switch (id) {
     case 'connect':
-      return 'Connection link, one-time access code, and client setup.';
+      return 'The link, a one-off code, and how to set it up.';
     case 'ops':
-      return 'Per-operation grants, grouped by pack.';
+      return 'What it may do, grouped by Pack.';
     case 'entities':
-      return 'Per-entity grants — collections and enrichment topics.';
+      return 'Which of your things it may read.';
     case 'recipes':
-      return 'Which recipes the AI can find and run. Each write inside one still asks.';
+      return 'Which Recipes the AI can find and run. Anything that changes things still asks you.';
     default:
       return '';
   }
@@ -1285,13 +1285,13 @@ const appendSnippet = (
 const DOOR_TYPE_LABELS: Record<DoorType, string> = {
   mcp: 'MCP tools',
   mcp_chat: 'MCP chat',
-  llm_gateway: 'LLM gateway',
+  llm_gateway: 'The AI door',
   // D-207 — present for exhaustiveness; a reception door is DERIVED from a
   // (form, recipe) bind and never appears in the hand-authoring list.
-  reception: 'Reception (public form)',
+  reception: 'Reception, your public form',
   // D-209 #1 — same: a webhook door is DERIVED at enrollment, never authored,
   // and (D-171 decision 8) not a row in the owner-facing door list either.
-  webhook: 'Webhook (vendor endpoint)',
+  webhook: 'A service telling your server things',
 };
 
 const clearChildren = (node: HTMLElement): void => {
@@ -1542,7 +1542,7 @@ export const bootstrapContractsRoute = (
     form.appendChild(doorRow);
 
     const capField = makeEl(doc, 'label', 'contracts-new-field');
-    capField.appendChild(makeEl(doc, 'span', undefined, 'Usage cap (optional)'));
+    capField.appendChild(makeEl(doc, 'span', undefined, 'Use limit, if you want one'));
     const capInput = makeEl(doc, 'input');
     capInput.setAttribute('type', 'number');
     capInput.setAttribute('min', '1');
@@ -1593,7 +1593,7 @@ export const bootstrapContractsRoute = (
       if (submitting) return;
       const name = nameInput.value.trim();
       if (name.length === 0) {
-        setError('Enter a name for the contract.');
+        setError('Give this agreement a name.');
         nameInput.focus({ preventScroll: true });
         return;
       }
@@ -1603,7 +1603,7 @@ export const bootstrapContractsRoute = (
       if (capRaw.length > 0) {
         cap = Number(capRaw);
         if (!Number.isInteger(cap) || cap <= 0) {
-          setError('Usage cap must be a positive whole number.');
+          setError('The limit has to be a whole number above zero.');
           capInput.focus({ preventScroll: true });
           return;
         }
@@ -1613,7 +1613,7 @@ export const bootstrapContractsRoute = (
       if (expiryRaw.length > 0) {
         const parsed = Date.parse(expiryRaw);
         if (Number.isNaN(parsed)) {
-          setError('Enter a valid expiry date.');
+          setError('Type a real end date.');
           expiryInput.focus({ preventScroll: true });
           return;
         }
@@ -1675,14 +1675,14 @@ export const bootstrapContractsRoute = (
       doc,
       'p',
       'contracts-section-copy contracts-intro',
-      'Contracts define who or what can reach Recued and which tools or data '
-        + 'that access can use.',
+      'An agreement says who or what can reach Recued, and which tools and things '
+        + 'they can use.',
     );
     body.appendChild(intro);
 
     const listTabs = makeEl(doc, 'nav', 'contracts-list-tabs');
     listTabs.setAttribute('role', 'tablist');
-    listTabs.setAttribute('aria-label', 'Contract categories');
+    listTabs.setAttribute('aria-label', 'Kinds of agreement');
     listTabs.setAttribute('aria-orientation', 'horizontal');
     const tabLabels: Record<ContractsListTab, string> = {
       'built-in': 'Built-in',
@@ -1752,7 +1752,7 @@ export const bootstrapContractsRoute = (
         doc,
         'p',
         undefined,
-        `Some contracts could not be loaded: ${loadErrorMessage}`,
+        `Recued could not load some of your agreements: ${loadErrorMessage}`,
       );
       note.setAttribute(CONTRACTS_ROUTE_ERROR_ATTR, '');
       body.appendChild(note);
@@ -1893,22 +1893,22 @@ export const bootstrapContractsRoute = (
 
     if (activeListTab === 'built-in') {
       panel.appendChild(
-        makeEl(doc, 'h2', 'contracts-section-title', 'Built-in contracts'),
+        makeEl(doc, 'h2', 'contracts-section-title', 'Agreements Recued makes itself'),
       );
       panel.appendChild(
         makeEl(
           doc,
           'p',
           'contracts-section-copy',
-          'Owner always exists. Public-form and webhook contracts are created '
-            + 'by their owning features; edit their tool and data grants here.',
+          'You always exist. The ones for your public form and for services are made '
+            + 'by those features. Change what they may do and read here.',
         ),
       );
       const list = makeEl(doc, 'ul');
       list.setAttribute(CONTRACTS_ROUTE_LIST_ATTR, '');
       appendRows(list, [SELF_ROW, ...rows]);
       panel.appendChild(list);
-      appendPager(panel, 'No managed access contracts', ' managed contracts');
+      appendPager(panel, 'No agreements you look after', ' agreements you look after');
     } else {
       const isCustomer = activeListTab === 'customer';
       panel.appendChild(
@@ -1916,7 +1916,7 @@ export const bootstrapContractsRoute = (
           doc,
           'h2',
           'contracts-section-title',
-          isCustomer ? 'Customer templates' : 'Other contracts',
+          isCustomer ? 'Customer templates' : 'Other agreements',
         ),
       );
       panel.appendChild(
@@ -1925,10 +1925,10 @@ export const bootstrapContractsRoute = (
           'p',
           'contracts-section-copy',
           isCustomer
-            ? 'Templates define the tool and data grants stamped into customer '
-              + 'access. Issued customer contracts stay in Seller.'
-            : 'Contracts for agents, applications, shared credentials, and any '
-              + 'other access to Recued.',
+            ? 'A template says what a customer may do and read. Recued copies it when you give someone '
+              + 'access. The customers themselves live under Seller.'
+            : 'Agreements for AI apps, other programs, shared keys, and anything '
+              + 'else that reaches Recued.',
         ),
       );
       if (isCustomer) {
@@ -1952,7 +1952,7 @@ export const bootstrapContractsRoute = (
             'contracts-section-copy',
             isCustomer
               ? 'No customer templates yet.'
-              : 'No other contracts on this page.',
+              : 'No other agreements on this page.',
           ),
         );
       } else {
@@ -1964,7 +1964,7 @@ export const bootstrapContractsRoute = (
 
       appendPager(
         panel,
-        isCustomer ? 'No customer templates' : 'No other contracts',
+        isCustomer ? 'No customer templates' : 'No other agreements',
       );
     }
 
@@ -2122,10 +2122,10 @@ export const bootstrapContractsRoute = (
     back.setAttribute('href', listTabRoute(parentListTab));
     back.textContent = `← Back to ${
       parentListTab === 'built-in'
-        ? 'Built-in contracts'
+        ? 'Agreements Recued makes itself'
         : parentListTab === 'customer'
-          ? 'Customer contracts'
-          : 'Other contracts'
+          ? 'Customer agreements'
+          : 'Other agreements'
     }`;
     back.addEventListener('click', (event) => {
       const click = event as MouseEvent | undefined;
@@ -2166,7 +2166,7 @@ export const bootstrapContractsRoute = (
         doc,
         'p',
         undefined,
-        `Some contracts could not be loaded: ${loadErrorMessage}`,
+        `Recued could not load some of your agreements: ${loadErrorMessage}`,
       );
       note.setAttribute(CONTRACTS_ROUTE_ERROR_ATTR, '');
       detail.appendChild(note);
@@ -2232,7 +2232,7 @@ export const bootstrapContractsRoute = (
         currentRow = { ...currentRow, door_types: updated.door_types ?? next };
       } catch (err) {
         if (disposed) return;
-        headError = `Could not update the door: ${errMessage(err)}`;
+        headError = `Recued could not change the door: ${errMessage(err)}`;
       } finally {
         doorBusy = false;
         doorBusyType = null;
@@ -2258,7 +2258,7 @@ export const bootstrapContractsRoute = (
         currentRow = { ...currentRow, lifecycle_state: revoked.lifecycle_state };
       } catch (err) {
         if (disposed) return;
-        headError = `Could not revoke: ${errMessage(err)}`;
+        headError = `Recued could not turn it off: ${errMessage(err)}`;
       } finally {
         revokeBusy = false;
         releaseOwnership();
@@ -2322,7 +2322,7 @@ export const bootstrapContractsRoute = (
         wrap.appendChild(btn);
       } else if (revokeArmed) {
         wrap.appendChild(
-          makeEl(doc, 'span', 'contracts-revoke-prompt', 'Revoke contract?'),
+          makeEl(doc, 'span', 'contracts-revoke-prompt', 'Turn this agreement off?'),
         );
         const confirm = makeEl(doc, 'button', undefined, 'Confirm');
         confirm.setAttribute('type', 'button');
@@ -2478,8 +2478,8 @@ export const bootstrapContractsRoute = (
           doc,
           'p',
           'contracts-section-copy',
-          'Give this contract a way to reach Recued: use a connection link and '
-            + 'one-time access code, then grant the tools and data it may use.',
+          'Give this agreement a way in. Use the link and the '
+            + 'one-off code, then say which tools and things it may use.',
         ),
       );
       const grid = makeEl(doc, 'div', 'contracts-snippet-grid');
@@ -2496,7 +2496,7 @@ export const bootstrapContractsRoute = (
           doc,
           'div',
           undefined,
-          'Connecting this contract is not available on this server yet.',
+          'This server cannot connect agreements yet.',
         );
         note.setAttribute(CONTRACTS_ROUTE_UNAVAILABLE_ATTR, '');
         host.appendChild(note);
@@ -2640,7 +2640,7 @@ export const bootstrapContractsRoute = (
   };
 
   // ── initial loading placeholder ──
-  const loading = makeEl(doc, 'p', undefined, 'Loading contracts…');
+  const loading = makeEl(doc, 'p', undefined, 'Loading your agreements…');
   loading.setAttribute(CONTRACTS_ROUTE_LOADING_ATTR, '');
   body.appendChild(loading);
 
@@ -2811,7 +2811,7 @@ export const bootstrapContractsRoute = (
     hasInFlightWork: hasContractsInFlightWork,
     inFlightWorkPrompt: () =>
       hasContractsInFlightWork()
-        ? 'A contract action is still in progress. Leave Contracts anyway?'
+        ? 'Something is still happening. Leave anyway?'
         : null,
     getRecoveryContextFreshness: () =>
       opts.contractsListCaller !== undefined && loadErrorMessage === null

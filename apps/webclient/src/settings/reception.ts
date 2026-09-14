@@ -100,42 +100,42 @@ export const RECEPTION_KIND_COPY: Readonly<
     section_label: 'Reception page',
     singular: 'reception page',
     description:
-      'Your public front door at /reception/ — contact card, preferred methods, and call-to-action links. A per-server singleton; no token, no expiry.',
+      'Your front door at /reception/. It shows who you are, how to reach you, and buttons for what people can do. There is one per server. It needs no key and never runs out.',
     create_label: 'Set up Reception page',
   },
   scheduling_link: {
     section_label: 'Scheduling links',
     singular: 'scheduling link',
     description:
-      'Anonymous visitors pick a slot from your free calendar windows. Approval turns the request into a booking with its own time and history.',
+      'People pick a time from when you are free. When you say yes, it becomes a real booking with its own time and history.',
     create_label: 'New scheduling link',
   },
   intake_form: {
     section_label: 'Intake forms',
     singular: 'intake form',
     description:
-      'Structured forms where each approved response becomes a response list you work through — or a task, note, booking, calendar event, or contact. Build a custom form or start from a Foundation pack template.',
+      'Forms people fill in. Each answer you say yes to becomes something you can work through: a list, a task, a note, a booking, a calendar event, or a contact. Build your own, or start from a ready-made one.',
     create_label: 'New intake form',
   },
   drop_link: {
     section_label: 'Drop links',
     singular: 'drop link',
     description:
-      'A "send me a file" link — visitors upload directly to your server filesystem within a closed MIME allowlist. Carries a 30-day hard expiry ceiling.',
+      'A “send me a file” link. Files go straight to your server, and only the kinds you allow. These links can never last more than 30 days.',
     create_label: 'New drop link',
   },
   approval_link: {
     section_label: 'Approval links',
     singular: 'approval link',
     description:
-      'Single-use scoped action tokens — pick a time, approve wording, confirm attendance, answer a question, or upload a doc. Consumed once, then dead.',
+      'A link that works once, for one thing: pick a time, say yes to some wording, confirm you are coming, answer a question, or send a document. Once used, it is dead.',
     create_label: 'New approval link',
   },
   status_link: {
     section_label: 'Status pages',
     singular: 'status page',
     description:
-      'Read-only projections of a work entity — a visitor polls progress without an account. GET-only; carries a 90-day expiry ceiling.',
+      'A page people can look at to follow progress, with no account. They can only look, never change anything. These pages can never last more than 90 days.',
     create_label: 'New status page',
   },
 };
@@ -161,79 +161,79 @@ export const isReceptionEndpointKindAvailable = (
  *  per-kind `*_config_invalid` codes carry the inner validator's first
  *  failure code in the rpc detail message — the renderer appends it. */
 export const RECEPTION_ERROR_COPY: Readonly<Record<ReceptionRpcErrorCode, string>> = {
-  unknown_endpoint_kind: 'Unknown endpoint kind. Refresh the page + try again.',
-  unknown_packet_kind: 'Unknown packet kind for this endpoint. Refresh the page + try again.',
+  unknown_endpoint_kind: 'Recued does not know that kind of link. Load the page again and try once more.',
+  unknown_packet_kind: 'Recued does not know that setting. Load the page again and try once more.',
   packet_kind_disallowed_for_endpoint_kind:
-    'The packet kind does not match the endpoint kind. Each endpoint kind binds to exactly one packet kind — refresh + retry.',
+    'Those settings do not match that kind of link. Each kind goes with one set. Load the page again and try once more.',
   fields_visible_override_exceeds_ceiling:
-    'The visible-fields override exceeds what this packet kind permits. Pick from the closed allowlist shown in the preview.',
+    'You have picked more to show than this kind of link allows. Choose from the list in the preview.',
   fields_visible_unknown_field:
-    'The visible-fields override names a field this packet kind does not have. Pick from the closed allowlist shown in the preview.',
+    'You have picked something this kind of link does not have. Choose from the list in the preview.',
   preview_hash_missing:
-    'This endpoint must be previewed before it can be created. Run View-As-Visitor first.',
+    'Look at this the way a visitor would before you make it. Use View as visitor first.',
   preview_hash_mismatch:
-    'The configuration changed since the preview. Re-run View-As-Visitor so you create exactly what you reviewed.',
+    'Something changed since you looked. Use View as visitor again, so you make exactly what you saw.',
   preview_hash_expired:
-    'The preview expired (10-minute window). Re-run View-As-Visitor + create again.',
-  expires_at_in_past: 'The expiry date is in the past. Pick a future date.',
+    'Your preview ran out after 10 minutes. Use View as visitor again, then make it.',
+  expires_at_in_past: 'That date has already gone. Pick one in the future.',
   expires_at_exceeds_ceiling:
-    'The expiry exceeds this kind’s hard ceiling (drop / approval 30 days, status 90 days). Pick an earlier date.',
+    'That is longer than this kind of link can last. File-drop and approval links last 30 days. Status pages last 90. Pick an earlier date.',
   long_lived_not_permitted_for_kind:
-    'This endpoint kind cannot be long-lived — it carries a hard expiry ceiling. Set a bounded expiry.',
-  source_query_not_object: 'The source query is malformed. Refresh the page + try again.',
-  source_query_unknown_kind: 'Unknown source-query kind. Refresh the page + try again.',
+    'This kind of link cannot last forever. Give it an end date.',
+  source_query_not_object: 'Recued could not read that. Load the page again and try once more.',
+  source_query_unknown_kind: 'Recued does not know that kind. Load the page again and try once more.',
   source_query_missing_id_field:
-    'The source query is missing its id field. Refresh the page + try again.',
+    'That is missing an id. Load the page again and try once more.',
   source_query_disallowed_for_packet:
-    'This source-query kind is not permitted for this packet kind. Refresh the page + try again.',
+    'You cannot use that here. Load the page again and try once more.',
   endpoint_not_found:
-    'That endpoint no longer exists — it may have been revoked on another device. Refresh the list.',
-  endpoint_already_enabled: 'That endpoint is already enabled. Refresh the list.',
-  endpoint_already_disabled: 'That endpoint is already disabled. Refresh the list.',
+    'That link is gone. Someone may have switched it off on another device. Load the list again.',
+  endpoint_already_enabled: 'That link is already on. Load the list again.',
+  endpoint_already_disabled: 'That link is already off. Load the list again.',
   endpoint_already_revoked:
-    'That endpoint is already revoked — revocation is irreversible. Create a fresh endpoint instead.',
+    'That link is already switched off for good. You cannot bring it back. Make a new one.',
   endpoint_revoked_cannot_extend:
-    'A revoked endpoint cannot be extended. Create a fresh endpoint instead.',
+    'You cannot give a switched-off link longer. Make a new one.',
   transformation_unknown:
-    'The packet declaration names an unknown transformation. Refresh the page + try again.',
+    'Recued does not know one of those settings. Load the page again and try once more.',
   allowed_action_unknown_for_kind:
-    'The packet declaration names an action this endpoint kind does not support. Refresh the page + try again.',
+    'This kind of link cannot do that. Load the page again and try once more.',
   reception_page_config_invalid:
-    'The Reception page configuration is invalid. Check the contact card + section + link fields.',
+    'Something on your Reception page is wrong. Check your details, the sections, and the links.',
   scheduling_link_config_invalid:
-    'The scheduling link configuration is invalid. Check the slot duration + availability windows.',
+    'Something about your booking link is wrong. Check the meeting lengths and when you are free.',
   intake_form_config_invalid:
-    'The intake form configuration is invalid. Check the field definitions + processing rule.',
+    'Something about your form is wrong. Check the boxes, and what happens when someone sends it.',
   drop_link_config_invalid:
-    'The drop link configuration is invalid. Check the MIME allowlist + size cap + expiry.',
+    'Something about your file-drop link is wrong. Check which file kinds you allow, the size limit, and the end date.',
   approval_link_config_invalid:
-    'The approval link configuration is invalid. Check the action kind + scoped context.',
+    'Something about your approval link is wrong. Check what you are asking, and what you are showing.',
   status_link_config_invalid:
-    'The status page configuration is invalid. Check the source entity + projection fields.',
+    'Something about your status page is wrong. Check what it is showing, and which parts.',
   intake_recipe_pair_invalid:
-    'The intake-form recipe-pair request is malformed. Refresh the current form and recipe, then try again.',
+    'Recued could not read that. Load the form and the Recipe again, then try once more.',
   intake_recipe_pair_wrong_endpoint_kind:
-    'Only an intake-form endpoint can be paired with a checkout recipe.',
+    'You can only pair a form with a checkout Recipe.',
   intake_recipe_pair_recipe_not_found:
-    'That saved recipe no longer exists. Refresh the recipe list and choose another.',
+    'That Recipe is gone. Load the list again and pick another.',
   intake_recipe_pair_recipe_invalid:
-    'That saved recipe is invalid or no longer matches its stored identity. Repair or replace it before pairing.',
+    'That Recipe is broken, or is not the one Recued saved. Fix it or replace it first.',
   intake_recipe_pair_incompatible:
-    'The current form and saved recipe cannot form this checkout pair. Check the form target and required visitor email.',
+    'That form and that Recipe do not go together. Check what the form makes, and that it asks for an email.',
   intake_recipe_pair_conflict:
-    'The intake-form recipe pair changed on another client. Refresh it before saving again.',
+    'Someone changed this on another device. Load it again before you save.',
   intake_recipe_pair_recipe_not_editable:
-    'This recipe source is read-only here. Create a local fork with a new recipe id, then pair that fork before configuring checkout.',
+    'You cannot change this Recipe here. Make your own copy with a new name, then pair that.',
   intake_recipe_pair_stored_invalid:
-    'The stored intake-form recipe pair is corrupt. Clear it, then bind the current form and recipe again.',
+    'What Recued saved is broken. Clear it, then pair the form and the Recipe again.',
   compose_intent_invalid:
-    'The Compose request is malformed. Shorten the description or refresh the page + try again.',
+    'Recued could not read that. Try a shorter description, or load the page again.',
   compose_ai_unavailable:
-    'Compose AI is not available on this server right now. Check the LLM configuration and try again.',
+    'The AI is not available on this server right now. Check your AI settings and try again.',
   compose_proposal_invalid:
-    'Compose returned a proposal that could not be used. Revise the description and try again.',
+    'What the AI came back with could not be used. Change your description and try again.',
   compose_compile_error:
-    'Compose blocked this proposal because it failed the endpoint safety checks.',
+    'Recued stopped this, because it did not pass the safety checks.',
 };
 
 /** § A.20.6 — per-`SafetyLabelKind` tooltip copy. The label’s emoji +
@@ -242,17 +242,17 @@ export const RECEPTION_ERROR_COPY: Readonly<Record<ReceptionRpcErrorCode, string
  *  the list view + Share Card surface on the label chip. */
 export const RECEPTION_SAFETY_LABEL_TOOLTIP: Readonly<Record<SafetyLabelKind, string>> = {
   public_url:
-    'Reachable by anyone with the link — no Recued account required. Treat the URL as the access credential.',
+    'Anyone with the link can use it. They need no Recued account. Treat the link itself like a key.',
   expires_in:
-    'This endpoint stops serving on its expiry date and returns 410 Gone. Extend it before then if you still need it.',
+    'This link stops working on its end date. Give it longer before then if you still need it.',
   read_only:
-    'Visitors can only read a projection of a work entity — they cannot submit, upload, or trigger anything.',
+    'People can only look. They cannot send anything, upload anything, or start anything.',
   single_use:
-    'This link works exactly once. After it is consumed it is dead — the token can never be replayed.',
+    'This link works once. After that it is dead, and nobody can use it again.',
   file_upload:
-    'Visitors can upload files straight to your server filesystem (within a closed MIME allowlist + size cap).',
+    'People can send files straight to your server. Only the kinds you allow, and only up to your size limit.',
   pii_collected:
-    'Visitors submit personal data (name / email / free text). It is encrypted at rest and decrypted only on-demand in this Settings page.',
+    'People give you personal details: a name, an email, and whatever they write. Recued keeps it locked away, and only unlocks it here when you look.',
 };
 
 /** § A.9 audit-log surface — per-`ReceptionAccessAction` display copy. */
@@ -262,10 +262,10 @@ export const RECEPTION_ACCESS_ACTION_COPY: Readonly<Record<ReceptionAccessAction
   upload: 'Uploaded',
   approve: 'Approved',
   reject: 'Rejected',
-  expired: 'Hit expired endpoint',
-  invalid_token: 'Invalid token',
+  expired: 'Used a link that had run out',
+  invalid_token: 'That link is not right',
   rate_limited: 'Rate limited',
-  revoked: 'Hit revoked endpoint',
+  revoked: 'Used a link that was switched off',
 };
 
 /** § A.9 audit-log surface — per-`ReceptionAccessOutcome` display copy. */
@@ -274,7 +274,7 @@ export const RECEPTION_ACCESS_OUTCOME_COPY: Readonly<Record<ReceptionAccessOutco
   rejected: 'Rejected',
   rate_limited: 'Rate limited',
   expired: 'Expired',
-  invalid_token: 'Invalid token',
+  invalid_token: 'That link is not right',
   revoked: 'Revoked',
   capacity_full: 'Capacity full',
 };
@@ -467,9 +467,9 @@ export interface ReceptionPageModel {
 const buildStatusHeader = (status: ReceptionStatusInput): ReceptionStatusHeader => {
   const serving = status.reception_public && !status.emergency_disabled;
   const status_label = status.emergency_disabled
-    ? 'Emergency disabled'
+    ? 'Switched off in a hurry'
     : !status.reception_public
-      ? 'Not publicly exposed'
+      ? 'Not open to the internet'
       : 'Enabled';
   return {
     serving,

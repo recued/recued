@@ -204,7 +204,17 @@ export interface ReceptionInboxDepsBundle {
  *  the index per call so a freshly-installed pack's ops resolve without a
  *  restart (the inbox is low-frequency — a held-op approve is a human
  *  action, not a hot path). */
-const buildResolverDeps = (
+/** ⚠ EXPORTED FOR D-270, WHICH IS THE SECOND COMPOSITION THAT NEEDS IT. This
+ *  builds the ARG-SCHEMA RESOLVER's deps — a resolver concern, not a reception
+ *  one — and lives here only because reception was the first caller. The
+ *  approval card's detail resolver needs the identical manifest scan, and
+ *  duplicating it would be two implementations of "find the installed
+ *  OperationSpec", drifting the first time a catalog shape changed.
+ *
+ *  ⛔ Exported rather than MOVED on purpose: a move touches a file another
+ *  session is actively editing, for no behaviour. Worth relocating to
+ *  `preflight-arg-schema-resolver.ts` when this file is next quiet. */
+export const buildResolverDeps = (
   localManifestStore: LocalManifestStore,
 ): ArgEditSchemaResolverDeps => {
   /** Find the installed `OperationSpec` (by fully-qualified id) across every

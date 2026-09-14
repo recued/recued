@@ -283,6 +283,13 @@ export interface StorageContext {
   ipBlockStoreRef: PerPairStore<'ipBlockStore'>;
   accountStore: ServerAccountStore | undefined;
   hostnameRegistryStore: HostnameRegistryStore;
+  /** D-269 step 1 — the server's own timezone (mode + declared zone). Read by
+   *  every wall-clock surface when no live client supplies one. */
+  serverTimeZoneStore: import('../storage/server-timezone-store.js').ServerTimeZoneStore;
+  /** D-269 step 2 — the per-kind notification policy the due-status sweep reads. */
+  notificationKindPolicyStore: import('../storage/notification-kind-policy-store.js').NotificationKindPolicyStore;
+  /** D-269 step 3 — the one quiet-hours window. */
+  quietHoursStore: import('../storage/quiet-hours-store.js').QuietHoursStore;
   gateRegistry: GateRegistry | undefined;
   auditRetention: AuditRetention | undefined;
   pressureState: PressureStateStore | undefined;
@@ -560,6 +567,12 @@ export const composeStorageContext = async (
   const { createRecoveryKeyCheckStore } = await import('../recovery-key-store.js');
   const recoveryKeyCheck = createRecoveryKeyCheckStore(db);
   const hostnameRegistryStore = createHostnameRegistryStore(db);
+  const { createServerTimeZoneStore } = await import('../storage/server-timezone-store.js');
+  const serverTimeZoneStore = createServerTimeZoneStore(db);
+  const { createNotificationKindPolicyStore } = await import('../storage/notification-kind-policy-store.js');
+  const notificationKindPolicyStore = createNotificationKindPolicyStore(db);
+  const { createQuietHoursStore } = await import('../storage/quiet-hours-store.js');
+  const quietHoursStore = createQuietHoursStore(db);
 
   const baseAuditLog: AuditLogStore | undefined = createAuditLogStore(
     createSQLiteCollection(db, 'audit_entries'),
@@ -1034,6 +1047,9 @@ export const composeStorageContext = async (
     ipBlockStoreRef,
     accountStore,
     hostnameRegistryStore,
+    serverTimeZoneStore,
+    notificationKindPolicyStore,
+    quietHoursStore,
     gateRegistry,
     auditRetention,
     pressureState,

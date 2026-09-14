@@ -18,16 +18,23 @@
  */
 
 import { decodeChoice, encodeChoice } from './callback.js';
+import { randomUUID } from 'node:crypto';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { attachmentFilename, sendDiscordAttachment } from './attachments.js';
 import { fitText } from './fit-text.js';
 import {
   DEFAULT_TIMEOUT_MS,
+  downloadToFile,
   classifyHttpError,
+  retryAfterSeconds,
   patchJson,
   postJson,
   type HttpPostOutcome,
 } from './http.js';
 import type {
   ClosePrompt,
+  FetchedMedia,
   InteractiveTransport,
   MediaRef,
   OutboundMessage,
@@ -90,6 +97,7 @@ export const DISCORD_INTERACTION_PING = 1;
 export const DISCORD_INTERACTION_MESSAGE_COMPONENT = 3;
 
 export interface DiscordTransportOptions {
+  downloadDir?: string;
   /** Inject for testing; defaults to `globalThis.fetch`. */
   fetchImpl?: typeof fetch;
   /** Per-request timeout; defaults to `DEFAULT_TIMEOUT_MS`. */
@@ -135,7 +143,11 @@ const handleDiscordOutcome = (outcome: HttpPostOutcome): TransportSendResult => 
       outcome.kind === 'http_error'
         ? `${describeDiscordError(outcome.json)} [http ${outcome.status}]`
         : outcome.detail;
-    return { ok: false, error: { kind, detail: `Discord: ${detail}` } };
+    const retryAfter = outcome.kind === 'http_error' ? Math.max(outcome.retry_after_ms ?? 0,
+      retryAfterSeconds((outcome.json as { retry_after?: unknown } | undefined)?.retry_after) ?? 0) : 0;
+    return { ok: false, error: { kind, detail: `Discord: ${detail}`,
+      ...(retryAfter > 0 ? { retry_after_ms: retryAfter } : {}),
+    } };
   }
   const env = (outcome.json ?? {}) as DiscordMessageEnvelope;
   return typeof env.id === 'string' && env.id.length > 0
@@ -171,6 +183,7 @@ const extractDiscordMedia = (env: Record<string, unknown>): MediaRef[] => {
       mime,
       size,
       remote_url: url,
+      ...(typeof attachment.filename === 'string' ? { filename: attachment.filename } : {}),
       ...(typeof attachment.id === 'string' ? { remote_id: attachment.id } : {}),
     });
   }
@@ -217,11 +230,20 @@ export const createDiscordTransport = (
   });
 
   const send = async (message: OutboundMessage): Promise<TransportSendResult> => {
+    const text = composeDiscordText(message);
+    if (message.lossless && fitDiscord(text) !== text) return { ok: false,
+      error: { kind: 'invalid_request', detail: 'Discord message exceeds the lossless text budget.' } };
     const outcome = await postJson(
       `${API_BASE}/channels/${encodeURIComponent(message.recipient)}/messages`,
       {
         headers: headers(message.token),
-        body: JSON.stringify({ content: fitDiscord(composeDiscordText(message)) }),
+        body: JSON.stringify({ content: fitDiscord(text),
+          ...(message.lossless ? { allowed_mentions: { parse: [], replied_user: false } } : {}),
+          ...(message.delivery_id ? { nonce: message.delivery_id, enforce_nonce: true } : {}),
+          ...(message.reply_to_message_id ? { message_reference: {
+            message_id: message.reply_to_message_id, fail_if_not_exists: true,
+          } } : {}),
+        }),
         timeoutMs,
         fetchImpl,
       },
@@ -339,6 +361,8 @@ export const createDiscordTransport = (
     const media = extractDiscordMedia(env);
     if (text.length === 0 && media.length === 0) return null;
     const result: ParsedInbound = { from: a.id, text };
+    const reference = env.message_reference as { message_id?: unknown } | undefined;
+    if (typeof reference?.message_id === 'string') result.reply_to_message_id = reference.message_id;
     if (typeof env.id === 'string' && env.id.length > 0) {
       result.vendor_message_id = env.id;
     }
@@ -374,9 +398,25 @@ export const createDiscordTransport = (
     return result;
   };
 
+  const fetchMedia = async (ref: MediaRef): Promise<FetchedMedia> => {
+    const url = new URL(ref.remote_url ?? '');
+    if (url.protocol !== 'https:' || !['cdn.discordapp.com', 'media.discordapp.net'].includes(url.hostname)
+      || url.port || url.username || url.password || !url.pathname.startsWith('/attachments/')) {
+      throw new Error('Invalid Discord attachment destination.');
+    }
+    const temp_path = join(options.downloadDir ?? tmpdir(), `discord-${randomUUID()}`);
+    const result = await downloadToFile(url.href, { destPath: temp_path, fetchImpl, idleTimeoutMs: timeoutMs, redirect: 'error' });
+    if (!result.ok) throw new Error('Discord attachment download failed.');
+    return { temp_path, size: result.size, head_bytes: result.headBytes,
+      filename: attachmentFilename(ref.filename, ref.remote_id ?? 'attachment'), mime_type: ref.mime,
+    };
+  };
+
   return {
     vendor: 'discord',
     send,
+    sendAttachment: file => sendDiscordAttachment(file, { fetchImpl, timeoutMs: options.timeoutMs ?? 120_000 }),
+    fetchMedia,
     parseInbound,
     // Gateway messages and interaction callbacks both carry flat `channel_id`.
     parseConversationId: interactionChannelId,

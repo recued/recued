@@ -119,7 +119,7 @@ const renderTemplateCard = (card: IntakeFormTemplateCardModel): string => {
   const fieldLine =
     card.collected.field_labels.length > 0
       ? card.collected.field_labels.map((f) => e(f.label)).join(', ')
-      : 'no visitor fields';
+      : 'nothing for visitors to fill in';
   return `
     <div class="reception-template-card" ${dataAttrs({ 'template-ref': card.template_ref })}>
       <div class="reception-template-card-head">
@@ -179,7 +179,7 @@ const renderPackTemplateCard = (card: PackIntakeFormTemplateCardModel): string =
   const fieldLine =
     card.collected.field_labels.length > 0
       ? card.collected.field_labels.map((f) => e(f.label)).join(', ')
-      : 'no visitor fields';
+      : 'nothing for visitors to fill in';
   return `
     <div class="reception-template-card" ${dataAttrs({ 'template-ref': card.template_ref, 'pack-slug': card.pack_slug })}>
       <div class="reception-template-card-head">
@@ -231,12 +231,12 @@ const renderIntentSection = (): string => `
       />
       ${button({
         id: 'reception-intent-submit',
-        label: 'Draft it with AI',
+        label: 'Let AI write it',
         size: 'sm',
         variant: 'primary',
         action: 'reception-template-propose',
         data: {},
-        title: 'Draft an endpoint from your description',
+        title: 'Write me one from what I said',
       })}
     </div>
     <p
@@ -294,7 +294,7 @@ const renderTemplatesBrowser = (
   const sections = [
     renderSection(
       'Intake forms',
-      'Collect structured submissions from visitors — each lands as a work entity for review.',
+      'Let people send you answers. Each one arrives for you to look at.',
       intakeModel.cards.map(renderTemplateCard).join(''),
     ),
     // D-220 Slice B — rendered only when a pack shipped something; a server
@@ -302,8 +302,8 @@ const renderTemplatesBrowser = (
     packModel.is_empty
       ? ''
       : renderSection(
-          'From your installed packs',
-          'Intake forms a pack ships to match the fields its recipes read. Review and edit before enabling — installing a pack never enables a form.',
+          'From the Packs you have',
+          'Forms that come with a Pack, made to match what its Recipes read. Look at them and change them before you switch one on. Installing a Pack never switches a form on.',
           packModel.cards.map(renderPackTemplateCard).join(''),
         ),
     renderSection(
@@ -332,7 +332,7 @@ const renderTemplatesBrowser = (
   const body = allEmpty
     ? emptyHint({
         message:
-          'No reception templates loaded — the Foundation pack may not be installed on this server.',
+          'No Reception templates loaded. The Foundation pack may not be installed on this server.',
       })
     : sections;
 
@@ -548,7 +548,7 @@ export const mountTemplatesBrowser = (
       const input = find(TEMPLATES_BROWSER_INTENT_INPUT_ATTR);
       const intent = (input?.value ?? '').trim();
       if (intent.length === 0) {
-        setStatus('Describe what you need first, then draft it with AI.');
+        setStatus('Say what you need first, then let AI write it.');
         return;
       }
       const submitBtn = find('id="reception-intent-submit"');
@@ -565,7 +565,7 @@ export const mountTemplatesBrowser = (
             const reason = result.reason !== undefined && result.reason.length > 0
               ? ` — ${result.reason}`
               : '';
-            setStatus(`AI suggested a ${result.kind}${reason}`);
+            setStatus(`AI thinks you want a ${result.kind}${reason}`);
             opts.onUseProposed?.(result.kind, result.config);
             opts.onClose();
             return;
@@ -577,7 +577,7 @@ export const mountTemplatesBrowser = (
           proposing = false;
           if (submitBtn && 'disabled' in submitBtn) submitBtn.disabled = false;
           setStatus(
-            'Couldn’t draft that — pick a template below or build by hand.',
+            'Recued could not write that. Pick a template below, or make one yourself.',
           );
         },
       );

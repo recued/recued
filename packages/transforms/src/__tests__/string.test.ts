@@ -163,6 +163,51 @@ describe('truncate', () => {
   it('truncates long string', () => expect(truncate({ input: 'hello world', max_length: 8 }, c)).toBe('hello...'));
   it('preserves short string', () => expect(truncate({ input: 'hi', max_length: 10 }, c)).toBe('hi'));
   it('custom suffix', () => expect(truncate({ input: 'hello world', max_length: 8, suffix: '~' }, c)).toBe('hello w~'));
+
+  // ⛔ THE BUDGET IS THE CONTRACT. Before the 2026-09-11 fix these returned MORE
+  // than max_length, because `max - suffix.length` went negative and
+  // String.slice reads a negative end as an offset from the END of the string.
+  // Measured on the old code: max_length 2 -> 'abcdefg...' (10 units), 0 -> 8.
+  describe('never exceeds its budget', () => {
+    for (const max of [0, 1, 2, 3, 4]) {
+      it(`max_length ${max} with the DEFAULT suffix`, () => {
+        const out = truncate({ input: 'abcdefgh', max_length: max }, c) as string;
+        expect(out.length).toBeLessThanOrEqual(max);
+      });
+    }
+    it('max_length 2 with the default suffix drops the suffix, keeps content', () =>
+      expect(truncate({ input: 'abcdefgh', max_length: 2 }, c)).toBe('ab'));
+    it('max_length 0 yields empty', () =>
+      expect(truncate({ input: 'abcdefgh', max_length: 0 }, c)).toBe(''));
+    it('negative max_length yields empty', () =>
+      expect(truncate({ input: 'abcdefgh', max_length: -5 }, c)).toBe(''));
+  });
+
+  // ⛔ AND THE CUT MUST FALL ON A CODE POINT. Slicing by UTF-16 unit can land
+  // between the halves of a surrogate pair and emit a LONE SURROGATE — a string
+  // that is ill-formed, not merely short, and that propagates into whatever
+  // consumes it.
+  describe('never splits a surrogate pair', () => {
+    it('cutting mid-pair drops the whole code point', () =>
+      expect(truncate({ input: 'A\u{1F600}Z', max_length: 2, suffix: '' }, c)).toBe('A'));
+    it('output stays well formed', () => {
+      const out = truncate({ input: 'A\u{1F600}Z', max_length: 2, suffix: '' }, c) as string;
+      // ⚠ NOT `out.isWellFormed()`. That lands on lib es2024 and this repo's
+      // tsconfig targets lower, so it runs green under vitest and breaks
+      // `typecheck:tests` — which is in `npm run ci` and the suite is not.
+      // A lone surrogate is what a split pair leaves behind, so matching
+      // one directly asserts the same property on every target.
+      expect(/[\uD800-\uDFFF]/.test(out.replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g, '')))
+        .toBe(false);
+    });
+    it('a complete code point is kept when it fits', () =>
+      expect(truncate({ input: '\u{1F600}\u{1F600}', max_length: 2, suffix: '' }, c)).toBe('\u{1F600}'));
+  });
+
+  // The two corpus callers at max_length 2 pass an explicit empty suffix, which
+  // is why the negative-index defect never fired in production. Pin that path.
+  it('empty suffix at a small budget is unchanged by the fix', () =>
+    expect(truncate({ input: 'abcdefgh', max_length: 2, suffix: '' }, c)).toBe('ab'));
 });
 
 describe('strip_html', () => {

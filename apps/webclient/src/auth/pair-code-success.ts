@@ -110,15 +110,15 @@ export const PAIR_CODE_SUCCESS_ERROR_COPY: Readonly<
   Record<PairCodeSuccessErrorCode, string>
 > = {
   pair_code_success_passport_failed:
-    "Pairing succeeded, but Recued couldn't finalize the handoff with your server. Reload and try again.",
+    "Pairing worked, but Recued could not finish setting things up with your server. Reload the page and try again.",
   pair_code_success_persist_failed:
-    "Pairing succeeded, but Recued couldn't save the credentials to local storage. Reload and try again.",
+    "Pairing worked, but Recued could not save your sign-in in this browser. Reload the page and try again.",
   pair_code_success_server_response_invalid:
-    "Pairing succeeded, but your server's passport was unreadable. Reload and try again.",
+    "Pairing worked, but Recued could not read the details your server sent back. Reload the page and try again.",
   pair_code_success_invalid_server_url:
-    "Your server URL is malformed — Recued couldn't open the WebSocket handoff. Re-enter the URL the server CLI printed and try again.",
+    "That server address is not quite right, so Recued could not connect. Type the address your server printed, then try again.",
   pair_code_success_already_paired:
-    'Another tab finished pairing while this form was open. Reload the page to use the existing pair, or clear this browser from Settings to pair a new server.',
+    'Another tab paired this browser while this form was open. Reload the page to use it. To pair a different server, clear this browser in Settings first.',
 };
 
 // ════════════════════════════════════════════════════════════════
@@ -541,7 +541,7 @@ const finalizePairCodeSuccessLocked = async (
     return {
       ok: false,
       error: 'pair_code_success_invalid_server_url',
-      detail: 'server URL must be http://, https://, ws://, or wss://',
+      detail: 'the server address must start with http://, https://, ws://, or wss://',
     };
   }
 

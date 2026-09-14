@@ -269,6 +269,70 @@ const renderRows = (
   return `<ul class="work-entity-list" role="list">${items}</ul>`;
 };
 
+/** D-267 follow-on — what the row knows that a task app's row cannot.
+ *
+ *  ⛔ EXCEPTION BADGES, NOT A STATUS COLUMN. Every work entity already stores
+ *  `sync_state`, `pending_write` and `deleted_at` (they are on
+ *  `SourceRowIdentity`, which every kind extends) and `commitment` additionally
+ *  stores `derivation` — and NONE of it reached the screen. A row you typed and
+ *  a row a recipe emitted rendered identically, which is precisely what makes
+ *  these surfaces read as "another task list".
+ *
+ *  ⚠ A CLEAN, HAND-MADE ROW RENDERS NOTHING, deliberately. `user_declared` is
+ *  the default origin, so badging it would put "you declared this" on every row
+ *  of a fresh install — noise that says nothing, on the one screen where there
+ *  is nothing else to read. These badge the NOTEWORTHY: an origin that is not
+ *  you, a source that cannot be reached, an edit that has not landed.
+ *
+ *  ⚠ Copy is shared with Today by hand, not by import: `Recued cannot reach this source`
+ *  and "may be out of date" are that view's exact words for the same state, and
+ *  two surfaces describing one fact differently is worse than either wording. */
+const ORIGIN_LABEL: Record<string, string> = {
+  mail_extracted: 'From mail',
+  meeting_extracted: 'From a meeting',
+  recipe_emitted: 'From a recipe',
+  peer_received: 'From a peer',
+};
+
+const SYNC_LABEL: Record<string, string> = {
+  stale_unreachable: 'Recued cannot reach this source',
+  tombstoned: 'Deleted at source',
+  orphaned: 'Source removed',
+};
+
+interface RowBadge { readonly text: string; readonly title: string; readonly warning: boolean }
+
+export const boundaryBadges = (entity: WorkEntity): readonly RowBadge[] => {
+  const badges: RowBadge[] = [];
+  // Origin, where the kind records one. Only `commitment` does today; the other
+  // four store no origin at all, so their provenance lives in the audit trail
+  // rather than on the row.
+  if (entity._kind === 'commitment') {
+    const origin = ORIGIN_LABEL[entity.derivation];
+    if (origin !== undefined) {
+      badges.push({ text: origin, title: 'Recued recorded where this came from.', warning: false });
+    }
+  }
+  const sync = SYNC_LABEL[entity.sync_state];
+  if (sync !== undefined) {
+    badges.push({ text: sync, title: 'This may be out of date.', warning: true });
+  }
+  // A local edit staged against an external Source and not yet acknowledged.
+  if (entity.pending_write !== undefined) {
+    badges.push({
+      text: 'Change not sent yet',
+      title: 'Your change is saved here. It has not reached where it came from.',
+      warning: true,
+    });
+  }
+  return badges;
+};
+
+const renderBadges = (entity: WorkEntity): string =>
+  boundaryBadges(entity).map((badge) =>
+    `<span class="work-entity-list-row-badge"${badge.warning ? ' data-warning' : ''}`
+    + ` title="${e(badge.title)}">${e(badge.text)}</span>`).join('');
+
 const renderRow = (
   row: WorkEntityListRow,
   show_source_label: boolean,
@@ -305,6 +369,7 @@ const renderRow = (
         <div class="work-entity-list-row-footer">
           ${sourceLabel}
           ${meta}
+          ${renderBadges(row.entity)}
           ${openingStatus}
         </div>
       </button>

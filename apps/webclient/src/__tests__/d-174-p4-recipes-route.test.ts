@@ -1019,11 +1019,11 @@ describe('R24 — Recipes route: list view', () => {
       );
       expect(html).toContain('job — reads + deletes (search, delete)');
       expect(html).toContain('job_event — deletes (delete)');
-      expect(html).toContain('changes and DELETES data stored on this server');
+      expect(html).toContain('changes things on this server, and DELETES some of them');
       // The pack's own classification replaces "Risk: unknown" — this recipe
       // is not chat-exposed, so the tool catalog has nothing to say about it.
       expect(html).toContain('<strong>Risk:</strong> destructive.');
-      expect(html).toContain('Declared by the pack.');
+      expect(html).toContain('Set by the Pack.');
       expect(html).not.toContain('<strong>Risk:</strong> unknown.');
 
       rig.route.dispose();
@@ -1048,7 +1048,7 @@ describe('R24 — Recipes route: list view', () => {
       expect(html).toContain('job — reads (search)');
       expect(html).toContain('<strong>Risk:</strong> read.');
       // A read-only recipe must not claim it changes anything.
-      expect(html).toContain('only reads data stored on this server');
+      expect(html).toContain('only reads things on this server');
       expect(html).not.toContain('changes data stored on this server');
 
       rig.route.dispose();
@@ -1428,7 +1428,7 @@ describe('R24 — Recipes route: list -> detail (delta 1)', () => {
       enabled: false,
     });
     html = shellHtml(rig.root);
-    expect(html).toContain('Pausing auto-run…');
+    expect(html).toContain('Pausing…');
     expect(html).toContain('aria-disabled="true" aria-busy="true"');
 
     update.resolve({ entry: autoRunStatus('watch-mail', { enabled: false }) });
@@ -1468,7 +1468,7 @@ describe('R24 — Recipes route: list -> detail (delta 1)', () => {
       enabled: true,
     });
     html = shellHtml(rig.root);
-    expect(html).toContain('Arming auto-run…');
+    expect(html).toContain('Setting it to run on its own…');
     await vi.waitFor(() => expect(shellHtml(rig.root)).toContain('Pause auto-run'));
 
     rig.route.dispose();
@@ -1610,14 +1610,14 @@ describe('R24 — Recipes route: list -> detail (delta 1)', () => {
     )?.[0];
     expect(pendingButton).toContain('aria-disabled="true" aria-busy="true"');
     expect(pendingButton).not.toContain(' disabled');
-    expect(pendingButton).toContain('Loading config…');
+    expect(pendingButton).toContain('Loading settings…');
 
     configRead.reject(new Error('read failed'));
-    await vi.waitFor(() => expect(shellHtml(rig.root)).not.toContain('Loading config…'));
+    await vi.waitFor(() => expect(shellHtml(rig.root)).not.toContain('Loading settings…'));
     expect(shellHtml(rig.root)).toContain('>Config</button>');
     expect(shellHtml(rig.root)).toContain('role="alert"');
     expect(shellHtml(rig.root)).toContain(
-      'load config: read failed. Try Config again.',
+      'load the settings: read failed. Try again.',
     );
 
     rig.route.dispose();
@@ -1648,19 +1648,19 @@ describe('R24 — Recipes route: list -> detail (delta 1)', () => {
     rig.route.closeDetail();
     rig.route.openRecipe('daily-brief');
     expect(shellHtml(rig.root)).toContain('>Config</button>');
-    expect(shellHtml(rig.root)).not.toContain('Loading config…');
+    expect(shellHtml(rig.root)).not.toContain('Loading settings…');
 
     clickRecipeAction(rig.root, 'open-recipe-config', 'daily-brief');
     expect(recipeConfigGetCaller).toHaveBeenCalledTimes(2);
     firstRead.reject(new Error('stale read failed'));
     await firstRead.promise.catch(() => undefined);
     await Promise.resolve();
-    expect(shellHtml(rig.root)).toContain('Loading config…');
+    expect(shellHtml(rig.root)).toContain('Loading settings…');
     expect(shellHtml(rig.root)).not.toContain('stale read failed');
 
     secondRead.reject(new Error('current read failed'));
-    await vi.waitFor(() => expect(shellHtml(rig.root)).not.toContain('Loading config…'));
-    expect(shellHtml(rig.root)).toContain('load config: current read failed');
+    await vi.waitFor(() => expect(shellHtml(rig.root)).not.toContain('Loading settings…'));
+    expect(shellHtml(rig.root)).toContain('load the settings: current read failed');
 
     rig.route.dispose();
   });
@@ -1846,7 +1846,7 @@ describe('R24 — Recipes route: list -> detail (delta 1)', () => {
     );
     expect(html).toContain('data-recued-recipes-bundle-pack="outbound-follow-up-response"');
     expect(html).toContain('href="#packs/outbound-follow-up-response"');
-    expect(html).toContain('View workflow pack');
+    expect(html).toContain('See the whole Pack');
     const reactiveRow = html.match(
       /<li data-recued-recipes-related-row="close-action">[\s\S]*?<\/li>/,
     )?.[0] ?? '';
@@ -1928,17 +1928,17 @@ describe('R24 — Recipes route: list -> detail (delta 1)', () => {
     const busyRow = shellHtml(rig.root).match(
       /<li data-recued-recipes-related-row="close-action">[\s\S]*?<\/li>/,
     )?.[0] ?? '';
-    expect(busyRow).toContain('Pausing auto-run…');
+    expect(busyRow).toContain('Pausing…');
     expect(busyRow).toContain('aria-disabled="true" aria-busy="true"');
     expect(busyRow).not.toMatch(/\sdisabled(?:[ >])/);
     expect(rig.route.hasInFlightWork()).toBe(true);
     expect(rig.route.inFlightWorkPrompt()).toBe(
-      'A recipe action is still in progress. Leave Recipes anyway?',
+      'Something is still happening. Leave anyway?',
     );
 
     rig.route.closeDetail();
     expect(confirm).toHaveBeenCalledWith(
-      'A recipe action is still in progress. Leave this recipe anyway?',
+      'Something is still happening. Leave anyway?',
     );
     expect(rig.route.selectedRecipe()).toBe('watch-pipeline');
 
@@ -1952,7 +1952,7 @@ describe('R24 — Recipes route: list -> detail (delta 1)', () => {
         `${RECIPES_ROUTE_AUTO_RUN_ERROR_ATTR}="close-action"`,
       );
       expect(html).toContain(
-        'Couldn’t update auto-run: server unavailable',
+        'Recued could not change that: server unavailable',
       );
       expect(html).toContain('Pause auto-run');
     });
@@ -2029,7 +2029,7 @@ describe('R24 — Recipes route: list -> detail (delta 1)', () => {
     const html = shellHtml(rig.root);
     expect(html).toContain(`${RECIPES_ROUTE_RELATED_ATTR}="${bundle}"`);
     expect(html).toContain('data-recued-recipes-bundle-pack="task-closure"');
-    expect(html).toContain('Install complete workflow (4)');
+    expect(html).toContain('Install everything (4)');
     // The section exists for installation even though no sibling is installed.
     expect(html).not.toContain(RECIPES_ROUTE_RELATED_ROW_ATTR);
 
@@ -2183,7 +2183,7 @@ describe('R24 — Recipes route: list -> detail (delta 1)', () => {
 
     clickRecipeAction(rig.root, 'retry-bundle-carrier', 'create-task');
     expect(packRecipeRefsCaller).toHaveBeenCalledTimes(2);
-    expect(shellHtml(rig.root)).toContain('Retrying workflow pack contents…');
+    expect(shellHtml(rig.root)).toContain('Trying again…');
     const busyRetry = shellHtml(rig.root).match(
       /<button[^>]*data-recued-recipes-bundle-retry="task-closure"[^>]*>Retrying…<\/button>/,
     )?.[0] ?? '';
@@ -2271,7 +2271,7 @@ describe('R24 — Recipes route: run + schedule modal', () => {
     const pending = rig.route.confirmRun();
     expect(rig.route.hasInFlightWork()).toBe(true);
     expect(rig.route.inFlightWorkPrompt()).toBe(
-      'A recipe action is still in progress. Leave Recipes anyway?',
+      'Something is still happening. Leave anyway?',
     );
 
     execution.resolve(executeResponse());
@@ -2530,7 +2530,7 @@ describe('R24 — Recipes route: run + schedule modal', () => {
     expect(html).toContain(`${RECIPES_ROUTE_RESULT_SECTION_ATTR}="text"`);
     expect(html).toContain(`${RECIPES_ROUTE_RESULT_SECTION_ATTR}="future_widget"`);
     expect(html).toContain('known result survives');
-    expect(html).toContain('Unsupported output: future_widget');
+    expect(html).toContain('Recued cannot show this: future_widget');
     expect(html).toContain('Unsupported output section type: future_widget');
     expect(html).toContain('future payload');
 
@@ -3410,7 +3410,7 @@ describe('R24 — Recipes route: run + schedule modal', () => {
     expect(html).toContain(`${RECIPES_ROUTE_RESULT_FILE_ATTR}="result-file-1"`);
     expect(html).toContain('Preview exact PDF');
     expect(html).toContain('Download exact PDF');
-    expect(html).toContain('7,500 USD minor units');
+    expect(html).toContain('7,500 USD in the smallest coins');
     expect(html).toContain('template.md');
     expect(html).toContain(sha256);
     expect(html).toContain('Approve and send exact PDF');
@@ -3540,7 +3540,7 @@ describe('R24 — Recipes route: run + schedule modal', () => {
 
     await vi.waitFor(() => {
       expect(shellHtml(rig.root)).toContain(
-        'This browser cannot safely open authenticated file bytes.',
+        'This browser cannot safely open the file.',
       );
     });
     expect(shellHtml(rig.root)).not.toContain(
@@ -3615,7 +3615,7 @@ describe('R24 — Recipes route: run + schedule modal', () => {
 
     await vi.waitFor(() => {
       expect(shellHtml(rig.root)).toContain(
-        'Authenticated file bytes do not match the returned file size.',
+        'The file is not the size it said it was.',
       );
     });
     expect(shellHtml(rig.root)).not.toContain(
@@ -3790,7 +3790,7 @@ describe('R24 — Recipes route: run + schedule modal', () => {
     rig.route.closeRunModal();
 
     expect(shellHtml(rig.root)).toContain(
-      'Approval action does not match this exact response and file hash.',
+      'This does not match the answer and the file Recued has.',
     );
     expect(shellHtml(rig.root)).not.toContain(
       `${RECIPES_ROUTE_RESULT_ACTION_ATTR}="result-action-`,
@@ -3802,7 +3802,7 @@ describe('R24 — Recipes route: run + schedule modal', () => {
     });
     await vi.waitFor(() => {
       expect(shellHtml(rig.root)).toContain(
-        'Authenticated file read no longer matches the reviewed SHA-256.',
+        'The file that came back does not match the fingerprint you checked.',
       );
     });
     expect(shellHtml(rig.root)).toContain(RECIPES_ROUTE_RESULT_FILE_STATUS_ATTR);
@@ -4286,7 +4286,7 @@ describe('R24 — Recipes route: run + schedule modal', () => {
     expect(html).toContain('&lt;iframe src=&quot;bad&quot;&gt;&lt;/iframe&gt;');
     expect(html).toContain('&lt;button onclick=&quot;steal()&quot;&gt;Run&lt;/button&gt;');
     expect(html).toContain('&lt;a href=&quot;javascript:alert(1)&quot;&gt;Open&lt;/a&gt;');
-    expect(html).toContain('Only recipe.run actions can be opened.');
+    expect(html).toContain('You can only open things that run a Recipe.');
     expect(html).not.toContain('<img src=x');
     expect(html).not.toContain('<script>');
     expect(html).not.toContain('<th onclick=');
@@ -4382,10 +4382,10 @@ describe('R24 — Recipes route: run + schedule modal', () => {
     await rig.route.confirmRun();
 
     const html = shellHtml(rig.root);
-    expect(html).toContain('Action context cannot set reserved key &quot;event&quot;.');
-    expect(html).toContain('Action context cannot set reserved key &quot;caller&quot;.');
-    expect(html).toContain('Target recipe is blocked by missing providers.');
-    expect(html).toContain('Target recipe needs a pack that is not installed.');
+    expect(html).toContain('You cannot use the name Recued keeps for itself: &quot;event&quot;.');
+    expect(html).toContain('You cannot use the name Recued keeps for itself: &quot;caller&quot;.');
+    expect(html).toContain('That Recipe cannot run. It needs a provider you do not have.');
+    expect(html).toContain('That Recipe needs a Pack you have not installed.');
     expect(html).toContain('<option value="result-action-0">Author context</option>');
     expect(html).not.toContain('is not a visible target for this recipe');
 
@@ -4427,8 +4427,8 @@ describe('R24 — Recipes route: run + schedule modal', () => {
     await rig.route.confirmRun();
 
     const html = shellHtml(rig.root);
-    expect(html).toContain('Action context must be a JSON-compatible object.');
-    expect(html).toContain('Action config must be a JSON-compatible object.');
+    expect(html).toContain('The details have to be a JSON object.');
+    expect(html).toContain('The settings have to be a JSON object.');
     expect(html).not.toContain(`${RECIPES_ROUTE_RESULT_ACTION_ATTR}="result-action-`);
 
     rig.route.dispose();
@@ -4463,7 +4463,7 @@ describe('R24 — Recipes route: run + schedule modal', () => {
 
     const html = shellHtml(rig.root);
     expect(html).toContain('Draft reply');
-    expect(html).toContain('Recipe runnability is unavailable.');
+    expect(html).toContain('Recued cannot tell whether this can run.');
     expect(html).not.toContain(`${RECIPES_ROUTE_RESULT_ACTION_ATTR}="result-action-`);
 
     rig.route.dispose();
@@ -4668,7 +4668,7 @@ describe('R24 — Recipes route runnability consumer', () => {
     await rig.route.whenLoaded();
 
     let html = shellHtml(rig.root);
-    expect(html).toContain('Blocked — install a pack');
+    expect(html).toContain('Cannot run. Install a Pack');
     expect(html).toContain('Install the officecli pack to make this recipe work.');
     expect(html).toContain('data-recued-pack-install-offer');
     expect(html).toContain('href="#packs/officecli"');
@@ -4681,8 +4681,8 @@ describe('R24 — Recipes route runnability consumer', () => {
     )?.[0];
     expect(blockedPrimary).toContain(' disabled');
     expect(blockedOverride).toContain(' disabled');
-    expect(blockedPrimary).toContain('Install the missing pack before running.');
-    expect(blockedOverride).toContain('Install the missing pack before running.');
+    expect(blockedPrimary).toContain('Install the missing Pack before you run this.');
+    expect(blockedOverride).toContain('Install the missing Pack before you run this.');
 
     listeners.get('recipe_runnability_changed')!({
       kind: 'recipe_runnability_changed',
@@ -4692,7 +4692,7 @@ describe('R24 — Recipes route runnability consumer', () => {
 
     html = shellHtml(rig.root);
     expect(html).toContain('data-recued-recipes-action="run-defaults"');
-    expect(html).not.toContain('Blocked — install a pack');
+    expect(html).not.toContain('Cannot run. Install a Pack');
     expect(html).not.toContain('data-recued-pack-install-offer');
     const recoveredPrimary = html.match(
       /<button type="button" class="recipes-button recipes-button--primary"[\s\S]*?<\/button>/,
@@ -4812,12 +4812,12 @@ describe('D-222 — recipe detail defaults and resolved output filters', () => {
     expect(pendingButton).toContain('Running…');
     expect(rig.route.hasInFlightWork()).toBe(true);
     expect(rig.route.inFlightWorkPrompt()).toBe(
-      'A recipe action is still in progress. Leave Recipes anyway?',
+      'Something is still happening. Leave anyway?',
     );
 
     rig.route.closeDetail();
     expect(confirm).toHaveBeenCalledWith(
-      'A recipe action is still in progress. Leave this recipe anyway?',
+      'Something is still happening. Leave anyway?',
     );
     expect(rig.route.selectedRecipe()).toBe('primitive-defaults');
 
@@ -5082,12 +5082,12 @@ describe('D-222 — recipe detail defaults and resolved output filters', () => {
     );
     expect(rig.route.hasInFlightWork()).toBe(true);
     expect(rig.route.inFlightWorkPrompt()).toBe(
-      'A recipe action is still in progress. Leave Recipes anyway?',
+      'Something is still happening. Leave anyway?',
     );
 
     rig.route.closeDetail();
     expect(confirm).toHaveBeenCalledWith(
-      'A recipe action is still in progress. Leave this recipe anyway?',
+      'Something is still happening. Leave anyway?',
     );
     expect(rig.route.selectedRecipe()).toBe('job-board');
 
@@ -5365,13 +5365,13 @@ describe('the editable grid in the result panel', () => {
     rig.route.setResultGridCell(key, 0, 'amount', '800.00');
     expect(rig.route.hasUnsavedChanges()).toBe(true);
     expect(rig.route.unsavedChangesPrompt()).toBe(
-      'This recipe result has unsaved table changes. Leave Recipes anyway?',
+      'You have changes you have not saved. Leave anyway?',
     );
 
     rig.route.closeDetail();
     expect(confirm).toHaveBeenNthCalledWith(
       1,
-      'This recipe result has unsaved table changes. Leave this recipe anyway?',
+      'You have changes you have not saved. Leave anyway?',
     );
     expect(rig.route.selectedRecipe()).toBe('collect');
 
@@ -5379,14 +5379,14 @@ describe('the editable grid in the result panel', () => {
     await vi.waitFor(() => expect(execute).toHaveBeenCalledTimes(2));
     expect(rig.route.hasInFlightWork()).toBe(true);
     expect(rig.route.inFlightWorkPrompt()).toBe(
-      'A recipe action is still in progress. Leave Recipes anyway?',
+      'Something is still happening. Leave anyway?',
     );
     expect(rig.route.hasUnsavedChanges()).toBe(true);
 
     rig.route.closeDetail();
     expect(confirm).toHaveBeenNthCalledWith(
       2,
-      'A recipe action is still in progress. Leave this recipe anyway?',
+      'Something is still happening. Leave anyway?',
     );
     expect(rig.route.selectedRecipe()).toBe('collect');
 

@@ -214,18 +214,18 @@ describe('buildStartupDiagnosticSummary', () => {
     expect(summary).toContain('Failure category: Server unreachable');
     expect(summary).toContain('Startup attempts in this tab: 2');
     expect(summary).toContain('Browser network signal: Online hint');
-    expect(summary).toContain('Saved browser access: Verified present');
+    expect(summary).toContain('Saved sign-in on this browser: Verified present');
     expect(summary).toContain('Server host: alice.recued.cloud:8443');
     // ⛔ Bound to the CONSTANT, not a copy of it. This pinned
     // 'webclient-shell-v7' and broke the moment the shell bumped to v8 —
     // failing on correct work while checking nothing anyone cares about.
     // What matters is that the summary reports whatever shell is live.
-    expect(summary).toContain(`Webclient shell: ${WEBCLIENT_SHELL_CACHE_NAME}`);
+    expect(summary).toContain(`Recued version: ${WEBCLIENT_SHELL_CACHE_NAME}`);
     expect(summary).toContain(
-      'The server host and any port shown above are included',
+      'only your server’s address and port, shown above',
     );
     expect(summary).toContain(
-      'URL paths, query parameters, and fragments are not included',
+      'leaves out error details, sign-in details, pairing codes',
     );
     expect(summary).not.toContain('owner');
     expect(summary).not.toContain('PAIR-SECRET');
@@ -285,12 +285,12 @@ describe('mountStartupFailureTriage', () => {
     });
 
     expect(dom.getHtml()).toContain(STARTUP_FAILURE_TRIAGE_ATTR);
-    expect(dom.getHtml()).toContain('Startup needs attention');
+    expect(dom.getHtml()).toContain('Recued needs your help to start');
     expect(dom.getHtml()).toContain('Recued can’t reach your server');
-    expect(dom.getHtml()).toContain('Your saved access is still here.');
-    expect(dom.getHtml()).toContain('does not clear saved access');
-    expect(dom.getHtml()).toContain('send another pairing request');
-    expect(dom.getHtml()).toContain('exact page you opened');
+    expect(dom.getHtml()).toContain('Your saved sign-in is still here.');
+    expect(dom.getHtml()).toContain('does not clear your sign-in');
+    expect(dom.getHtml()).toContain('ask to pair again');
+    expect(dom.getHtml()).toContain('page you opened is still chosen');
     expect(dom.getHtml()).toContain(STARTUP_FAILURE_TRIAGE_RELOAD_ATTR);
     expect(dom.getHtml()).toContain(
       'aria-describedby="webclient-startup-failure-triage-safety webclient-startup-failure-triage-context"',
@@ -324,11 +324,11 @@ describe('mountStartupFailureTriage', () => {
       onRetry: async () => undefined,
     });
 
-    expect(dom.getHtml()).toContain('Startup still needs attention');
+    expect(dom.getHtml()).toContain('Recued still needs your help to start');
     expect(dom.getHtml()).toContain(
-      'This tab reloaded, but startup still did not finish.',
+      'This tab reloaded, but Recued still did not finish opening.',
     );
-    expect(dom.getHtml()).toContain('exact page you opened is still selected');
+    expect(dom.getHtml()).toContain('page you opened is still chosen');
     expect(dom.getHtml()).toContain(
       STARTUP_FAILURE_DIAGNOSTIC_ACTION_ATTR,
     );
@@ -364,14 +364,14 @@ describe('mountStartupFailureTriage', () => {
       onRetry: () => pendingRetry,
     });
 
-    expect(dom.getHtml()).toContain('Access saved in another tab');
+    expect(dom.getHtml()).toContain('Sign-in saved in another tab');
     expect(dom.getHtml()).toContain(
-      'Another tab already finished saving secure access',
+      'Another tab has already saved the sign-in',
     );
-    expect(dom.getHtml()).toContain('Pairing is still complete.');
-    expect(dom.getHtml()).toContain('Only this tab is retrying startup.');
+    expect(dom.getHtml()).toContain('This browser is still paired.');
+    expect(dom.getHtml()).toContain('Only this tab is trying again.');
     expect(dom.getHtml()).toContain(
-      'completed pairing does not need to be repeated',
+      'You do not need to pair again',
     );
     expect(dom.getHtml()).toContain(
       STARTUP_FAILURE_DIAGNOSTIC_ACTION_ATTR,
@@ -382,7 +382,7 @@ describe('mountStartupFailureTriage', () => {
     const retry = host.retry();
 
     expect(dom.getHtml()).toContain(
-      'Trying this tab again with the access already saved',
+      'Trying this tab again with the sign-in already saved',
     );
     expect(dom.getHtml()).toContain('disabled');
 
@@ -404,8 +404,8 @@ describe('mountStartupFailureTriage', () => {
       },
     });
 
-    expect(dom.getHtml()).toContain('Startup still needs attention');
-    expect(dom.getHtml()).toContain('exact page and unsent Chat draft');
+    expect(dom.getHtml()).toContain('Recued still needs your help to start');
+    expect(dom.getHtml()).toContain('page and the Chat message you had not sent');
     expect(dom.getHtml()).not.toContain(STARTUP_FAILURE_TRIAGE_RELOAD_ATTR);
 
     await host.retry();
@@ -457,7 +457,7 @@ describe('mountStartupFailureTriage', () => {
     expect(copied).not.toContain('DO-NOT-COPY');
     await vi.waitFor(() => {
       expect(dom.getHtml()).toContain(
-        'Safe diagnostic copied. Paste it into your support conversation',
+        'Copied. Paste it wherever you are getting help',
       );
     });
     expect(dom.getHtml()).toContain(STARTUP_FAILURE_DIAGNOSTIC_STATUS_ATTR);
@@ -482,7 +482,7 @@ describe('mountStartupFailureTriage', () => {
 
     await vi.waitFor(() => {
       expect(dom.getHtml()).toContain(
-        'Copy is unavailable here. The summary is focused',
+        'Copying is not available here. The summary is selected',
       );
     });
     expect(dom.getHtml()).toContain('tabindex="0"');
@@ -520,7 +520,7 @@ describe('mountStartupFailureTriage', () => {
     }));
 
     expect(dom.getHtml()).toContain(
-      'Failure category: Browser storage read failed',
+      'Failure category: Browser storage could not be read',
     );
     expect(dom.getHtml()).toMatch(
       new RegExp(`${STARTUP_FAILURE_DIAGNOSTIC_COPY_ATTR}[^>]*disabled`),
@@ -552,13 +552,13 @@ describe('mountStartupFailureTriage', () => {
     });
 
     expect(dom.getHtml()).toContain(
-      'Recued has not cleared your saved access.',
+      'Recued has not cleared your saved sign-in.',
     );
     expect(dom.getHtml()).not.toContain(
       'saved browser access is available',
     );
-    expect(dom.getHtml()).not.toContain('Access saved in another tab');
-    expect(dom.getHtml()).not.toContain('Pairing is still complete.');
+    expect(dom.getHtml()).not.toContain('Sign-in saved in another tab');
+    expect(dom.getHtml()).not.toContain('This browser is still paired.');
   });
 
   it('respects an explicitly unknown online hint', () => {
@@ -577,7 +577,7 @@ describe('mountStartupFailureTriage', () => {
       onRetry: async () => undefined,
     });
 
-    expect(dom.getHtml()).toContain('Recued couldn’t finish opening');
+    expect(dom.getHtml()).toContain('Recued could not finish opening');
     expect(dom.getHtml()).not.toContain('This browser appears offline');
   });
 
@@ -654,20 +654,20 @@ describe('mountStartupFailureTriage', () => {
 
     await host.retry();
 
-    expect(dom.getHtml()).toContain('Browser storage interrupted startup');
+    expect(dom.getHtml()).toContain('Browser storage stopped Recued starting');
     expect(dom.getHtml()).toContain('role="alert"');
     expect(onFailure).toHaveBeenCalledWith(
       expect.any(Error),
       'storage',
     );
-    expect(dom.getHtml()).toContain('Startup still needs attention');
+    expect(dom.getHtml()).toContain('Recued still needs your help to start');
     expect(dom.getHtml()).toContain(STARTUP_FAILURE_DIAGNOSTIC_ACTION_ATTR);
     expect(dom.actionFocus).toHaveBeenCalledTimes(2);
 
     await host.retry();
 
     expect(onRetry).toHaveBeenCalledTimes(2);
-    expect(dom.getHtml()).toContain('Startup is ready');
+    expect(dom.getHtml()).toContain('Ready. Opening your page');
     expect(dom.statusFocus).toHaveBeenCalled();
   });
 
@@ -721,7 +721,7 @@ describe('recoverStartupTaskWithTriage', () => {
     });
 
     expect(dom.getHtml()).toContain(
-      'This tab reloaded, but startup still did not finish.',
+      'This tab reloaded, but Recued still did not finish opening.',
     );
     expect(dom.getHtml()).toContain(
       STARTUP_FAILURE_DIAGNOSTIC_ACTION_ATTR,
@@ -738,7 +738,7 @@ describe('recoverStartupTaskWithTriage', () => {
     await expect(result).resolves.toBe('ready');
     expect(task).toHaveBeenCalledTimes(2);
     expect(dom.getHtml()).toContain(
-      'Saved access check complete. Continuing startup…',
+      'Your saved sign-in is fine. Carrying on…',
     );
     expect(dom.listenerCount()).toBe(0);
   });

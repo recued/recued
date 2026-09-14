@@ -37,6 +37,7 @@ import {
   MAIL_MESSAGE_SCHEMA,
   MAIL_COMPOSE_REWRITE_ACTIONS,
   REWRITE_COMPOSED_MAIL_RECIPE_ID,
+  SAVE_COMPOSED_DRAFT_TO_MAILBOX_RECIPE_ID,
   SEND_COMPOSED_MAIL_RECIPE_ID,
   addComposeAttachmentsTransition,
   closeComposeTransition,
@@ -54,6 +55,7 @@ import {
   setComposeSubmittingTransition,
   setComposeValuesTransition,
   parseMailDraftContent,
+  type ComposeDispatchHooks, type MailComposeValues,
   type MailDraft, type MailDraftContent, type ServerRpcRegistry, type PreparePreapproval,
   type MailComposeAttachment,
   type MailComposeState,
@@ -61,7 +63,7 @@ import {
   type MailComposeRewriteAction,
   type MailSenderSourceOption,
 } from '@recued/contracts';
-import { renderMailComposeDialog } from '@recued/ui-shared';
+import { renderMailComposeDialog, stampZone } from '@recued/ui-shared';
 import { humanizeRpcError } from '../shell/rpc-error-copy.js';
 
 // ════════════════════════════════════════════════════════════════
@@ -74,6 +76,9 @@ export interface MailInstanceSummary {
   slug: string;
   adapter_type: string;
   send_capable: boolean;
+  /** D-264 — can this mailbox hold a draft? Independent of `send_capable`
+   *  in both directions; see `MailSenderSourceOption.draft_capable`. */
+  draft_capable: boolean;
   account_email: string;
 }
 
@@ -88,12 +93,21 @@ export type MailInstanceListCaller = () => Promise<{
  * a setup suggestion, while the latter proves only that Recued could not check.
  * Likewise, a read-only mailbox deserves a repair path rather than the new-
  * account path. */
-export type MailSendReadiness =
+export type MailComposeReadiness =
   | { status: 'loading' }
   | { status: 'none' }
   | { status: 'read_only'; mailboxes: readonly MailSenderSourceOption[] }
+  /** D-264 — at least one mailbox can hold a draft, none can send. Compose
+   *  OPENS here: Save draft works, Send and Schedule do not. Distinct from
+   *  `read_only`, which can do neither and still deserves its repair path. */
+  | { status: 'draft_only'; mailboxes: readonly MailSenderSourceOption[] }
   | { status: 'ready'; mailboxes: readonly MailSenderSourceOption[] }
   | { status: 'unavailable' };
+
+/** @deprecated D-264 renamed this — it has not been a send-only question since
+ *  a mailbox could be draft-capable and not send-capable. Kept as an alias so
+ *  out-of-file callers keep compiling. */
+export type MailSendReadiness = MailComposeReadiness;
 
 /** `execute` — narrowed to the two fields this surface sets. */
 export type MailComposeExecuteCaller = (args: {
@@ -118,6 +132,9 @@ export type MailComposeFilePickCaller = (
 ) => Promise<readonly string[]>;
 
 export interface MailComposeDeps {
+  /** D-269 step 1 — the server's resolved IANA zone for a scheduled send's
+   *  activation stamp. Absent ⇒ this browser's, as before. */
+  serverTimeZone?: () => string | undefined;
   listMailInstances: MailInstanceListCaller;
   runExecute: MailComposeExecuteCaller;
   /** Absent ⇒ chips render unresolved (id + "size unknown") rather than
@@ -153,9 +170,9 @@ export interface MailComposeMount {
   /** Current state — exposed for the route's own empty-state decisions. */
   state(): MailComposeState;
   /** Current send-readiness projection. */
-  readiness(): MailSendReadiness;
+  readiness(): MailComposeReadiness;
   /** Re-read mail instances from the server. */
-  refresh(): Promise<MailSendReadiness>;
+  refresh(): Promise<MailComposeReadiness>;
   /** Live-DOM-aware draft check for shell leave guards. */
   hasUnsavedChanges(): boolean;
   /** A send, file choice, or rewrite action that has not settled yet. */
@@ -181,10 +198,72 @@ const MAIL_ADAPTER_LABELS: Readonly<Record<string, string>> = {
  *  `MailSenderSourceOption` documents why: a trailing-segment heuristic
  *  collapsed `recued.mail_message` and `hubspot.<conn>.mail_message` onto the
  *  same slug. The row carries the real one; use it. */
+/** D-264 — compose values → `MailDraftContent`, in DRAFT mode.
+ *
+ *  ⛔ **THE `'draft'` ARGUMENT IS THE WHOLE FEATURE, AND DROPPING IT IS
+ *  SILENT.** Without it the save path runs the SEND gate, a draft-only mailbox
+ *  fails `sender_source`, and Save draft becomes a button that looks available
+ *  and refuses — the exact failure D-264 exists to remove. That line lived
+ *  inside `mountMailCompose`'s closure, where this repo's no-DOM test setup
+ *  could not reach it and a mutation removing it stayed green. Lifted here for
+ *  the same reason as the two mappings above: a wrong field is silent, so it
+ *  gets a test.
+ *
+ *  Pure modulo the supplied hooks. The caller owns painting the errors. */
+export const mailDraftContentFromCompose = (
+  values: MailComposeValues,
+  hooks: ComposeDispatchHooks,
+  prior?: MailDraftContent,
+): { ok: true; content: MailDraftContent } | { ok: false; errors: Readonly<Record<string, string>> } => {
+  const result = composeStateToSendPayload(values, hooks, 'draft');
+  if (!result.ok) return { ok: false, errors: result.errors };
+  // Fields the compose form does not own but a reply thread must keep.
+  const extras: Record<string, unknown> = {};
+  for (const key of ['references', 'reply_to', 'reconciliation_id'] as const) {
+    if (prior?.[key] !== undefined) extras[key] = prior[key];
+  }
+  return {
+    ok: true,
+    content: parseMailDraftContent({
+      ...extras,
+      ...composePayloadToSendRecipeConfig(result.payload),
+      body_format: prior?.body_format ?? 'text',
+    }),
+  };
+};
+
+/** D-264 — may the compose dialog open, and with which sender defaulted?
+ *
+ *  ⛔ **THIS IS THE JOIN THAT WAS DEAD.** `openCreate` gated on
+ *  `readiness === 'ready'` AND a SEND-capable first sender, while both entry
+ *  points had been taught to call it on `draft_only`. Both callers ignore its
+ *  `false` return, so New mail silently did nothing for exactly the users D-264
+ *  was built for — in Mail and in Chat. Nothing was red: the readiness
+ *  derivation had tests, the dialog renderer had tests, and the rule BETWEEN
+ *  them had none.
+ *
+ *  Lifted out of the closure because this repo has no jsdom — the mount is
+ *  verified in a real browser, which is precisely why a rule living inside it
+ *  gets no unit coverage. Pure, so it does.
+ *
+ *  Returns the Source to default the picker to, or `null` when the dialog must
+ *  not open. Prefers a sender that can actually send, so a mixed install opens
+ *  fully usable rather than in its most restricted state. */
+export const mailComposeOpenSender = (
+  readiness: MailComposeReadiness,
+  sources: readonly MailSenderSourceOption[],
+): MailSenderSourceOption | null => {
+  if (readiness.status !== 'ready' && readiness.status !== 'draft_only') return null;
+  return sources.find((s) => s.send_capable)
+    ?? sources.find((s) => s.draft_capable)
+    ?? null;
+};
+
 export const senderOptionFromInstance = (row: {
   slug: string;
   adapter_type: string;
   send_capable: boolean;
+  draft_capable?: boolean;
   account_email: string;
 }): MailSenderSourceOption => {
   const kind = MAIL_ADAPTER_LABELS[row.adapter_type] ?? row.adapter_type;
@@ -194,6 +273,11 @@ export const senderOptionFromInstance = (row: {
     label: `${email} (${kind})`,
     account_email: row.account_email,
     send_capable: row.send_capable,
+    // D-264 — optional on the ROW and defaulted false here, because a server
+    // older than D-264 answers `collection.mail.list` without the field. An
+    // absent axis must read as "cannot", never as "same as send": the second
+    // would offer draft-only compose against a mailbox that cannot hold one.
+    draft_capable: row.draft_capable === true,
     mail_instance_slug: row.slug,
   };
 };
@@ -201,15 +285,21 @@ export const senderOptionFromInstance = (row: {
 /** Project a successful mailbox roster read into the one readiness vocabulary
  * every entry point consumes. This is deliberately pure so the no-mailbox and
  * read-only distinctions stay pinned without a browser harness. */
-export const mailSendReadinessFromInstances = (
+export const mailComposeReadinessFromInstances = (
   instances: readonly MailInstanceSummary[],
-): MailSendReadiness => {
+): MailComposeReadiness => {
   if (instances.length === 0) return { status: 'none' };
   const mailboxes = instances.map(senderOptionFromInstance);
-  return mailboxes.some((mailbox) => mailbox.send_capable)
-    ? { status: 'ready', mailboxes }
-    : { status: 'read_only', mailboxes };
+  // D-264 — three tiers, tested strongest-first. `ready` outranks `draft_only`
+  // because one send-capable mailbox makes the whole surface fully usable;
+  // `draft_only` outranks `read_only` because it can still do something.
+  if (mailboxes.some((mailbox) => mailbox.send_capable)) return { status: 'ready', mailboxes };
+  if (mailboxes.some((mailbox) => mailbox.draft_capable)) return { status: 'draft_only', mailboxes };
+  return { status: 'read_only', mailboxes };
 };
+
+/** @deprecated D-264 renamed this alongside its return type. */
+export const mailSendReadinessFromInstances = mailComposeReadinessFromInstances;
 
 /** Classify the execute response without treating transport success as mail
  * success. A durable approval pause is accepted but not sent; only a terminal
@@ -322,7 +412,7 @@ export const mountMailCompose = (
   let state: MailComposeState = initialMailComposeState();
   let sources: MailSenderSourceOption[] = [];
   let files: MailComposeAttachment[] = [];
-  let readinessState: MailSendReadiness = { status: 'loading' };
+  let readinessState: MailComposeReadiness = { status: 'loading' };
   let refreshGeneration = 0;
   let draftGeneration = 0;
   let attachmentGeneration = 0;
@@ -344,13 +434,33 @@ export const mountMailCompose = (
   let draftBusyLabel: string | undefined;
   let pendingSave: { signature: string; key: string } | null = null;
   let pendingSchedule: { signature: string; request: PreparePreapproval } | null = null;
+  /** D-264 — the Save-to-mailbox control's own label, which is also its only
+   *  outcome surface: the dialog stays open, so "done" has to be visible here. */
+  let mailboxStatus = '';
   const resetSaved = (): void => {
-    saved = null; savedValues = ''; draftStatus = ''; scheduleVisible = false; scheduleTime = '';
+    saved = null; savedValues = ''; draftStatus = ''; scheduleVisible = false; scheduleTime = ''; mailboxStatus = '';
     pendingSave = null; pendingSchedule = null;
   };
 
   const sendCapable = (): MailSenderSourceOption[] =>
     sources.filter((s) => s.send_capable);
+
+  /** D-264 — every Source this dialog can do ANYTHING with. The open paths gate
+   *  on this, not on `sendCapable`, because a mailbox that can only hold a draft
+   *  is exactly who the dialog now opens for.
+   *
+   *  ⛔ `openCreate` used to require `readiness === 'ready'` AND a send-capable
+   *  first sender, and both callers IGNORE its `false` return — so New mail
+   *  silently did nothing for the users this feature was built for, in Mail and
+   *  in Chat. Nothing was red: the readiness derivation and the dialog renderer
+   *  were each tested, and the JOIN between them was not. */
+  const composable = (): MailSenderSourceOption[] =>
+    sources.filter((s) => s.send_capable || s.draft_capable);
+
+  /** Both statuses the dialog may open on — the reply path's half of the same
+   *  rule `mailComposeOpenSender` carries for the create path. */
+  const openableReadiness = (): boolean =>
+    mailComposeOpenSender(readinessState, sources) !== null;
 
   const render = (): void => {
     if (destroyed) return;
@@ -374,6 +484,13 @@ export const mountMailCompose = (
       },
       attachmentBusy,
       ...(deps.drafts ? { savedDraft: { status: draftStatus, scheduling: scheduleVisible, runAt: scheduleTime,
+        // D-269 — the same thunk the activation stamp already uses, so the line
+        // the owner reads and the zone the row carries cannot disagree.
+        ...((): { serverTimeZone?: string } => {
+          const z = deps.serverTimeZone?.();
+          return z !== undefined && z.length > 0 ? { serverTimeZone: z } : {};
+        })(),
+      ...(mailboxStatus ? { mailboxStatus } : {}),
         ...(draftBusyLabel ? { busyLabel: draftBusyLabel } : {}) } } : {}),
     });
   };
@@ -404,17 +521,65 @@ export const mountMailCompose = (
 
   const draftContent = (): MailDraftContent | null => {
     const dialog = composeDialog(state); if (!dialog) return null;
-    const result = composeStateToSendPayload(withoutBlankRecipients(dialog.values), {
+    const result = mailDraftContentFromCompose(withoutBlankRecipients(dialog.values), {
       resolveContactEmail, findSenderSource: id => sources.find(source => source.id === id) ?? null,
-    });
+    }, saved?.content);
     if (!result.ok) { setState(setComposeErrorsTransition(state, result.errors)); return null; }
-    const extras: Record<string, unknown> = {};
-    for (const key of ['references', 'reply_to', 'reconciliation_id'] as const) {
-      if (saved?.content[key] !== undefined) extras[key] = saved.content[key];
-    }
-    return parseMailDraftContent({ ...extras, ...composePayloadToSendRecipeConfig(result.payload),
-      body_format: saved?.content.body_format ?? 'text' });
+    return result.content;
   };
+  /** D-264 — save the draft, then copy it into the mail account's Drafts folder.
+   *
+   *  ⛔ The SAME two-step shape `saveDraft` uses, deliberately: the op takes a
+   *  `draft_id` and the server reads the stored row, so the message that lands
+   *  in the mailbox is the one Recued holds — by construction, not by the client
+   *  re-sending content that could differ.
+   *
+   *  ⛔ A RUN, not an rpc. This reaches the owner's mail account, and every
+   *  action is gated at the one enforcement boundary; an rpc would be a second
+   *  door onto the same provider. Same reasoning as Send.
+   *
+   *  ⚠ `awaiting_approval` is a real outcome here, not a failure — a
+   *  contract-bound caller's write can hold at the gate. The label says so
+   *  rather than claiming the mailbox has the draft. */
+  const saveToMailbox = async (): Promise<void> => {
+    syncFromDom(); const dialog = composeDialog(state);
+    if (!deps.drafts || !dialog || dialog.submitting || attachmentBusy || assistState.busyAction) return;
+    let content: MailDraftContent | null;
+    try { content = draftContent(); } catch (error) { setState(setComposeSubmitErrorTransition(state, humanizeRpcError(error))); return; }
+    if (!content) return;
+    const signature = JSON.stringify(content); const generation = draftGeneration;
+    draftBusyLabel = 'Saving…'; mailboxStatus = 'Saving to mailbox…';
+    setState(setComposeErrorsTransition(state, {})); setState(setComposeSubmittingTransition(state, true));
+    try {
+      if (!saved || JSON.stringify(saved.content) !== signature) {
+        if (!pendingSave || pendingSave.signature !== signature) pendingSave = { signature, key: crypto.randomUUID() };
+        if (!saved) saved = await deps.drafts.create({ idempotency_key: pendingSave.key, content });
+        else saved = await deps.drafts.update({ draft_id: saved.draft_id, expected_revision: saved.revision, content });
+      }
+      if (destroyed || generation !== draftGeneration) return;
+      draftStatus = 'Draft saved.';
+      savedValues = JSON.stringify(composeDialog(state)!.values);
+      deps.drafts.changed?.();
+      const response = await deps.runExecute({
+        recipe_id: SAVE_COMPOSED_DRAFT_TO_MAILBOX_RECIPE_ID,
+        config: { draft_id: saved.draft_id },
+      });
+      if (destroyed || generation !== draftGeneration) return;
+      const record = response as { success?: unknown; awaiting_approval?: unknown } | null;
+      mailboxStatus = record?.awaiting_approval === true
+        ? 'Waiting for your approval'
+        : record?.success === true ? 'Saved to mailbox ✓' : 'Could not save to mailbox';
+    } catch (error) {
+      if (!destroyed && generation === draftGeneration) {
+        mailboxStatus = '';
+        syncFromDom(); setState(setComposeSubmitErrorTransition(state, humanizeRpcError(error)));
+      }
+    } finally {
+      draftBusyLabel = undefined;
+      if (!destroyed && generation === draftGeneration) { syncFromDom(); setState(setComposeSubmittingTransition(state, false)); }
+    }
+  };
+
   const saveDraft = async (schedule: boolean): Promise<void> => {
     syncFromDom(); const dialog = composeDialog(state);
     if (!deps.drafts || !dialog || dialog.submitting || attachmentBusy || assistState.busyAction) return;
@@ -456,7 +621,11 @@ export const mountMailCompose = (
         const requestSignature = JSON.stringify([saved.draft_id, saved.revision, runAt]);
         if (!pendingSchedule || pendingSchedule.signature !== requestSignature) pendingSchedule = { signature: requestSignature, request: {
           idempotency_key: crypto.randomUUID(), subject: { kind: 'mail_draft', draft_id: saved.draft_id, draft_revision: saved.revision },
-          activation: { kind: 'one_shot', run_at: runAt, time_zone: Intl.DateTimeFormat().resolvedOptions().timeZone },
+          // D-269 — the SERVER's zone: the send is dispatched server-side, and
+          // this stamp was RE-WRITTEN from the composing browser on every
+          // schedule, so a send arranged from a laptop abroad carried the
+          // travel zone each time.
+          activation: { kind: 'one_shot', run_at: runAt, time_zone: stampZone(deps.serverTimeZone) },
           decision_deadline: Math.min(runAt, Date.now() + 86_400_000), dispatch_deadline: runAt + 900_000,
         } };
         const pending = await deps.drafts.prepare(pendingSchedule.request);
@@ -793,6 +962,7 @@ export const mountMailCompose = (
       void submit();
       return;
     }
+    if (action === 'save-mail-draft-to-mailbox') { void saveToMailbox(); return; }
     if (action === 'save-mail-draft' || action === 'schedule-mail-draft') {
       void saveDraft(action === 'schedule-mail-draft'); return;
     }
@@ -831,14 +1001,14 @@ export const mountMailCompose = (
   host.addEventListener('click', onClick);
   host.addEventListener('change', onChange);
 
-  const refresh = async (): Promise<MailSendReadiness> => {
+  const refresh = async (): Promise<MailComposeReadiness> => {
     const generation = ++refreshGeneration;
     readinessState = { status: 'loading' };
     try {
       const listed = await deps.listMailInstances();
       if (destroyed || generation !== refreshGeneration) return readinessState;
       sources = listed.instances.map(senderOptionFromInstance);
-      readinessState = mailSendReadinessFromInstances(listed.instances);
+      readinessState = mailComposeReadinessFromInstances(listed.instances);
     } catch {
       if (destroyed || generation !== refreshGeneration) return readinessState;
       sources = [];
@@ -851,11 +1021,10 @@ export const mountMailCompose = (
 
   return {
     openCreate() {
-      const first = sendCapable()[0];
+      const first = mailComposeOpenSender(readinessState, sources);
       const dialog = composeDialog(state);
       if (
-        readinessState.status !== 'ready'
-        || first === undefined
+        first === null
         || dialog?.submitting === true
         || attachmentBusy
         || assistState.busyAction !== null
@@ -874,8 +1043,8 @@ export const mountMailCompose = (
     openReply(context) {
       const dialog = composeDialog(state);
       if (
-        readinessState.status !== 'ready'
-        || !sendCapable().some((source) => source.id === context.original_source_id)
+        !openableReadiness()
+        || !composable().some((source) => source.id === context.original_source_id)
         || dialog?.submitting === true
         || attachmentBusy
         || assistState.busyAction !== null

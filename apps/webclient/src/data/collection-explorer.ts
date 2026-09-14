@@ -20,6 +20,7 @@
  *
  *  Spec: D-198 §4 + D-198 §B Slice 5. */
 
+import { renderFileCloudCapture } from './file-cloud-capture.js';
 import {
   getCollectionDisplaySchema,
   readDisplayField,
@@ -61,6 +62,7 @@ export interface CollectionExplorerProps {
   /** Instances of this collection's platform (from `collection.listInstances`,
    *  filtered to `platform === collection` by the route). */
   instances: readonly CollectionInstanceRow[];
+  instanceLabels?: ReadonlyMap<string, string>;
   /** The selected instance's `slug` (null → the picker when >1; the route
    *  auto-selects when exactly 1). */
   selectedSlug: string | null;
@@ -230,15 +232,33 @@ const renderInstanceBar = (
   instances: readonly CollectionInstanceRow[],
   selectedSlug: string | null,
   actionAttr: string,
+  labels?: ReadonlyMap<string, string>,
 ): string => {
-  if (instances.length <= 1) return '';
+  if (instances.length === 0 || (instances.length === 1 && instances[0]!.slug === selectedSlug)) return '';
   const chips = instances
     .map((inst) => {
       const active = inst.slug === selectedSlug;
-      const label = `${inst.adapter_type} · ${inst.slug}`;
+      // D-267 — ⛔ NEVER SAY THE SAME WORD TWICE. The chip exists to tell
+      // instances apart, so `<adapter> · <slug>` is informative for
+      // `gcal · work-calendar` and pure noise for the built-in local calendar,
+      // whose adapter AND slug are both `local` — it rendered "local · local",
+      // which reads as a naming accident rather than as "the one on this
+      // machine". The server RESERVES that slug (`RESERVED_CALENDAR_SLUGS`), so
+      // one word is unambiguous by construction: there can only ever be one.
+      const label = labels?.get(inst.slug) ?? (inst.adapter_type === inst.slug
+        ? inst.slug
+        : `${inst.adapter_type} · ${inst.slug}`);
+      // ⚠ And say whose it is. A `local` adapter needs no credential and lives
+      // on this server, so it is the owner's in the D-174 I-8 sense
+      // ("own it → manageable"), sitting in a tab grouped under Connected
+      // because the GROUP is per-collection while the posture is per-INSTANCE.
+      // The tab cannot express that; the chip can.
+      const owned = inst.adapter_type === 'local'
+        ? `<span class="col-explorer-instance-owned">On this server</span>`
+        : '';
       return `<button type="button" class="col-explorer-instance-chip${active ? ' is-active' : ''}"
         ${actionAttr}="${COLLECTION_SELECT_INSTANCE_ACTION}" ${COLLECTION_INSTANCE_SLUG_ATTR}="${e(inst.slug)}"
-        aria-pressed="${active ? 'true' : 'false'}">${e(label)}</button>`;
+        aria-pressed="${active ? 'true' : 'false'}">${e(label)}${owned}</button>`;
     })
     .join('');
   return `<div class="col-explorer-instances" role="group" aria-label="Choose an instance">${chips}</div>`;
@@ -310,25 +330,26 @@ const renderDetail = (
     // redundant / empty there: Received (no timestamp → 0), Modified (===
     // Received), Size (0), Source id (=== record_id). Platform records keep
     // them all (received_at is always a real ingest stamp).
-    if (!compact || record.received_at > 0) {
+    const remote = record.hot_fields.posture === 'remote';
+    if (!remote && (!compact || record.received_at > 0)) {
       appendMetaField(
         'Received',
         formatRelativeTime(record.received_at, now),
         'Added to Recued',
       );
     }
-    if (!compact || record.modified_at !== record.received_at) {
+    if (remote ? record.modified_at > 0 : !compact || record.modified_at !== record.received_at) {
       appendMetaField(
         'Modified',
         formatRelativeTime(record.modified_at, now),
         'Last updated',
       );
     }
-    if (!compact || record.size_bytes > 0) {
+    if (remote ? typeof record.hot_fields.size === 'number' : !compact || record.size_bytes > 0) {
       appendMetaField(
         'Size',
         formatBytes(record.size_bytes),
-        'Stored body size',
+        'Size kept in Recued',
       );
     }
     if (!compact || record.source_id !== record.record_id) {
@@ -379,6 +400,7 @@ const renderDetail = (
         <h2 class="col-explorer-detail-title" ${COLLECTION_DETAIL_HEADING_ATTR} tabindex="-1">${e(title)}</h2>
       </div>
       ${fields ? `<dl class="col-explorer-detail-fields">${fields}</dl>` : ''}
+      ${collection === 'file' ? renderFileCloudCapture(record.hot_fields?.cloud_capture) : ''}
       ${bodyBlock}
       ${raw && raw !== '{}' ? `<details class="col-explorer-detail-raw"><summary>Raw fields</summary><pre>${e(raw)}</pre></details>` : ''}`;
   }
@@ -420,7 +442,7 @@ export const renderCollectionExplorer = (props: CollectionExplorerProps): string
 
   const instanceBar = props.singleCollection
     ? ''
-    : renderInstanceBar(props.instances, props.selectedSlug, props.actionAttr);
+    : renderInstanceBar(props.instances, props.selectedSlug, props.actionAttr, props.instanceLabels);
 
   let body: string;
   if (props.error !== undefined) {
@@ -470,6 +492,12 @@ export const COLLECTION_EXPLORER_STYLES = `
   border: 1px solid var(--border); background: transparent; color: var(--fg-muted); cursor: pointer;
 }
 .col-explorer-instance-chip.is-active { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+/* D-267 — "On this server" rides inside the chip as a quieter second clause;
+   a stroke and a size, never a fill, per I-7's fill budget. */
+.col-explorer-instance-owned {
+  margin-left: 0.4rem; padding: 0 0.3rem; border-radius: 999px;
+  border: 1px solid currentColor; font-size: 0.6875rem; opacity: 0.85;
+}
 .col-explorer-list { min-width: 0; list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.375rem; }
 .col-explorer-row { min-width: 0; }
 .col-explorer-row-btn {

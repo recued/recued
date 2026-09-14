@@ -517,9 +517,9 @@ describe('D-174 contracts route — list → detail shell', () => {
     expect(rows[0]!.getAttribute('href')).toBe('#contracts/user_self');
     expect(rows[1]!.getAttribute('href')).toBe('#contracts/door_rcpt_1');
     expect(rows[1]!.getAttribute(CONTRACTS_ROUTE_ANONYMOUS_ATTR)).toBe('');
-    expect(allText(rows[1]!)).toContain('capped by its granted ops');
+    expect(allText(rows[1]!)).toContain('only what you allow');
     expect(collectByAttr(root, CONTRACTS_ROUTE_PAGE_STATUS_ATTR)[0]?.textContent)
-      .toBe('Showing 1–1 of 1 managed contracts');
+      .toBe('Showing 1–1 of 1 agreements you look after');
   });
 
   it('never renders an inverted range when an older caller ignores category filters', async () => {
@@ -533,7 +533,7 @@ describe('D-174 contracts route — list → detail shell', () => {
 
     const status = collectByAttr(root, CONTRACTS_ROUTE_PAGE_STATUS_ATTR)[0];
     expect(status?.textContent).toBe(
-      'No managed access contracts on this page',
+      'No agreements you look after on this page',
     );
     expect(status?.textContent).not.toContain('1–0');
   });
@@ -566,7 +566,7 @@ describe('D-174 contracts route — list → detail shell', () => {
     )).toEqual(['door_alpha', 'door_beta']);
     expect(collectByAttr(root, CONTRACTS_ROUTE_BADGE_ATTR).map((badge) => badge.textContent))
       .toEqual(['Contract', 'Contract']);
-    expect(allText(root)).toContain('agents, applications, shared credentials');
+    expect(allText(root)).toContain('AI apps, other programs, shared keys');
     expect(allText(root)).not.toContain('Agent contracts');
     expect(allText(collectByAttr(root, CONTRACTS_ROUTE_ROW_ATTR)[1]!))
       .toContain('4 of 10 uses left');
@@ -765,7 +765,7 @@ describe('D-174 contracts route — list → detail shell', () => {
     ]);
     const badges = collectByAttr(list.root, CONTRACTS_ROUTE_BADGE_ATTR);
     expect(badges.map((badge) => badge.textContent)).toEqual(['Template']);
-    expect(allText(list.root)).toContain('Issued customer contracts stay in Seller.');
+    expect(allText(list.root)).toContain('The customers themselves live under Seller.');
     expect(collectByAttr(list.root, CONTRACTS_ROUTE_NEW_BUTTON_ATTR)).toHaveLength(0);
     list.route.dispose();
 
@@ -1114,7 +1114,7 @@ describe('D-174 contracts route — list → detail shell', () => {
     expect(doc.activeElement).toBe(busy);
     expect(route.hasInFlightWork()).toBe(true);
     expect(route.inFlightWorkPrompt()).toBe(
-      'A contract action is still in progress. Leave Contracts anyway?',
+      'Something is still happening. Leave anyway?',
     );
 
     resolveRevoke(agentContract({ lifecycle_state: 'revoked' }));
@@ -1154,7 +1154,7 @@ describe('D-174 contracts route — list → detail shell', () => {
     expect(tabs[1]!.getAttribute('aria-controls')).toBe(tabBody.getAttribute('id'));
     expect(tabBody.getAttribute('aria-labelledby')).toBe(tabs[1]!.getAttribute('id'));
     expect(allText(collectByAttr(root, CONTRACTS_ROUTE_TAB_BODY_ATTR)[0]!)).toContain(
-      'enrichment topics',
+      'Which of your things it may read',
     );
   });
 
@@ -1379,7 +1379,7 @@ describe('D-174 contracts route — list → detail shell', () => {
     await route.whenLoaded();
 
     expect(collectByAttr(root, CONTRACTS_ROUTE_NEW_TEMPLATE_BUTTON_ATTR)).toHaveLength(0);
-    expect(allText(root)).toContain('Issued customer contracts stay in Seller.');
+    expect(allText(root)).toContain('The customers themselves live under Seller.');
     expect(
       collectByTag(root, 'a').some((link) => link.getAttribute('href') === '#settings/seller'),
     ).toBe(true);
@@ -1667,7 +1667,7 @@ describe('D-174 P2 chat route — AI-availability affordance (UX flow-09)', () =
 
     const send = collectByAttr(root, CHAT_ROUTE_SEND_ATTR)[0]!;
     expect(send.disabled).toBe(true);
-    expect(send.getAttribute('title')).toContain('No AI model');
+    expect(send.getAttribute('title')).toContain('No AI is picked yet');
     expect(send.getAttribute('aria-describedby')).toBe(
       CHAT_ROUTE_AI_UNAVAILABLE_ID,
     );
@@ -2567,6 +2567,52 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     }) as ChatRouteConn;
   };
 
+  it('recovers recent completions while preserving an old search target and its history gap', async () => {
+    const doc = makeFakeDocument();
+    const root = doc.createElement('div');
+    const reconnectListeners: Array<() => void> = [];
+    const reads: Array<{ session_id: string; limit?: number; around_message_id?: string }> = [];
+    const base = stepConn({ sessions: [sessionSummary()] });
+    const conn = (async (method: string, payload?: unknown) => {
+      if (method !== 'chat.session.get') {
+        return (base as (method: string, payload?: unknown) => Promise<unknown>)(method, payload);
+      }
+      const request = payload as typeof reads[number];
+      reads.push(request);
+      const old = request.around_message_id === 'msg_old';
+      const messages = old
+        ? [{ ...chatMessage(), id: 'msg_old', ts: 10, turn_id: 'turn_old' }]
+        : [{ ...chatMessage(), id: 'msg_recent', ts: 1000, turn_id: 'turn_recent' }];
+      return {
+        ...chatSession(), messages, plans: [], has_more: true,
+        has_more_after: old,
+        oldest_cursor: { ts: messages[0]!.ts, message_id: messages[0]!.id },
+        newest_cursor: { ts: messages[0]!.ts, message_id: messages[0]!.id },
+      };
+    }) as ChatRouteConn;
+    const route = bootstrapChatRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      conn,
+      reconnect: listener => { reconnectListeners.push(listener); return () => {}; },
+      initialSessionId: 'chat_1', initialMessageId: 'msg_old',
+    });
+    await tick(8);
+    expect(route.getThread().messages.map(message => message.id)).toEqual(['msg_old']);
+    reconnectListeners[0]?.();
+    await tick(8);
+    expect(route.getThread().messages.map(message => message.id)).toEqual(['msg_old', 'msg_recent']);
+    expect(route.getThread().completed_turn_ids).toContain('turn_recent');
+    expect(route.getThread().has_more_after).toBe(true);
+    expect(route.getThread().newest_cursor).toEqual({ ts: 10, message_id: 'msg_old' });
+    expect(reads).toEqual([
+      { session_id: 'chat_1', limit: 100, around_message_id: 'msg_old' },
+      { session_id: 'chat_1', limit: 100, around_message_id: 'msg_old' },
+      { session_id: 'chat_1', limit: 100 },
+    ]);
+    route.dispose();
+  });
+
   const byokAndFreeConfig = {
     free_pool: [{ id: 'groq', enabled: true }],
     slot_1: { provider: 'anthropic', model: 'claude-opus', has_key: true },
@@ -2623,7 +2669,7 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     route.dispose();
   });
 
-  it('turns the first empty Chat landing into three outcome-led paths', async () => {
+  it('turns the first empty Chat landing into outcome-led paths', async () => {
     const doc = makeFakeDocument();
     const root = doc.createElement('div');
     const calls: Array<{ method: string; payload?: unknown }> = [];
@@ -2638,6 +2684,10 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     const activation = collectByAttr(root, CHAT_ROUTE_ACTIVATION_ATTR)[0]!;
     expect(activation).toBeDefined();
     expect(allText(activation)).toContain('Start here');
+    // ⚠ THREE HERE BECAUSE THIS MOUNT WIRES NO UPSERT CALLER. D-267 added a
+    // fourth `capture` card gated on the same predicate as the composer chip;
+    // with callers the order is `capture, ask, connect, automate`, pinned in
+    // `chat-composer-create-overlay.test.ts`. This case is the unwired arm.
     expect(collectByAttr(root, CHAT_ROUTE_ACTIVATION_CARD_ATTR).map(
       (card) => card.getAttribute(CHAT_ROUTE_ACTIVATION_CARD_ATTR),
     )).toEqual(['ask', 'connect', 'automate']);
@@ -2877,7 +2927,7 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     const review = collectByAttr(
       root,
       CHAT_ROUTE_SOURCE_ACTION_ATTR,
-    ).find((action) => action.textContent === 'Review first question')!;
+    ).find((action) => action.textContent === 'Read the first question')!;
     expect(review.focused).toBe(true);
     expect(doc.activeElement).toBe(review);
     expect(collectByAttr(root, CHAT_ROUTE_SOURCE_HANDOFF_ATTR)[0]!
@@ -2921,7 +2971,7 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     expect(collectByAttr(root, CHAT_ROUTE_SOURCE_HANDOFF_ATTR)[0]!
       .getAttribute('data-state')).toBe('unknown');
     expect(allText(collectByAttr(root, CHAT_ROUTE_SOURCE_HANDOFF_ATTR)[0]!))
-      .toContain('Status unavailable');
+      .toContain('Recued cannot tell');
     expect(scheduled).toHaveLength(1);
 
     scheduled.shift()!();
@@ -2960,7 +3010,7 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     await tick(8);
 
     const dismiss = collectByAttr(root, CHAT_ROUTE_SOURCE_ACTION_ATTR).find(
-      (action) => action.textContent === 'Use Chat without this account',
+      (action) => action.textContent === 'Use Chat without it',
     )!;
     fireEvent(
       collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!,
@@ -3039,7 +3089,7 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     expect(answer.getAttribute('data-state')).toBe('preparing');
     expect(allText(answer)).toContain('Gmail · person@example.com');
     expect(collectByAttr(answer, CHAT_ROUTE_SOURCE_ANSWER_RECEIPT_ATTR)[0]!
-      .textContent).toBe('Checking activity');
+      .textContent).toBe('Checking what it did');
     expect(collectByAttr(root, CHAT_ROUTE_MESSAGE_ATTR).some(
       (row) => row.getAttribute('data-role') === 'user'
         && allText(row).includes(question),
@@ -3124,9 +3174,9 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     answer = collectByAttr(root, CHAT_ROUTE_SOURCE_ANSWER_ATTR)[0]!;
     expect(answer.getAttribute('data-state')).toBe('search_complete');
     expect(collectByAttr(answer, CHAT_ROUTE_SOURCE_ANSWER_RECEIPT_ATTR)[0]!
-      .textContent).toBe('Mail search completed');
+      .textContent).toBe('Mail search finished');
     expect(allText(answer)).toContain(
-      'The receipt does not show which records, if any, informed the answer.',
+      'It does not say which records, if any, went into the answer.',
     );
     let references = collectByAttr(answer, CHAT_ROUTE_SOURCE_REFERENCES_ATTR);
     expect(references).toHaveLength(1);
@@ -3136,7 +3186,7 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     )[0]!;
     expect(allText(referencesToggle)).toContain('3 recorded references');
     expect(allText(referencesToggle)).toContain(
-      'Sources and available record IDs',
+      'Where it came from, and the records Recued knows',
     );
     expect(referencesToggle.getAttribute('aria-expanded')).toBe('false');
     expect(collectByAttr(
@@ -3153,7 +3203,7 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     )[0]!;
     expect(referencesToggle.getAttribute('aria-expanded')).toBe('true');
     expect(allText(references[0]!)).toContain(
-      'They are not yet linked to individual sentences.',
+      'They are not tied to any one sentence yet.',
     );
     expect(collectByAttr(
       answer,
@@ -3166,7 +3216,7 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     expect(allText(references[0]!)).toContain('Quarterly planning');
     expect(allText(references[0]!)).toContain('Launch readiness');
     expect(allText(references[0]!)).toContain('Account timeline');
-    expect(allText(references[0]!)).toContain('Record ID not recorded');
+    expect(allText(references[0]!)).toContain('Recued did not note which record');
     expect(collectByAttr(
       answer,
       CHAT_ROUTE_SOURCE_REFERENCE_OPEN_ATTR,
@@ -3184,8 +3234,8 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
 
     const actions = collectByAttr(answer, CHAT_ROUTE_SOURCE_ANSWER_ACTION_ATTR);
     expect(actions.map((action) => action.textContent)).toEqual([
-      'Draft the replies',
-      'Make an action list',
+      'Write the replies',
+      'Make a to-do list',
       'View mailbox',
     ]);
     actions[0]!.click();
@@ -3202,15 +3252,15 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
       'Reply drafts · Gmail · person@example.com',
     );
     expect(allText(followupContext[0]!)).toContain(
-      'Requests a new mail search',
+      'Asks for a new mail search',
     );
     expect(allText(followupContext[0]!)).toContain(
-      'If you ask it to send email, you’ll review and approve that separately.',
+      'If you ask it to send email, you will say yes separately.',
     );
     expect(collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!
       .getAttribute('aria-describedby')).not.toBeNull();
     expect(collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!
-      .getAttribute('placeholder')).toBe('Review or edit this request...');
+      .getAttribute('placeholder')).toBe('Read or change this…');
     expect(collectByAttr(root, CHAT_ROUTE_SEND_ATTR)[0]!.textContent)
       .toBe('Ask Chat');
     fireEvent(
@@ -3219,18 +3269,18 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
       `${collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!.value} `,
     );
     expect(allText(followupContext[0]!)).toContain('Review first');
-    expect(allText(followupContext[0]!)).not.toContain('Edited request');
+    expect(allText(followupContext[0]!)).not.toContain('You changed this');
     fireEvent(
       collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!,
       'input',
       'Keep the follow-up I already started.',
     );
-    expect(allText(followupContext[0]!)).toContain('Edited request');
+    expect(allText(followupContext[0]!)).toContain('You changed this');
     expect(allText(followupContext[0]!)).toContain(
-      'Source use now depends on your edits',
+      'What Chat reads now depends on your changes',
     );
     expect(allText(followupContext[0]!)).toContain(
-      'Chat handles data-changing actions through a separate approval step.',
+      'Anything that changes your things still asks you first.',
     );
     actions[1]!.click();
     expect(collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!.value).toBe(
@@ -3249,7 +3299,7 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
 
     answer = collectByAttr(root, CHAT_ROUTE_SOURCE_ANSWER_ATTR)[0]!;
     collectByAttr(answer, CHAT_ROUTE_SOURCE_ANSWER_ACTION_ATTR)
-      .find((action) => action.textContent === 'Make an action list')!
+      .find((action) => action.textContent === 'Make a to-do list')!
       .click();
     followupContext = collectByAttr(root, CHAT_ROUTE_FOLLOWUP_CONTEXT_ATTR);
     expect(followupContext).toHaveLength(1);
@@ -3257,13 +3307,13 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
       CHAT_ROUTE_FOLLOWUP_CONTEXT_ATTR,
     )).toBe('context');
     expect(allText(followupContext[0]!)).toContain(
-      'Continues from the previous answer · no new search requested',
+      'Carries on from the last answer · nothing new searched',
     );
     expect(allText(followupContext[0]!)).toContain(
-      'Prioritized action list · Gmail · person@example.com',
+      'To-do list, most important first · Gmail · person@example.com',
     );
     expect(allText(followupContext[0]!)).toContain(
-      'If you ask it to create tasks, you’ll review and approve that separately.',
+      'If you ask it to make tasks, you will say yes separately.',
     );
     expect(collectByAttr(root, CHAT_ROUTE_SEND_ATTR)[0]!.textContent)
       .toBe('Ask Chat');
@@ -3279,10 +3329,10 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
       'continuing',
     ]);
     expect(allText(sourceAnswers[1]!)).toContain(
-      'Prioritized action list · Gmail · person@example.com',
+      'To-do list, most important first · Gmail · person@example.com',
     );
     expect(collectByAttr(root, CHAT_ROUTE_ANSWER_WAITING_ATTR)[0]!
-      .textContent).toBe('Continuing from the previous answer…');
+      .textContent).toBe('Carrying on from the last answer…');
     expect(collectByAttr(root, CHAT_ROUTE_FOLLOWUP_CONTEXT_ATTR)).toHaveLength(0);
     expect(collectByAttr(root, CHAT_ROUTE_MESSAGE_ATTR).map(
       (row) => row.getAttribute('data-role'),
@@ -3311,7 +3361,7 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     expect(collectByAttr(
       sourceAnswers[1]!,
       CHAT_ROUTE_SOURCE_ANSWER_RECEIPT_ATTR,
-    )[0]!.textContent).toBe('No new search');
+    )[0]!.textContent).toBe('Nothing new was searched');
     expect(collectByAttr(
       sourceAnswers[0]!,
       CHAT_ROUTE_SOURCE_ANSWER_RECEIPT_ATTR,
@@ -3321,7 +3371,7 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
       CHAT_ROUTE_SOURCE_ANSWER_RECEIPT_ATTR,
     )[0]!.getAttribute('role')).toBe('status');
     expect(allText(sourceAnswers[1]!)).toContain(
-      'No new mail search was recorded.',
+      'No new mail search was noted.',
     );
     expect(collectByAttr(
       sourceAnswers[0]!,
@@ -3331,7 +3381,7 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
       sourceAnswers[1]!,
       CHAT_ROUTE_SOURCE_ANSWER_ACTION_ATTR,
     ).map((action) => action.textContent)).toEqual([
-      'Draft the replies',
+      'Write the replies',
       'View mailbox',
     ]);
     expect(calls.filter((call) => call.method === 'chat.send')).toHaveLength(2);
@@ -3362,7 +3412,7 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
       'preparing',
     ]);
     expect(collectByAttr(root, CHAT_ROUTE_ANSWER_WAITING_ATTR)[0]!
-      .textContent).toBe('Preparing to search connected mail…');
+      .textContent).toBe('Getting ready to search your connected mail…');
 
     publish({
       kind: 'chat.tool_call_started',
@@ -3415,7 +3465,7 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     expect(collectByAttr(
       sourceAnswers[2]!,
       CHAT_ROUTE_SOURCE_ANSWER_RECEIPT_ATTR,
-    )[0]!.textContent).toBe('Mail search completed');
+    )[0]!.textContent).toBe('Mail search finished');
     expect(collectByAttr(
       sourceAnswers[0]!,
       CHAT_ROUTE_SOURCE_ANSWER_ACTION_ATTR,
@@ -3428,7 +3478,7 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
       sourceAnswers[2]!,
       CHAT_ROUTE_SOURCE_ANSWER_ACTION_ATTR,
     ).map((action) => action.textContent)).toEqual([
-      'Make an action list',
+      'Make a to-do list',
       'View mailbox',
     ]);
     expect(calls.filter((call) => call.method === 'chat.send')).toHaveLength(3);
@@ -3436,7 +3486,7 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     collectByAttr(
       sourceAnswers[2]!,
       CHAT_ROUTE_SOURCE_ANSWER_ACTION_ATTR,
-    ).find((action) => action.textContent === 'Make an action list')!
+    ).find((action) => action.textContent === 'Make a to-do list')!
       .click();
     const retryableDraft =
       collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!.value;
@@ -3466,15 +3516,15 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     expect(collectByAttr(
       sourceAnswers[3]!,
       CHAT_ROUTE_SOURCE_ANSWER_RECEIPT_ATTR,
-    )[0]!.textContent).toBe('Edited request');
+    )[0]!.textContent).toBe('You changed this');
     expect(allText(sourceAnswers[3]!)).toContain(
-      'Any new mail search will appear here.',
+      'Any new mail search shows up here.',
     );
     expect(allText(sourceAnswers[3]!)).toContain(
       'Follow-up with Gmail · person@example.com',
     );
     expect(allText(sourceAnswers[3]!)).not.toContain(
-      'Prioritized action list · Gmail · person@example.com',
+      'To-do list, most important first · Gmail · person@example.com',
     );
 
     publish({
@@ -3494,7 +3544,7 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     sourceAnswers = collectByAttr(root, CHAT_ROUTE_SOURCE_ANSWER_ATTR);
     expect(sourceAnswers[3]!.getAttribute('data-state')).toBe('context_only');
     expect(allText(sourceAnswers[3]!)).toContain(
-      'Source use followed your edited request.',
+      'What Chat read followed your change.',
     );
     expect(calls.filter((call) => call.method === 'chat.send')).toHaveLength(5);
     route.dispose();
@@ -3631,7 +3681,7 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     const answer = collectByAttr(root, CHAT_ROUTE_SOURCE_ANSWER_ATTR)[0]!;
     expect(answer.getAttribute('data-state')).toBe('failed');
     const retry = collectByAttr(answer, CHAT_ROUTE_SOURCE_ANSWER_ACTION_ATTR)
-      .find((action) => action.textContent === 'Review and retry')!;
+      .find((action) => action.textContent === 'Look at it, then try again')!;
     retry.click();
     expect(collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!.value).toBe(question);
     expect(collectByAttr(root, CHAT_ROUTE_FOLLOWUP_CONTEXT_ATTR)[0]!
@@ -3854,15 +3904,15 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     expect(review.getAttribute('role')).toBe('status');
     expect(review.children.find(
       (child) => child.className === 'chat-data-verification-title',
-    )?.textContent).toBe('Help interpreting this result');
+    )?.textContent).toBe('Help me understand this');
     expect(review.children.find(
       (child) => child.className === 'chat-data-verification-detail',
     )?.textContent).toContain(
-      'Chat can explain what the linked Data evidence does and does not show',
+      'Chat can tell you what this does and does not show',
     );
     expect(review.children.find(
       (child) => child.className === 'chat-data-verification-detail',
-    )?.textContent).toContain('Nothing retried.');
+    )?.textContent).toContain('Nothing was tried again.');
     expect(review.children.find(
       (child) => child.tagName === 'A',
     )).toBeUndefined();
@@ -3874,13 +3924,13 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
       + 'answer/msg_action',
     );
     const retry = collectByAttr(target, CHAT_ROUTE_PLAN_RETRY_ATTR)[0]!;
-    expect(retry.textContent).toBe('Review and retry');
+    expect(retry.textContent).toBe('Look at it, then try again');
     expect(retry.focused).toBe(false);
     const diagnose = collectByAttr(
       target,
       CHAT_ROUTE_DATA_VERIFICATION_DIAGNOSE_ATTR,
     )[0]!;
-    expect(diagnose.textContent).toBe('Help me interpret this');
+    expect(diagnose.textContent).toBe('Help me understand this');
     expect(diagnose.focused).toBe(true);
     expect(calls.some((call) => call.method === 'chat.send')).toBe(false);
     expect(calls.some((call) => call.method === 'chat.plan.approve')).toBe(false);
@@ -3891,11 +3941,11 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
       CHAT_ROUTE_DATA_DIAGNOSIS_CONTEXT_ATTR,
     )[0]!;
     expect(diagnosis.getAttribute('aria-label')).toBe(
-      'Get help interpreting Data review for Send email',
+      'Get help understanding the Data you looked at for Send email',
     );
-    expect(allText(diagnosis)).toContain('Explanation only');
-    expect(allText(diagnosis)).toContain('without changing anything');
-    expect(allText(diagnosis)).toContain('does not retry the action');
+    expect(allText(diagnosis)).toContain('Explain it only');
+    expect(allText(diagnosis)).toContain('It changes nothing');
+    expect(allText(diagnosis)).toContain('runs nothing again');
     const input = collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!;
     expect(input.value).toContain(
       'Help me interpret the Data review linked to the action below.',
@@ -3904,10 +3954,10 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     expect(input.value).toContain('"execution_status": "failed"');
     expect(input.value).toContain('"execution_reason": "execution_error"');
     expect(input.value).toContain(
-      '"run_correlation": "confirmed by the action execution receipt"',
+      '"run_correlation": "the result says so"',
     );
     expect(input.value).toContain(
-      '"data_relationship": "item involved in the side-effecting step"',
+      '"data_relationship": "item touched by the step that changes things"',
     );
     expect(input.value).toContain('Do not retry the action');
     expect(input.value).toContain('<reviewed_arguments>');
@@ -3960,7 +4010,7 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     expect(interpreting.getAttribute('data-run-correlation')).toBe('matched');
     expect(interpreting.getAttribute('role')).toBe('status');
     expect(allText(interpreting)).toContain(
-      'This request carries no approval or retry authority',
+      'This asks for no permission and cannot run anything again',
     );
     expect(collectByAttr(
       interpreting,
@@ -3969,7 +4019,7 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     expect(allText(collectByAttr(
       root,
       CHAT_ROUTE_ANSWER_WAITING_ATTR,
-    )[0]!)).toContain('Interpreting the linked evidence');
+    )[0]!)).toContain('Working out what this means');
 
     reconnectListeners[0]?.();
     await tick(8);
@@ -4080,7 +4130,7 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
       CHAT_ROUTE_ANSWER_WAITING_ATTR,
     )[0]!)).toContain('Preparing your answer');
     expect(allText(root)).not.toContain(
-      'This request carries no approval or retry authority',
+      'This asks for no permission and cannot run anything again',
     );
     route.dispose();
   });
@@ -4148,10 +4198,10 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     expect(receipt.getAttribute('data-run-correlation')).toBe('matched');
     expect(receipt.getAttribute('role')).toBeNull();
     expect(allText(receipt)).toContain(
-      'Explanation ready — choose a safe next step',
+      'Chat has explained it. Now pick a safe next step',
     );
     expect(allText(receipt)).toContain(
-      'did not retry the action or grant a new approval',
+      'did not run anything again, and gave no new permission',
     );
 
     reconnectListeners[0]?.();
@@ -4172,7 +4222,7 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
       'action',
       'safe-check',
     ]);
-    expect(actions[2]?.textContent).toBe('Draft a safe check');
+    expect(actions[2]?.textContent).toBe('Write a safe check');
     expect(actions[0]?.getAttribute('href')).toBe(
       '#logs/run%2Fone/return/chat/session/chat_1/plan/plan_approved/'
       + 'answer/msg_diagnosis',
@@ -4192,7 +4242,7 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
       CHAT_ROUTE_DATA_DIAGNOSIS_CONTEXT_ATTR,
     );
     expect(safeCheckContext).toHaveLength(1);
-    expect(allText(safeCheckContext[0]!)).toContain('Read-only check');
+    expect(allText(safeCheckContext[0]!)).toContain('Look-only check');
     expect(allText(safeCheckContext[0]!)).toContain(
       'verify remaining uncertainty',
     );
@@ -4319,7 +4369,7 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     expect(initial.getAttribute('data-resolution')).toBeNull();
     expect(initial.getAttribute('role')).toBeNull();
     expect(allText(initial)).toContain(
-      'Read-only check complete — close the loop',
+      'The look-only check is done. Now finish up',
     );
     const closeResolved = collectByAttr(
       initial,
@@ -4391,7 +4441,7 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     expect(doc.activeElement).toBe(resolved);
     expect(resolved.getAttribute('role')).toBe('status');
     expect(allText(resolved)).toContain(
-      'Closed — no further action requested',
+      'Closed. You asked for nothing more',
     );
 
     const changed: Extract<
@@ -4418,7 +4468,7 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     expect(needsAction.getAttribute('data-resolution')).toBe(
       'needs_new_action',
     );
-    expect(allText(needsAction)).toContain('Closed — fresh review needed');
+    expect(allText(needsAction)).toContain('Closed. This needs a fresh look');
     const stale: Extract<
       ServerEvent,
       { kind: 'chat.data_diagnosis_resolved' }
@@ -4444,9 +4494,9 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     fresh.click();
 
     const context = collectByAttr(root, CHAT_ROUTE_PLAN_CONTEXT_ATTR)[0]!;
-    expect(allText(context)).toContain('Fresh approval required');
+    expect(allText(context)).toContain('This needs a fresh yes');
     expect(allText(context)).toContain(
-      'Nothing can run until you approve that fresh review',
+      'Nothing runs until you say yes to it',
     );
     const initialPrompt = collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!.value;
     expect(initialPrompt).toContain(
@@ -4464,7 +4514,7 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     ).find(
       (action) => action.getAttribute('data-action') === 'fresh-action',
     )!;
-    expect(otherFresh.textContent).toBe('Go to current draft');
+    expect(otherFresh.textContent).toBe('Go to what you were writing');
 
     const reclosed: Extract<
       ServerEvent,
@@ -4572,7 +4622,7 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
       ).find(
         (action) => action.getAttribute('data-action') === 'resolve-resolved',
       );
-      expect(attempted?.textContent).toBe('Resolved — no action');
+      expect(attempted?.textContent).toBe('Sorted. Nothing to do');
       expect(attempted?.focused).toBe(true);
     });
     const restored = collectByAttr(
@@ -4581,7 +4631,7 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     ).find(
       (action) => action.getAttribute('data-action') === 'resolve-resolved',
     )!;
-    expect(restored.textContent).toBe('Resolved — no action');
+    expect(restored.textContent).toBe('Sorted. Nothing to do');
     expect(restored.disabled).toBe(false);
     expect(restored.getAttribute('aria-disabled')).toBeNull();
     expect(restored.getAttribute('aria-busy')).toBeNull();
@@ -4643,7 +4693,7 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     )[0]!;
     expect(receipt.getAttribute('data-resolution')).toBe('still_uncertain');
     expect(receipt.getAttribute('role')).toBeNull();
-    expect(allText(receipt)).toContain('Closed as still uncertain');
+    expect(allText(receipt)).toContain('Closed, and still not certain');
     expect(collectByAttr(
       receipt,
       CHAT_ROUTE_DATA_DIAGNOSIS_ANSWER_ACTION_ATTR,
@@ -4715,7 +4765,7 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     expect(review.children.find(
       (child) => child.className === 'chat-data-verification-detail',
     )?.textContent).toContain(
-      'action receipt does not identify a run',
+      'result does not say which run it came from',
     );
     collectByAttr(
       review,
@@ -4727,11 +4777,11 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
       CHAT_ROUTE_DATA_DIAGNOSIS_CONTEXT_ATTR,
     )[0]!;
     expect(allText(diagnosis)).toContain(
-      'without assuming this run belongs to the action',
+      'without assuming this run belongs here',
     );
     const prompt = collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!.value;
     expect(prompt).toContain(
-      '"run_correlation": "not confirmed by the action execution receipt"',
+      '"run_correlation": "not the result says so"',
     );
     expect(prompt).toContain(
       'keep that uncertainty explicit instead of inferring a match',
@@ -4927,11 +4977,11 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     expect(review.getAttribute('data-run-match')).toBe('mismatched');
     expect(review.children.find(
       (child) => child.className === 'chat-data-verification-title',
-    )?.textContent).toBe('Data return does not match this action');
+    )?.textContent).toBe('What came back from Data does not match this');
     expect(review.children.find(
       (child) => child.className === 'chat-data-verification-detail',
     )?.textContent).toContain(
-      'different run than this action’s execution receipt',
+      'belongs to a different run',
     );
     expect(review.children.find(
       (child) => child.tagName === 'A',
@@ -5031,12 +5081,12 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     expect(
       collectByAttr(root, CHAT_ROUTE_PLAN_TARGET_MISSING_ATTR)[0]?.textContent,
     ).toBe(
-      'The exact action card is no longer available. Showing its Chat answer instead.',
+      'That card is gone. Here is the Chat answer it belongs to instead.',
     );
     const fallback = collectByAttr(root, CHAT_ROUTE_RETURN_TARGET_ATTR)[0]!;
     expect(fallback.getAttribute(CHAT_ROUTE_MESSAGE_ATTR)).toBe('msg_action');
     expect(fallback.getAttribute('aria-label')).toBe(
-      'Chat answer for unavailable action card',
+      'Chat’s answer, for a card Recued cannot show',
     );
     expect(collectByAttr(
       fallback,
@@ -5049,11 +5099,11 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     expect(review.getAttribute('data-result')).toBe('reviewed');
     expect(review.children.find(
       (child) => child.className === 'chat-data-verification-title',
-    )?.textContent).toBe('Data review marked complete');
+    )?.textContent).toBe('You marked this as looked at');
     expect(review.children.find(
       (child) => child.className === 'chat-data-verification-detail',
     )?.textContent).toContain(
-      'It cannot confirm that the destination changed.',
+      'It cannot prove the other side changed.',
     );
     route.dispose();
   });
@@ -5096,12 +5146,12 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     expect(
       collectByAttr(root, CHAT_ROUTE_PLAN_TARGET_MISSING_ATTR)[0]?.textContent,
     ).toBe(
-      'The exact action card could not be verified. Showing its last linked Chat answer instead.',
+      'Recued could not check that card. Here is the Chat answer it belongs to instead.',
     );
     expect(
       collectByAttr(root, CHAT_ROUTE_RETURN_TARGET_ATTR)[0]
         ?.getAttribute('aria-label'),
-    ).toBe('Chat answer for unavailable action card');
+    ).toBe('Chat’s answer, for a card Recued cannot show');
     expect(calls.some((call) => call.method === 'chat.send')).toBe(false);
     route.dispose();
   });
@@ -5139,7 +5189,7 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     })).toBe(true);
     expect(
       collectByAttr(root, CHAT_ROUTE_PLAN_TARGET_MISSING_ATTR)[0]?.textContent,
-    ).toBe('Finding the exact action in Chat…');
+    ).toBe('Finding it in Chat…');
     collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!.focus();
     await tick(8);
     const recoveredInput = collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!;
@@ -5156,7 +5206,7 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
       target,
       CHAT_ROUTE_DATA_VERIFICATION_DIAGNOSE_ATTR,
     )[0]!;
-    expect(primary.textContent).toBe('Go to current draft');
+    expect(primary.textContent).toBe('Go to what you were writing');
     expect(primary.focused).toBe(false);
     primary.click();
     expect(collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!.value).toBe(
@@ -5219,7 +5269,7 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     })).toBe(true);
     expect(
       collectByAttr(root, CHAT_ROUTE_PLAN_TARGET_MISSING_ATTR)[0]?.textContent,
-    ).toBe('Finding the exact action in Chat…');
+    ).toBe('Finding it in Chat…');
 
     const event: Extract<ServerEvent, { kind: 'chat.plan_proposed' }> = {
       kind: 'chat.plan_proposed',
@@ -5275,7 +5325,7 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     expect(
       collectByAttr(root, CHAT_ROUTE_RETURN_MISSING_ATTR)[0]?.textContent,
     ).toBe(
-      'The cited answer is no longer available. This chat is still open.',
+      'That message is gone. The chat is still here.',
     );
     expect(route.getThread().session?.id).toBe('chat_1');
     route.dispose();
@@ -5351,7 +5401,7 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     fireEvent(search, 'input', 'missing');
     expect(collectByAttr(root, CHAT_ROUTE_SESSION_ROW_ATTR)).toHaveLength(0);
     expect(allText(collectByAttr(root, CHAT_ROUTE_HISTORY_EMPTY_ATTR)[0]!))
-      .toContain('No matching chats');
+      .toContain('No chat names match');
     route.dispose();
   });
 
@@ -5439,9 +5489,9 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     )[0]!;
     const composerTrigger = collectByTag(composerActions, 'summary')[0]!;
     expect(composerActions.getAttribute('aria-label'))
-      .toBe('Chat composer actions');
+      .toBe('Things you can do here');
     expect(composerTrigger.getAttribute('aria-label'))
-      .toBe('More Chat composer actions');
+      .toBe('More Things you can do here');
     const historyActions = collectByAttr(
       root,
       CHAT_ROUTE_SESSION_ACTIONS_ATTR,
@@ -5509,7 +5559,7 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     ).find(
       (action) => action.getAttribute(CHAT_ROUTE_COMPOSER_ACTION_ATTR) === 'run',
     )!;
-    expect(run.getAttribute('aria-label')).toBe('Run a recipe');
+    expect(run.getAttribute('aria-label')).toBe('Run a Recipe');
     run.focus();
     run.click();
     expect(openRunPalette).toHaveBeenCalledOnce();
@@ -5572,6 +5622,7 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
           slug: 'work',
           adapter_type: 'gmail',
           send_capable: true,
+          draft_capable: false,
           account_email: 'owner@example.com',
         }],
       };
@@ -5594,7 +5645,7 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     const unavailable = collectByAttr(root, CHAT_ROUTE_MAIL_NOTICE_ATTR)[0]!;
     expect(unavailable.getAttribute(CHAT_ROUTE_MAIL_NOTICE_ATTR))
       .toBe('unavailable');
-    expect(allText(unavailable)).toContain('couldn’t check');
+    expect(allText(unavailable)).toContain('could not check');
 
     collectByAttr(unavailable, CHAT_ROUTE_MAIL_NOTICE_RETRY_ATTR)[0]!.click();
     await tick(4);
@@ -5627,6 +5678,7 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
             slug: 'archive',
             adapter_type: 'imap',
             send_capable: false,
+            draft_capable: false,
             account_email: 'owner@example.com',
           }],
         })),
@@ -5664,6 +5716,7 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
         slug: string;
         adapter_type: string;
         send_capable: boolean;
+        draft_capable: boolean;
         account_email: string;
       }>;
     }) => void;
@@ -5672,6 +5725,7 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
         slug: string;
         adapter_type: string;
         send_capable: boolean;
+        draft_capable: boolean;
         account_email: string;
       }>;
     }>((resolve) => {
@@ -5699,6 +5753,7 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
         slug: 'work',
         adapter_type: 'gmail',
         send_capable: true,
+        draft_capable: false,
         account_email: 'owner@example.com',
       }],
     });
@@ -5922,7 +5977,7 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     const discard = collectByTag(
       collectByAttr(root, CHAT_ROUTE_HISTORY_DRAFT_GUARD_ATTR)[0]!,
       'button',
-    ).find((button) => button.textContent === 'Discard and open')!;
+    ).find((button) => button.textContent === 'Throw it away and open')!;
     discard.click();
     await tick(8);
     expect(route.getThread().session?.id).toBe('chat_2');
@@ -6004,7 +6059,7 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     expect(busyExport.getAttribute('aria-busy')).toBe('true');
     expect(doc.activeElement).toBe(busyExport);
     expect(route.inFlightWorkPrompt()).toBe(
-      'A chat history action is still in progress. Leave Chat anyway?',
+      'Something is still happening in your chat history. Leave anyway?',
     );
     const exportNewChat = collectByAttr(
       root,
@@ -6043,7 +6098,7 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     expect(busyDelete.getAttribute('aria-busy')).toBe('true');
     expect(doc.activeElement).toBe(busyDelete);
     expect(route.inFlightWorkPrompt()).toBe(
-      'A chat history action is still in progress. Leave Chat anyway?',
+      'Something is still happening in your chat history. Leave anyway?',
     );
     const deleteNewChat = collectByAttr(
       root,
@@ -6121,7 +6176,7 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     )[0]!;
     expect(exportRetryActions.open).toBe(true);
     expect(doc.activeElement).toBe(exportRetry);
-    expect(allText(root)).toContain("Couldn't export this chat");
+    expect(allText(root)).toContain("Recued could not save this chat to a file");
 
     collectByAttr(root, CHAT_ROUTE_SESSION_DELETE_ATTR)[0]!.click();
     collectByAttr(root, CHAT_ROUTE_SESSION_DELETE_CONFIRM_ATTR)[0]!.click();
@@ -6137,7 +6192,7 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     )[0]!;
     expect(deleteRetryActions.open).toBe(true);
     expect(doc.activeElement).toBe(deleteRetry);
-    expect(allText(root)).toContain("Couldn't delete this chat");
+    expect(allText(root)).toContain("Recued could not delete this chat");
     expect(calls.filter((method) => method === 'chat.session.export'))
       .toHaveLength(1);
     expect(calls.filter((method) => method === 'chat.session.delete'))
@@ -6237,7 +6292,7 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     await route.sendMessage('plan my week ahead');
     await tick();
     const createCall = calls.find((c) => c.method === 'chat.session.create');
-    expect(createCall?.payload).toEqual({ title: 'plan my week ahead' });
+    expect(createCall?.payload).toEqual({ title: 'plan my week ahead', creation_id: expect.any(String) });
     expect(calls.some((c) => c.method === 'chat.send')).toBe(true);
     expect(route.getThread().inflight?.turn_id).toBe('turn_1');
     route.dispose();
@@ -6408,7 +6463,7 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     expect(doc.activeElement).toBe(firstPendingPicker);
     expect(route.hasInFlightWork()).toBe(true);
     expect(route.inFlightWorkPrompt()).toBe(
-      'A Chat model change is still in progress. Leave Chat anyway?',
+      'Recued is still changing which AI you use. Leave anyway?',
     );
 
     fireEvent(firstPendingPicker, 'change', 'slot_1');
@@ -6664,10 +6719,10 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     expect(send.disabled).toBe(false); // a real draft can lazy-create on Send
     send.focus();
     send.click();
-    await tick();
+    await vi.waitFor(() => expect(calls.some(c => c.method === 'chat.send')).toBe(true));
     expect(
       calls.find((c) => c.method === 'chat.session.create')?.payload,
-    ).toEqual({ title: 'via the button' });
+    ).toEqual({ title: 'via the button', creation_id: expect.any(String) });
     const sendCall = calls.find((c) => c.method === 'chat.send');
     expect((sendCall?.payload as { message?: string })?.message).toBe(
       'via the button',
@@ -6844,7 +6899,7 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     // the navigation the pending turn no longer blocks.
     const discard = collectByAttr(root, CHAT_ROUTE_HISTORY_DRAFT_GUARD_ATTR)[0]!
       .children.flatMap((child) => child.children)
-      .find((button) => button.textContent === 'Discard and open')!;
+      .find((button) => button.textContent === 'Throw it away and open')!;
     discard.click();
     await tick(8);
     expect(route.getThread().session?.id).toBe('chat_2');
@@ -6920,7 +6975,7 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     const discard = collectByTag(
       collectByAttr(root, CHAT_ROUTE_HISTORY_DRAFT_GUARD_ATTR)[0]!,
       'button',
-    ).find((button) => button.textContent === 'Discard and start new')!;
+    ).find((button) => button.textContent === 'Throw it away and start a new one')!;
     discard.click();
     await tick();
     expect(collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!.value).toBe('');

@@ -22,7 +22,7 @@ const POST_PAIR_STARTUP_RECOVERY_STYLES_MARKER =
 const SPLASH_MESSAGE_ID = 'webclient-boot-splash-message';
 
 export const POST_PAIR_STARTUP_RETRY_ERROR_COPY =
-  'Recued still could not open with the saved access. Check that this tab is online and your browser allows site data, then try again. You do not need to pair this browser again.';
+  'Recued still could not open with your saved sign-in. Check that this tab is online, and that your browser lets this address save data. Then try again. You do not need to pair this browser again.';
 
 const STYLES = `
 .post-pair-startup-recovery {
@@ -162,25 +162,25 @@ export const mountPostPairStartupRecovery = (
   let focusActionAfterRender = true;
 
   const contextCopy = options.draftPreserved
-    ? 'Your exact page and unsent Chat draft are still held in this tab. Keep it open, then try startup again.'
+    ? 'Your page and the Chat message you had not sent are still here. Keep this tab open, then try starting again.'
     : options.reconnect
-      ? 'Your exact page is still held in this tab. Try startup again to return where you left off.'
-      : 'The page you opened is still selected in this tab. Try startup again to continue.';
+      ? 'Your page is still here. Try starting again to go back to where you were.'
+      : 'The page you opened is still chosen in this tab. Try starting again to carry on.';
   const summaryCopy = options.completedInAnotherTab
     ? options.reconnect
-      ? 'Another tab finished reconnecting this browser. Your secure access is ready, but this tab hit a problem while opening Recued.'
-      : 'Another tab finished saving secure access for this browser. The access is ready, but this tab hit a problem while opening Recued.'
+      ? 'Another tab reconnected this browser. Your sign-in is ready, but this tab hit a problem while opening Recued.'
+      : 'Another tab saved the sign-in for this browser. The sign-in is ready, but this tab hit a problem while opening Recued.'
     : options.reconnect
-      ? 'This browser finished saving the renewed access, but Recued hit a problem while returning to your work.'
-      : 'This browser finished saving secure access, but Recued hit a problem while opening the app.';
+      ? 'This browser saved the new sign-in, but Recued hit a problem going back to your work.'
+      : 'This browser saved your sign-in, but Recued hit a problem while opening.';
   const kickerCopy = options.completedInAnotherTab
-    ? 'Access saved in another tab'
-    : 'Secure access saved';
+    ? 'Sign-in saved in another tab'
+    : 'Sign-in saved';
   const titleCopy = options.completedInAnotherTab
     ? 'Finish opening this tab'
-    : 'Recued didn’t finish opening';
+    : 'Recued could not finish opening';
   const safeHeadingCopy = options.completedInAnotherTab
-    ? 'Pairing is already finished.'
+    ? 'This browser is already paired.'
     : 'You do not need to pair this browser again.';
   const actionCopy = options.completedInAnotherTab
     ? 'Try opening this tab again'
@@ -189,8 +189,8 @@ export const mountPostPairStartupRecovery = (
     ? 'Opening this tab…'
     : 'Opening Recued…';
   const busyStatusCopy = options.completedInAnotherTab
-    ? 'Opening this tab with the saved access…'
-    : 'Opening Recued with the saved access…';
+    ? 'Opening this tab with your saved sign-in…'
+    : 'Opening Recued with your saved sign-in…';
 
   const render = (): void => {
     if (disposed) return;

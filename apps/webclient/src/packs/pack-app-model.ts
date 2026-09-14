@@ -68,8 +68,10 @@ import {
 } from '@recued/contracts';
 
 import {
+  buildPackOperationIndex,
   recipeDeclaredOps,
   recipeRecordsUsage,
+  type PackOperationIndex,
   type RecordsUsagePack,
 } from '../recipes/recipe-records-usage.js';
 import { classifyRecipeAction } from '../recipes/recipe-action-kind.js';
@@ -182,7 +184,7 @@ const stepsAreAnalysable = (steps: unknown): boolean => {
  *  understood, both axes clean, and an unresolved op is a no. */
 const isProvablyReadOnly = (
   recipe: ServerRecipeListEntry['recipe'],
-  roster: readonly RecordsUsagePack[],
+  roster: PackOperationIndex,
 ): boolean => {
   const r = recipe as unknown as {
     steps?: unknown; prefetch_steps?: unknown; trigger_steps?: unknown;
@@ -224,12 +226,33 @@ export const rosterForUsage = (
  *  the manifest is what the pack declares it ships and is present even for a
  *  pack whose recipes failed to install — which is how `missing` can be
  *  reported at all. */
-export const packAppSurface = (
-  pack: PackListEntry,
+/** Everything `packAppSurface` would otherwise rebuild on every call: the
+ *  installed-recipe lookup and the pack-operation index.
+ *
+ *  ⛔ BOTH WERE PER-CALL, AND NEITHER DEPENDS ON THE PACK. Classifying one
+ *  pack — what the panel does — never noticed. Classifying the whole corpus
+ *  rebuilt a Map over every installed recipe 1,048 times and walked a ~26k-op
+ *  roster once per recipe, which is ~58 s of the minute that sweep took.
+ *  Taking a built index makes the reuse structural: the shape of the call
+ *  now says the work is shared. */
+export interface PackAppIndex {
+  readonly byRecipeId: ReadonlyMap<string, ServerRecipeListEntry>;
+  readonly ops: PackOperationIndex;
+}
+
+export const buildPackAppIndex = (
   installed: readonly ServerRecipeListEntry[],
   roster: readonly RecordsUsagePack[],
+): PackAppIndex => ({
+  byRecipeId: new Map(installed.map((entry) => [entry.recipe_id, entry])),
+  ops: buildPackOperationIndex(roster),
+});
+
+export const packAppSurface = (
+  pack: PackListEntry,
+  index: PackAppIndex,
 ): PackAppSurface => {
-  const byId = new Map(installed.map((entry) => [entry.recipe_id, entry]));
+  const byId = index.byRecipeId;
   const views: PackAppRecipe[] = [];
   const lookups: PackAppRecipe[] = [];
   const operations: PackAppRecipe[] = [];
@@ -261,7 +284,7 @@ export const packAppSurface = (
       continue;
     }
     const readOnlyRenderer = rendersReadingSurface(entry.recipe)
-      && isProvablyReadOnly(entry.recipe, roster);
+      && isProvablyReadOnly(entry.recipe, index.ops);
     const bucket = !readOnlyRenderer
       ? operations
       : needsAnArgument(entry.recipe) ? lookups : views;

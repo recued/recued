@@ -278,7 +278,7 @@ export const createRecoverySetupHandlers = (
     if (!crypto.isValid(entered)) {
       deps.setState(
         challengeFailed(
-          'That doesn\'t look like a valid 24-word recovery key. Check for typos or missing words.',
+          'That does not look like a 24-word recovery key. Check for typing mistakes or missing words.',
         ),
       );
       return;
@@ -287,7 +287,7 @@ export const createRecoverySetupHandlers = (
     if (entered !== generated) {
       deps.setState(
         challengeFailed(
-          'That doesn\'t match the key we just generated. Double-check your written copy.',
+          'That does not match the key Recued just made. Check what you wrote down.',
         ),
       );
       return;
@@ -306,7 +306,7 @@ export const createRecoverySetupHandlers = (
       if (!ok) {
         deps.setState(
           challengeFailed(
-            'Internal verification failed — the built check didn\'t round-trip. Please try again.',
+            'Recued could not check its own work. Try again.',
           ),
         );
         return;

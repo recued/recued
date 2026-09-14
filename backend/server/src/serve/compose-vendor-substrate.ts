@@ -21,6 +21,9 @@ export type VendorSubstrateAppContext = Pick<
 >;
 
 export interface ComposeVendorSubstrateContextOptions {
+  /** D-269 step 1 — the owner's declared server zone for D-139 § A.3.7's
+   *  engagement timezone fallback. */
+  prefsTimezone?: () => string | null | undefined;
   readonly app: VendorSubstrateAppContext;
   readonly upstreamMergeRegistry: UpstreamMergeRegistry | undefined;
   readonly auditLog?: Pick<AuditLogStore, 'logActivity'> | undefined;
@@ -52,6 +55,8 @@ export const composeVendorSubstrateContext = async (
     connectionStore: app.connectionStoreRef,
     keys: app.keys,
     engagementStore: app.engagementStoreRef,
+    // D-269 — D-139 § A.3.7's third fallback step, finally supplied.
+    ...(options.prefsTimezone ? { prefsTimezone: options.prefsTimezone } : {}),
     enrichmentStore: app.enrichmentStoreRef,
     crmRecordMirror: app.crmRecordMirrorStoreRef,
     contactStore: app.contactStoreRef,

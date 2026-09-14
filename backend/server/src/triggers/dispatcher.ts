@@ -37,7 +37,12 @@ import { emitAutomationRule } from '../events/emit-sites.js';
 import type { EventTriggersStore } from './store.js';
 import type { BackfillStateLookup } from './backfill-state.js';
 import { createTriggerDispatchQueue } from './queue.js';
+import type { NotificationMessage } from '@recued/notification';
 import { presentAutomationFailure } from '../automation-failure.js';
+import {
+  decideAutomationFailure,
+  type AutomationUnitRef,
+} from '../automation-failure-reporter.js';
 import { triggerEventContext } from './event-context.js';
 import type { PreapprovalDriver } from '../preapproval-driver.js';
 
@@ -58,7 +63,7 @@ export interface TriggerDispatchRuntime {
     trigger_id: string;
     /** Private queue metadata, never part of recipe context or public RPC. */
     candidate?: object;
-  }) => Promise<void | { skipped: true }>;
+  }) => Promise<void | { skipped: true } | { total_refusal: true }>;
 }
 
 export interface EventTriggerDispatcher {
@@ -85,6 +90,10 @@ export interface EventTriggerDispatcherDeps {
   store: EventTriggersStore;
   runtime: TriggerDispatchRuntime;
   auditLog?: AuditLogStore;
+  /** D-268 — deliver one owner notice about a failed fire: the first failure of
+   *  an episode, and the disarm. Absent ⇒ failures are recorded on the trigger
+   *  row and reach nobody, which is the pre-D-268 behaviour. */
+  onAutomationFailure?: (notice: NotificationMessage, unit: AutomationUnitRef) => void;
   /** D-121 broadcast bus — the error-cap auto-disable fans
    *  `automation_rule_changed` so the Automation governance surface
    *  sees the server-side disarm (the one rule mutation with no rpc
@@ -150,6 +159,72 @@ export const createEventTriggerDispatcher = (
     errorsByTrigger.delete(trigger_id);
   };
 
+  const unitOf = (trigger: EventTrigger): AutomationUnitRef => ({
+    kind: 'trigger',
+    id: trigger.trigger_id,
+    recipe_id: trigger.recipe_id,
+  });
+
+  /** D-268 — classify one failed fire, move the 24h counter, and hand the owner
+   *  the one notice this episode owes.
+   *
+   *  ⛔ THE COUNTER IS STILL `recordError`, DELIBERATELY. The trigger path's
+   *  24h window already behaves as "failures since the last success" —
+   *  `clearErrors` runs on every clean fire — so introducing a second counter
+   *  would be a second place the same fact lives, and they would disagree the
+   *  first time one of them was reset and the other was not. */
+  const handleFailure = (
+    trigger: EventTrigger,
+    code: string | undefined,
+    total_refusal: boolean,
+    reason: string,
+  ): 'not_a_failure' | 'continue' | 'stop' => {
+    const unit = unitOf(trigger);
+    // `recordError` both appends and returns the new length, so the count
+    // BEFORE this failure is one less — which is the episode boundary the
+    // reporter needs (`0 → 1` opens an episode and sends its one notice).
+    const count = recordError(trigger.trigger_id);
+    const report = decideAutomationFailure({
+      unit,
+      code,
+      total_refusal,
+      reason,
+      prior_consecutive_failures: count - 1,
+      threshold: errorCap,
+    });
+    if (report.not_a_failure) {
+      // Undo the append: a tripped guard is not evidence the trigger is broken,
+      // and leaving it counted would disarm a working trigger after `errorCap`
+      // successful guard evaluations.
+      const entries = errorsByTrigger.get(trigger.trigger_id);
+      if (entries) entries.pop();
+      return 'not_a_failure';
+    }
+    if (report.notice) {
+      try {
+        deps.onAutomationFailure?.(report.notice, unit);
+      } catch {
+        // Telling the owner is best-effort; a broken consumer must not turn a
+        // recorded failure into a failed dispatch.
+      }
+    }
+    return report.disarm ? 'stop' : 'continue';
+  };
+
+  const disableTrigger = async (trigger: EventTrigger, why: string): Promise<void> => {
+    deps.store.update(trigger.trigger_id, { enabled: false });
+    clearErrors(trigger.trigger_id);
+    await deps.auditLog?.logActivity({
+      activity_id: '',
+      timestamp: now(),
+      action: 'trigger_auto_disabled',
+      target: trigger.trigger_id,
+      detail: why,
+    }).catch(() => { /* best-effort */ });
+    rebuild();
+    emitAutomationRule(deps.eventBus, 'event_trigger');
+  };
+
   const onEvent = async (trigger: EventTrigger, event: WarehouseEvent, candidate?: object): Promise<void> => {
     // D-124 Phase 2.2 — suppress trigger fan-out for events emitted
     // while the source adapter is still in initial-backfill drain.
@@ -192,7 +267,18 @@ export const createEventTriggerDispatcher = (
         trigger_id: trigger.trigger_id,
         ...(candidate ? { candidate } : {}),
       });
-      if (outcome?.skipped) return;
+      if (outcome !== undefined && 'skipped' in outcome) return;
+      // D-268 — a run that reported success and refused every item it attempted.
+      // It is a failure for the counter's sake and NOT for the row's: the run
+      // completed, so `last_error` stays null and the status is untouched. What
+      // is false is the inference that it produced anything.
+      if (outcome !== undefined && 'total_refusal' in outcome) {
+        deps.store.update(trigger.trigger_id, { last_fired_at: now() });
+        const verdict = handleFailure(trigger, undefined, true,
+          'This run attempted items and every one was refused.');
+        if (verdict === 'stop') await disableTrigger(trigger, 'total_refusal');
+        return;
+      }
       deps.store.update(trigger.trigger_id, {
         last_fired_at: now(),
         last_error: null,
@@ -211,23 +297,24 @@ export const createEventTriggerDispatcher = (
           `[event-triggers] trigger ${trigger.trigger_id} internal failure: ${failure.internalMessage}`,
         );
       }
+      const raw = (err as { code?: unknown } | null)?.code;
+      const code = typeof raw === 'string' ? raw : undefined;
+      const verdict = handleFailure(trigger, code, false, failure.userMessage);
+      // ⛔ A `conditional` code is the recipe DECIDING not to act and being right
+      // to — a tripped guard, a matched fail-on, an absent prerequisite. It
+      // leaves no `last_error` and touches no counter: counting those toward the
+      // cap disarms triggers that are working, and it would look exactly like
+      // the feature working.
+      if (verdict === 'not_a_failure') {
+        deps.store.update(trigger.trigger_id, { last_fired_at: now() });
+        return;
+      }
       deps.store.update(trigger.trigger_id, {
         last_fired_at: now(),
         last_error: failure.userMessage,
       });
-      const errorCount = recordError(trigger.trigger_id);
-      if (errorCount >= errorCap) {
-        deps.store.update(trigger.trigger_id, { enabled: false });
-        clearErrors(trigger.trigger_id);
-        await deps.auditLog?.logActivity({
-          activity_id: '',
-          timestamp: now(),
-          action: 'trigger_auto_disabled',
-          target: trigger.trigger_id,
-          detail: `errors_24h=${errorCount}`,
-        }).catch(() => { /* best-effort */ });
-        rebuild();
-        emitAutomationRule(deps.eventBus, 'event_trigger');
+      if (verdict === 'stop') {
+        await disableTrigger(trigger, code !== undefined ? `code=${code}` : 'errors_24h');
       }
     }
   };

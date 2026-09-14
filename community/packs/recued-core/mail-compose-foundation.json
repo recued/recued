@@ -30,6 +30,12 @@
       "slug": "rewrite-composed-mail",
       "version": 1,
       "visible": false
+    },
+    {
+      "type": "recipe",
+      "slug": "save-composed-draft-to-mailbox",
+      "version": 1,
+      "visible": false
     }
   ]
 }

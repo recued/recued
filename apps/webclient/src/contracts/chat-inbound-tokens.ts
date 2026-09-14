@@ -52,17 +52,17 @@ export const CHAT_INBOUND_TOKEN_CONCURRENCY_COPY: Readonly<Record<
   3: {
     label: 'Conservative',
     description:
-      'Up to 3 concurrent calls per token. Default for personal-trust tokens (close peers; you handle rare bursts).',
+      'Up to 3 things at once. This suits people you know well, where a rush is rare.',
   },
   5: {
     label: 'Balanced',
     description:
-      'Up to 5 concurrent calls per token. Default for typical sharing relationships — covers a handful of parallel agent steps.',
+      'Up to 5 things at once. This suits most sharing, and covers a few steps running together.',
   },
   10: {
     label: 'Power user',
     description:
-      'Up to 10 concurrent calls per token. For high-volume automation peers (CI agents, large team integrations).',
+      'Up to 10 things at once. This is for heavy use, like build systems or a big team.',
   },
 } as const;
 
@@ -100,58 +100,58 @@ export const CHAT_INBOUND_TOKEN_KIND_COPY: Readonly<Record<
 >> = {
   http: {
     label: 'HTTP',
-    description: 'Read / write via outbound HTTP endpoints (REST APIs).',
+    description: 'Reading from and writing to other services over the web.',
   },
   dom: {
     label: 'Browser DOM',
     description:
-      'Read / write the user’s open browser tabs (CRM dashboards, web apps). Bridge-actuated.',
+      'Reading and changing whatever web pages you have open, through the Browser Bridge.',
   },
   ai: {
     label: 'AI inference',
     description:
-      'Calls into the local AI surface (classify / score / extract / summarize).',
+      'Using AI on this machine to sort, score, pull out facts, or sum things up.',
   },
   chat: {
     label: 'Chat',
     description:
-      'Calls into your chat agent (Direction C — peer’s AI interprets the call). Gated by chat-mode below.',
+      'Talking to your Chat, where their AI reads the answer. The chat setting below controls this.',
   },
   mcp: {
-    label: 'MCP-backed recipes',
+    label: 'Recipes that use another AI app',
     description:
-      'Recipes whose steps call an enrolled MCP connection. '
-      + 'The connection’s own tools are NOT here — Recued mints them into a pack, '
-      + 'so they appear under “Direct operation calls” below.',
+      'Recipes with a step that calls another AI app you have connected. '
+      + 'That app’s own tools are not here. Recued puts them into a Pack, '
+      + 'so you will find them under “Direct operation calls” below.',
   },
   service: {
     label: 'Long-running service',
     description:
-      'Stateful service instances (background jobs, watchers).',
+      'Jobs that keep running in the background and watch for changes.',
   },
   storage: {
     label: 'Local storage',
     description:
-      'Reads / writes against the personal warehouse (mail, calendar, contacts, files, memory).',
+      'Reading and writing your own things: mail, calendar, contacts, files and memories.',
   },
   connection: {
     label: 'Outbound connection',
     description:
-      'Per-vendor reconcilers + webhooks (HubSpot, Salesforce, etc.).',
+      'Keeping services like HubSpot and Salesforce in step, and listening for what they send.',
   },
   cli: {
     label: 'Local tools',
     description:
-      'D-182 local-binary toolkit ops (whisper / docling / ffmpeg / imagemagick). '
-      + 'Recipe-internal only — like services, cli ops are never exposed as raw '
-      + 'door tools (§8), so this group stays empty for inbound tokens.',
+      'Programs on your own machine, like whisper, docling, ffmpeg and imagemagick. '
+      + 'Only Recipes can use these. They are never offered directly through a '
+      + 'door, so this list stays empty here.',
   },
   recued_native: {
     label: 'Recued server tools',
     description:
-      'Recued’s own MCP tools — run / save / list recipes, read audit, '
-      + 'timeline, and warehouse introspection. Powerful; grant only what '
-      + 'this connection needs.',
+      'Recued’s own tools: running, saving and listing Recipes, reading what happened, '
+      + 'seeing a timeline, and looking through your things. These are powerful. Only allow what '
+      + 'this connection actually needs.',
   },
   recued_ingredient: {
     label: 'Direct ingredient calls',
@@ -298,6 +298,14 @@ const TIER1_TO_INGREDIENT_KIND: Readonly<Record<Tier1ToolName, IngredientKind>> 
   // gateway-gated follow-on inside the handler, not the tool's home).
   'work.search': 'storage',
   'work.read': 'storage',
+  // Slice 1 — `work.create` writes the LOCAL work graph, no connection.
+  'work.create': 'storage',
+  // Slice 2 — calendar writes go through the calendar STACK, which is a local
+  // warehouse mirror even when the provider behind it is remote. Same kind as
+  // `calendar.search` above, which reads that same mirror.
+  'calendar.create': 'storage',
+  'calendar.update': 'storage',
+  'work.update': 'storage',
   // D-172 P2 — file.search reads the data.file warehouse collection.
   'file.search': 'storage',
   'recipe.run': 'storage',

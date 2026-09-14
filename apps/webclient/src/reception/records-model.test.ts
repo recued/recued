@@ -180,9 +180,9 @@ describe('buildReceptionRecordsModel', () => {
       submission({ record_id: 'd', outcome: 'spam' }),
     ]);
     expect(model.rows.map((r) => r.outcome_label)).toEqual([
-      'Needs review',
+      'Needs a look',
       'Auto-confirmed',
-      'Blocked domain',
+      'That email address is blocked',
       'Spam',
     ]);
   });

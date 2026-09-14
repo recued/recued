@@ -161,7 +161,7 @@ export const mountKitchenChrome = (
 
   const tabBar = doc.createElement('nav');
   tabBar.setAttribute(KITCHEN_ROUTE_TABS_ATTR, '');
-  tabBar.setAttribute('aria-label', 'Kitchen surfaces');
+  tabBar.setAttribute('aria-label', 'Kitchen pages');
 
   const kitchenLabel = doc.createElement('span');
   kitchenLabel.setAttribute(KITCHEN_ROUTE_LABEL_ATTR, '');

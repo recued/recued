@@ -175,10 +175,34 @@ export const channelMessengerEnabled = (
   return settings[channel].messenger;
 };
 
-/** D-169 P1 — default per-bridge mode record. Both modes default
- *  `false` on a freshly paired bridge (N.6 + TR-8). */
+/** Default per-bridge mode record.
+ *
+ *  ⛔⛔ NOTIFICATION DEFAULTS **ON** — OWNER RULING 2026-09-13, OVERRIDING D-169
+ *  TR-8's *"both default off, opt-in not opt-out"*. The opt-in posture produced a
+ *  trap rather than a safeguard: **the Browser Bridge arrived MUTED**, and the
+ *  channel-level toggle an owner may already have set could not turn it on —
+ *  because pairing a bridge is precisely what stops that toggle deciding
+ *  (`describeBridges` non-empty ⇒ the per-bridge split owns the adapter). So the
+ *  one control that looked like the switch stopped being the switch at the exact
+ *  moment a device appeared, and the new device was silent.
+ *
+ *  🔑 INSTALLING THE BRIDGE **IS** THE OPT-IN. It is a deliberate act — you fetch
+ *  it, install it, and pair it to this server — and its whole purpose is OS
+ *  notifications. Asking again afterwards, on a screen the owner has no reason to
+ *  visit, is a consent ritual that only ever produces silence.
+ *
+ *  ⚠ APPROVAL STAYS OFF, and not as a compromise: `CHANNEL_ROLES.bridge` declares
+ *  `approval: false` — the bridge is a fan-out surface, *"not a place you hold a
+ *  conversation"*. Defaulting it on would set a flag the channel role refuses.
+ *
+ *  ⚠ RETROACTIVE BY DESIGN, and safely so. `describeBridges` reads
+ *  `map[token_id] ?? DEFAULT`, so a bridge paired earlier and NEVER TOUCHED now
+ *  reads ON — which is the repair, not a side effect. A bridge the owner
+ *  deliberately switched OFF has a STORED row (`setBridgeMode` merges and
+ *  persists both axes) and is untouched: **explicit choices survive, absent ones
+ *  are re-answered.** */
 export const DEFAULT_BRIDGE_MODE_SETTINGS: BridgeModeSettings = {
-  notification: false,
+  notification: true,
   approval: false,
 };
 

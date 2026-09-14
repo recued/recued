@@ -1,4 +1,4 @@
-/** D-177 N.11 rule 5 (5.c, slice C) — the "Scoped grant proposals" panel:
+/** D-177 N.11 rule 5 (5.c, slice C) — the "Things Chat wants to be allowed to do" panel:
  *  open-card rendering (rule-7 sentence + verbatim excerpt + connection
  *  affordance), the unmintable zero-candidate state, the approve call's
  *  args (auto-filled sole candidate + tighten-only bounds), the two-stage

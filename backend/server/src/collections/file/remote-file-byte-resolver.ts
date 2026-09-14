@@ -15,7 +15,7 @@
  *  empty registry remains a fail-closed test/default seam. Design + fork
  *  decisions: D-192. */
 
-import { RpcError, type FileMetaProjection } from '@recued/contracts';
+import { RpcError, type FileMetaProjection, type FileExportRepresentation } from '@recued/contracts';
 
 import type { FileConnectionCredential, FileConnectionResolver } from '../../file-source-adapters/index.js';
 import { parseRemoteFileRecordId } from '../../file-view-resolver.js';
@@ -72,16 +72,36 @@ export interface RemoteFileByteResult {
   filename?: string;
 }
 
+/** Download availability and representation, known before fetching bytes. */
+export interface RemoteFileDownload {
+  /** Absent for an original byte download. Size metadata describes the source,
+   * not an export; only the actual exported byte length can enforce its limit. */
+  export_as?: FileExportRepresentation;
+  unavailable_reason?: string;
+}
+
 /** A per-vendor "fetch bytes by remote id" resolver. Notion's re-resolves the
  *  ~1h-signed url on each call (`GET /v1/blocks/{id}` → fresh url → download);
  *  S3 does a SigV4 `GetObject`; etc. It MUST abort past `req.maxBytes`, and
  *  should throw an `RpcError` with a {@link RemoteFileReadErrorCode} for a
  *  structured failure (e.g. `remote_unresolvable`) — any other throw is wrapped
  *  as `remote_fetch_failed` by the orchestrator. */
-export type RemoteFileByteResolver = (req: RemoteFileByteRequest) => Promise<RemoteFileByteResult>;
+export interface RemoteFileByteResolver {
+  (req: RemoteFileByteRequest): Promise<RemoteFileByteResult>;
+  /** Pure metadata inspection, shared by browsing, import and ordinary reads.
+   * No credentials, network calls or retained bytes. Absent means direct download. */
+  describe?: (meta: FileMetaProjection) => RemoteFileDownload;
+}
 
 /** The provider → resolver registry (keyed on `FileMetaProjection.provider`). */
 export type RemoteFileByteResolverRegistry = Readonly<Record<string, RemoteFileByteResolver>>;
+
+export const describeRemoteFileDownload = (
+  resolvers: RemoteFileByteResolverRegistry, meta: FileMetaProjection,
+): RemoteFileDownload => {
+  const resolver = resolvers[meta.provider];
+  return resolver ? resolver.describe?.(meta) ?? {} : { unavailable_reason: 'Downloads are not supported for this source.' };
+};
 
 /** Fail-closed empty registry for isolated tests or deliberately unwired
  *  runtimes. Production injects `buildRemoteFileByteResolvers()`. */
@@ -189,6 +209,7 @@ export interface RemoteFileReadResult {
   mime_type: string;
   filename: string;
   size_bytes: number;
+  export_as?: FileExportRepresentation;
 }
 
 const isRemoteReadRpcError = (err: unknown): err is RpcError =>
@@ -250,9 +271,11 @@ export const resolveRemoteFileBytes = async (
     );
   }
   const maxBytes = deps.maxBytes ?? REMOTE_FILE_READ_MAX_BYTES;
+  const download = describeRemoteFileDownload(deps.byteResolvers, row.meta);
+  if (download.unavailable_reason) throw new RpcError('remote_unresolvable', download.unavailable_reason, 422);
   // Preflight on the vendor-reported size (when present) — reject BEFORE the
   // fetch so an oversized object never buffers.
-  if (typeof row.meta.size === 'number' && row.meta.size > maxBytes) {
+  if (!download.export_as && typeof row.meta.size === 'number' && row.meta.size > maxBytes) {
     throw new RpcError(
       'remote_too_large',
       `file.read: remote file is ${row.meta.size} bytes (> ${maxBytes} ceiling)`,
@@ -285,5 +308,9 @@ export const resolveRemoteFileBytes = async (
   }
   const mime_type = result.mime_type ?? row.meta.mime_type ?? 'application/octet-stream';
   const filename = result.filename ?? row.meta.filename ?? 'file';
-  return { bytes: result.bytes, mime_type, filename, size_bytes: result.bytes.length };
+  if (download.export_as && (mime_type !== download.export_as.mime_type || filename !== download.export_as.filename)) {
+    throw new RpcError('remote_fetch_failed', 'The exported file does not match the selected format.', 502);
+  }
+  return { bytes: result.bytes, mime_type, filename, size_bytes: result.bytes.length,
+    ...(download.export_as ? { export_as: download.export_as } : {}) };
 };

@@ -122,6 +122,12 @@ const conditionalTopLevelKeys = [
 const alwaysKernelKeys = [
   'preapprovalRequest',
   'mailDraft',
+  // D-264 — wired unconditionally for the same reason `mailDraft` is: the
+  // dispatcher looks the owner service up per call, so there is nothing to gate
+  // the WIRING on. A server with no mail stack leaves the underlying
+  // `mailDraftSaveToMailbox` dep absent and the call raises rather than the key
+  // vanishing from this shape.
+  'mailDraftSaveToMailbox',
   'collectionGet',
   'collectionList',
   'collectionSearch',

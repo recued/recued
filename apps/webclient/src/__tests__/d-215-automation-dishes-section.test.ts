@@ -281,7 +281,7 @@ describe('D-215 slice 3 — dish rows', () => {
     const rig = mount({});
     await settle();
     expect(rig.route.getLoadErrors().dishes).toBeUndefined();
-    expect(rig.host.innerHTML).toContain('not available on this server yet');
+    expect(rig.host.innerHTML).toContain('This server does not do dishes yet');
     expect(rig.host.innerHTML).not.toContain('No dishes yet');
   });
 

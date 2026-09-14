@@ -220,23 +220,23 @@ export const connectionOAuthCredentialReadiness = (args: {
   if (!namePresent) {
     refreshIssue = {
       fieldKey: 'name',
-      message: 'Give this connection a lowercase name first — recipes reference it by that name.',
+      message: 'Give this connection a lower-case name first. Recipes use that name.',
     };
   } else if (!displayNamePresent) {
     refreshIssue = {
       fieldKey: 'display_name',
-      message: 'Add a display name so this connection is recognisable in lists.',
+      message: 'Add a name so you can recognise this in a list.',
     };
   } else if (args.vendor !== null && provider === null) {
     refreshIssue = {
       fieldKey: null,
-      message: 'Provider sign-in details are unavailable. Return to Connections and choose the provider again.',
+      message: 'Recued cannot read the sign-in details. Go back to Connections and pick the service again.',
     };
   } else if (!clientIdPresent) {
     refreshIssue = {
       fieldKey: 'auth.client_id',
       message:
-        'Paste the provider-issued Client ID. Use the application or client ID—not a secret ID or secret value.',
+        'Paste the Client ID they gave you. That is the app or client id, not a secret.',
     };
   } else if (secretRequired && !clientSecretPresent) {
     refreshIssue = {

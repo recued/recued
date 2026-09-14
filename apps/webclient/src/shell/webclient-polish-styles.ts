@@ -532,6 +532,67 @@ export const WEBCLIENT_POLISH_STYLES = `
     --wc-pad-x: 12px;
   }
 }
+/* ════════════════════════════════════════════════════════════════
+   D-266 · The missed-run card — one panel above the Schedules list.
+   Raised rather than sunk: it is the one thing on the page WAITING
+   on the owner, and an empty-state's quiet dashed panel would read
+   as "nothing here" for the opposite reason.
+   ════════════════════════════════════════════════════════════════ */
+[data-recued-webclient-shell] [data-recued-webclient-content] .missed-runs-card {
+  display: block;
+  margin: 0 0 18px;
+  padding: 18px 20px;
+  border: 1px solid var(--border-strong);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--wc-radius-lg);
+  background: var(--surface-raised, var(--surface-sunk));
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] .missed-runs-title {
+  margin: 0 0 6px;
+  font-size: 15px;
+  font-weight: 680;
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] :is(
+  .missed-runs-window, .missed-runs-note
+) {
+  margin: 0 0 10px;
+  color: var(--fg-muted);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] .missed-runs-entries {
+  margin: 0 0 10px;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] .missed-runs-entry {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 13px;
+  line-height: 1.45;
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] :is(
+  .missed-runs-entry-actions, .missed-runs-actions
+) {
+  display: flex;
+  gap: 8px;
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] .missed-runs-entry-action {
+  padding: 3px 10px;
+  font-size: 12px;
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] .missed-runs-error {
+  margin: 0 0 10px;
+  color: var(--danger, #b42318);
+  font-size: 12.5px;
+}
+
 @media (prefers-reduced-motion: reduce) {
   [data-recued-webclient-shell] *,
   [data-recued-webclient-shell] *::before,

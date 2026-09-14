@@ -211,7 +211,7 @@ const scopeFacets = (scope: ContractScope): string[] => {
   axis('ingredients', scope.ingredient_ids);
   axis('operations', scope.operation_ids);
   axis('connections', scope.connection_names);
-  return parts.length > 0 ? parts : ['Unrestricted scope (any channel / actor / ingredient)'];
+  return parts.length > 0 ? parts : ['Everything (any channel, anyone, any ingredient)'];
 };
 
 /** The bound chips for a row — expiry + uses, each only when present.
@@ -262,10 +262,10 @@ const visibleInGenericContractsPanel = (view: ContractDefinitionView): boolean =
 /** Display order + headers for the grouped inventory. Standing contracts
  *  lead (the surface's namesake), then the gate-grant families. */
 const INVENTORY_GROUPS: ReadonlyArray<{ group: InventoryGroup; header: string }> = [
-  { group: 'standing', header: 'Standing contracts' },
-  { group: 'delegation', header: 'Delegation rules' },
-  { group: 'session', header: 'Session grants' },
-  { group: 'other', header: 'Other grants' },
+  { group: 'standing', header: 'Contracts that stay' },
+  { group: 'delegation', header: 'Rules you handed over' },
+  { group: 'session', header: 'Yeses for one sitting' },
+  { group: 'other', header: 'Other yeses' },
 ];
 
 const PILL_LABEL: Record<ContractLifecycleState, string> = {
@@ -420,7 +420,7 @@ export const mountContractsPanel = (
         controls.className = 'ct-confirm';
         const prompt = doc.createElement('span');
         prompt.className = 'ct-confirm-prompt';
-        prompt.textContent = 'Revoke contract?';
+        prompt.textContent = 'Take this contract back?';
         controls.appendChild(prompt);
         const confirm = makeButton(
           CONTRACTS_REVOKE_CONFIRM_ATTR,
@@ -458,7 +458,7 @@ export const mountContractsPanel = (
         row,
         CONTRACTS_ROW_ERROR_ATTR,
         'ct-row-error',
-        `Could not revoke: ${rowError}`,
+        `Recued could not take it back: ${rowError}`,
       );
     }
 
@@ -475,7 +475,7 @@ export const mountContractsPanel = (
         root,
         CONTRACTS_PANEL_ERROR_ATTR,
         'ct-error',
-        `Could not load contracts: ${state.listError}`,
+        `Recued could not load your contracts: ${state.listError}`,
       );
     }
 
@@ -518,7 +518,7 @@ export const mountContractsPanel = (
         root,
         CONTRACTS_PANEL_EMPTY_ATTR,
         'ct-empty',
-        'No contracts. A contract is a scoped, revocable authorization you grant an AI agent or session; minted contracts appear here.',
+        'No contracts yet. A contract is a limited yes you give an AI, and you can take it back at any time. The ones you make show up here.',
       );
     }
     // phase === 'error' with zero rows → the error chip above is the whole surface.

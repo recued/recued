@@ -112,7 +112,7 @@ describe('createArchiveDownload', () => {
     expect(saved).toHaveLength(0);
     expect(outcome.done).toBe(0);
     expect(outcome.error).toHaveLength(1);
-    expect(outcome.error[0]).toMatch(/incomplete/i);
+    expect(outcome.error[0]).toMatch(/did not finish/i);
   });
 
   it('maps a server download_error frame to a message', async () => {
@@ -129,13 +129,13 @@ describe('createArchiveDownload', () => {
     const ra = run({ fake: a });
     await tick();
     a.fireClose();
-    expect(ra.outcome.error[0]).toMatch(/closed before finishing/i);
+    expect(ra.outcome.error[0]).toMatch(/stopped before it finished/i);
 
     const b = makeFakeSocket();
     const rb = run({ fake: b });
     await tick();
     b.fireError();
-    expect(rb.outcome.error[0]).toMatch(/connection failed/i);
+    expect(rb.outcome.error[0]).toMatch(/download went wrong/i);
   });
 
   it('errors when saveBlob throws (does not report done)', async () => {
@@ -155,7 +155,7 @@ describe('createArchiveDownload', () => {
     const fake = makeFakeSocket();
     const { outcome } = run({ fake, openSocket: async () => { throw new Error('no socket'); } });
     await tick();
-    expect(outcome.error[0]).toMatch(/could not open/i);
+    expect(outcome.error[0]).toMatch(/could not start/i);
   });
 
   it('cancel settles silently + ignores later events', async () => {

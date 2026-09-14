@@ -46,7 +46,11 @@ import {
   HARNESS_SERVER_PUBLIC_KEY,
 } from './server-identity.js';
 import { savedViewsDemoReply } from './saved-data-views.js';
+import { recordsBrowseReply } from './records-browse.js';
+import { chatHistorySearchReply } from './chat-history-search.js';
 import { todayDemoReply } from './today-view.js';
+import { chatTurnQueueDemoReply } from './chat-turn-queue.js';
+import { workEntityUpsertDemoReply } from './work-entity-upsert.js';
 import { recipeSimulationDemoReply } from './recipe-simulation.js';
 import { preapprovalDemoReply } from './preapproval.js';
 import type { GrantRecipeOpUsageCaller } from '../../src/contracts/contract-grants-panel.js';
@@ -2154,6 +2158,11 @@ const buildFakeTransport = (
                                   }
             : undefined;
         let error: { code: string; message: string } | undefined;
+        const chatSearchReply = chatHistorySearchReply(rpc.method, rpc.args);
+        if (chatSearchReply !== null) {
+          result = chatSearchReply.result;
+          error = chatSearchReply.error;
+        }
         const savedViewsReply = savedViewsDemoReply(rpc.method, rpc.args);
         if (savedViewsReply !== null) {
           result = savedViewsReply.result;
@@ -2434,6 +2443,13 @@ const buildFakeTransport = (
               ),
             };
           }
+        }
+        // D-266 — the missed-run card reads this on every Automation load.
+        // Empty by default: the demo schedules are not in an outage, and a
+        // card the fixtures never asked for would change every existing
+        // Automation assertion.
+        if (rpc.method === 'schedules.missed') {
+          result = { outage_from: null, outage_to: Date.now(), entries: [] };
         }
         if (automationRulesDemo && rpc.method === 'triggers.list') {
           result = { triggers: automationRunModalTriggers };
@@ -3293,6 +3309,9 @@ const buildFakeTransport = (
                 ? [recordsNavigationJob]
                 : recordsDemoDeleted ? [] : [recordsDemoRecord],
           };
+          if (searchParams.get('records_browse') === '1') {
+            result = recordsBrowseReply(rpc.args as Parameters<typeof recordsBrowseReply>[0]);
+          }
         }
         if (recordsDemo && rpc.method === 'records.get') {
           const args = rpc.args as { id?: unknown };
@@ -6522,8 +6541,17 @@ const buildFakeTransport = (
         }
         const preapprovalReply = preapprovalDemoReply(rpc.method, rpc.args);
         if (preapprovalReply !== null) { result = preapprovalReply.result; error = preapprovalReply.error; }
-        const todayReply = todayDemoReply(rpc.method, rpc.args);
+        const todayReply: ReturnType<typeof todayDemoReply> = todayDemoReply(rpc.method, rpc.args);
         if (todayReply !== null) { result = todayReply.result; error = todayReply.error; }
+        // D-265's queue read. Unanswered it never settles, and `sendMessage`
+        // awaits it before `chat.send` — see `chat-turn-queue.ts`.
+        const queueReply = chatTurnQueueDemoReply(rpc.method, rpc.args);
+        if (queueReply !== null) { result = queueReply.result; }
+        // Every capture except contact hung on commit without this — see
+        // `work-entity-upsert.ts`. Declines under the paged demo, which owns
+        // its own stateful answer for the same method.
+        const upsertReply = workEntityUpsertDemoReply(rpc.method, rpc.args);
+        if (upsertReply !== null) { result = upsertReply.result; }
         const simulationReply = recipeSimulationDemoReply(rpc.method, rpc.args);
         if (simulationReply !== null) { result = simulationReply.result; error = undefined; }
         // `trace_pending=1` — name every read this transport never answers.

@@ -212,14 +212,14 @@ export const packBadges = (
     out.push({
       label: 'Needs update',
       tone: 'danger',
-      title: 'This pack no longer runs on this server — its actions fail until you update it.',
+      title: 'This Pack no longer works on this server. Nothing it does will work until you update it.',
     });
   }
   if (preInstall?.has(r.slug) === true) {
     out.push({
       label: 'Included',
       tone: 'muted',
-      title: 'Ships with Recued and installs itself on every server boot — you did not choose it.',
+      title: 'This comes with Recued and installs itself every time the server starts. You did not choose it.',
     });
   }
   if (r.publisher_certified === true) out.push({ label: '✓ Certified', tone: 'accent' });

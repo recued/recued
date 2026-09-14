@@ -18,6 +18,17 @@ interface Row {
   draft_id: string; incarnation: string; revision: number; owner_id: string; contract_id: string | null;
   principal: string; idempotency_key: string; request_hash: string; content_hash: string; ciphertext: string | null;
   created_at: number; updated_at: number; deleted_at: number | null;
+  /** D-264 — the provider-side id of the last successful export of this draft,
+   *  or NULL. Handed back as `prior` on a re-export so the mailbox is updated
+   *  rather than accumulating copies. */
+  mailbox_copy_id: string | null;
+  /** D-264 — the mail instance that id belongs to.
+   *
+   *  ⛔ A provider id is only meaningful inside the account that issued it. The
+   *  draft's `sender_mail_instance` is editable, so a draft saved to mailbox
+   *  A and then re-pointed at B would otherwise hand A's id to B, where it can
+   *  name an unrelated message. Stored and compared, never assumed. */
+  mailbox_copy_instance: string | null;
 }
 const missing = (): never => { throw new RpcError('mail_draft_not_found', 'The saved draft is unavailable.', 404); };
 const stale = (): never => { throw new RpcError('mail_draft_stale', 'The draft changed. Reload before saving or scheduling.', 409); };
@@ -28,6 +39,21 @@ export const createMailDraftStore = (db: Database.Database, codec: PreapprovalCo
     owner_id TEXT NOT NULL, contract_id TEXT, principal TEXT NOT NULL, idempotency_key TEXT NOT NULL,
     request_hash TEXT NOT NULL, content_hash TEXT NOT NULL, ciphertext TEXT, created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL, deleted_at INTEGER, UNIQUE(principal,idempotency_key))`);
+  // D-264 — additive, nullable, migrated in place. `CREATE TABLE IF NOT EXISTS`
+  // is a no-op on a database that already has this table, so a shipped server
+  // needs the ALTER to ever see the column. Nullable with no default: a draft
+  // that has never been exported has no provider id, and `NULL` says exactly
+  // that where `''` would be a value the re-export path had to special-case.
+  {
+    const columns = (db.prepare('PRAGMA table_info(mail_drafts)').all() as Array<{ name: string }>)
+      .map((column) => column.name);
+    if (!columns.includes('mailbox_copy_id')) {
+      db.exec('ALTER TABLE mail_drafts ADD COLUMN mailbox_copy_id TEXT');
+    }
+    if (!columns.includes('mailbox_copy_instance')) {
+      db.exec('ALTER TABLE mail_drafts ADD COLUMN mailbox_copy_instance TEXT');
+    }
+  }
   const principalKey = (principal: MailDraftPrincipal): string => preapprovalHash([principal.owner_id, principal.contract_id]);
   const authorize = (principal: MailDraftPrincipal): void => { codec.assertUnlocked(); principal.validate(); };
   const read = (id: string, principal: MailDraftPrincipal): Row => {
@@ -53,6 +79,48 @@ export const createMailDraftStore = (db: Database.Database, codec: PreapprovalCo
   };
   return {
     get,
+    /** D-264 — the provider id of this draft's last export INTO `instance`, or
+     *  `null` when it was never exported there.
+     *
+     *  ⛔ Scoped on purpose. A caller that asked "what id does this draft have"
+     *  without naming the account would get A's id for a draft now pointed at B,
+     *  and B would resolve it against its own mailbox. The instance is part of
+     *  the question, so it is part of the signature. */
+    mailboxCopyId(draftId: string, instance: string, principal: MailDraftPrincipal): string | null {
+      const row = read(draftId, principal);
+      return row.mailbox_copy_instance === instance ? row.mailbox_copy_id : null;
+    },
+    /** D-264 — record what the provider returned.
+     *
+     *  ⛔ Its own column, NOT a field on the content. The content hash is pinned
+     *  as a pre-approval dependency (`pin` above); folding an export id into it
+     *  would bump the revision and invalidate a pending review of the SAME
+     *  message, because the message did not change — only where a copy of it now
+     *  lives. So this write touches neither `revision` nor `content_hash`, and a
+     *  reviewed draft survives being exported. */
+    /** Returns the id this export SUPERSEDED, or `null` when it did not
+     *  supersede one — including when a concurrent export won the race.
+     *
+     *  ⚠ Compare-and-set on `expected`, not a blind UPDATE. Two authorized
+     *  callers exporting the same draft concurrently both read a `null` prior,
+     *  both create a mailbox copy, and a blind write would let the second
+     *  silently overwrite the first's id — leaving one copy untracked in the
+     *  owner's mailbox forever, with neither result mentioning it. The loser now
+     *  learns it lost and can say so. */
+    recordMailboxCopy(
+      draftId: string, instance: string, sourceId: string,
+      expected: string | null, principal: MailDraftPrincipal,
+    ): { recorded: boolean } {
+      const row = read(draftId, principal);
+      const result = expected === null
+        ? db.prepare(`UPDATE mail_drafts SET mailbox_copy_id=?, mailbox_copy_instance=?, updated_at=?
+            WHERE draft_id=? AND mailbox_copy_id IS NULL`)
+          .run(sourceId, instance, now(), row.draft_id)
+        : db.prepare(`UPDATE mail_drafts SET mailbox_copy_id=?, mailbox_copy_instance=?, updated_at=?
+            WHERE draft_id=? AND mailbox_copy_id=? AND mailbox_copy_instance=?`)
+          .run(sourceId, instance, now(), row.draft_id, expected, instance);
+      return { recorded: result.changes > 0 };
+    },
     assertRevision(draftId: string, revision: number, principal: MailDraftPrincipal): PreapprovalDependency {
       const row = read(draftId, principal); if (row.revision !== revision) stale();
       return db.transaction(() => pin(row)).immediate();
@@ -72,9 +140,17 @@ export const createMailDraftStore = (db: Database.Database, codec: PreapprovalCo
         authorize(principal); const concurrent = prior(); if (concurrent) return reuse(concurrent);
         const timestamp = now(); const row: Row = { draft_id: `mad_${randomUUID()}`, incarnation: randomUUID(), revision: 1,
           owner_id: principal.owner_id, contract_id: principal.contract_id, principal: key, idempotency_key: request.idempotency_key,
-          request_hash: hash, content_hash: hash, ciphertext, created_at: timestamp, updated_at: timestamp, deleted_at: null };
-        db.prepare(`INSERT INTO mail_drafts VALUES(@draft_id,@incarnation,@revision,@owner_id,@contract_id,@principal,
-          @idempotency_key,@request_hash,@content_hash,@ciphertext,@created_at,@updated_at,@deleted_at)`).run(row);
+          request_hash: hash, content_hash: hash, ciphertext, created_at: timestamp, updated_at: timestamp, deleted_at: null,
+          mailbox_copy_id: null, mailbox_copy_instance: null };
+        // ⚠ COLUMNS NAMED EXPLICITLY since D-264. A bare `VALUES(...)` binds by
+        // POSITION against every column the table has, so the ALTER above would
+        // have broken this INSERT the moment it ran — on a fresh database as
+        // much as a migrated one. Naming them makes the next additive column a
+        // no-op here instead of a runtime failure.
+        db.prepare(`INSERT INTO mail_drafts (draft_id,incarnation,revision,owner_id,contract_id,principal,
+          idempotency_key,request_hash,content_hash,ciphertext,created_at,updated_at,deleted_at,mailbox_copy_id,mailbox_copy_instance)
+          VALUES(@draft_id,@incarnation,@revision,@owner_id,@contract_id,@principal,
+          @idempotency_key,@request_hash,@content_hash,@ciphertext,@created_at,@updated_at,@deleted_at,@mailbox_copy_id,@mailbox_copy_instance)`).run(row);
         pin(row); return row.draft_id;
       }).immediate();
       return get({ draft_id: id }, principal);

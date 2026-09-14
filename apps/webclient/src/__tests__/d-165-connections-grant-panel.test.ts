@@ -781,7 +781,7 @@ describe('D-165 Connections operation-group grant panel', () => {
     expect(mount.getConnections()).toHaveLength(0);
     expect(calls.runListGroups).not.toHaveBeenCalled();
     expect(collectByAttr(host, CONNECTIONS_GRANT_PANEL_EMPTY_ATTR)).toHaveLength(1);
-    expect(allText(host).join(' ')).toContain('No API connections');
+    expect(allText(host).join(' ')).toContain('No Connections yet');
     mount.dispose();
   });
 

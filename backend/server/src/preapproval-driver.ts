@@ -112,8 +112,33 @@ export const createPreapprovalDriver = (deps: {
     const selected = autoRunActivation(request.recipe_id, enabled);
     if (selected.kind === 'disabled' || (selected.kind === 'preapproved' && selected.status !== 'active')) return null;
     if (selected.kind === 'ordinary') {
-      const poll = deps.activations.ordinaryAutoRunPoll(request.recipe_id);
-      return handleExecute(deps.execution, request, { after_auto_run_qualification: poll.qualify, auto_run_qualification: poll.qualification });
+      let poll: ReturnType<PreapprovalActivations['ordinaryAutoRunPoll']>;
+      try { poll = deps.activations.ordinaryAutoRunPoll(request.recipe_id); }
+      catch (error) {
+        // Another process can accept a review between selection and capture.
+        if (error instanceof RpcError && error.code === 'preapproval_stale') return null;
+        throw error;
+      }
+      let superseded = false;
+      try {
+        const result = await handleExecute(deps.execution, request, {
+          after_auto_run_qualification: () => {
+            try { poll.qualify(); }
+            catch (error) {
+              superseded = error instanceof RpcError && error.code === 'preapproval_stale';
+              throw error;
+            }
+          },
+          auto_run_qualification: poll.qualification,
+        });
+        // This poll lost its generation before the work phase. Its durable
+        // run still records the refusal, but charging it to the scheduler
+        // would disarm and invalidate the owner's newly approved execution.
+        return superseded ? null : result;
+      } catch (error) {
+        if (superseded && error instanceof RpcError && error.code === 'preapproval_stale') return null;
+        throw error;
+      }
     }
     try {
       const candidate = await deps.runtime.autoRunCandidate(selected.future_execution_ref);

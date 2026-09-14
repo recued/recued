@@ -344,8 +344,20 @@ describe('R31 — per-channel notify / approval axis split', () => {
     expect(ui.askCalls.map((c) => c.ask_id)).toEqual(['ask-split-a']);
     expect(telegram.askCalls.map((c) => c.ask_id)).toEqual(['ask-split-a']);
     expect(slack.askCalls).toEqual([]);
-    // slack still gets no ask-time notify either (it's inline, not
-    // notify-only — inline channels are gated purely on the approval axis).
-    expect(slack.notifyCalls).toEqual([]);
+    // ⇒ AMENDED: slack now receives the PASSIVE NOTICE instead of silence.
+    //
+    // This line used to read `expect(slack.notifyCalls).toEqual([])`, and its
+    // reason was a CONSEQUENCE stated as a guarantee — "inline channels are
+    // gated purely on the approval axis" was true of the code, and nobody had
+    // decided it should be. The owner's settings say "don't ASK me on slack"
+    // and "DO notify me on slack"; delivering neither answers a question they
+    // did not ask, and it is I-3's own named failure ("a silent ask on a user
+    // surface = lost approval") reached through the settings door rather than
+    // the capability door.
+    //
+    // ⛔ The property this test actually guards is UNCHANGED and still above:
+    // approval OFF means NO ASK. One notice, never the ask, never both.
+    expect(slack.notifyCalls.length).toBe(1);
+    expect(slack.notifyCalls[0]?.text).toMatch(/approval pending/);
   });
 });

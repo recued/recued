@@ -17,12 +17,18 @@
 import { RpcError, type HandlerSlice, type ServerRpcRegistry } from '@recued/contracts';
 import type { WsClient } from './ws-server.js';
 import { handleFileRead, type FileReadDeps } from './collections/file/file-read-handler.js';
+import { createCloudFileAttachments, type CloudFileAttachmentDeps } from './cloud-file-attachments.js';
+import type { InboundFileCollection } from './collections/file/inbound-file-collection.js';
+import { previewFile } from './file-preview.js';
 
 export interface FileReadRpcDeps {
   /** Lazy resolver for the shared file-read deps (collection registry + blob
    *  store + auditLog). Undefined when the inbound file collection isn't wired
    *  (dbless boot / no blob store) — the handler then returns `not_configured`. */
   getFileReadDeps: () => FileReadDeps | undefined;
+  cloudAttachments?: CloudFileAttachmentDeps;
+  changed?: (session: string, file: string, deleted: boolean) => void;
+  deleted?: (file: string) => void;
 }
 
 /** Require a registered paired client. The owner-trusted read runs WITHOUT the
@@ -72,7 +78,7 @@ export const handleDataFileRead = async (
   };
 };
 
-type FileReadRpcMethods = 'data.file.read';
+type FileReadRpcMethods = 'data.file.attachments.preview' | 'data.file.attachments.sources' | 'data.file.attachments.remote.list' | 'data.file.attachments.remote.get' | 'data.file.attachments.import' | 'data.file.read' | 'data.file.usage' | 'data.file.mutate' | 'data.file.attachments.list' | 'data.file.attachments.get' | 'data.file.attachments.conversation';
 
 export const makeFileReadRpcHandlers = (
   deps: FileReadRpcDeps | undefined,
@@ -80,9 +86,80 @@ export const makeFileReadRpcHandlers = (
   | HandlerSlice<ServerRpcRegistry, FileReadRpcMethods, WsClient>
   | undefined => {
   if (!deps) return undefined;
+  let cloud: ReturnType<typeof createCloudFileAttachments> | undefined;
+  const cloudFiles = () => {
+    if (!deps.cloudAttachments) throw new RpcError('not_configured', 'Connected file sources are unavailable.', 503);
+    return cloud ??= createCloudFileAttachments(deps.cloudAttachments, deps.getFileReadDeps);
+  };
+  const retainedFiles = (): InboundFileCollection => {
+    const files = deps.getFileReadDeps()?.registry.get('file', 'received') as InboundFileCollection | undefined;
+    if (!files?.attachmentLifecycle || !files.mutateLifecycle) throw new RpcError('not_configured', 'Retained file lifecycle is unavailable.', 503);
+    return files;
+  };
+  const requireFileId = (id: unknown): string => {
+    if (typeof id !== 'string' || !/^file:[0-9a-f]{32}$/.test(id)) throw new RpcError('bad_request', 'Choose a retained file.', 400);
+    return id;
+  };
   return {
-    methods: ['data.file.read'],
+    methods: ['data.file.attachments.preview', 'data.file.attachments.sources', 'data.file.attachments.remote.list', 'data.file.attachments.remote.get', 'data.file.attachments.import', 'data.file.read', 'data.file.usage', 'data.file.mutate', 'data.file.attachments.list', 'data.file.attachments.get', 'data.file.attachments.conversation'],
     handlers: {
+      'data.file.attachments.preview': async (args, client) => {
+        requireRegisteredClient(client);
+        const read = deps.getFileReadDeps();
+        if (!read) throw new RpcError('not_configured', 'File previews are unavailable.', 503);
+        return previewFile(read, args, id => id.startsWith('file:remote:')
+          ? cloudFiles().get({ record_id: id })
+          : retainedFiles().attachmentLifecycle!.selection(requireFileId(id)));
+      },
+      'data.file.attachments.sources': async (_args, client) => {
+        requireRegisteredClient(client); return cloudFiles().sources();
+      },
+      'data.file.attachments.remote.list': async (args, client) => {
+        requireRegisteredClient(client); return cloudFiles().list(args);
+      },
+      'data.file.attachments.remote.get': async (args, client) => {
+        requireRegisteredClient(client); return cloudFiles().get(args);
+      },
+      'data.file.attachments.import': async (args, client) => {
+        requireRegisteredClient(client); return cloudFiles().importFile(args);
+      },
+      'data.file.attachments.conversation': async (args, client) => {
+        requireRegisteredClient(client);
+        return retainedFiles().attachmentLifecycle!.conversationFiles(args);
+      },
+      'data.file.attachments.list': async (args, client) => {
+        requireRegisteredClient(client);
+        return retainedFiles().attachmentLifecycle!.listSelections(args ?? {});
+      },
+      'data.file.attachments.get': async (args, client) => {
+        requireRegisteredClient(client);
+        return retainedFiles().attachmentLifecycle!.selection(requireFileId(args.record_id));
+      },
+      'data.file.usage': async (args, client) => {
+        requireRegisteredClient(client);
+        return retainedFiles().attachmentLifecycle!.preview(requireFileId(args.record_id));
+      },
+      'data.file.mutate': async (args, client) => {
+        requireRegisteredClient(client);
+        requireFileId(args.record_id);
+        if (!args.revision || typeof args.revision !== 'string' || !['archive', 'delete'].includes(args.action)) {
+          throw new RpcError('bad_request', 'Review the file usage and choose an action.', 400);
+        }
+        const { replayed, ...result } = retainedFiles().mutateLifecycle!(args);
+        if (replayed) return result;
+        if (args.action === 'delete') {
+          try { deps.deleted?.(result.record_id); } catch { console.error('File deletion cascade failed after commit.'); }
+        }
+        for (const session of retainedFiles().attachmentLifecycle!.sessions(result.record_id)) {
+          try { deps.changed?.(session, result.record_id, args.action === 'delete'); }
+          catch { console.error('File lifecycle notification failed after commit.'); }
+        }
+        await deps.getFileReadDeps()?.auditLog?.logActivity({ activity_id: '', timestamp: Date.now(),
+          action: args.action === 'archive' ? 'collection_record_updated' : 'collection_record_deleted', target: result.record_id,
+          detail: JSON.stringify({ operation: args.action, message_count: result.message_count, queued_count: result.queued_count }) })
+          .catch(() => { console.error('File lifecycle audit write failed after commit.'); });
+        return result;
+      },
       'data.file.read': async (args, client) => {
         requireRegisteredClient(client);
         return handleDataFileRead(deps, args as { record_id: string });

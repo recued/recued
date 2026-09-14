@@ -266,7 +266,7 @@ describe('mountReceptionRecordsSection — lenses', () => {
     const content = root.children.at(-1) as FakeEl;
     const html = (content.children[0] as FakeEl | undefined)?.innerHTML ?? '';
     expect(html).toContain(FR_LENS_EMPTY_COPY);
-    expect(FR_LENS_EMPTY_COPY).toContain('Reception Inbox');
+    expect(FR_LENS_EMPTY_COPY).toContain('Reception inbox');
   });
 
   it('lists accepted responses when there are some', async () => {
@@ -315,7 +315,7 @@ describe('mountReceptionRecordsSection — lenses', () => {
     expect(html).toContain(FR_LENS_ERROR_ATTR);
     expect(html).toContain('detail offline');
     expect(html).toContain(FR_LENS_DETAIL_RETRY_ATTR);
-    expect(html).toContain('Try again or return to the list');
+    expect(html).toContain('Try again, or go back to the list');
   });
 });
 

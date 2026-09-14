@@ -73,6 +73,20 @@ export const composePreapproval = (deps: {
     execution: deps.execution, pumpOutbox: () => outbox.drain() });
   deps.execution.preapprovalRuntime = runtime;
   deps.execution.mailDraft = async (method, raw, meta) => drafts.kernel(method, raw, meta);
+  // D-264 — wired only when the mail stack is up, because the export needs a
+  // live collection registry to reach the mailbox. Absent ⇒ the kernel case
+  // raises SERVER_NOT_REACHABLE like any unwired dispatcher, which is the
+  // honest answer for a server with no mail enrolled.
+  if (deps.mail) {
+    const registry = deps.mail.registry;
+    deps.execution.mailDraftSaveToMailbox = async (input, meta) => {
+      const { handleMailDraftSaveToMailbox } = await import('../../collections/mail/draft-save-to-mailbox.js');
+      const origin = createPreapprovalRequestOrigin({ ownerId: deps.ownerId, recipes: deps.sources.recipes,
+        definitions: deps.definitions, clientTokens: deps.clientTokens, inboundTokens: deps.inboundTokens }, meta);
+      return handleMailDraftSaveToMailbox({ registry, drafts: deps.storage.drafts },
+        input, drafts.saveToMailboxPrincipal(origin));
+    };
+  }
   deps.execution.preapprovalDriver = driver;
   deps.execution.preapprovalRequest = async (request, meta) => {
     const origin = createPreapprovalRequestOrigin({ ownerId: deps.ownerId, recipes: deps.sources.recipes,

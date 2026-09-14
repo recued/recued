@@ -1054,7 +1054,7 @@ describe('Connections route (R13–R16 restructure)', () => {
     clickAction(content, { action: 'accounts-submit-form' });
     expect(route.hasInFlightWork()).toBe(true);
     expect(route.inFlightWorkPrompt()).toBe(
-      'A connection action is still in progress. Leave Connections anyway?',
+      'Connections is still doing something. Leave anyway?',
     );
     finishEnroll({ slug: 'fastmail', send_capable: true });
     await tick();
@@ -1395,12 +1395,12 @@ describe('Connections route (R13–R16 restructure)', () => {
       .filter((candidate) => candidate.getAttribute(WEBHOOKS_PANEL_ACTION_ATTR) === action)
       .map((candidate) => candidate.getAttribute('aria-label'));
     expect(labelsFor('credentials')).toEqual([
-      `Rotate credentials for Signed deliveries (${first.ingress_id})`,
-      `Rotate credentials for Billing deliveries (${second.ingress_id})`,
+      `Swap the keys for Signed deliveries (${first.ingress_id})`,
+      `Swap the keys for Billing deliveries (${second.ingress_id})`,
     ]);
     expect(labelsFor('enable')).toEqual([
-      `Enable intake for Signed deliveries (${first.ingress_id})`,
-      `Enable intake for Billing deliveries (${second.ingress_id})`,
+      `Let messages in for Signed deliveries (${first.ingress_id})`,
+      `Let messages in for Billing deliveries (${second.ingress_id})`,
     ]);
 
     route.dispose();
@@ -1529,11 +1529,11 @@ describe('Connections route (R13–R16 restructure)', () => {
       'registration-reconcile',
     );
     expect(reconcile).toMatchObject({
-      textContent: 'Register provider endpoint',
+      textContent: 'Set up the address at the service',
       disabled: false,
     });
-    expect(treeText(root)).toContain('Registration mode managed endpoint');
-    expect(treeText(root)).toContain('Paired connection stripe-test');
+    expect(treeText(root)).toContain('How to set it up managed endpoint');
+    expect(treeText(root)).toContain('Connection stripe-test');
     expect(treeText(root)).toContain('never exposed to packs or recipes');
     expect(findByAttrValue(root, WEBHOOKS_PANEL_ACTION_ATTR, 'credentials')).toBeNull();
     reconcile?.click();
@@ -1588,7 +1588,7 @@ describe('Connections route (R13–R16 restructure)', () => {
       WEBHOOKS_PANEL_ACTION_ATTR,
       'connection-rebind',
     );
-    expect(open).toMatchObject({ textContent: 'Change paired connection' });
+    expect(open).toMatchObject({ textContent: 'Change the Connection' });
     open?.click();
     const input = collectByAttr(root, WEBHOOKS_PANEL_REBIND_ATTR)[0]!;
     input.value = ' stripe-test-rotated ';
@@ -1652,10 +1652,10 @@ describe('Connections route (R13–R16 restructure)', () => {
     });
     await route.webhooksPanel()!.refresh();
 
-    expect(treeText(root)).toContain('Pending paired connection stripe-test-new');
-    expect(treeText(root)).toContain('Only after confirmed absence will it switch');
+    expect(treeText(root)).toContain('Waiting for a Connection stripe-test-new');
+    expect(treeText(root)).toContain('Only once it has checked the address is gone will it switch');
     const retry = findByAttrValue(root, WEBHOOKS_PANEL_ACTION_ATTR, 'cleanup-retry');
-    expect(retry).toMatchObject({ textContent: 'Retry connection cutover' });
+    expect(retry).toMatchObject({ textContent: 'Try the swap again' });
     retry?.click();
     await tick();
     expect(retryCutover).toHaveBeenCalledWith({
@@ -1723,8 +1723,8 @@ describe('Connections route (R13–R16 restructure)', () => {
     });
     await route.webhooksPanel()!.refresh();
 
-    expect(treeText(root)).toContain('Provider endpoint cleanup is still pending');
-    expect(treeText(root)).toContain('Last failure managed_cleanup_unconfirmed');
+    expect(treeText(root)).toContain('The address at the service still has to be cleaned up');
+    expect(treeText(root)).toContain('Last thing that went wrong managed_cleanup_unconfirmed');
     expect(findByAttrValue(
       root,
       WEBHOOKS_PANEL_ACTION_ATTR,
@@ -1733,7 +1733,7 @@ describe('Connections route (R13–R16 restructure)', () => {
     expect(findByAttrValue(root, WEBHOOKS_PANEL_ACTION_ATTR, 'retire')).toBeNull();
     const retry = findByAttrValue(root, WEBHOOKS_PANEL_ACTION_ATTR, 'cleanup-retry');
     expect(retry).toMatchObject({
-      textContent: 'Retry provider cleanup',
+      textContent: 'Try the clean-up again',
       disabled: false,
     });
     retry?.click();
@@ -1799,8 +1799,8 @@ describe('Connections route (R13–R16 restructure)', () => {
 
     expect(runTestDelivery).toHaveBeenCalledWith({ ingress_id: ingress.ingress_id });
     expect(collectByAttr(root, WEBHOOKS_PANEL_TEST_ATTR)).toHaveLength(1);
-    expect(treeText(root)).toContain('was durably accepted');
-    expect(treeText(root)).toContain('followed normal event dispatch');
+    expect(treeText(root)).toContain('arrived and was kept at');
+    expect(treeText(root)).toContain('It went the same way a real one would');
 
     runTestDelivery.mockRejectedValueOnce(new Error(
       'delivery whd_ambiguous may have dispatched; inspect it before retrying',
@@ -1866,7 +1866,7 @@ describe('Connections route (R13–R16 restructure)', () => {
     expect(findByAttrValue(root, WEBHOOKS_PANEL_ACTION_ATTR, 'test-delivery'))
       .not.toBeNull();
     expect(treeText(root)).toContain('deliberately signs with the older active credential');
-    expect(treeText(root)).toContain('cannot verify the replacement');
+    expect(treeText(root)).toContain('it cannot verify the replacement');
     expect(treeText(root)).toContain('does not prove the GitHub dashboard is configured');
     route.dispose();
   });
@@ -2018,7 +2018,7 @@ describe('Connections route (R13–R16 restructure)', () => {
       limit: 10,
     });
     expect(collectByAttr(root, WEBHOOKS_PANEL_DELIVERIES_ATTR)).toHaveLength(1);
-    expect(treeText(root)).toContain('Authentication failures and other rejected attempts are not included.');
+    expect(treeText(root)).toContain('Ones that failed the check, or were turned away, are not here.');
     expect(collectByAttr(root, WEBHOOKS_PANEL_DELIVERY_ATTR)).toHaveLength(1);
 
     findByAttrValue(root, WEBHOOKS_PANEL_ACTION_ATTR, 'deliveries-more')!.click();
@@ -2033,8 +2033,8 @@ describe('Connections route (R13–R16 restructure)', () => {
       .filter((action) => action.getAttribute(WEBHOOKS_PANEL_ACTION_ATTR)
         === 'delivery-open')
       .map((action) => action.getAttribute('aria-label'))).toEqual([
-      `Inspect delivery ${delivery.delivery_id} for ${ingress.display_name} (${ingress.ingress_id})`,
-      `Inspect delivery ${olderDelivery.delivery_id} for ${ingress.display_name} (${ingress.ingress_id})`,
+      `Look at message ${delivery.delivery_id} for ${ingress.display_name} (${ingress.ingress_id})`,
+      `Look at message ${olderDelivery.delivery_id} for ${ingress.display_name} (${ingress.ingress_id})`,
     ]);
 
     findByAttrValue(root, WEBHOOKS_PANEL_ACTION_ATTR, 'delivery-open')!.click();
@@ -2046,7 +2046,7 @@ describe('Connections route (R13–R16 restructure)', () => {
     expect(collectByAttr(root, WEBHOOKS_PANEL_EVENT_ATTR)).toHaveLength(1);
     expect(findByAttrValue(root, WEBHOOKS_PANEL_ACTION_ATTR, 'event-open')
       ?.getAttribute('aria-label')).toBe(
-      `View decoded payload for event ${event.event_id} in ${ingress.display_name} (${ingress.ingress_id})`,
+      `See what was sent for event ${event.event_id} in ${ingress.display_name} (${ingress.ingress_id})`,
     );
 
     findByAttrValue(root, WEBHOOKS_PANEL_ACTION_ATTR, 'event-open')!.click();
@@ -2069,7 +2069,7 @@ describe('Connections route (R13–R16 restructure)', () => {
     expect(collectByAttr(root, WEBHOOKS_PANEL_DELIVERIES_ATTR)).toHaveLength(0);
     expect(collectByAttr(root, WEBHOOKS_PANEL_REJECTIONS_ATTR)).toHaveLength(1);
     expect(collectByAttr(root, WEBHOOKS_PANEL_REJECTION_ATTR)).toHaveLength(1);
-    expect(treeText(root)).toContain('Bodies, hashes, paths, headers, signatures, credentials, network identifiers');
+    expect(treeText(root)).toContain('What they said, their fingerprints, paths, headers, signatures, keys, network details');
     expect(treeText(root)).toContain('authentication_failed');
     findByAttrValue(root, WEBHOOKS_PANEL_ACTION_ATTR, 'rejections-more')!.click();
     await tick();
@@ -2085,15 +2085,15 @@ describe('Connections route (R13–R16 restructure)', () => {
     findByAttrValue(root, WEBHOOKS_PANEL_ACTION_ATTR, 'rejections')!.click();
     await tick();
     expect(treeText(root)).toContain('rejection read failed');
-    expect(treeText(root)).toContain('Rejected delivery summaries are unavailable.');
-    expect(treeText(root)).not.toContain('No rejected delivery summaries are retained.');
+    expect(treeText(root)).toContain('Recued cannot show the messages that were turned away.');
+    expect(treeText(root)).not.toContain('Recued has kept no messages that were turned away.');
 
     findByAttrValue(root, WEBHOOKS_PANEL_ACTION_ATTR, 'retention-prune')!.click();
     await tick();
     expect(runRetentionPrune).toHaveBeenCalledWith({ ingress_id: ingress.ingress_id });
     expect(collectByAttr(root, WEBHOOKS_PANEL_RETENTION_ATTR)).toHaveLength(1);
-    expect(treeText(root)).toContain('Pruned eligible data: 2 payloads');
-    expect(treeText(root)).toContain('Pending, leased, or dead-letter work and pinned payloads remain protected.');
+    expect(treeText(root)).toContain('Cleared out: 2 things that were sent');
+    expect(treeText(root)).toContain('Anything still waiting, being worked on, stuck, or pinned is kept safe.');
 
     findByAttrValue(root, WEBHOOKS_PANEL_ACTION_ATTR, 'retire')!.click();
     expect(runRetire).not.toHaveBeenCalled();
@@ -2150,8 +2150,8 @@ describe('Connections route (R13–R16 restructure)', () => {
       .filter((action) => action.getAttribute(WEBHOOKS_PANEL_ACTION_ATTR)
         === 'credential-retire');
     expect(retire.map((action) => [action.textContent, action.disabled])).toEqual([
-      ['Retire credential v2', false],
-      ['Retire credential v1', true],
+      ['Retire key v2', false],
+      ['Retire key v1', true],
     ]);
     expect(findByAttrValue(root, WEBHOOKS_PANEL_ACTION_ATTR, 'retire'))
       .toMatchObject({ disabled: true });
@@ -2265,7 +2265,7 @@ describe('Connections route (R13–R16 restructure)', () => {
     const retire = findByAttrValue(root, WEBHOOKS_PANEL_ACTION_ATTR, 'retire')!;
     expect(retire.disabled).toBe(false);
     retire.click();
-    expect(treeText(root)).toContain('no operation-bound callback attachment');
+    expect(treeText(root)).toContain('nothing could ever have been sent to it');
     findByAttrValue(root, WEBHOOKS_PANEL_ACTION_ATTR, 'retire-confirm')!.click();
     await tick();
     expect(runRetire).toHaveBeenCalledWith({ ingress_id: ingress.ingress_id });
@@ -2326,7 +2326,7 @@ describe('Connections route (R13–R16 restructure)', () => {
     token.value = 'plaintext-never-echoed';
     const form = findByAttrValue(root, WEBHOOKS_PANEL_FORM_ATTR, 'create')!;
     expect(collectByAttr(root, WEBHOOKS_PANEL_DEDUPLICATION_ATTR)[0]?.textContent)
-      .toContain('5 minutes receipt-time body-fingerprint buckets');
+      .toContain('in 5 minutes blocks');
     expect(collectByAttr(root, WEBHOOKS_PANEL_DEDUPLICATION_ATTR)[0]?.textContent)
       .toContain('at least 45 days');
     fire(form, 'submit', { preventDefault() {} });
@@ -2390,7 +2390,7 @@ describe('Connections route (R13–R16 restructure)', () => {
     ]);
     expect(treeText(root)).toContain('Slack requests · timestamped hmac');
     expect(collectByAttr(root, WEBHOOKS_PANEL_DEDUPLICATION_ATTR)[0]?.textContent)
-      .toContain('when one is absent it uses the signed timestamp and exact body');
+      .toContain('If there is none, it uses the signed time and exactly what was sent');
     expect(collectByAttr(root, WEBHOOKS_PANEL_REGISTRATION_MODE_ATTR)[0]!
       .children.map((option) => option.value)).toEqual(['manual']);
     expect(collectByAttr(root, WEBHOOKS_PANEL_PAIRED_CONNECTION_ATTR)).toEqual([]);
@@ -2739,7 +2739,7 @@ describe('Connections route (R13–R16 restructure)', () => {
     findByAttrValue(root, WEBHOOKS_PANEL_ACTION_ATTR, 'enable')!.click();
     await tick();
     expect(runEnable).toHaveBeenCalledWith({ ingress_id: created.ingress_id });
-    expect(treeText(root)).toContain('v1 (not yet verified)');
+    expect(treeText(root)).toContain('v1 (not checked yet)');
 
     // Model the owner redelivering GitHub's setup ping after explicit enablement.
     setupCredentialVerified = true;
@@ -2766,8 +2766,8 @@ describe('Connections route (R13–R16 restructure)', () => {
         === 'credential-retire');
     expect(pendingRetirement.map((action) => [action.textContent, action.disabled]))
       .toEqual([
-        ['Retire credential v2', false],
-        ['Retire credential v1', true],
+        ['Retire key v2', false],
+        ['Retire key v1', true],
       ]);
 
     newCredentialVerified = true;
@@ -2777,8 +2777,8 @@ describe('Connections route (R13–R16 restructure)', () => {
         === 'credential-retire');
     expect(verifiedRetirement.map((action) => [action.textContent, action.disabled]))
       .toEqual([
-        ['Retire credential v2', false],
-        ['Retire credential v1', false],
+        ['Retire key v2', false],
+        ['Retire key v1', false],
       ]);
     expect(runCredentialRetire).not.toHaveBeenCalled();
     route.dispose();
@@ -2887,9 +2887,9 @@ describe('Connections route (R13–R16 restructure)', () => {
       selected_event_types: ['issues', 'pull_request'],
     });
     expect(runWrite).not.toHaveBeenCalled();
-    expect(treeText(root)).toContain('Registration target repository: openai/example');
+    expect(treeText(root)).toContain('Where it is set up repository: openai/example');
     expect(treeText(root)).toContain('refuses ambiguous or foreign hooks');
-    expect(treeText(root)).toContain('immediate setup ping before intake is enabled');
+    expect(treeText(root)).toContain('immediate setup ping before you let messages in');
     expect(treeText(root)).toContain('will not retry that failure automatically');
     expect(treeText(root)).toContain('Recent deliveries to redeliver that ping');
     expect(findByAttrValue(root, WEBHOOKS_PANEL_ACTION_ATTR, 'credentials')).toBeNull();
@@ -2899,7 +2899,7 @@ describe('Connections route (R13–R16 restructure)', () => {
       'registration-reconcile',
     );
     expect(reconcile).toMatchObject({
-      textContent: 'Register provider endpoint',
+      textContent: 'Set up the address at the service',
       disabled: false,
     });
     reconcile?.click();
@@ -3058,7 +3058,7 @@ describe('Connections route (R13–R16 restructure)', () => {
     expect(runManualConfirm).toHaveBeenCalledWith({ ingress_id: created.ingress_id });
 
     findByAttrValue(root, WEBHOOKS_PANEL_ACTION_ATTR, 'credentials')!.click();
-    expect(treeText(root)).toContain('shows its plaintext once');
+    expect(treeText(root)).toContain('shows it to you once');
     fire(findByAttrValue(root, WEBHOOKS_PANEL_FORM_ATTR, 'credentials')!, 'submit', {
       preventDefault() {},
     });
@@ -3157,7 +3157,7 @@ describe('Connections route (R13–R16 restructure)', () => {
       'registration-reconcile',
     );
     expect(reconcile).toMatchObject({
-      textContent: 'Register provider endpoint',
+      textContent: 'Set up the address at the service',
       disabled: false,
     });
     reconcile?.click();
@@ -3278,7 +3278,7 @@ describe('Connections route (R13–R16 restructure)', () => {
       'registration-reconcile',
     );
     expect(reconcile).toMatchObject({
-      textContent: 'Register provider endpoint',
+      textContent: 'Set up the address at the service',
       disabled: false,
     });
     reconcile?.click();
@@ -3470,7 +3470,7 @@ describe('Connections route (R13–R16 restructure)', () => {
     expect(collectByAttr(root, WEBHOOKS_PANEL_PAIRED_CONNECTION_ATTR)).toEqual([]);
     expect(findByAttrValue(root, WEBHOOKS_PANEL_FIELD_ATTR, 'endpoint_secret_key')).toBeNull();
     expect(treeText(root)).toContain('matching Paddle Sandbox account for test');
-    expect(treeText(root)).toContain('Endpoint secret key with Add credentials');
+    expect(treeText(root)).toContain('Endpoint secret key with Add keys');
     const eventTypes = collectByAttr(root, WEBHOOKS_PANEL_EVENT_TYPE_ATTR);
     expect(eventTypes).toHaveLength(68);
     expect(eventTypes.every((input) => input.checked === false)).toBe(true);
@@ -3581,8 +3581,8 @@ describe('Connections route (R13–R16 restructure)', () => {
         === 'credential-retire');
     expect(pendingRetirement.map((action) => [action.textContent, action.disabled]))
       .toEqual([
-        ['Retire credential v2', false],
-        ['Retire credential v1', true],
+        ['Retire key v2', false],
+        ['Retire key v1', true],
       ]);
 
     replacementCredentialVerified = true;
@@ -3592,8 +3592,8 @@ describe('Connections route (R13–R16 restructure)', () => {
         === 'credential-retire');
     expect(verifiedRetirement.map((action) => [action.textContent, action.disabled]))
       .toEqual([
-        ['Retire credential v2', false],
-        ['Retire credential v1', false],
+        ['Retire key v2', false],
+        ['Retire key v1', false],
       ]);
     findByAttrValue(root, WEBHOOKS_PANEL_ACTION_ATTR, 'disable')!.click();
     await tick();
@@ -3792,7 +3792,7 @@ describe('Connections route (R13–R16 restructure)', () => {
     });
     expect(runWrite).not.toHaveBeenCalled();
     expect(treeText(root)).toContain(created.endpoint_url!);
-    expect(treeText(root)).toContain('Add credentials');
+    expect(treeText(root)).toContain('Add keys');
     expect(treeText(root)).toContain('After the vendor returns the Endpoint signing secret');
     expect(findByAttrValue(root, WEBHOOKS_PANEL_ACTION_ATTR, 'manual-confirm')?.disabled)
       .toBe(true);
@@ -3910,7 +3910,7 @@ describe('Connections route (R13–R16 restructure)', () => {
       'registration-reconcile',
     );
     expect(reconcile).toMatchObject({
-      textContent: 'Register provider endpoint',
+      textContent: 'Set up the address at the service',
       disabled: false,
     });
     reconcile?.click();
@@ -4063,7 +4063,7 @@ describe('Connections route (R13–R16 restructure)', () => {
     });
     expect(route.connectionsEnrollPanel()).toBeNull();
     const content = collectByAttr(root, CONNECTIONS_ROUTE_CONTENT_ATTR)[0]!;
-    expect(content.children[0]?.textContent).toContain('not available');
+    expect(content.children[0]?.textContent).toContain('cannot add Connections yet');
     route.dispose();
   });
 

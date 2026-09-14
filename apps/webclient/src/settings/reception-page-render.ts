@@ -354,7 +354,7 @@ const renderStatusHeader = (
     : state.status.emergency_disabled
       ? 'Emergency disabled'
       : !state.status.reception_public
-        ? 'Not publicly exposed'
+        ? 'Not open to the internet'
         : 'Enabled';
   const baseUrl = header ? header.base_url : state.status.base_url;
   const counts = state.page
@@ -782,7 +782,7 @@ const renderShareCards = (detail: ReceptionEndpointDetailModel): string => {
         : inlineHint(
             detail.row.is_singleton
               ? 'The Reception page is your tokenless public front door — there is no share secret to rotate.'
-              : 'This endpoint is revoked — its token cannot be rotated. Create a fresh endpoint instead.',
+              : 'This link has been taken back, so its secret cannot be swapped. Make a new one instead.',
           ),
     });
   }

@@ -32,7 +32,7 @@ const QUICKBOOKS_FIELDS: readonly ConnectionField[] = [
     key: 'name',
     label: 'Name',
     type: 'identifier',
-    help: 'Lowercase identifier used in recipes (e.g. `quickbooks`, `quickbooks-sandbox`).',
+    help: 'A short lower-case name you use in Recipes, such as `quickbooks`, `quickbooks-sandbox`).',
     placeholder: 'quickbooks',
   },
   {
@@ -46,7 +46,7 @@ const QUICKBOOKS_FIELDS: readonly ConnectionField[] = [
     key: 'config.vendor',
     label: 'Vendor',
     type: 'text',
-    help: 'QuickBooks vendor identifier — locked at enrollment.',
+    help: 'QuickBooks sets this when you connect. You cannot change it.',
     placeholder: 'quickbooks',
     hidden: true,
   },
@@ -75,7 +75,7 @@ const QUICKBOOKS_FIELDS: readonly ConnectionField[] = [
     label: 'Auth Type',
     type: 'select',
     options: ['oauth2_refresh'],
-    help: 'QuickBooks uses OAuth 2.0 with refresh tokens.',
+    help: 'QuickBooks asks you to sign in, and Recued stays signed in for you.',
     hidden: true,
   },
   {

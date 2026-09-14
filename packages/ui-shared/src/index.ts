@@ -7,6 +7,8 @@
 
 export * from './template.js';
 export * from './date-time.js';
+// D-269 REV 4 — the two-clock preview, beside the formatter it composes.
+export * from './two-clock.js';
 export * from './run-facts.js';
 export * from './reference-provenance.js';
 export * from './icon-render.js';
@@ -349,3 +351,19 @@ export {
   renderSubmitNow,
 } from './stats/publish-dialog.js';
 export type { PublishDialogProps } from './stats/publish-dialog.js';
+
+// D-266 — the one-per-wake missed-run card.
+export {
+  renderMissedRunsCard,
+  formatOutage,
+  isMissedRunsAnswer,
+  parseMissedRunsAction,
+  MISSED_RUNS_ACTION_ATTR,
+  MISSED_RUNS_CARD_ATTR,
+} from './missed-runs-card.js';
+export type {
+  MissedRunsAnswer,
+  MissedRunsCardEntry,
+  MissedRunsCardReport,
+  RenderMissedRunsCardOptions,
+} from './missed-runs-card.js';

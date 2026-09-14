@@ -120,19 +120,19 @@ export const projectConnectedSourceAnswer = (
               state: 'answer_ready',
               badge: 'Answer ready',
               detail:
-                'The edited follow-up finished. Chat does not currently '
-                + 'record whether this specific file source was searched.',
-              pendingText: 'Following your edited request…',
+                'Your changed follow-up is done. Chat does not '
+                + 'keep a note of whether it searched this particular file source.',
+              pendingText: 'Doing what you changed it to…',
               tone: 'neutral',
               searchTool,
             }
           : {
               state: 'continuing',
-              badge: 'Edited request',
+              badge: 'You changed this',
               detail:
-                'Chat is following your edited request. Source-specific '
-                + 'activity is not recorded for this file connection.',
-              pendingText: 'Following your edited request…',
+                'Chat is doing what you changed it to. It keeps no note of '
+                + 'what it searched for this file connection.',
+              pendingText: 'Doing what you changed it to…',
               tone: 'neutral',
               searchTool,
             };
@@ -140,22 +140,22 @@ export const projectConnectedSourceAnswer = (
       return options.complete
         ? {
             state: 'context_only',
-            badge: 'No new source check',
+            badge: 'Nothing new was searched',
             detail:
-              'This follow-up was sent as a continuation of the previous answer. '
-              + 'Chat does not currently record a source-specific search for '
+              'This follow-up carries on from the last answer. '
+              + 'Chat keeps no note of what it searched for '
               + 'this file connection.',
-            pendingText: 'Continuing from the previous answer…',
+            pendingText: 'Carrying on from the last answer…',
             tone: 'neutral',
             searchTool,
           }
         : {
             state: 'continuing',
-            badge: 'Conversation context',
+            badge: 'Carrying on from before',
             detail:
-              'This follow-up is continuing from the previous answer. '
-              + 'No new source-specific search was requested.',
-            pendingText: 'Continuing from the previous answer…',
+              'This follow-up carries on from the last answer. '
+              + 'Nothing new was searched.',
+            pendingText: 'Carrying on from the last answer…',
             tone: 'neutral',
             searchTool,
           };
@@ -165,8 +165,8 @@ export const projectConnectedSourceAnswer = (
           state: 'answer_ready',
           badge: 'Answer ready',
           detail:
-            'The answer finished. Chat does not currently record whether '
-            + 'this specific file source was searched.',
+            'The answer is done. Chat keeps no note of whether '
+            + 'it searched this particular file source.',
           pendingText: 'Preparing your answer…',
           tone: 'neutral',
           searchTool,
@@ -176,7 +176,7 @@ export const projectConnectedSourceAnswer = (
           badge: 'Preparing',
           detail:
             `This question started from your connected ${kind}. `
-            + 'Chat is preparing the answer.',
+            + 'Chat is working on the answer.',
           pendingText: 'Preparing your answer…',
           tone: 'neutral',
           searchTool,
@@ -193,13 +193,13 @@ export const projectConnectedSourceAnswer = (
     if (errored) {
       return {
         state: 'search_failed',
-        badge: 'Search incomplete',
+        badge: 'The search did not finish',
         detail: used
-          ? `At least one ${searchLabel} search completed, but another did not. `
-            + 'Treat this answer as incomplete and retry or review the connection.'
-          : `The recorded ${searchLabel} search did not complete. `
-            + 'Treat this answer as incomplete and retry or review the connection.',
-        pendingText: 'Finishing with the information still available…',
+          ? `At least one ${searchLabel} search finished, but another did not. `
+            + 'Treat this answer as unfinished. Try again, or check the connection.'
+          : `The recorded ${searchLabel} search did not finish. `
+            + 'Treat this answer as unfinished. Try again, or check the connection.',
+        pendingText: 'Finishing with what Recued already has…',
         tone: 'warning',
         searchTool,
       };
@@ -207,10 +207,10 @@ export const projectConnectedSourceAnswer = (
     if (used) {
       return {
         state: 'search_complete',
-        badge: `${searchLabel[0]!.toUpperCase()}${searchLabel.slice(1)} search completed`,
+        badge: `${searchLabel[0]!.toUpperCase()}${searchLabel.slice(1)} search finished`,
         detail:
-          `This turn recorded a completed ${searchLabel} search. `
-          + 'The receipt does not show which records, if any, informed the answer.',
+          `Recued noted a finished ${searchLabel} search. `
+          + 'It does not say which records, if any, went into the answer.',
         pendingText: `Reviewing the ${searchLabel} search…`,
         tone: 'positive',
         searchTool,
@@ -220,22 +220,22 @@ export const projectConnectedSourceAnswer = (
       if (edited) {
         return {
           state: 'context_only',
-          badge: 'No new search',
+          badge: 'Nothing new was searched',
           detail:
-            `The edited follow-up finished without a recorded ${searchLabel} search. `
-            + 'Source use followed your edited request.',
-          pendingText: 'Following your edited request…',
+            `Your changed follow-up finished, with no noted ${searchLabel} search. `
+            + 'What Chat read followed your change.',
+          pendingText: 'Doing what you changed it to…',
           tone: 'neutral',
           searchTool,
         };
       }
       return {
         state: 'context_only',
-        badge: 'No new search',
+        badge: 'Nothing new was searched',
         detail:
-          `This follow-up was sent as a continuation of the previous answer. `
-          + `No new ${searchLabel} search was recorded.`,
-        pendingText: 'Continuing from the previous answer…',
+          `This follow-up carries on from the last answer. `
+          + `No new ${searchLabel} search was noted.`,
+        pendingText: 'Carrying on from the last answer…',
         tone: 'neutral',
         searchTool,
       };
@@ -243,14 +243,14 @@ export const projectConnectedSourceAnswer = (
     if (context === 'refresh') {
       return {
         state: 'unverified',
-        badge: 'Search not verified',
+        badge: 'Recued could not check the search',
         detail: edited
-          ? `This edited follow-up started from a suggestion that requested `
-            + `a new ${searchLabel} search, but none was recorded. `
-            + `Review your edits and the answer before relying on ${kind}-specific claims.`
-          : `This follow-up requested a new ${searchLabel} search, `
-            + 'but none was recorded. '
-            + `Review it before relying on ${kind}-specific claims.`,
+          ? `Your changed follow-up came from a suggestion that asked for `
+            + `a new ${searchLabel} search, but none was noted. `
+            + `Read your changes and the answer before you trust ${kind}-specific claims.`
+          : `This follow-up asked for a new ${searchLabel} search, `
+            + 'but none was noted. '
+            + `Read it before you trust ${kind}-specific claims.`,
         pendingText: 'Preparing your answer…',
         tone: 'warning',
         searchTool,
@@ -258,10 +258,10 @@ export const projectConnectedSourceAnswer = (
     }
     return {
       state: 'unverified',
-      badge: 'Search not verified',
+      badge: 'Recued could not check the search',
       detail:
-        `This answer finished without a recorded ${searchLabel} search. `
-        + `Review it before relying on ${kind}-specific claims.`,
+        `This answer finished with no noted ${searchLabel} search. `
+        + `Read it before you trust ${kind}-specific claims.`,
       pendingText: 'Preparing your answer…',
       tone: 'warning',
       searchTool,
@@ -281,13 +281,13 @@ export const projectConnectedSourceAnswer = (
   if (errored) {
     return {
       state: 'search_failed',
-      badge: 'Search incomplete',
+      badge: 'The search did not finish',
       detail: used
-        ? `One ${searchLabel} search completed, but another did not. `
-          + 'Chat is finishing with the information still available.'
-        : `The ${searchLabel} search did not complete. `
-          + 'Chat is finishing with the information still available.',
-      pendingText: 'Finishing with the information still available…',
+        ? `One ${searchLabel} search finished, but another did not. `
+          + 'Chat is finishing with what Recued already has.'
+        : `The ${searchLabel} search did not finish. `
+          + 'Chat is finishing with what Recued already has.',
+      pendingText: 'Finishing with what Recued already has…',
       tone: 'warning',
       searchTool,
     };
@@ -295,8 +295,8 @@ export const projectConnectedSourceAnswer = (
   if (used) {
     return {
       state: 'reviewing',
-      badge: 'Search complete',
-      detail: `The ${searchLabel} search completed. Chat is preparing the answer.`,
+      badge: 'Search finished',
+      detail: `The ${searchLabel} search finished. Chat is working on the answer.`,
       pendingText: `Reviewing the ${searchLabel} search…`,
       tone: 'positive',
       searchTool,
@@ -306,22 +306,22 @@ export const projectConnectedSourceAnswer = (
     if (edited) {
       return {
         state: 'continuing',
-        badge: 'Edited request',
+        badge: 'You changed this',
         detail:
-          'Chat is following your edited request. '
-          + `Any new ${searchLabel} search will appear here.`,
-        pendingText: 'Following your edited request…',
+          'Chat is doing what you changed it to. '
+          + `Any new ${searchLabel} search shows up here.`,
+        pendingText: 'Doing what you changed it to…',
         tone: 'neutral',
         searchTool,
       };
     }
     return {
       state: 'continuing',
-      badge: 'Conversation context',
+      badge: 'Carrying on from before',
       detail:
-        `This follow-up is continuing from the previous answer. `
-        + `No new ${searchLabel} search was requested.`,
-      pendingText: 'Continuing from the previous answer…',
+        `This follow-up carries on from the last answer. `
+        + `No new ${searchLabel} search was asked for.`,
+      pendingText: 'Carrying on from the last answer…',
       tone: 'neutral',
       searchTool,
     };
@@ -330,30 +330,30 @@ export const projectConnectedSourceAnswer = (
     if (edited) {
       return {
         state: 'preparing',
-        badge: 'Edited request',
+        badge: 'You changed this',
         detail:
-          'Chat is following your edited request. '
-          + `The selected next step requested a new ${searchLabel} search; `
-          + 'recorded activity will appear here.',
-        pendingText: 'Following your edited request…',
+          'Chat is doing what you changed it to. '
+          + `The next step you picked asked for a new ${searchLabel} search; `
+          + 'whatever it does shows up here.',
+        pendingText: 'Doing what you changed it to…',
         tone: 'neutral',
         searchTool,
       };
     }
     return {
       state: 'preparing',
-      badge: 'Search requested',
+      badge: 'A search was asked for',
       detail:
-        `This follow-up requested a new ${searchLabel} search. `
-        + 'Recorded activity will appear here.',
-      pendingText: `Preparing to search connected ${searchLabel}…`,
+        `This follow-up asked for a new ${searchLabel} search. `
+        + 'Whatever Chat does shows up here.',
+      pendingText: `Getting ready to search your connected ${searchLabel}…`,
       tone: 'neutral',
       searchTool,
     };
   }
   return {
     state: 'preparing',
-    badge: 'Checking activity',
+    badge: 'Checking what it did',
     detail:
       `This question started from your connected ${kind}. `
       + `If Chat searches your ${kind}, that activity will be shown here.`,
@@ -369,7 +369,7 @@ export const connectedSourceAnswerFollowups = (
   if (source.lane === 'mail') {
     return [
       {
-        label: 'Draft the replies',
+        label: 'Write the replies',
         prompt:
           'Search my connected mail again for the messages that need my response, '
           + 'then draft concise replies. '
@@ -377,21 +377,21 @@ export const connectedSourceAnswerFollowups = (
         mode: 'refresh',
         outcome: 'Reply drafts',
         boundary:
-          'Chat will show drafts here first. '
-          + 'If you ask it to send email, you’ll review and approve '
-          + 'that separately.',
+          'Chat shows the drafts here first. '
+          + 'If you ask it to send email, you will say yes '
+          + 'separately.',
       },
       {
-        label: 'Make an action list',
+        label: 'Make a to-do list',
         prompt:
           'Using the previous mailbox summary, turn the action items into '
           + 'a prioritized task list.',
         mode: 'context',
-        outcome: 'Prioritized action list',
+        outcome: 'To-do list, most important first',
         boundary:
-          'Chat will show the list here first. '
-          + 'If you ask it to create tasks, you’ll review and approve '
-          + 'that separately.',
+          'Chat shows the list here first. '
+          + 'If you ask it to make tasks, you will say yes '
+          + 'separately.',
       },
     ];
   }
@@ -405,9 +405,9 @@ export const connectedSourceAnswerFollowups = (
         mode: 'refresh',
         outcome: 'Meeting prep',
         boundary:
-          'Chat will show prep notes here first. '
-          + 'If you ask it to change your calendar, you’ll approve '
-          + 'that separately.',
+          'Chat shows the notes here first. '
+          + 'If you ask it to change your calendar, you will say yes '
+          + 'separately.',
       },
       {
         label: 'Check for conflicts',
@@ -415,38 +415,38 @@ export const connectedSourceAnswerFollowups = (
           'Search my connected calendar again for conflicts this week and '
           + 'suggest how to resolve them.',
         mode: 'refresh',
-        outcome: 'Conflict review',
+        outcome: 'Clashes',
         boundary:
-          'Chat will suggest options here first. '
-          + 'If you ask it to change your calendar, you’ll approve '
-          + 'that separately.',
+          'Chat suggests options here first. '
+          + 'If you ask it to change your calendar, you will say yes '
+          + 'separately.',
       },
     ];
   }
   return [
     {
-      label: 'Make an action plan',
+      label: 'Make a plan',
       prompt:
         'Using the previous answer, turn the most important information '
         + 'into a short action plan.',
       mode: 'context',
-      outcome: 'Action plan',
+      outcome: 'The plan',
       boundary:
-        'Chat will show the plan here first. '
-        + 'If you ask it to create tasks, you’ll review and approve '
-        + 'that separately.',
+        'Chat shows the plan here first. '
+        + 'If you ask it to make tasks, you will say yes '
+        + 'separately.',
     },
     {
-      label: 'Show supporting details',
+      label: 'Show me why',
       prompt:
         'Using the previous answer, show the supporting details behind '
         + 'its most important point.',
       mode: 'context',
-      outcome: 'Supporting details',
+      outcome: 'Why',
       boundary:
-        'Chat will show supporting details here. '
-        + 'If you ask it to change files, you’ll review and approve '
-        + 'that separately.',
+        'Chat shows the reasons here. '
+        + 'If you ask it to change files, you will say yes '
+        + 'separately.',
     },
   ];
 };
@@ -456,10 +456,10 @@ export const connectedSourceFollowupContextDetail = (
   mode: ConnectedSourceFollowupMode,
 ): string => {
   if (mode === 'context') {
-    return 'Continues from the previous answer · no new search requested';
+    return 'Carries on from the last answer · nothing new searched';
   }
   const searchLabel = connectedSourceSearchLabel(source);
-  return `Requests a new ${searchLabel} search`;
+  return `Asks for a new ${searchLabel} search`;
 };
 
 export const connectedSourceSearchRetryPrompt = (
@@ -597,7 +597,7 @@ const provenanceSourceLabel = (
           : 'Files';
     return `${lane} · ${collectionSlug}`;
   }
-  if (sourceId.length === 0) return 'Source not recorded';
+  if (sourceId.length === 0) return 'Recued did not note where this came from';
   if (sourceId === 'local') return 'Local data';
   if (sourceId === 'hubspot') return 'HubSpot';
   if (sourceId === 'salesforce') return 'Salesforce';

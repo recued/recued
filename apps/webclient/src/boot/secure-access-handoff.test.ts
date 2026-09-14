@@ -248,7 +248,7 @@ describe('secure access URL handoff', () => {
     });
     expect(resolveSecureAccessUrl('http://alice.recued.cloud', LOCATION)).toEqual({
       ok: false,
-      message: 'Use a trusted address that starts with https://.',
+      message: 'Use a safe address. It has to start with https://.',
     });
     expect(resolveSecureAccessUrl(
       'https://alice:secret@recued.example',
@@ -336,7 +336,7 @@ describe('secure access handoff surface', () => {
 
     expect(replaceLocation).not.toHaveBeenCalled();
     expect(fake.status.textContent).toBe(
-      'Use a trusted address that starts with https://.',
+      'Use a safe address. It has to start with https://.',
     );
     expect(fake.status.getAttribute('role')).toBe('alert');
     expect(fake.status.classList.contains('is-error')).toBe(true);

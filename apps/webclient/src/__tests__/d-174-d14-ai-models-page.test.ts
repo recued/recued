@@ -424,11 +424,11 @@ describe('D-174 D14 — AI / Models initial load', () => {
     expect(named(AI_MODELS_SLOT_FIELD_ATTR, 'slot_1:provider'))
       .toBe('Slot 1: fast provider');
     expect(named(AI_MODELS_SLOT_FIELD_ATTR, 'slot_2:model'))
-      .toBe('Slot 2: quality / thinking model');
+      .toBe('Slot 2: better, slower thinking model');
     expect(named(AI_MODELS_SLOT_SAVE_ATTR, 'slot_1'))
       .toBe('Save Slot 1: fast');
     expect(named(AI_MODELS_SLOT_CLEAR_ATTR, 'slot_2'))
-      .toBe('Clear Slot 2: quality / thinking');
+      .toBe('Clear Slot 2: better, slower thinking');
     expect(named(AI_MODELS_EMBEDDINGS_FIELD_ATTR, 'provider'))
       .toBe('Embeddings slot provider');
     expect(named(AI_MODELS_SLOT_SAVE_ATTR, 'embeddings_slot'))
@@ -439,7 +439,7 @@ describe('D-174 D14 — AI / Models initial load', () => {
     expect(named(AI_MODELS_CATALOG_MODE_SELECT_ATTR, 'slot_1'))
       .toBe('Slot 1: fast chat tool catalog');
     expect(named(AI_MODELS_CATALOG_MODE_SELECT_ATTR, 'slot_2'))
-      .toBe('Slot 2: quality / thinking chat tool catalog');
+      .toBe('Slot 2: better, slower thinking chat tool catalog');
     expect(named(AI_MODELS_CATALOG_MODE_SELECT_ATTR, 'free_pool'))
       .toBe('Free pool chat tool catalog');
 
@@ -508,7 +508,7 @@ describe('D-174 D14 — AI / Models initial load', () => {
     });
     await mount.whenLoaded();
 
-    expect(mount.getState().failLoud).toMatch(/No AI model is available/);
+    expect(mount.getState().failLoud).toMatch(/The AI you picked is not available/);
     expect(findByAttr(host, AI_MODELS_FAIL_LOUD_ATTR)).not.toBeNull();
     mount.dispose();
   });
@@ -668,7 +668,7 @@ describe('Set up Chat — focused first-run journey', () => {
       AI_MODELS_CHAT_SETUP_STATUS_ATTR,
       'saving',
     );
-    expect(finishing?.textContent).toBe('Finishing Chat setup…');
+    expect(finishing?.textContent).toBe('Finishing off…');
     expect(finishing?.getAttribute('role')).toBe('status');
     expect(finishing?.getAttribute('tabindex')).toBe('-1');
     expect(runSetDefaultModelPref).toHaveBeenCalledTimes(1);
@@ -700,13 +700,13 @@ describe('Set up Chat — focused first-run journey', () => {
 
     clickByAttrValue(host, AI_MODELS_CHAT_SETUP_SUBMIT_ATTR, 'new');
     expect(findByAttr(host, AI_MODELS_CHAT_SETUP_ERROR_ATTR)?.textContent)
-      .toContain('API key');
+      .toContain('a key');
     expect(opts.runSetLLMSlot).not.toHaveBeenCalled();
     expect(opts.runSetDefaultModelPref).not.toHaveBeenCalled();
     mount.dispose();
   });
 
-  it('requires and saves the base URL for an OpenAI-compatible endpoint', async () => {
+  it('requires and saves the the address for an An address that works like OpenAI’s', async () => {
     const { host, mount, opts } = mountFixture({
       initialView: 'chat-setup',
       runGetDefaultModelPref: vi.fn(async () => ({
@@ -727,7 +727,7 @@ describe('Set up Chat — focused first-run journey', () => {
     inputByAttr(host, AI_MODELS_CHAT_SETUP_KEY_ATTR, 'local-key');
     clickByAttrValue(host, AI_MODELS_CHAT_SETUP_SUBMIT_ATTR, 'new');
     expect(findByAttr(host, AI_MODELS_CHAT_SETUP_ERROR_ATTR)?.textContent)
-      .toContain('base URL');
+      .toContain('the address');
     expect(opts.runSetLLMSlot).not.toHaveBeenCalled();
 
     inputByAttr(
@@ -798,7 +798,7 @@ describe('Set up Chat — focused first-run journey', () => {
     clickByAttrValue(host, AI_MODELS_CHAT_SETUP_SUBMIT_ATTR, 'new');
 
     expect(findByAttr(host, AI_MODELS_CHAT_SETUP_ERROR_ATTR)?.textContent)
-      .toContain('API key');
+      .toContain('a key');
     expect(opts.runSetLLMSlot).not.toHaveBeenCalled();
     mount.dispose();
   });
@@ -854,7 +854,7 @@ describe('Set up Chat — focused first-run journey', () => {
     await mount.whenLoaded();
 
     expect(findByAttr(host, AI_MODELS_CHAT_SETUP_ERROR_ATTR)?.textContent)
-      .toContain('Could not read');
+      .toContain('Recued could not read');
     expect(hasText(host, 'Try again')).toBe(true);
     expect(findByAttr(host, AI_MODELS_CHAT_SETUP_KEY_ATTR)).toBeNull();
     expect(opts.runSetLLMSlot).not.toHaveBeenCalled();
@@ -1002,7 +1002,7 @@ describe('D-174 D14 — AI / Models write-through controls', () => {
     expect(dialog?.getAttribute('aria-labelledby')).not.toBeNull();
     expect(dialog?.getAttribute('aria-describedby')).not.toBeNull();
     expect(hasText(dialog!, 'Clear Slot 1: fast?')).toBe(true);
-    expect(hasText(dialog!, 'saved provider settings and API key')).toBe(true);
+    expect(hasText(dialog!, 'deletes the settings and the key')).toBe(true);
     expect(opts.runSetLLMSlot).not.toHaveBeenCalled();
 
     clickByAttrValue(host, AI_MODELS_SLOT_CLEAR_CANCEL_ATTR, 'slot_1');
@@ -1090,7 +1090,7 @@ describe('D-174 D14 — AI / Models write-through controls', () => {
     expect(dialog?.getAttribute('role')).toBe('alertdialog');
     expect(dialog?.getAttribute('aria-modal')).toBe('true');
     expect(hasText(dialog!, 'Clear Embeddings slot?')).toBe(true);
-    expect(hasText(dialog!, 'saved provider settings and API key')).toBe(true);
+    expect(hasText(dialog!, 'deletes the settings and the key')).toBe(true);
     expect(opts.runSetEmbeddingsSlot).not.toHaveBeenCalled();
 
     clickByAttrValue(
@@ -1317,7 +1317,7 @@ describe('D-174 D14 — AI / Models write-through controls', () => {
     mount.dispose();
   });
 
-  it('clears a persisted slot base URL when the owner empties the field', async () => {
+  it('clears a persisted slot the address when the owner empties the field', async () => {
     const { host, mount, opts } = mountFixture();
     await mount.whenLoaded();
 
@@ -1798,7 +1798,7 @@ describe('D-174 D14 — AI / Models write-through controls', () => {
       AI_MODELS_PAUSE_BUTTON_ATTR,
       'resume',
     );
-    expect(allow?.textContent).toBe('Updating background BYOK…');
+    expect(allow?.textContent).toBe('Changing…');
     expect(allow?.getAttribute('aria-disabled')).toBe('true');
     expect(allow?.getAttribute('aria-busy')).toBe('true');
     expect(allow?.disabled).toBe(false);
@@ -1823,7 +1823,7 @@ describe('D-174 D14 — AI / Models write-through controls', () => {
       AI_MODELS_ALLOW_BYOK_TOGGLE_ATTR,
       'background',
     );
-    expect(settled?.textContent).toBe('Disable background BYOK');
+    expect(settled?.textContent).toBe('Do not spend my key on its own');
     expect(settled?.getAttribute('aria-disabled')).toBeNull();
     expect(settled?.getAttribute('aria-busy')).toBeNull();
     expect(findByAttrValue(
@@ -1973,7 +1973,7 @@ describe('D-174 R28 Slice B — api_key redaction', () => {
     mount.dispose();
   });
 
-  it('masks the API key input fields (type=password)', async () => {
+  it('masks the a key input fields (type=password)', async () => {
     const { host, mount } = mountFixture();
     await mount.whenLoaded();
     expect(findInputByType(host, 'password')).not.toBeNull();
@@ -2063,7 +2063,7 @@ describe('D-174 R28 Slice C — embeddings slot card', () => {
     mount.dispose();
   });
 
-  it('clears a persisted embeddings base URL when the owner empties the field', async () => {
+  it('clears a persisted embeddings the address when the owner empties the field', async () => {
     const { host, mount, opts } = mountFixture({
       runGetLLMConfig: vi.fn(async () => ({
         config: {
@@ -2207,10 +2207,10 @@ describe('Lever-2 per-slot (Phase 3) — chat catalog mode', () => {
     const { host, mount } = mountFixture();
     await mount.whenLoaded();
     // The "how to choose" legend + one distinguishing phrase per mode.
-    expect(hasText(host, 'What do these modes mean?')).toBe(true);
-    expect(hasText(host, 'full input schema')).toBe(true); // full
-    expect(hasText(host, 'listed by name and summary')).toBe(true); // index
-    expect(hasText(host, 'searches to discover recipes')).toBe(true); // lean-core
+    expect(hasText(host, 'What do these mean?')).toBe(true);
+    expect(hasText(host, 'Every tool is listed in full')).toBe(true); // full
+    expect(hasText(host, 'Tools are listed by name only')).toBe(true); // index
+    expect(hasText(host, 'searches for Recipes itself')).toBe(true); // lean-core
     mount.dispose();
   });
 
@@ -2223,11 +2223,11 @@ describe('Lever-2 per-slot (Phase 3) — chat catalog mode', () => {
     // change reddening a test that was only ever meant to prove the UI and the
     // server read ONE map.
     const shortLabel: Record<string, string> = {
-      full: 'Full', index: 'Index', 'lean-core': 'Lean core',
+      full: 'Full catalog', index: 'A short list', 'lean-core': 'Only the basics',
     };
     for (const [source, phrase] of [
       ['free_pool', 'the free pool'],
-      ['slot_1', 'a BYOK slot'],
+      ['slot_1', 'your own paid key'],
     ] as const) {
       const mode = CHAT_CATALOG_SMART_DEFAULT_BY_SOURCE[source];
       expect(
@@ -2385,7 +2385,7 @@ describe('System prompts — the box holds the role, not the whole prompt', () =
 
     for (const [surface, title] of [
       ['chat', 'Chat'],
-      ['llm_gateway', 'LLM gateway'],
+      ['llm_gateway', 'The AI door'],
     ] as const) {
       const section = findByAttrValue(
         host,
@@ -2423,7 +2423,7 @@ describe('System prompts — the box holds the role, not the whole prompt', () =
       AI_MODELS_PROMPT_POLICY_ATTR,
       'llm_gateway',
     )?.getAttribute('aria-label'))
-      .toBe('LLM gateway customer system prompt policy');
+      .toBe('The AI door customer system prompt policy');
     mount.dispose();
   });
 
@@ -2510,22 +2510,22 @@ describe('System prompts — the box holds the role, not the whole prompt', () =
     // The badge reports the ROW; this reports the BOX. They agree until a
     // keystroke, which is exactly when the owner needs to be told they differ.
     expect(findByAttrValue(host, AI_MODELS_PROMPT_STATUS_ATTR, 'chat')?.textContent)
-      .toBe('Showing the built-in default, in force now.');
+      .toBe('This is the one Recued comes with. It is in use now.');
     expect(
       findByAttrValue(host, AI_MODELS_PROMPT_STATUS_ATTR, 'llm_gateway')?.textContent,
-    ).toBe('Showing your saved prompt, in force now.');
+    ).toBe('This is yours. It is in use now.');
 
     const area = findByAttrValue(host, AI_MODELS_PROMPT_TEXT_ATTR, 'chat')!;
     area.value = 'You are a lawyer.';
     for (const listener of area.listeners.get('input') ?? []) listener({});
     expect(findByAttrValue(host, AI_MODELS_PROMPT_STATUS_ATTR, 'chat')?.textContent)
-      .toBe('Unsaved changes — Save to put this in force.');
+      .toBe('You have not saved yet. Save to make this happen.');
 
     // …and back: typing the saved text again is not a change.
     area.value = CHAT_ROLE_DEFAULT;
     for (const listener of area.listeners.get('input') ?? []) listener({});
     expect(findByAttrValue(host, AI_MODELS_PROMPT_STATUS_ATTR, 'chat')?.textContent)
-      .toBe('Showing the built-in default, in force now.');
+      .toBe('This is the one Recued comes with. It is in use now.');
     mount.dispose();
   });
 
@@ -2733,7 +2733,7 @@ describe('System prompts — saving, the policy, and the reset that is a delete'
     expect(findByAttrValue(host, AI_MODELS_PROMPT_TEXT_ATTR, 'chat')?.value)
       .toBe(CHAT_ROLE_DEFAULT);
     expect(findByAttrValue(host, AI_MODELS_PROMPT_STATUS_ATTR, 'chat')?.textContent)
-      .toBe('Unsaved changes — Save to put this in force.');
+      .toBe('You have not saved yet. Save to make this happen.');
     // Still customised on the server: nothing has been written yet.
     expect(opts.runSetLlmPrompt).not.toHaveBeenCalled();
     expect(findByAttrValue(host, AI_MODELS_PROMPT_BADGE_ATTR, 'custom'))
@@ -2868,7 +2868,7 @@ describe('System prompts — saving, the policy, and the reset that is a delete'
     // already granted. Say it, rather than leave them to discover it.
     const section = findByAttrValue(host, AI_MODELS_PROMPT_SECTION_ATTR, 'llm_gateway')!;
     expect(hasText(section, 'used instead of yours')).toBe(true);
-    expect(hasText(section, 'your wording no longer applies')).toBe(true);
+    expect(hasText(section, 'Your words no longer count')).toBe(true);
     mount.dispose();
   });
 });
@@ -2946,7 +2946,7 @@ describe('Test connection', () => {
     expect(box.getAttribute('data-probe-ok')).toBe('false');
     // "401 Unauthorized" is the provider's framing; "the API key" is the
     // owner's, and it is the box they have to go and edit.
-    expect(hasText(box, 'The API key was rejected. Check the key.')).toBe(true);
+    expect(hasText(box, 'That key was refused. Check it.')).toBe(true);
     // …and the provider's own words survive underneath, for a self-hosted
     // endpoint where the raw text is the only thing that identifies the fault.
     expect(hasText(box, 'bad key')).toBe(true);
@@ -2991,8 +2991,8 @@ describe('Test connection', () => {
     const box = findByAttrValue(host, AI_MODELS_SLOT_TEST_RESULT_ATTR, 'slot_1')!;
     // `supports_json` is owner-DECLARED and defaults on — this is the first
     // thing in the product that has ever checked it.
-    expect(hasText(box, 'JSON mode not supported')).toBe(true);
-    expect(hasText(box, 'no system-message support')).toBe(true);
+    expect(hasText(box, 'cannot answer in JSON')).toBe(true);
+    expect(hasText(box, 'no separate place for instructions')).toBe(true);
     mount.dispose();
   });
 

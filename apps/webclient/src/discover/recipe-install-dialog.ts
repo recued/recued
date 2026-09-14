@@ -340,13 +340,13 @@ export const mountRecipeInstallDialog = (
     const intro = doc.createElement('p');
     intro.className = 'recipe-dialog-intro';
     intro.textContent =
-      'Install this recipe together with any selected packs it needs to run.';
+      'Install this Recipe along with the Packs it needs.';
     box.appendChild(intro);
 
     // ── Dependencies ────────────────────────────────────────────────
     const depsHead = doc.createElement('h3');
     depsHead.className = 'recipe-dialog-section-title';
-    depsHead.textContent = 'This recipe uses these packs';
+    depsHead.textContent = 'This Recipe uses these Packs';
     box.appendChild(depsHead);
 
     const list = doc.createElement('div');
@@ -611,7 +611,7 @@ export const mountRecipeInstallDialog = (
       }
       const res = await opts.installRecipe(r.recipe_id);
       if (!res.ok) {
-        error = res.message ?? "Couldn't install the recipe.";
+        error = res.message ?? "Recued could not install the Recipe.";
         busy = false;
         render();
         return;

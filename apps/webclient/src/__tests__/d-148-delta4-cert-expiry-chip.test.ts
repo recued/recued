@@ -36,15 +36,15 @@ describe('R26.4 Delta 4 — formatCertExpiry', () => {
   });
 
   it('at or past the expiry → expired (incl. the diff===0 zero-crossing)', () => {
-    expect(formatCertExpiry(NOW, NOW)).toEqual({ severity: 'expired', text: 'cert expired' });
-    expect(formatCertExpiry(NOW - 1, NOW)).toEqual({ severity: 'expired', text: 'cert expired' });
+    expect(formatCertExpiry(NOW, NOW)).toEqual({ severity: 'expired', text: 'the certificate has run out' });
+    expect(formatCertExpiry(NOW - 1, NOW)).toEqual({ severity: 'expired', text: 'the certificate has run out' });
     expect(formatCertExpiry(NOW - 30 * DAY, NOW).severity).toBe('expired');
   });
 
   it('within the 14-day window → warning + relative days', () => {
     expect(formatCertExpiry(NOW + 5 * DAY, NOW)).toEqual({
       severity: 'warning',
-      text: 'expires in 5 days',
+      text: 'runs out in 5 days',
     });
   });
 
@@ -56,33 +56,33 @@ describe('R26.4 Delta 4 — formatCertExpiry', () => {
     expect(formatCertExpiry(NOW + 14 * DAY - 1, NOW).severity).toBe('warning');
   });
 
-  it('exactly one day out → "expires within a day" (days===1 bucket edge)', () => {
+  it('exactly one day out → "runs out within a day" (days===1 bucket edge)', () => {
     expect(formatCertExpiry(NOW + DAY, NOW)).toEqual({
       severity: 'warning',
-      text: 'expires within a day',
+      text: 'runs out within a day',
     });
   });
 
-  it('under a day → "expires within a day" (still warning)', () => {
+  it('under a day → "runs out within a day" (still warning)', () => {
     expect(formatCertExpiry(NOW + 12 * 60 * 60 * 1000, NOW)).toEqual({
       severity: 'warning',
-      text: 'expires within a day',
+      text: 'runs out within a day',
     });
   });
 
   it('far future → ok + month-granularity copy (incl. the days===60 day/month bucket edge)', () => {
     expect(formatCertExpiry(NOW + 90 * DAY, NOW)).toEqual({
       severity: 'ok',
-      text: 'expires in 3 months',
+      text: 'runs out in 3 months',
     });
     // < 60 days stays in day-granularity; exactly 60 flips to months.
     expect(formatCertExpiry(NOW + 45 * DAY, NOW)).toEqual({
       severity: 'ok',
-      text: 'expires in 45 days',
+      text: 'runs out in 45 days',
     });
     expect(formatCertExpiry(NOW + 60 * DAY, NOW)).toEqual({
       severity: 'ok',
-      text: 'expires in 2 months',
+      text: 'runs out in 2 months',
     });
   });
 });
@@ -227,7 +227,7 @@ describe('R26.4 Delta 4 — cert-expiry chip render', () => {
     const chip = findByAttr(host, HOSTNAMES_ROW_CERT_EXPIRY_ATTR);
     expect(chip).not.toBeNull();
     expect(chip!.getAttribute(HOSTNAMES_ROW_CERT_EXPIRY_ATTR)).toBe('warning');
-    expect(chip!.textContent).toContain('expires in 8 days');
+    expect(chip!.textContent).toContain('runs out in 8 days');
     expect(chip!.textContent).toContain('⚠');
     mount.dispose();
   });
@@ -237,7 +237,7 @@ describe('R26.4 Delta 4 — cert-expiry chip render', () => {
     await mount.whenLoaded();
     const chip = findByAttr(host, HOSTNAMES_ROW_CERT_EXPIRY_ATTR);
     expect(chip!.getAttribute(HOSTNAMES_ROW_CERT_EXPIRY_ATTR)).toBe('expired');
-    expect(chip!.textContent).toContain('cert expired');
+    expect(chip!.textContent).toContain('the certificate has run out');
     mount.dispose();
   });
 

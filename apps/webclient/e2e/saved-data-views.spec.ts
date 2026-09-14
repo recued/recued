@@ -63,7 +63,7 @@ test('Saved views persist search settings through reload, rename, Back, and dele
   await page.evaluate((hash) => window.__app.setHash(hash!), href);
   await page.reload();
   await ready(page);
-  await expect(page.getByRole('alert')).toContainText('no longer available');
+  await expect(page.getByRole('alert')).toContainText('does not have that saved view any more');
   expect(await page.evaluate(() => window.__app.rpcCallCount('contact.list'))).toBe(0);
   expect(errors).toEqual([]);
 });
@@ -77,7 +77,15 @@ test('Saved views keep a missing or unavailable bookmark explicit and retryable'
   await expect(page.getByRole('alert')).toContainText('temporarily unavailable');
   expect(await page.evaluate(() => window.__app.rpcCallCount('data_views.get'))).toBe(2);
   await page.getByRole('link', { name: 'Browse Data', exact: true }).click();
-  await expect(query(page)).toBeVisible();
+  // ⚠ D-267 — the escape link is a bare `#data`, and a tabless address now
+  // resolves to Today rather than Contacts. This assertion used the contact
+  // search box as its proxy for "the escape landed somewhere usable", which
+  // quietly pinned the old default from here; name the destination instead.
+  await expect(page.locator('[data-today-view]')).toBeVisible();
+  await expect(page.getByRole('tab', { name: 'Today', exact: true }))
+    .toHaveAttribute('aria-selected', 'true');
+  // The escape must also clear the saved-view error rather than carry it along.
+  await expect(page.getByRole('alert')).toHaveCount(0);
 });
 
 test('Saved views discard a delayed bookmark load after navigation', async ({ page }) => {
@@ -146,7 +154,7 @@ for (const missing of ['pack', 'kind'] as const) {
     }, { viewId: id, absent: missing });
     await page.goto(`${URL_BASE}?data=records-navigation#data/view/${id}`);
     await ready(page);
-    await expect(page.locator('[data-recued-data-route]')).toContainText(`The ${missing === 'kind' ? 'record kind' : 'pack'} selected for this view is no longer available`);
+    await expect(page.locator('[data-recued-data-route]')).toContainText(`The ${missing === 'kind' ? 'kind' : 'Pack'} you picked is gone`);
     expect(await page.evaluate(() => window.__app.rpcCallCount('records.search'))).toBe(0);
     await expect(page).toHaveURL(new RegExp(`#data/view/${id}$`));
   });
@@ -218,5 +226,5 @@ test('Saved views can be deleted without discarding an open Data draft', async (
   await ready(page);
   await expect(query(page)).toBeVisible();
   await page.evaluate((hash) => window.__app.setHash(hash!), href);
-  await expect(page.getByRole('alert')).toContainText('no longer available');
+  await expect(page.getByRole('alert')).toContainText('does not have that saved view any more');
 });

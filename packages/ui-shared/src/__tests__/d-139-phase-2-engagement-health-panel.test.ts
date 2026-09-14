@@ -181,23 +181,23 @@ const salesforceHealth = (): EngagementHealthResponse => ({
 // ────────────────────────────────────────────────────────────────
 
 describe('D-139 P2 — engagement-health row affordance', () => {
-  it('renders Engagement health button on HubSpot rows', () => {
+  it('renders How well it is working button on HubSpot rows', () => {
     const html = renderConnectionsPage(baseState());
     expect(html).toContain('data-action="connections-engagement-toggle"');
-    expect(html).toContain('Engagement health');
+    expect(html).toContain('How well it is working');
   });
 
-  it('renders Engagement health button on Salesforce rows', () => {
+  it('renders How well it is working button on Salesforce rows', () => {
     const html = renderConnectionsPage(baseState({ connections: [salesforceConn] }));
     expect(html).toContain('data-action="connections-engagement-toggle"');
   });
 
-  it('omits Engagement health button on non-vendor api rows (Stripe)', () => {
+  it('omits How well it is working button on non-vendor api rows (Stripe)', () => {
     const html = renderConnectionsPage(baseState({ connections: [stripeConn] }));
     expect(html).not.toContain('connections-engagement-toggle');
   });
 
-  it('omits Engagement health button on mcp / notification rows', () => {
+  it('omits How well it is working button on mcp / notification rows', () => {
     const mcpConn: ConnectionView = {
       name: 'gh-mcp',
       kind: 'mcp',
@@ -447,7 +447,7 @@ describe('D-139 P2 — engagement-health panel render', () => {
       data: salesforceHealth(),
     });
     expect(html).toContain('Re-probing…');
-    expect(html).toContain('this may take a few seconds');
+    expect(html).toContain('This takes a few seconds');
   });
 
   it('formats budget pct as percentage string', () => {

@@ -13,6 +13,7 @@ import {
   KERNEL_OP_REGISTRY,
   OP_ENTITY_COLLECTION,
   OWNER_CONTRACT_ID,
+  TIER1_CLASSIFICATIONS,
   TIER1_TOOL_ENTITY,
   TIER1_TOOL_NAMES,
   isReadableCollection,
@@ -33,6 +34,7 @@ import { createContractGrantEntryStore } from '../storage/contract-grant-entry-s
  *  wrapper uses, so this cannot drift from it. */
 const tableFencedTools = (): string[] =>
   TIER1_TOOL_NAMES.filter((name) => {
+    if (TIER1_CLASSIFICATIONS[name] !== 'read') return false;
     const entity = TIER1_TOOL_ENTITY[name];
     if (entity === 'work' || name === 'contact.search') return false;
     const collection = OP_ENTITY_COLLECTION[entity];

@@ -174,7 +174,7 @@ export const bootstrapMailRoute = (options: MailRouteOptions): MailRoute => {
     for (const row of draftRows) {
       const item = doc.createElement('div'); item.dataset.mailDraftId = row.draft_id;
       item.append(button(row.subject || 'Untitled draft', async () => {
-        if (!await compose.openSaved(row.draft_id)) throw new Error('Close the current message before opening another draft.');
+        if (!await compose.openSaved(row.draft_id)) throw new Error('Close the message you have open before you open another draft.');
       }), button('Delete draft', async () => {
         draftBusy = true; paintDrafts();
         try { await options.drafts!.delete({ draft_id: row.draft_id, expected_revision: row.revision }); await refreshDrafts(); }
@@ -223,20 +223,38 @@ export const bootstrapMailRoute = (options: MailRouteOptions): MailRoute => {
     }
     if (readiness.status === 'read_only') {
       const mailboxes = readiness.mailboxes;
+      // D-264 — say why composing is refused too, not only sending. A draft
+      // needs an EXIT: send it from here, or hand it to a mail app through the
+      // Drafts folder. This mailbox has neither, so a draft would have nowhere
+      // to go — and an owner told only "cannot send" would reasonably expect
+      // Save draft to work.
       roster.innerHTML = `<p class="mail-route-empty" ${MAIL_ROUTE_EMPTY_ATTR}="read-only">
         Your connected ${mailboxes.length === 1 ? 'mailbox can' : 'mailboxes can'} read mail, but
-        ${mailboxes.length === 1 ? 'it cannot' : 'they cannot'} send yet.
+        ${mailboxes.length === 1 ? 'it cannot' : 'they cannot'} send or save drafts — so there is
+        nowhere for a new message to go yet.
         <a href="${esc(serializeShellRoute('connections', 'mail'))}">Fix mail connection →</a>
       </p>`;
       composeButton.disabled = true;
       return;
     }
+    // D-264 — `ready` and `draft_only` both reach here, and both open compose.
+    // The difference is stated rather than enforced: the roster names what each
+    // mailbox can do, and the dialog disables Send for a draft-only sender.
     composeButton.disabled = false;
     const mailboxes = readiness.mailboxes;
-    roster.innerHTML = `<ul class="mail-route-mailboxes">${mailboxes
+    const draftOnlyNote = readiness.status === 'draft_only'
+      ? `<p class="mail-route-empty" role="status" ${MAIL_ROUTE_EMPTY_ATTR}="draft-only">
+        Your mail can hold drafts but cannot send yet. Compose and save; sending
+        needs outbound set up.
+        <a href="${esc(serializeShellRoute('connections', 'mail'))}">Fix mail connection →</a>
+      </p>`
+      : '';
+    roster.innerHTML = `${draftOnlyNote}<ul class="mail-route-mailboxes">${mailboxes
       .map((m) => `<li class="mail-route-mailbox" ${MAIL_ROUTE_MAILBOX_ATTR}="${esc(m.mail_instance_slug)}">
         <span class="mail-route-mailbox-email">${esc(m.account_email.length > 0 ? m.account_email : m.mail_instance_slug)}</span>
-        <span class="mail-route-mailbox-cap">${m.send_capable ? 'can send' : 'read only'}</span>
+        <span class="mail-route-mailbox-cap">${
+          m.send_capable ? 'can send' : m.draft_capable ? 'drafts only' : 'read only'
+        }</span>
       </li>`)
       .join('')}</ul>`;
   };
@@ -280,12 +298,12 @@ export const bootstrapMailRoute = (options: MailRouteOptions): MailRoute => {
     hasUnsavedChanges,
     unsavedChangesPrompt: () =>
       hasUnsavedChanges()
-        ? 'This message has unsaved changes. Leaving Mail discards those changes.'
+        ? 'This message has changes you have not saved. Leaving Mail throws them away.'
         : null,
     hasInFlightWork: () => compose.hasInFlightWork(),
     inFlightWorkPrompt: () =>
       compose.hasInFlightWork()
-        ? 'A mail action is still in progress. Leave Mail anyway?'
+        ? 'Mail is still doing something. Leave anyway?'
         : null,
     whenLoaded: () => loaded,
     dispose() {

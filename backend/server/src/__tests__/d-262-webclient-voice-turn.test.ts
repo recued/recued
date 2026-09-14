@@ -128,7 +128,6 @@ const runScenario = async (input: ScenarioInput) => {
     // The same ingest call `webclient-upload-service.finalize` makes, with the
     // same origin and the same browser-reported mime.
     const attachments: Array<{ file_id: string; media_class: string }> = [];
-    const names = new Map<string, string>();
     for (const [index, upload] of input.uploads.entries()) {
       const record = await collection.ingest({
         bytes: upload.bytes,
@@ -143,7 +142,6 @@ const runScenario = async (input: ScenarioInput) => {
         file_id: record.record_id,
         media_class: upload.claimed_class,
       });
-      names.set(record.record_id, upload.filename);
     }
 
     const aiInputs: Record<string, unknown>[] = [];
@@ -173,7 +171,14 @@ const runScenario = async (input: ScenarioInput) => {
       registry: internalRegistry(),
       selfSignature,
       executeAiCall,
-      resolveFileNames: () => names,
+      resolveFileNames: (ids: readonly string[]) => {
+        const names = new Map<string, string>();
+        for (const id of ids) {
+          const filename = collection?.get(id)?.hot_fields.filename;
+          if (filename) names.set(id, filename);
+        }
+        return names;
+      },
       ...(input.withoutTranscription
         ? {}
         : {
@@ -237,8 +242,10 @@ describe('D-262 — the owner\'s own voice note is the utterance', () => {
     expect(result.user).toMatchObject({
       role: 'user',
       content: 'move the Thursday call to Friday',
-      attachments: [{ file_id: result.attachments[0]!.file_id, media_class: 'voice' }],
+      attachments: [{ source_file_id: result.attachments[0]!.file_id, media_class: 'voice',
+        filename: 'voice-note-20300402-100000.webm', availability: 'available' }],
     });
+    expect(result.user?.attachments?.[0]?.file_id).not.toBe(result.attachments[0]!.file_id);
     // The model reasoned over the transcript, and it ran at all — a wordless
     // drop spends ZERO ai calls, so this distinguishes the two branches.
     expect(result.executeAiCall).toHaveBeenCalledTimes(1);

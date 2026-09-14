@@ -39,85 +39,14 @@ import {
 /** How long a day-scoped event runs when nothing else says. */
 const ALL_DAY_MINUTES = 24 * 60;
 
-/** A wall-clock string the mapping accepts: a date (`2026-07-20`) or a local
- *  datetime (`2026-07-20T19:30[:SS]`). A zone suffix is deliberately NOT
- *  accepted — the config's `timezone` is the authority, and a value carrying
- *  its own zone would silently outrank it. */
-const WALL_CLOCK_RE =
-  /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2}))?)?$/;
+/** ⛔ MOVED TO `@recued/contracts` (`zoned-wall-clock.ts`) — D-269 step 3
+ *  follow-on. Re-exported here so the two consumers that already reached
+ *  through this path keep working, and because a general time primitive living
+ *  behind a reception-processor import is what made a third consumer nearly
+ *  re-implement it. New callers should import from contracts. */
+import { zonedWallClockToEpochMs } from '@recued/contracts';
+export { zonedWallClockToEpochMs, zoneOffsetMsAt } from '@recued/contracts';
 
-/** The offset (ms) a zone was at for a given instant: `zone_local - utc`.
- *  Derived by asking `Intl` to render the instant IN the zone and reading the
- *  rendered wall clock back as if it were UTC. This is the only way to get an
- *  IANA offset in the platform — there is no `Date` API for it. */
-const zoneOffsetMsAt = (epochMs: number, timeZone: string): number => {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone,
-    hour12: false,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  }).formatToParts(new Date(epochMs));
-  const read = (type: string): number => {
-    const raw = parts.find((p) => p.type === type)?.value;
-    return raw === undefined ? Number.NaN : Number(raw);
-  };
-  // Some ICU builds render midnight as hour 24 under `hour12: false`.
-  const hour = read('hour') === 24 ? 0 : read('hour');
-  const asIfUtc = Date.UTC(
-    read('year'),
-    read('month') - 1,
-    read('day'),
-    hour,
-    read('minute'),
-    read('second'),
-  );
-  return asIfUtc - epochMs;
-};
-
-/** Interpret a zone-less wall clock IN a given IANA zone → epoch ms.
- *  `null` for a malformed string or an unknown zone (`Intl` throws a
- *  `RangeError` on a bad `timeZone`, which must not escape as a 500).
- *
- *  Two passes, because the offset depends on the very instant we are solving
- *  for: the first guess uses the offset at the naive-UTC reading, the second
- *  re-measures at that guess. They differ only across a DST transition, where
- *  the second answer is the correct one. (A wall clock inside a spring-forward
- *  gap does not exist; the correction lands it just after the jump, which is
- *  the same thing every calendar UI does.) */
-export const zonedWallClockToEpochMs = (
-  wallClock: string,
-  timeZone: string,
-): number | null => {
-  const m = WALL_CLOCK_RE.exec(wallClock.trim());
-  if (m === null) return null;
-  const [, y, mo, d, hh, mi, ss] = m;
-  const naiveUtc = Date.UTC(
-    Number(y),
-    Number(mo) - 1,
-    Number(d),
-    Number(hh ?? '0'),
-    Number(mi ?? '0'),
-    Number(ss ?? '0'),
-  );
-  if (!Number.isFinite(naiveUtc)) return null;
-  try {
-    const firstOffset = zoneOffsetMsAt(naiveUtc, timeZone);
-    if (!Number.isFinite(firstOffset)) return null;
-    const guess = naiveUtc - firstOffset;
-    const secondOffset = zoneOffsetMsAt(guess, timeZone);
-    if (!Number.isFinite(secondOffset)) return null;
-    return firstOffset === secondOffset ? guess : naiveUtc - secondOffset;
-  } catch {
-    // Unknown IANA zone. The config validator does not verify zone existence
-    // (the closed list is the platform's, not ours), so fail here rather than
-    // let a `RangeError` surface as a crashed materialize.
-    return null;
-  }
-};
 
 /** The INVERSE of `zonedWallClockToEpochMs`: an instant → the wall clock a
  *  reader in `timeZone` sees, as `YYYY-MM-DDTHH:mm` (exactly what an

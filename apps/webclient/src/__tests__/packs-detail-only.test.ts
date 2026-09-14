@@ -408,7 +408,7 @@ describe('packs panel — detail (marketplace resolve + install/uninstall)', () 
     expect(findByAttr(host, PACKS_DETAIL_RESOLVING_ATTR)).toBeNull();
     const note = findByAttr(host, PACKS_DETAIL_RESOLVE_ERROR_ATTR);
     expect(note).not.toBeNull();
-    expect(note!.textContent).toContain('isn’t available');
+    expect(note!.textContent).toContain('does not have that Pack');
     expect(findByAttr(host, PACKS_DETAIL_BACK_ATTR)).not.toBeNull();
   });
 
@@ -484,7 +484,7 @@ describe('packs panel — detail (marketplace resolve + install/uninstall)', () 
     await tick();
 
     expect(findByAttr(host, PACKS_DETAIL_RESOLVE_ERROR_ATTR)?.textContent)
-      .toContain('changed after you reviewed it');
+      .toContain('changed after you looked at it');
     expect(findByAttrValue(host, PACKS_ROW_INSTALL_BTN_ATTR, 'mkt-pack')).toBeNull();
     expect(resolve).toHaveBeenCalledTimes(1);
   });

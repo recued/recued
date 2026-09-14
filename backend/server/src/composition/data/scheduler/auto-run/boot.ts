@@ -76,6 +76,9 @@ export const bootAutoRunScheduler = (
       ...(ctx.isVaultUnlocked ? { isVaultUnlocked: ctx.isVaultUnlocked } : {}),
       onFired: (recipe_id) =>
         emitReactiveFire(executeDeps.eventBus, recipe_id),
+      // D-268 — the failure notice, read through `ctx` so a maintenance
+      // rebuild keeps the seam rather than silently dropping it.
+      ...(ctx.onAutomationFailure ? { onAutomationFailure: ctx.onAutomationFailure } : {}),
     });
     launchStart(handle);
   };

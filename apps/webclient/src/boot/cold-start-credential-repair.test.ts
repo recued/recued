@@ -162,7 +162,7 @@ describe('announceColdStartCredentialCheck', () => {
 
     const stop = announceColdStartCredentialCheck(document);
 
-    expect(message.textContent).toBe('Checking saved access…');
+    expect(message.textContent).toBe('Checking your saved sign-in…');
     expect([...attributes]).toEqual([
       ['role', 'status'],
       ['aria-live', 'polite'],
@@ -172,7 +172,7 @@ describe('announceColdStartCredentialCheck', () => {
       'attribute:role=status',
       'attribute:aria-live=polite',
       'attribute:aria-atomic=true',
-      'text:Checking saved access…',
+      'text:Checking your saved sign-in…',
     ]);
 
     stop();
@@ -599,7 +599,7 @@ describe('mountColdStartCredentialRepairHost', () => {
     expect(html).toContain('Have the existing recovery key ready.');
     expect(html).toContain('a fresh pairing code is not a substitute');
     expect(html).toContain('stop here before clearing local access');
-    expect(html).toContain('Continue recovery here');
+    expect(html).toContain('Carry on here');
     expect(html).toContain(
       `${COLD_START_CREDENTIAL_REPAIR_ACTION_ATTR} aria-describedby="webclient-cold-start-credential-repair-consequence webclient-cold-start-credential-repair-material"`,
     );
@@ -676,7 +676,7 @@ describe('mountColdStartCredentialRepairHost', () => {
       'Recued will verify its signed identity only after pairing succeeds',
     );
     expect(html).toContain(
-      'Review the current server origin and the data-continuity warning before creating a new recovery key.',
+      'Look at this server’s address, and the warning about what you might lose, before you make a new recovery key.',
     );
     expect(html).toContain('Clear local access and verify current server');
     expect(html).not.toContain('old.recued.cloud');
@@ -700,9 +700,9 @@ describe('mountColdStartCredentialRepairHost', () => {
 
       const html = dom.getHtml();
       expect(html).toContain(
-        'This tab reloaded, but this browser’s saved access still needs repair.',
+        'This tab reloaded, but this browser’s saved sign-in still needs fixing.',
       );
-      expect(html).toContain('exact page you opened is still selected');
+      expect(html).toContain('page you opened is still chosen');
       expect(html).toContain(
         `${COLD_START_CREDENTIAL_REPAIR_ACTION_ATTR} aria-describedby="webclient-cold-start-credential-repair-consequence webclient-cold-start-credential-repair-context"`,
       );

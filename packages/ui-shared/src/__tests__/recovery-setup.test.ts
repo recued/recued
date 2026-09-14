@@ -218,7 +218,7 @@ describe('submitChallenge failure paths', () => {
     await h.submitChallenge();
 
     expect(store.getSlice().stage).toBe('challenging');
-    expect(store.getSlice().error).toMatch(/typos|valid 24-word/);
+    expect(store.getSlice().error).toMatch(/typing mistakes|24-word recovery key/);
     expect(kekSpy).not.toHaveBeenCalled();
     expect(storage._backing.has(RECOVERY_CHECK_KEY)).toBe(false);
   });
@@ -239,7 +239,7 @@ describe('submitChallenge failure paths', () => {
     await h.submitChallenge();
 
     expect(store.getSlice().stage).toBe('challenging');
-    expect(store.getSlice().error).toMatch(/doesn'?t match/);
+    expect(store.getSlice().error).toMatch(/does not match/);
     expect(storage._backing.has(RECOVERY_CHECK_KEY)).toBe(false);
   });
 
@@ -259,7 +259,7 @@ describe('submitChallenge failure paths', () => {
     await h.submitChallenge();
 
     expect(store.getSlice().stage).toBe('challenging');
-    expect(store.getSlice().error).toMatch(/round-trip/);
+    expect(store.getSlice().error).toMatch(/could not check its own work/);
     expect(storage._backing.has(RECOVERY_CHECK_KEY)).toBe(false);
   });
 

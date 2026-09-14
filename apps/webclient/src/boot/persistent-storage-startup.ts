@@ -102,7 +102,7 @@ const asPersistentStorageError = (
     classifyPersistentStorageFailure(error),
     error instanceof Error
       ? error.message
-      : 'IndexedDB did not open',
+      : 'browser storage did not open',
     error,
   );
 };
@@ -153,7 +153,7 @@ export const openWebclientDatabase = (
     if (factory === undefined) {
       reject(new PersistentStorageStartupError(
         'unavailable',
-        'IndexedDB is not exposed by this browser',
+        'this browser does not offer storage',
       ));
       return;
     }
@@ -209,7 +209,7 @@ export const openWebclientDatabase = (
       fail(
         new PersistentStorageStartupError(
           'blocked',
-          'IndexedDB open is blocked by another Recued tab or window',
+          'another Recued tab or window is holding storage open',
           undefined,
           blockedContinuation.promise,
         ),
@@ -234,65 +234,65 @@ const recoveryCopy = (
         kicker: 'Browser storage is busy',
         title: 'Close another Recued tab',
         summary:
-          'Another Recued tab or installed window is holding an older copy of this browser’s Recued storage open.',
+          'Another Recued tab or window is still using an older copy of what this browser saved.',
         steps: [
           'Close other Recued tabs and installed Recued windows for this site.',
-          'This tab continues automatically when storage is free. Choose Check again if you already closed them.',
+          'This tab carries on by itself once storage is free. If you have already closed them, choose Check again.',
         ],
         retryError:
-          'Storage is still busy. Close the remaining Recued tab or window, then check again.',
+          'Storage is still in use. Close the last Recued tab or window, then check again.',
       };
     case 'denied':
       return {
         kicker: 'Browser storage is blocked',
         title: 'Allow storage to continue',
         summary:
-          'This browser is preventing Recued from opening the local storage it needs to keep this browser signed in securely.',
+          'This browser will not let Recued save anything here. Recued needs to save a little, to keep you signed in safely.',
         steps: [
-          'If this is a private or incognito window, reopen this page in a regular window.',
-          'Otherwise allow site data for this Recued address, then return and choose Check again.',
+          'If this is a private window, open this page in a normal window instead.',
+          'If it is not, let this Recued address save data, come back, then choose Check again.',
         ],
         retryError:
-          'Storage is still blocked. Allow site data or use a regular browser window, then check again.',
+          'Storage is still blocked. Let this address save data, or use a normal window, then check again.',
       };
     case 'quota':
       return {
         kicker: 'Browser storage is full',
         title: 'Make room for browser storage',
         summary:
-          'This browser or device does not currently have enough storage available for Recued’s protected local access.',
+          'There is not enough room left on this browser or device. Recued needs a little room to keep you signed in.',
         steps: [
-          'Free a small amount of device or browser storage.',
-          'Avoid clearing Recued site data unless you have your recovery key, then return and choose Check again.',
+          'Make a little room on this device or browser.',
+          'Do not delete Recued’s own saved data unless you have your recovery key. Then come back and choose Check again.',
         ],
         retryError:
-          'Storage is still full. Free a little more browser or device space, then check again.',
+          'There is still no room. Make a little more space, then check again.',
       };
     case 'outdated':
       return {
         kicker: 'This tab needs an update',
         title: 'Reload the latest Recued',
         summary:
-          'This tab is using an older Recued version than the browser data already saved on this device.',
+          'This tab is running an older Recued than the one that saved data on this device.',
         steps: [
-          'Reload this tab to use the Recued version that matches your saved browser data.',
-          'If an installed Recued window returns here, close all Recued windows, then open it again.',
+          'Reload this tab to get the Recued that matches what is saved here.',
+          'If an installed Recued window brings you back here, close every Recued window, then open it again.',
         ],
         retryError:
-          'This tab still cannot open the newer saved data. Reload the latest Recued to continue.',
+          'This tab still cannot read the newer saved data. Reload to get the latest Recued.',
       };
     case 'unavailable':
       return {
         kicker: 'Browser storage did not open',
         title: 'Try browser storage again',
         summary:
-          'The browser could not open Recued’s protected local storage. This may be a temporary browser or site-storage issue.',
+          'The browser could not open the small store Recued keeps here. This is often temporary.',
         steps: [
-          'Close any other Recued tabs and make sure this is not a private window.',
-          'Choose Check again. If it still fails, reload this tab or review this site’s storage permission.',
+          'Close any other Recued tabs. Check that this is not a private window.',
+          'Choose Check again. If it still fails, reload this tab, or check whether this address is allowed to save data.',
         ],
         retryError:
-          'Browser storage is still unavailable. Follow the steps above, then check again.',
+          'Browser storage still will not open. Follow the steps above, then check again.',
       };
   }
 };
@@ -480,7 +480,7 @@ export const mountPersistentStorageRecoveryHost = (
     const busy = phase === 'busy';
     const reloadIsPrimary = failureKind === 'outdated';
     const continuity = options.reloadAttempted
-      ? `<p class="persistent-storage-recovery-context" id="${PERSISTENT_STORAGE_CONTEXT_ID}">This tab reloaded, but browser storage still did not open. The exact page you opened is still selected, so you can keep recovering here.</p>`
+      ? `<p class="persistent-storage-recovery-context" id="${PERSISTENT_STORAGE_CONTEXT_ID}">This tab reloaded, but browser storage still did not open. The page you opened is still chosen, so you can keep trying here.</p>`
       : '';
     const actionDescriptionIds = options.reloadAttempted
       ? `${PERSISTENT_STORAGE_SAFETY_ID} ${PERSISTENT_STORAGE_CONTEXT_ID}`

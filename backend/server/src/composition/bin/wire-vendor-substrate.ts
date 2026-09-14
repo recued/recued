@@ -67,6 +67,10 @@ import {
  *  optional with documented degradation. */
 export interface ComposeVendorSubstrateDeps {
   connectionStore: ConnectionStoreSqlite;
+  /** D-269 step 1 — the owner's declared server zone, for D-139 § A.3.7's
+   *  engagement timezone fallback. Absent ⇒ the chain skips to UTC, which is
+   *  what it did for every engagement before this was supplied at all. */
+  prefsTimezone?: () => string | null | undefined;
   keys: KeyManager | undefined;
   engagementStore: EngagementStore | undefined;
   enrichmentStore: EnrichmentStore | undefined;
@@ -279,6 +283,9 @@ export const composeVendorSubstrate = async (
     const bundle = await entry.boot({
       connectionStore: deps.connectionStore,
       engagementStore: deps.engagementStore,
+      // D-269 — fills D-139 § A.3.7's third fallback step, declared on eleven
+      // reconcilers and supplied by nobody until now.
+      ...(deps.prefsTimezone ? { prefsTimezone: deps.prefsTimezone } : {}),
       enrichmentStore: deps.enrichmentStore,
       crmRecordMirror: deps.crmRecordMirror,
       upstreamMergeRegistry: deps.upstreamMergeRegistry,

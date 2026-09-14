@@ -505,7 +505,7 @@ describe('submitPairCodeInput — client-side guards', () => {
     if (!result.ok) {
       expect(result.error).toBe('pair_code_input_invalid_recovery_key');
       expect(PAIR_CODE_INPUT_ERROR_COPY[result.error]).toContain(
-        'do not form a valid recovery key',
+        'do not make a working recovery key',
       );
       expect(PAIR_CODE_INPUT_ERROR_COPY[result.error]).not.toContain(
         'does not match this server',
@@ -677,7 +677,7 @@ describe('submitPairCodeInput — server errors', () => {
       expect(result.detail).toBe('whoops');
       expect(result.serverSaid).toBe('whoops');
       expect(result.serverCode).toBe('totally_made_up');
-      expect(PAIR_CODE_INPUT_ERROR_COPY[result.error]).not.toMatch(/check the url/i);
+      expect(PAIR_CODE_INPUT_ERROR_COPY[result.error]).not.toMatch(/check the address/i);
     }
   });
 
@@ -824,7 +824,7 @@ describe('mountPairCodeInputHost — initial render', () => {
     expect(fake.getSubmitBtn()?.disabled).toBe(true);
     expect(fake.getSubmitBtn()?.textContent).toContain('Pair this device');
     expect(fake.getHtml()).toContain(
-      'Enter the server URL and paste the 24-word recovery key to continue.',
+      'Type the server’s web address and paste the 24-word recovery key to carry on.',
     );
   });
 
@@ -965,7 +965,7 @@ describe('mountPairCodeInputHost — deeplink seed', () => {
     expect(fake.getHtml()).toContain(
       'Changing servers also clears any pairing code.',
     );
-    expect(fake.getHtml()).not.toContain('Enter its URL');
+    expect(fake.getHtml()).not.toContain('Type its address');
     expect(fake.getHtml()).toMatch(
       new RegExp(
         `id="${PAIR_CODE_INPUT_SERVER_URL_ID}"[\\s\\S]*?readonly[\\s\\S]*?aria-describedby="webclient-pair-code-input-secure-resume-notice"`,
@@ -1047,7 +1047,7 @@ describe('mountPairCodeInputHost — guided reauthorization', () => {
     expect(fake.isRecoveryCorrectionFocused()).toBe(true);
     expect(fake.getSubmitBtn()?.disabled).toBe(true);
     expect(fake.getHtml()).toContain(
-      'Review the server address or re-enter the recovery key before retrying.',
+      'Check the server address, or type the recovery key again, before trying once more.',
     );
     expect(recoveryValuesFromHtml(fake.getHtml()).join(' ')).toBe(
       realRecoveryKey,
@@ -1107,13 +1107,13 @@ describe('mountPairCodeInputHost — guided reauthorization', () => {
       ` ${PAIR_CODE_INPUT_RECOVERY_DIAGNOSTIC_ATTR}`,
     );
     expect(fake.getHtml()).toContain(
-      'Details to share with the server owner',
+      'Details to show the server owner',
     );
     expect(fake.getHtml()).toContain(
-      'Format-valid key rejections in this tab: 2',
+      'Keys that looked right but were refused, in this tab: 2',
     );
     expect(fake.getHtml()).toContain(
-      'Previously paired server origin: https://alice.recued.cloud:8443',
+      'Server address paired with before: https://alice.recued.cloud:8443',
     );
     expect(fake.getHtml()).not.toContain(
       `data-action="${PAIR_CODE_INPUT_USE_SAVED_SERVER_ACTION}"`,
@@ -1124,15 +1124,15 @@ describe('mountPairCodeInputHost — guided reauthorization', () => {
     await vi.waitFor(() => {
       expect(recoveryDiagnosticWriter).toHaveBeenCalledOnce();
       expect(fake.getHtml()).toContain(
-        'Safe diagnostic copied. Nothing was sent automatically.',
+        'Copied, with nothing private in it. Recued sent nothing by itself.',
       );
     });
     const copiedDiagnostic = recoveryDiagnosticWriter.mock.calls[0]?.[0] ?? '';
     expect(copiedDiagnostic).toContain(
-      'Latest server origin tried: https://alice.recued.cloud:8443',
+      'Last server address tried: https://alice.recued.cloud:8443',
     );
     expect(copiedDiagnostic).toContain(
-      'Origin comparison: matches previously paired origin',
+      'Do the addresses match: matches the server this browser paired with before',
     );
     expect(copiedDiagnostic).not.toContain(realRecoveryKey);
     expect(copiedDiagnostic).not.toContain('FRESH-CODE');
@@ -1186,7 +1186,7 @@ describe('mountPairCodeInputHost — guided reauthorization', () => {
 
     const pausedHtml = fake.getHtml();
     expect(pausedHtml).toContain(` ${PAIR_CODE_INPUT_RECOVERY_STOP_ATTR}`);
-    expect(pausedHtml).toContain('Recovery paused safely');
+    expect(pausedHtml).toContain('Paused, and nothing was lost');
     expect(pausedHtml).toContain('Ask the person who manages this server');
     expect(pausedHtml).toContain(
       'No pairing request is running, and this tab will not send another one unless you explicitly resume.',
@@ -1202,7 +1202,7 @@ describe('mountPairCodeInputHost — guided reauthorization', () => {
       'The rejected recovery words and pairing code were cleared from this form.',
     );
     expect(pausedHtml).toContain(
-      'Your exact page and unsent Chat draft are still held here.',
+      'Your page and the Chat message you had not sent are still here.',
     );
     expect(pausedHtml).toContain(
       'Do not generate a replacement key, guess words, or keep retrying.',
@@ -1248,15 +1248,15 @@ describe('mountPairCodeInputHost — guided reauthorization', () => {
     await vi.waitFor(() => {
       expect(recoveryDiagnosticWriter).toHaveBeenCalledOnce();
       expect(fake.getHtml()).toContain(
-        'Safe owner handoff copied. Nothing was sent automatically.',
+        'Copied, with nothing private in it. Recued sent nothing by itself.',
       );
     });
     const ownerHandoff = recoveryDiagnosticWriter.mock.calls[0]?.[0] ?? '';
     expect(ownerHandoff).toContain(
-      'Requested owner check: confirm this server origin and whether the server was replaced or reset; do not request the recovery key',
+      'What to ask the server owner: is this the right address, and was the server replaced or reset? Do not ask them for the recovery key.',
     );
     expect(ownerHandoff).toContain(
-      'Latest server origin tried: https://alice.recued.cloud:8443',
+      'Last server address tried: https://alice.recued.cloud:8443',
     );
     expect(ownerHandoff).not.toContain(realRecoveryKey);
     expect(ownerHandoff).not.toContain(pairingCode);
@@ -1268,7 +1268,7 @@ describe('mountPairCodeInputHost — guided reauthorization', () => {
       'replacement_server',
     );
     expect(fake.getHtml()).not.toContain(PAIR_CODE_INPUT_RECOVERY_STOP_ATTR);
-    expect(fake.getHtml()).toContain('Review the current server');
+    expect(fake.getHtml()).toContain('Look at this server');
     expect(fake.getHtml()).toContain(
       ` ${PAIR_CODE_INPUT_RECOVERY_RESUME_NOTICE_ATTR}`,
     );
@@ -1322,7 +1322,7 @@ describe('mountPairCodeInputHost — guided reauthorization', () => {
     expect(pausedHtml).toContain(
       ` ${PAIR_CODE_INPUT_RECOVERY_STOP_REENTRY_ATTR}`,
     );
-    expect(pausedHtml).toContain('Recovery still paused');
+    expect(pausedHtml).toContain('Still paused');
     expect(pausedHtml).toContain('What did the server owner confirm?');
     expect(pausedHtml).toContain('No recovery material was restored');
     expect(pausedHtml).toContain(
@@ -1331,7 +1331,7 @@ describe('mountPairCodeInputHost — guided reauthorization', () => {
     expect(pausedHtml).toContain('The server changed or was reset');
     expect(pausedHtml).not.toContain(PAIR_CODE_INPUT_RECOVERY_DIAGNOSTIC_ATTR);
     expect(pausedHtml).not.toContain(PAIR_CODE_INPUT_RECOVERY_CORRECTION_ATTR);
-    expect(pausedHtml).not.toContain('Format-valid key rejections');
+    expect(pausedHtml).not.toContain('Keys that looked right but were refused');
     expect(pausedHtml).not.toContain(serverSecret);
     expect(pausedHtml).not.toContain('old.recued.cloud');
     expect(pausedHtml).not.toContain(codeSecret);
@@ -1354,7 +1354,7 @@ describe('mountPairCodeInputHost — guided reauthorization', () => {
     );
     expect(resumedHtml).toContain('Original key ready');
     expect(resumedHtml).toContain(
-      'Enter the current server address, then enter its original 24-word key',
+      'Type this server’s address, then its original 24 words',
     );
     expect(resumedHtml).not.toContain(serverSecret);
     expect(resumedHtml).not.toContain(codeSecret);
@@ -1396,7 +1396,7 @@ describe('mountPairCodeInputHost — guided reauthorization', () => {
       onAfterPair,
     });
 
-    expect(fake.getHtml()).toContain('Review the current server');
+    expect(fake.getHtml()).toContain('Look at this server');
     expect(fake.getHtml()).toContain('Use a fresh code from the current server');
     expect(fake.getHtml()).not.toContain('old.example');
     expect(fake.getHtml()).not.toContain('STALE-OLD-CODE');
@@ -1409,7 +1409,7 @@ describe('mountPairCodeInputHost — guided reauthorization', () => {
     handle.setFieldValue('serverUrl', enteredAddress);
     expect(fake.getSubmitBtn()?.disabled).toBe(true);
     expect(fake.getHtml()).toContain(
-      'Enter a fresh pairing code from the current server terminal.',
+      'Type a new pairing code from this server’s terminal.',
     );
     handle.setFieldValue('pairingCode', 'FRESH-CODE-1');
     expect(fake.getSubmitBtn()?.disabled).toBe(false);
@@ -1447,9 +1447,9 @@ describe('mountPairCodeInputHost — guided reauthorization', () => {
     expect(confirmedHtml).toContain(
       ` ${PAIR_CODE_INPUT_REPLACEMENT_CONFIRMED_ATTR}`,
     );
-    expect(confirmedHtml).toContain('Fresh start confirmed for this server');
+    expect(confirmedHtml).toContain('You have chosen a fresh start for this server');
     expect(confirmedHtml).toContain(
-      'The old server’s key cannot be entered in this path',
+      'You cannot use the old server’s key here',
     );
     expect(confirmedHtml).toContain('Generate a new recovery key');
     expect(confirmedHtml).not.toContain('FRESH-CODE-2');
@@ -1475,22 +1475,22 @@ describe('mountPairCodeInputHost — guided reauthorization', () => {
       recoveryKey: freshRecoveryKey,
       recoveryContext: 'fresh_replacement',
     }));
-    expect(fake.getHtml()).toContain('Finish saving server access');
-    expect(fake.getSubmitBtn()?.textContent).toBe('Finish saving access');
+    expect(fake.getHtml()).toContain('Finish saving your sign-in');
+    expect(fake.getSubmitBtn()?.textContent).toBe('Finish saving your sign-in');
     expect(fake.getHtml()).toContain(
-      'The current server accepted the fresh pairing code.',
+      'Your server took the new pairing code.',
     );
     expect(fake.getHtml()).toContain(
-      'any visible retry finishes only this browser’s save',
+      'Trying again only finishes saving in this browser.',
     );
     expect(fake.getHtml()).toContain(
       'The new recovery key already belongs to this server.',
     );
     expect(fake.getHtml()).toContain(
-      'Recued will not send the pairing request again.',
+      'Recued will not ask to pair again.',
     );
     expect(fake.getHtml()).not.toContain(
-      'A fresh pairing code from that server is ready',
+      'A new pairing code from that server is ready',
     );
 
     await handle.submit();
@@ -1536,9 +1536,9 @@ describe('mountPairCodeInputHost — guided reauthorization', () => {
     expect(onRecoveryCheckpointChange).toHaveBeenLastCalledWith(
       'replacement_server',
     );
-    expect(existingKeyHtml).toContain('Verify the current server');
-    expect(existingKeyHtml).toContain('Use only this current server’s key');
-    expect(existingKeyHtml).toContain('Current server recovery key');
+    expect(existingKeyHtml).toContain('Check this server');
+    expect(existingKeyHtml).toContain('Use only this server’s own key');
+    expect(existingKeyHtml).toContain('This server\'s recovery key');
     expect(existingKeyHtml).not.toContain('Generate a new recovery key');
     expect(fake.getRecoveryFocus()).toHaveBeenCalledOnce();
 
@@ -1597,7 +1597,7 @@ describe('mountPairCodeInputHost — guided reauthorization', () => {
     expect(stoppedHtml).not.toContain(freshRecoveryKey);
 
     fake.fireAction(PAIR_CODE_INPUT_USE_REPLACEMENT_EXISTING_KEY_ACTION);
-    expect(fake.getHtml()).toContain('Use only this current server’s key');
+    expect(fake.getHtml()).toContain('Use only this server’s own key');
     expect(recoveryValuesFromHtml(fake.getHtml())).toEqual(
       Array.from({ length: 24 }, () => ''),
     );
@@ -1645,7 +1645,7 @@ describe('mountPairCodeInputHost — guided reauthorization', () => {
     );
     expect(html).toContain('The scheme, hostname, or port is different.');
     expect(html).toContain(
-      'Using the previously paired address keeps the 24 words here and clears the pairing code because codes belong to one server.',
+      'Using the address you paired with before keeps your 24 words here. It clears the pairing code, because each code belongs to one server.',
     );
     expect(html).toContain(
       `data-action="${PAIR_CODE_INPUT_USE_SAVED_SERVER_ACTION}"`,
@@ -1654,17 +1654,17 @@ describe('mountPairCodeInputHost — guided reauthorization', () => {
     fake.fireAction(PAIR_CODE_INPUT_COPY_RECOVERY_DIAGNOSTIC_ACTION);
     await vi.waitFor(() => {
       expect(recoveryDiagnosticWriter).toHaveBeenCalledOnce();
-      expect(fake.getHtml()).toContain('Copy is unavailable here.');
+      expect(fake.getHtml()).toContain('Copying is not available here.');
     });
     const shared = recoveryDiagnosticWriter.mock.calls[0]?.[0] ?? '';
     expect(shared).toContain(
-      'Latest server origin tried: https://other.recued.cloud:9443',
+      'Last server address tried: https://other.recued.cloud:9443',
     );
     expect(shared).toContain(
-      'Previously paired server origin: https://alice.recued.cloud:8443',
+      'Server address paired with before: https://alice.recued.cloud:8443',
     );
     expect(shared).toContain(
-      'Origin comparison: differs from previously paired origin',
+      'Do the addresses match: is different from the server this browser paired with before',
     );
     expect(shared).not.toContain('operator');
     expect(shared).not.toContain('password');
@@ -1739,9 +1739,9 @@ describe('mountPairCodeInputHost — guided reauthorization', () => {
     await handle.submit();
     expect(fetchFake.calls).toHaveLength(3);
     expect(fake.getHtml()).toContain(
-      'Format-valid key rejections in this tab: 3',
+      'Keys that looked right but were refused, in this tab: 3',
     );
-    expect(fake.getHtml()).toContain('Copy safe diagnostic');
+    expect(fake.getHtml()).toContain('Copy the details');
     expect(fake.getHtml()).not.toContain('Safe diagnostic copied.');
     handle.dispose();
   });
@@ -1759,20 +1759,20 @@ describe('mountPairCodeInputHost — guided reauthorization', () => {
 
     const html = fake.getHtml();
     expect(html).toContain(` ${PAIR_CODE_INPUT_REAUTH_NOTICE_ATTR}`);
-    expect(html).toContain('Recovery resumed in this tab');
-    expect(html).toContain('You do not need to wait for that page.');
+    expect(html).toContain('Carrying on in this tab');
+    expect(html).toContain('You do not need to wait for it.');
     expect(html).toContain(
-      'The exact page you were returning to is still selected.',
+      'The page you were going back to is still chosen.',
     );
     expect(html).toContain(
-      'Pairing details are not restored',
+      'Your pairing details are not kept',
     );
     expect(html).toContain(
-      're-enter any missing server address, pairing code, and recovery key',
+      'Type any missing server address, pairing code, and recovery key again',
     );
     expect(html).toContain(` ${PAIR_CODE_INPUT_RECOVERY_HELP_ATTR}`);
     expect(html).toContain(
-      'Start with the server address, then enter your existing 24-word recovery key.',
+      'Start with the server address, then type your 24-word recovery key.',
     );
     expect(html).toContain('Need help finding these details?');
     expect(html).toContain('<code>recued pair</code>');
@@ -1791,7 +1791,7 @@ describe('mountPairCodeInputHost — guided reauthorization', () => {
     );
     expect(html).not.toContain('another tab is reconnecting');
     expect(html).not.toContain('Waiting for other tab');
-    expect(html).not.toContain('Generate a new one');
+    expect(html).not.toContain('Make a new one');
     expect(html).not.toContain('Restore a backup');
     expect(fake.getServerFocus()).toHaveBeenCalledOnce();
     expect(fake.getBootPendingRemove()).toHaveBeenCalledWith(
@@ -1815,15 +1815,15 @@ describe('mountPairCodeInputHost — guided reauthorization', () => {
     const html = fake.getHtml();
     expect(html).toContain(` ${PAIR_CODE_INPUT_REAUTH_NOTICE_ATTR}`);
     expect(html).toContain('Reconnect this browser');
-    expect(html).toContain('Saved access needs attention');
+    expect(html).toContain('Your saved sign-in needs a look');
     expect(html).toContain(
-      'Your current page and unsent Chat draft are held in this tab.',
+      'Your page and the Chat message you had not sent are still in this tab.',
     );
     expect(html).toContain('<code>recued pair</code>');
     expect(html).not.toContain(PAIR_CODE_INPUT_RECOVERY_HELP_ATTR);
     expect(html).toContain('value="https://alice.recued.cloud:8443"');
     expect(html).toContain('(only if your server asks)');
-    expect(html).not.toContain('Generate a new one');
+    expect(html).not.toContain('Make a new one');
     expect(html).not.toContain('Restore a backup');
     expect(fake.getSubmitBtn()?.textContent).toContain(
       'Reconnect this browser',
@@ -1843,14 +1843,14 @@ describe('mountPairCodeInputHost — guided reauthorization', () => {
     });
 
     const html = fake.getHtml();
-    expect(html).toContain('Unreadable local access cleared');
+    expect(html).toContain('A sign-in Recued could not read has been cleared');
     expect(html).toContain(
       'This browser could not unlock its saved sign-in',
     );
-    expect(html).toContain('only that local access record');
-    expect(html).toContain('Work stored on your server was not deleted.');
+    expect(html).toContain('just that one saved sign-in');
+    expect(html).toContain('Nothing on your server was deleted.');
     expect(html).not.toContain(
-      "Your server no longer accepts this browser's saved access",
+      "Your server will not take the sign-in saved in this browser any more",
     );
   });
 
@@ -1867,15 +1867,15 @@ describe('mountPairCodeInputHost — guided reauthorization', () => {
     });
 
     const html = fake.getHtml();
-    expect(html).toContain('Incomplete browser setup cleared');
+    expect(html).toContain('An unfinished setup has been cleared');
     expect(html).toContain(
-      'A previous setup stopped before every local access detail was saved.',
+      'An earlier setup stopped before everything was saved here.',
     );
-    expect(html).toContain('Work stored on your server was not deleted.');
-    expect(html).not.toContain('Generate a new one');
+    expect(html).toContain('Nothing on your server was deleted.');
+    expect(html).not.toContain('Make a new one');
     expect(html).not.toContain('Restore a backup');
     expect(html).not.toContain(
-      "Your server no longer accepts this browser's saved access",
+      "Your server will not take the sign-in saved in this browser any more",
     );
   });
 
@@ -1892,15 +1892,15 @@ describe('mountPairCodeInputHost — guided reauthorization', () => {
     });
 
     const html = fake.getHtml();
-    expect(html).toContain('Saved access changed in another tab');
+    expect(html).toContain('Another tab changed your saved sign-in');
     expect(html).toContain(
-      'Another Recued tab cleared or replaced this browser’s saved access.',
+      'Another Recued tab cleared or replaced this browser’s sign-in.',
     );
     expect(html).toContain(
-      'Your current page and unsent Chat draft are held in this tab.',
+      'Your page and the Chat message you had not sent are still in this tab.',
     );
     expect(html).not.toContain(
-      "Your server no longer accepts this browser's saved access",
+      "Your server will not take the sign-in saved in this browser any more",
     );
   });
 
@@ -1917,19 +1917,19 @@ describe('mountPairCodeInputHost — guided reauthorization', () => {
     });
 
     const html = fake.getHtml();
-    expect(html).toContain('Access changed while this tab was recovering');
+    expect(html).toContain('Your sign-in changed while this tab was still working');
     expect(html).toContain(
-      'cleared or replaced the saved access this startup retry was using',
+      'cleared or replaced the sign-in this tab was using',
     );
     expect(html).toContain(
-      'stopped that stale retry before it could open your page',
+      'stopped the old attempt before it could open your page',
     );
     expect(html).toContain(
-      'Your current page and unsent Chat draft are held in this tab.',
+      'Your page and the Chat message you had not sent are still in this tab.',
     );
-    expect(html).not.toContain('Pairing is still complete');
+    expect(html).not.toContain('This browser is still paired');
     expect(html).not.toContain(
-      "Your server no longer accepts this browser's saved access",
+      "Your server will not take the sign-in saved in this browser any more",
     );
   });
 
@@ -1954,9 +1954,9 @@ describe('mountPairCodeInputHost — guided reauthorization', () => {
     const html = fake.getHtml();
     expect(html).toContain('Another tab is reconnecting');
     expect(html).toContain(
-      'return to your current page and unsent Chat draft automatically when the other tab finishes',
+      'go back to your page and the Chat message you had not sent by itself once the other tab finishes',
     );
-    expect(html).toContain('Your recovery-key entry stays here');
+    expect(html).toContain('What you typed as your recovery key stays here');
     expect(html).not.toContain('value="USED-ONCE"');
     expect(recoveryValuesFromHtml(html).join(' ')).toBe(realRecoveryKey);
     expect(fake.getSubmitBtn()?.disabled).toBe(true);
@@ -1999,10 +1999,10 @@ describe('mountPairCodeInputHost — guided reauthorization', () => {
     });
     expect(fake.getHtml()).toContain('The other tab is taking longer');
     expect(fake.getHtml()).toContain(
-      'Recued lets only one continue and returns the others automatically',
+      'Recued lets only one carry on and brings the others back by itself',
     );
     expect(fake.getHtml()).toContain(
-      'recovery key, current page, and unsent Chat draft stay here',
+      'recovery key, your page, and the Chat message you had not sent stay here',
     );
     expect(recoveryValuesFromHtml(fake.getHtml()).join(' ')).toBe(
       realRecoveryKey,
@@ -2041,19 +2041,19 @@ describe('mountPairCodeInputHost — guided reauthorization', () => {
     handle.setFieldValue('recoveryKey', realRecoveryKey);
     handle.showInterruptedCredentialTransition();
 
-    expect(fake.getHtml()).toContain('continue in this tab only');
+    expect(fake.getHtml()).toContain('use only this tab');
     expect(fake.getHtml()).toContain(
-      'cannot safely choose between simultaneous reconnect attempts',
+      'cannot safely pick between two reconnects at once',
     );
     expect(fake.getHtml()).not.toContain(
-      'Recued lets only one continue and returns the others automatically',
+      'Recued lets only one carry on and brings the others back by itself',
     );
     handle.showSiblingTakeoverNeedsAttention();
     expect(fake.getHtml()).toContain(
-      'continue in just one open reconnect tab and keep the others idle',
+      'carry on in just one reconnect tab and leave the others alone',
     );
     expect(fake.getHtml()).not.toContain(
-      'Recued will choose one open tab to continue',
+      'Recued will pick one open tab to carry on',
     );
     handle.dispose();
   });
@@ -2073,12 +2073,12 @@ describe('mountPairCodeInputHost — guided reauthorization', () => {
     handle.setFieldValue('recoveryKey', realRecoveryKey);
     handle.showInterruptedCredentialTransition();
 
-    expect(fake.getHtml()).toContain('continue in this tab only');
+    expect(fake.getHtml()).toContain('use only this tab');
     expect(fake.getHtml()).toContain(
-      'cannot safely choose between simultaneous reconnect attempts',
+      'cannot safely pick between two reconnects at once',
     );
     expect(fake.getHtml()).not.toContain(
-      'Recued lets only one continue and returns the others automatically',
+      'Recued lets only one carry on and brings the others back by itself',
     );
     handle.dispose();
   });
@@ -2111,18 +2111,18 @@ describe('mountPairCodeInputHost — guided reauthorization', () => {
     expect(fetchFake.calls).toHaveLength(0);
     expect(onTakeoverNeedsAttention).toHaveBeenCalledOnce();
     expect(fake.getHtml()).toContain(PAIR_CODE_INPUT_RECOVERY_OWNER_ATTR);
-    expect(fake.getHtml()).toContain('This tab needs attention');
+    expect(fake.getHtml()).toContain('This tab needs you');
     expect(fake.getHtml()).toContain(
       'data-error="pair_code_input_server_unknown_error"',
     );
     expect(fake.getStatus()?.textContent).toContain(
-      'Pre-pair check failed: saved access could not be read',
+      'The check before pairing failed: saved access could not be read',
     );
     expect(fake.getSubmitBtn()?.textContent).toBe('Retry in this tab');
 
     handle.disableSiblingTakeoverCoordination();
     expect(fake.getHtml()).not.toContain(PAIR_CODE_INPUT_RECOVERY_OWNER_ATTR);
-    expect(fake.getHtml()).toContain('continue in this tab only');
+    expect(fake.getHtml()).toContain('use only this tab');
     expect(fake.getSubmitBtn()?.textContent).toBe('Reconnect in this tab');
     handle.dispose();
   });
@@ -2198,11 +2198,11 @@ describe('mountPairCodeInputHost — guided reauthorization', () => {
       PAIR_CODE_INPUT_TAKEOVER_OWNER_ATTR,
     );
     expect(contenderFake.getSubmitBtn()?.textContent).toBe(
-      'Choosing one tab…',
+      'Picking one tab…',
     );
-    expect(contenderFake.getHtml()).toContain('Choosing one tab safely');
+    expect(contenderFake.getHtml()).toContain('Picking one tab');
     expect(contenderFake.getHtml()).toContain(
-      'return automatically without sending its pairing code',
+      'comes back by itself and never sends its pairing code',
     );
     expect(contenderFake.getHtml()).toContain('aria-busy="true"');
     expect(contenderFake.getHtml()).toContain('aria-disabled="true"');
@@ -2327,7 +2327,7 @@ describe('mountPairCodeInputHost — guided reauthorization', () => {
     expect(failedFake.getHtml()).toContain(
       'waiting so it will not send or save the same access twice',
     );
-    expect(failedFake.getHtml()).toContain('your retry returns here');
+    expect(failedFake.getHtml()).toContain('you can try again here');
     expect(failedFake.getHtml()).not.toContain(
       'data-error="recovery_key_invalid"',
     );
@@ -2455,9 +2455,9 @@ describe('mountPairCodeInputHost — guided reauthorization', () => {
       expect(ownerFake.getHtml()).toContain(
         PAIR_CODE_INPUT_RECOVERY_OWNER_ATTR,
       );
-      expect(ownerFake.getHtml()).toContain('This tab needs attention');
+      expect(ownerFake.getHtml()).toContain('This tab needs you');
       expect(ownerFake.getHtml()).toContain(
-        'only one retry to manage',
+        'only one to deal with',
       );
       expect(ownerFake.getHtml()).toContain(
         'data-error="recovery_key_invalid"',
@@ -2468,10 +2468,10 @@ describe('mountPairCodeInputHost — guided reauthorization', () => {
         PAIR_CODE_INPUT_RECOVERY_OWNER_ELSEWHERE_ATTR,
       );
       expect(siblingFake.getHtml()).toContain(
-        'Continue in the tab that needs attention',
+        'Carry on in the tab that needs you',
       );
       expect(siblingFake.getHtml()).toContain(
-        'only tab offering a retry',
+        'only one you can try again in',
       );
       expect(siblingFake.getSubmitBtn()?.textContent).toBe(
         'Waiting for recovery tab…',
@@ -2512,9 +2512,9 @@ describe('mountPairCodeInputHost — guided reauthorization', () => {
       expect(siblingFake.getHtml()).toContain(
         PAIR_CODE_INPUT_RECOVERY_SUCCESSOR_ATTR,
       );
-      expect(siblingFake.getHtml()).toContain('Recovery moved to this tab');
+      expect(siblingFake.getHtml()).toContain('Recued moved to this tab');
       expect(siblingFake.getSubmitBtn()?.textContent).toBe(
-        'Continue recovery here',
+        'Carry on here',
       );
       expect(recoveryValuesFromHtml(siblingFake.getHtml()).join(' ')).toBe(
         realRecoveryKey,
@@ -2635,10 +2635,10 @@ describe('mountPairCodeInputHost — guided reauthorization', () => {
       expect(firstFake.getHtml()).toContain(
         PAIR_CODE_INPUT_RECOVERY_SUCCESSOR_ATTR,
       );
-      expect(firstFake.getHtml()).toContain('Recovery moved to this tab');
-      expect(firstFake.getHtml()).toContain('only safe successor');
+      expect(firstFake.getHtml()).toContain('Recued moved to this tab');
+      expect(firstFake.getHtml()).toContain('picked this tab to carry on');
       expect(firstFake.getSubmitBtn()?.textContent).toBe(
-        'Continue recovery here',
+        'Carry on here',
       );
       expect(firstFake.getSubmitBtn()?.disabled).toBe(false);
       expect(firstFake.getSubmitFocus()).toHaveBeenCalled();
@@ -2647,9 +2647,9 @@ describe('mountPairCodeInputHost — guided reauthorization', () => {
         PAIR_CODE_INPUT_RECOVERY_SUCCESSOR_ELSEWHERE_ATTR,
       );
       expect(secondFake.getHtml()).toContain(
-        'Recovery continued in another tab',
+        'Another tab is carrying on',
       );
-      expect(secondFake.getHtml()).toContain('remains safely paused');
+      expect(secondFake.getHtml()).toContain('stays paused');
       expect(secondFake.getSubmitBtn()?.textContent).toBe(
         'Waiting for recovery tab…',
       );
@@ -2659,7 +2659,7 @@ describe('mountPairCodeInputHost — guided reauthorization', () => {
         PAIR_CODE_INPUT_RECOVERY_SUCCESSOR_ELSEWHERE_ATTR,
       );
       expect(secondFake.getHtml()).toContain(
-        'Recovery continued in another tab',
+        'Another tab is carrying on',
       );
       expect(recoveryValuesFromHtml(secondFake.getHtml()).join(' ')).toBe(
         realRecoveryKey,
@@ -2676,7 +2676,7 @@ describe('mountPairCodeInputHost — guided reauthorization', () => {
         PAIR_CODE_INPUT_RECOVERY_SUCCESSOR_ATTR,
       );
       expect(firstFake.getSubmitBtn()?.textContent).toBe(
-        'Continue recovery here',
+        'Carry on here',
       );
 
       first.dispose();
@@ -2690,7 +2690,7 @@ describe('mountPairCodeInputHost — guided reauthorization', () => {
         PAIR_CODE_INPUT_RECOVERY_SUCCESSOR_ELSEWHERE_ATTR,
       );
       expect(secondFake.getSubmitBtn()?.textContent).toBe(
-        'Continue recovery here',
+        'Carry on here',
       );
       expect(secondChosen).toHaveBeenCalled();
       expect(leaseHeld).toBe(true);
@@ -2792,7 +2792,7 @@ describe('mountPairCodeInputHost — guided reauthorization', () => {
 
     const html = fake.getHtml();
     expect(html).toContain(PAIR_CODE_INPUT_INTERRUPTED_NOTICE_ATTR);
-    expect(html).toContain('Another tab is saving access');
+    expect(html).toContain('Another tab is saving your sign-in');
     expect(html).toContain('cleared the old one-time code');
     expect(html).not.toContain('value="USED-ONCE"');
     expect(recoveryValuesFromHtml(html).join(' ')).toBe(realRecoveryKey);
@@ -2887,7 +2887,7 @@ describe('mountPairCodeInputHost — submit gating', () => {
     // URL only — still disabled.
     handle.setFieldValue('serverUrl', 'http://localhost:3001');
     expect(fake.getSubmitBtn()?.disabled).toBe(true);
-    expect(fake.getHtml()).toContain('Paste the 24-word recovery key to continue (0/24 words).');
+    expect(fake.getHtml()).toContain('Paste the 24-word recovery key to carry on (0/24 words).');
     // 24 words — submit becomes enabled.
     handle.setFieldValue('recoveryKey', realRecoveryKey);
     expect(fake.getSubmitBtn()?.disabled).toBe(false);
@@ -3028,7 +3028,7 @@ describe('mountPairCodeInputHost — submit flow', () => {
     const onPaired = vi
       .fn()
       .mockRejectedValueOnce(new Error(
-        "Pairing succeeded, but Recued couldn't save the credentials to local storage. Reload and try again.",
+        "Pairing worked, but Recued could not save your sign-in in this browser. Reload the page and try again.",
       ))
       .mockResolvedValueOnce(undefined);
     const onPairAccepted = vi.fn();
@@ -3055,12 +3055,12 @@ describe('mountPairCodeInputHost — submit flow', () => {
     );
     expect(fake.getStatus()?.textContent).not.toContain('Reload');
     expect(fake.getStatus()?.textContent).toContain(
-      "Recued couldn't save the credentials to local storage",
+      "Recued could not save your sign-in in this browser",
     );
     expect(fake.getHtml()).toContain(PAIR_CODE_INPUT_INTERRUPTED_NOTICE_ATTR);
     expect(fake.getHtml()).toContain('data-local-finalize-retry');
-    expect(fake.getHtml()).toContain('will not contact the pairing endpoint again');
-    expect(fake.getSubmitBtn()?.textContent).toBe('Finish saving access');
+    expect(fake.getHtml()).toContain('will not ask to pair again');
+    expect(fake.getSubmitBtn()?.textContent).toBe('Finish saving your sign-in');
     expect(fake.getSubmitBtn()?.disabled).toBe(false);
     expect(fake.getHtml()).toMatch(
       /id="webclient-pair-code-input-server-url"[\s\S]*?disabled/,
@@ -3112,7 +3112,7 @@ describe('mountPairCodeInputHost — submit flow', () => {
     expect(fake.getStatus()?.textContent).toContain(
       'still will not send another pairing request',
     );
-    expect(fake.getSubmitBtn()?.textContent).toBe('Finish saving access');
+    expect(fake.getSubmitBtn()?.textContent).toBe('Finish saving your sign-in');
     expect(fake.getSubmitBtn()?.disabled).toBe(false);
 
     await handle.submit();
@@ -3206,7 +3206,7 @@ describe('mountPairCodeInputHost — submit flow', () => {
     expect(fake.getHtml()).not.toContain('data-local-finalize-retry');
     expect(fake.getHtml()).toContain('data-local-finalize-restarted');
     expect(fake.getHtml()).toContain('Ready for a fresh pairing attempt');
-    expect(fake.getHtml()).not.toContain('Another tab is saving access');
+    expect(fake.getHtml()).not.toContain('Another tab is saving your sign-in');
     expect(fake.getSubmitBtn()?.textContent).toBe('Pair this device');
     await handle.submit();
 
@@ -3264,7 +3264,7 @@ describe('mountPairCodeInputHost — submit flow', () => {
     expect(status?.textContent).toBe(PAIR_CODE_INPUT_ERROR_COPY.recovery_key_invalid);
     expect(fake.getSubmitBtn()?.disabled).toBe(true);
     expect(fake.getHtml()).toContain(
-      'Review the server address or re-enter the recovery key before retrying.',
+      'Check the server address, or type the recovery key again, before trying once more.',
     );
   });
 
@@ -3290,12 +3290,12 @@ describe('mountPairCodeInputHost — submit flow', () => {
       'pair_code_input_invalid_recovery_key',
     );
     expect(fake.getStatus()?.textContent).toContain(
-      'do not form a valid recovery key',
+      'do not make a working recovery key',
     );
     expect(fake.getRecoveryFocus()).toHaveBeenCalledOnce();
     expect(fake.getSubmitBtn()?.disabled).toBe(true);
     expect(fake.getHtml()).toContain(
-      'Correct the recovery key before retrying.',
+      'Fix the recovery key, then try again.',
     );
     expect(fake.getHtml()).not.toContain(
       PAIR_CODE_INPUT_RECOVERY_CORRECTION_ATTR,
@@ -3454,14 +3454,14 @@ describe('mountPairCodeInputHost — generate mode (R26.4 first-run recovery key
     expect(fake.getHtml()).toContain('Every pair confirms this key');
     // The mode toggle is present with both options.
     expect(fake.getHtml()).toContain('I have a recovery key');
-    expect(fake.getHtml()).toContain('Generate a new one');
+    expect(fake.getHtml()).toContain('Make a new one');
   });
 
   it('switching to generate mode shows the Generate CTA (start stage)', () => {
     const { fake } = mountGenerate();
     fake.fireAction('pair-code-input-mode-generate');
     expect(fake.getHtml()).toContain('Generate a new recovery key');
-    expect(fake.getHtml()).toContain('First time setting up this server?');
+    expect(fake.getHtml()).toContain('Setting this server up for the first time?');
   });
 
   it('generate → writing reveals the 24 generated words read-only', () => {
@@ -3483,7 +3483,7 @@ describe('mountPairCodeInputHost — generate mode (R26.4 first-run recovery key
     fake.fireAction('pair-code-input-generate');
     fake.fireAction('pair-code-input-generate-ack');
     const html = fake.getHtml();
-    expect(html).toContain('Type the 24 words from your paper copy');
+    expect(html).toContain('Type the 24 words you wrote down');
     // The editable challenge grid is rendered (24 slots).
     expect(html).toContain(`id="${PAIR_CODE_INPUT_RECOVERY_PREFIX}-0"`);
   });
@@ -3495,12 +3495,12 @@ describe('mountPairCodeInputHost — generate mode (R26.4 first-run recovery key
     fake.fireAction('pair-code-input-mode-generate');
     // start stage: must generate + confirm first.
     expect(fake.getSubmitBtn()?.disabled).toBe(true);
-    expect(fake.getHtml()).toContain('Generate your recovery key and confirm it to continue.');
+    expect(fake.getHtml()).toContain('Make your recovery key and type it back to carry on.');
     fake.fireAction('pair-code-input-generate');
     fake.fireAction('pair-code-input-generate-ack');
     // challenging, nothing re-typed yet.
     expect(fake.getSubmitBtn()?.disabled).toBe(true);
-    expect(fake.getHtml()).toContain('Re-enter your written recovery key to confirm (0/24 words).');
+    expect(fake.getHtml()).toContain('Type your written recovery key again to check it (0/24 words).');
     // matching re-type → enabled.
     handle.setFieldValue('recoveryKey', KNOWN);
     expect(fake.getSubmitBtn()?.disabled).toBe(false);
@@ -3515,7 +3515,7 @@ describe('mountPairCodeInputHost — generate mode (R26.4 first-run recovery key
     fake.fireAction('pair-code-input-generate-ack');
     handle.setFieldValue('recoveryKey', OTHER); // 24 valid words, but != KNOWN
     expect(fake.getSubmitBtn()?.disabled).toBe(true);
-    expect(fake.getHtml()).toContain('re-typed words');
+    expect(fake.getHtml()).toContain('Those words do not match');
   });
 
   it('successful generate-pair submits the GENERATED key + reports it to onPaired', async () => {
@@ -3555,7 +3555,7 @@ describe('mountPairCodeInputHost — generate mode (R26.4 first-run recovery key
     handle.setFieldValue('recoveryKey', KNOWN);
     // URL + matching re-type present, but no pairing code yet → disabled.
     expect(fake.getSubmitBtn()?.disabled).toBe(true);
-    expect(fake.getHtml()).toContain('Enter the pairing code from your server console to continue.');
+    expect(fake.getHtml()).toContain('Type the pairing code from your server terminal to carry on.');
     // Type the code last via the delegated input — must re-sync the gate.
     fake.fireField('pairing-code', 'CODE1234');
     expect(fake.getSubmitBtn()?.disabled).toBe(false);
@@ -3704,7 +3704,7 @@ describe('D-212 tail #6 — an unmapped server code reaches the user', () => {
     // Recued's sentence says only that the server refused …
     expect(status?.textContent).toBe(PAIR_SERVER_REFUSED_COPY);
     expect(status?.textContent).not.toContain('14:00');
-    expect(status?.textContent).not.toMatch(/check the url/i);
+    expect(status?.textContent).not.toMatch(/check the address/i);
     // … and the server's words live in their OWN element, labelled.
     const html = fake.splash.innerHTML;
     expect(html).toContain('data-server-said');
@@ -3732,7 +3732,7 @@ describe('D-212 tail #6 — an unmapped server code reaches the user', () => {
     const status = fake.getStatus();
     expect(status?.dataset.error).toBe('instance_revoked');
     expect(status?.textContent).toBe(PAIR_CODE_INPUT_ERROR_COPY.instance_revoked);
-    expect(status?.textContent).not.toMatch(/check the url/i);
+    expect(status?.textContent).not.toMatch(/check the address/i);
     expect(fake.splash.innerHTML).not.toContain('data-server-said');
   });
 

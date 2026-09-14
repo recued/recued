@@ -95,9 +95,15 @@ const boot = async (dir: string, bearer: string) => {
     // 🔑 THE TWO BOUNDS MUST STAY ORDERED: this per-boot timer has to fire
     // BEFORE the per-case timeout at the bottom of the file, or a stalled boot
     // surfaces as a bare vitest timeout carrying NO boot trace instead of the
-    // `phase:` log that says exactly where startup stopped. One boot (120s) <
-    // one case (300s) holds, with room for the three boots a case performs.
-    const timer = setTimeout(() => { clearInterval(poll); reject(new Error(`Foreground boot timed out: ${output.slice(-6000)}`)); }, 120_000);
+    // `phase:` log that says exactly where startup stopped.
+    //
+    // ⚠ RAISED 120s → 240s FOR FULL-SUITE CONTENTION (D-269 REV 26). Under a
+    // bare `vitest run` this boot lost the CPU race and fired at 120s having
+    // reached only `dispatch-start` — a starved boot, not a stalled one. The
+    // per-case bound below moves WITH it, or the ordering this note exists to
+    // protect inverts: one boot (240s) < one case (720s), which is exactly the
+    // three boots a case performs.
+    const timer = setTimeout(() => { clearInterval(poll); reject(new Error(`Foreground boot timed out: ${output.slice(-6000)}`)); }, 240_000);
     const poll = setInterval(() => {
       if (output.includes('[listener] path listener bound')) { clearTimeout(timer); clearInterval(poll); ready(); }
       else if (child.exitCode !== null) { clearTimeout(timer); clearInterval(poll); reject(new Error(`Foreground boot exited: ${output.slice(-6000)}`)); }
@@ -337,14 +343,14 @@ it.each(['pending', 'approved', 'stdio'] as const)('boots the actual owner servi
   const final = await rpc<PreapprovalInspection>(second.socket, 'preapproval.get', { proposal_id: pending.proposal_id });
   expect(final.execution_status).toBe('cancelled');
 // ⚠ PER-CASE timeout — this SILENTLY OVERRIDES vitest's global 30s
-// `testTimeout`, so the global is not what bounds this file. Raised
-// 120s → 300s alongside the per-boot timer above so that timer stays the
-// first thing to fire (see the ordering note there). Each case performs
-// THREE boots, which is why a proportional raise of the inner bound alone
-// would have overrun this one.
+// `testTimeout`, so the global is not what bounds this file. Raised 120s → 300s
+// (original), then 300s → 720s in D-269 REV 26 alongside the per-boot timer
+// above, so that timer stays the first thing to fire (see the ordering note
+// there). Each case performs THREE boots — 3 × 240s — which is why a
+// proportional raise of the inner bound alone would have overrun this one.
 //
 // ⚠ NOT RAISED: the 45s execution-completion poll further up is a
 // different clock (waiting for a dispatched op to reach `succeeded`, not
 // for startup) and it did not fire. Left alone deliberately rather than
 // swept along — if it starts failing it is saying something else.
-}, 300_000);
+}, 720_000);

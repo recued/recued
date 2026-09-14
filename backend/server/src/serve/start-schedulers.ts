@@ -24,6 +24,12 @@ export type ServeHousekeepingStorageContext = Omit<
     | 'eventBus'
     | 'auditLog'
     | 'workEntityStoreRef'
+    // D-269 step 1 — the declared server zone, for D-139 § A.3.7's engagement
+    // timezone fallback (the step that had a reader on eleven files and a
+    // supplier on none).
+    | 'serverTimeZoneStore'
+    | 'notificationKindPolicyStore'
+    | 'quietHoursStore'
   >,
   'db'
 > & {
@@ -69,6 +75,17 @@ export type ServeHousekeepingCollectionContext = Pick<
 >;
 
 export interface StartServeHousekeepingSchedulerOptions {
+  /** D-269 step 4 — called once when quiet hours ENDS, with a digest recomputed
+   *  from anchor rows. Absent ⇒ the edge is still tracked (so it is not
+   *  mis-detected later) but no card is sent. */
+  /** D-269 — delivers a booking / calendar reminder. ⛔ A NOTIFY, not an event:
+   *  the policy gates a DELIVERY here, which is what quiet hours is defined to
+   *  suppress. Absent ⇒ the reminder sweep does not register at all, because its
+   *  whole output is this call. */
+  readonly notifyReminder?: (message: { title: string; text: string }) => void;
+  readonly onQuietHoursReleased?: (
+    digest: import('@recued/contracts').QuietHoursDigest,
+  ) => void;
   readonly storage: ServeHousekeepingStorageContext;
   readonly app: ServeHousekeepingAppContext;
   readonly collection: ServeHousekeepingCollectionContext;
@@ -173,6 +190,18 @@ export const startServeHousekeepingScheduler = async (
     // D-177 N.13 (P6b) — the delegation-rule-suggestion learner registers
     // when the contract substrate is composed.
     ...(app.contractStoreRef ? { contractStore: app.contractStoreRef } : {}),
+    // D-269 step 2 — the per-kind reminder policy the sweep reads per cycle.
+    notificationKindPolicyStore: storage.notificationKindPolicyStore,
+    // D-269 step 3 — the window and the zone it is read in.
+    quietHoursStore: storage.quietHoursStore,
+    // D-269 — the reminder sink for bookings / calendar events.
+    ...(options.notifyReminder ? { notifyReminder: options.notifyReminder } : {}),
+    // D-269 step 4 — the release card. Forwarded from the caller, which is where
+    // the notification block lives (the same shape D-266's `onMissedRuns` uses).
+    ...(options.onQuietHoursReleased
+      ? { onQuietHoursReleased: options.onQuietHoursReleased }
+      : {}),
+    serverTimeZoneStore: storage.serverTimeZoneStore,
     ...(storage.workEntityStoreRef
       ? { workEntityStore: storage.workEntityStoreRef }
       : {}),

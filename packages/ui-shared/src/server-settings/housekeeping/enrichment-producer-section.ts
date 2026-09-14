@@ -196,7 +196,7 @@ const renderRow = (
         : {}),
     });
     if (preview.deterministic) {
-      return `Deterministic — no token cost (${enrichment.source_collection_count} source records).`;
+      return `Always the same answer, and it costs nothing (${enrichment.source_collection_count} source records).`;
     }
     if (preview.estimated_cost_usd !== undefined) {
       return `~${preview.estimated_tokens.toLocaleString()} tokens × ${enrichment.source_collection_count} records ≈ $${preview.estimated_cost_usd.toFixed(2)}`;
@@ -254,7 +254,7 @@ const renderRow = (
             data: { 'task-id': status.meta.id },
             disabled: runNowDisabled,
             ...(trustState === 'off'
-              ? { title: 'Run policy is Off — set Manual or Auto to enable Run now.' }
+              ? { title: 'This is switched off. Set it to Manual or Automatic to run it.' }
               : {}),
           })}
           ${button({

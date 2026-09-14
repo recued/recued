@@ -200,7 +200,7 @@ describe('R19 — mountReceptionAbuseSection', () => {
     });
     const mount = mountReceptionAbuseSection({ host: fakeHost.host, shell: ctl.shell });
     expect(fakeHost.getHtml()).toContain('reception-loading-bar');
-    expect(fakeHost.getHtml()).toContain('The Abuse Inbox request was malformed');
+    expect(fakeHost.getHtml()).toContain('Recued could not read that request');
     expect(fakeHost.getHtml()).not.toContain('raw-untranslated-message');
     mount.dispose();
   });

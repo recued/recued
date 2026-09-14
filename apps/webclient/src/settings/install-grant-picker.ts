@@ -247,15 +247,15 @@ const ACCESS_LABEL: Record<InstallAccessTier, string> = {
 };
 
 const ACCESS_HINT: Record<InstallAccessTier, string> = {
-  read: 'View data. Safe and idempotent — the recommended default.',
-  write: 'Also create and update. Each write still asks for approval before it runs.',
-  all: 'Also delete and admin operations. Each still asks for approval before it runs.',
+  read: 'Look at things only. Safe, and running it twice changes nothing. This is what we suggest.',
+  write: 'Also make and change things. Every change still asks you first.',
+  all: 'Also delete things and change settings. Every one of these still asks you first.',
 };
 
 const SCOPE_LABEL: Record<InstallScopeWho, string> = {
   owner: 'You',
   all_customers: 'All customers',
-  all_other_contracts: 'All other contracts',
+  all_other_contracts: 'Everyone else you have an agreement with',
   all_contracts: 'Everyone',
 };
 
@@ -305,13 +305,13 @@ export const resolveInstallAudienceSelection = (
 });
 
 const SCOPE_HINT: Record<InstallScopeWho, string> = {
-  owner: 'Your own AI, in your chat, may use these grants. Recommended.',
+  owner: 'Your own AI, in your own chat, may do these. This is what we suggest.',
   all_customers:
-    'Seller customer doors that already exist may use these grants. Customers added later start with no access until you share again.',
+    'Customers you already have may do these. Anyone you add later starts with nothing until you share again.',
   all_other_contracts:
-    'Non-customer contracts that already exist may use these grants. Contracts added later start with no access until you share again.',
+    'Everyone else you already have an agreement with may do these. Anyone added later starts with nothing until you share again.',
   all_contracts:
-    'Every agent and external door you have now may use them too. Doors you add later start with no access until you share again.',
+    'Every app and every way in that you have now may do these too. Anything you add later starts with nothing until you share again.',
 };
 
 /** ⛔ Access and Scope are ONE decision in two steps — "grant THESE operations to
@@ -327,17 +327,17 @@ const SCOPE_HINT: Record<InstallScopeWho, string> = {
 const COPY = {
   access_heading: 'Access — step 1 of 2',
   access_intro:
-    'Choose the operations to grant. Whatever you pick here is granted to the '
-    + 'contracts you choose in step 2 below — including you. Each tier includes '
-    + 'the ones above it. Nothing is granted until you install; you can change '
-    + 'both later in the pack’s Access tab.',
+    'Choose what to allow. Whatever you pick here goes to the '
+    + 'people you choose in step 2, including yourself. Each level includes '
+    + 'the ones above it. Nothing is allowed until you install, and you can change '
+    + 'both later under the Pack’s Access tab.',
   // "Grants:" read as the complete set for the tier. It is the ops the tier ADDS
   // — the server grants the cumulative band (write ⇒ read + write) — so a tier
   // listing one write op while also granting every read op looked exhaustive.
   grants_prefix: 'Adds: ',
   scope_heading: 'Scope — step 2 of 2',
   scope_intro:
-    'Who receives the access chosen in step 1. “You” is a contract like any '
+    'Who gets what you chose in step 1. “You” counts as one of them, like any '
     + 'other: unchecking it revokes your own use of these operations. You can '
     + 'change this later in the pack’s Access tab.',
 } as const;
@@ -515,8 +515,8 @@ export const renderInstallGrantPicker = (
       details.className = 'igp-audience-details';
       const summary = doc.createElement('summary');
       summary.textContent = who === 'all_customers'
-        ? 'Choose customer tiers'
-        : 'Choose individual contracts';
+        ? 'Choose customer packages'
+        : 'Choose particular agreements';
       details.appendChild(summary);
       const selectedIds = new Set(
         who === 'all_customers'

@@ -91,6 +91,33 @@ export const OWNER_DEFAULT_ONLY_GRANT_ENTRIES: ReadonlySet<string> = new Set([
   // seller grants a customer tier in per §3 (fail-closed, opt-in write + read).
   'core.memory.write',
   'core.memory.read',
+  // The Tier-1 `work.create` writes — OWNER-on / door-off, the same posture as
+  // `core.memory.write` beside it and `core.work-entity.read` below.
+  //
+  // ⚠ MEMBERSHIP HERE IS NOT REDUNDANT WITH THE TOOL'S CLASSIFICATION, even
+  // though both currently fail closed. `buildDefaultMcpInboundTokenGrants` keys
+  // on the TOOL (`classification === 'read'`, so `'unknown'` is already false);
+  // this set keys on the OP, which is what the handler actually checks via
+  // `isOpGranted`. They are two axes over two vocabularies, and a later
+  // re-classification of the tool must not silently open the op.
+  'core.work-entity.task.create',
+  'core.work-entity.note.create',
+  // Slice 2 — the Tier-1 calendar writes. Owner-on / door-off like the rest.
+  // ⚠ These ALSO carry plan-approval (`classification: 'write'`), so a door
+  // that somehow held the grant would still have to satisfy a card. The grant
+  // runs first regardless: an ungranted door never gets to propose.
+  'core.data.calendar.create',
+  'core.data.calendar.update',
+  // Slice 3 — the Tier-1 `work.update` writes, per kind, plus the separate
+  // completion op. `mark-done` is its own entry because it is its own op:
+  // `done` is the completion bit and does not travel with a field edit.
+  'core.work-entity.commitment.update',
+  'core.work-entity.note.update',
+  'core.work-entity.project.update',
+  'core.work-entity.task.mark-done',
+  'core.work-entity.task.update',
+  'core.work-entity.commitment.create',
+  'core.work-entity.project.create',
   // The work graph (task / note / commitment / project) via the Tier-1
   // `work.search` / `work.read` tools — OWNER-on / door-off by default, the
   // same posture as `core.memory.read` and `core.contact.engagements.read`.

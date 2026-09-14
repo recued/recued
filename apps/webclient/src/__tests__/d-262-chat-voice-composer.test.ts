@@ -240,11 +240,13 @@ const makeConn = (
   // `sendMessage` directly — so they never noticed the button is disabled
   // without a chat model. A test that drives the BUTTON needs one.
   chatConfigured = false,
+  sendAck?: Promise<{ turn_id: string }>,
 ) => {
   const calls: Array<{ method: string; args: unknown }> = [];
   const conn = ((method: string, args: unknown) => {
     calls.push({ method, args });
     if (method === 'chat.sessions.list') return Promise.resolve({ sessions: [] });
+    if (method === 'chat.session.create') return Promise.resolve({ session_id: 'chat_1' });
     // D-262 § B8 — the mic renders only when the server reports a COMPLETE
     // transcription source, so every mic case needs one configured.
     if (method === 'server.getLLMConfig') {
@@ -267,7 +269,7 @@ const makeConn = (
     if (method === 'chat.session.get') {
       return Promise.resolve({ ...chatSession(), messages: [chatMessage()] });
     }
-    if (method === 'chat.send') return Promise.resolve({ turn_id: 'turn_1' });
+    if (method === 'chat.send') return sendAck ?? Promise.resolve({ turn_id: 'turn_1' });
     return Promise.resolve({});
   }) as unknown as ChatRouteConn;
   return { conn, calls, sends: () => calls.filter((c) => c.method === 'chat.send') };
@@ -296,12 +298,13 @@ const mount = (
     voiceSpeaker?: { speak(t: string): void; cancel(): void } | null;
     /** Configure a chat slot too, so the Send button is not disabled. */
     chatConfigured?: boolean;
+    sendAck?: Promise<{ turn_id: string }>;
   } = {},
 ) => {
   const doc = makeDoc();
   const root = doc.createElement('div');
   const { conn, sends } = makeConn(
-    transcriptionConfigured, extra.prefs ?? {}, extra.chatConfigured ?? false,
+    transcriptionConfigured, extra.prefs ?? {}, extra.chatConfigured ?? false, extra.sendAck,
   );
   const subscriber = makeSubscriber();
   const route = bootstrapChatRoute({
@@ -582,6 +585,31 @@ describe('D-262 § 5 — press-to-talk in the chat composer', () => {
     } finally {
       restore();
     }
+  });
+
+  it('correlates a reply that beats a voice send acknowledgement and never speaks another client\'s reply or a replay', async () => {
+    const { engines, restore } = await withFakeEngine();
+    let acknowledge!: (ack: { turn_id: string }) => void;
+    const sendAck = new Promise<{ turn_id: string }>(resolve => { acknowledge = resolve; });
+    try {
+      const spoken: string[] = []; const capture = controllableCapture();
+      const { root, route, emit, sends } = mount(async () => capture.session, true, {
+        prefs: { 'ui.voice.auto_send': false, 'ui.voice.speak_replies': 'after_voice' },
+        voiceSpeaker: { speak: text => { spoken.push(text); }, cancel: () => {} }, chatConfigured: true, sendAck,
+      });
+      await tick(); await speakAndFinalize(root, engines);
+      sendButton(root)?.click();
+      await vi.waitFor(() => expect(sends()).toHaveLength(1));
+      const complete = (turn: string, content: string) => emit('chat.message_complete', { session_id: 'chat_1', turn_id: turn,
+        final: { id: `reply-${turn}`, role: 'assistant', content },
+      });
+      complete('other-client', 'unrelated reply'); complete('turn_1', 'your voice reply');
+      expect(spoken).toEqual([]);
+      acknowledge({ turn_id: 'turn_1' });
+      await vi.waitFor(() => expect(spoken).toEqual(['your voice reply']));
+      complete('turn_1', 'your voice reply'); expect(spoken).toEqual(['your voice reply']);
+      route.dispose();
+    } finally { acknowledge({ turn_id: 'turn_1' }); restore(); }
   });
 
   it('discards without uploading anything', async () => {

@@ -165,6 +165,9 @@ export interface BootstrapReceptionRouteOptions
     ReceptionRouteOptions,
     'pageHost' | 'inboxHost' | 'modalHost' | 'promptsHost'
   > {
+  /** D-269 step 1 — the server's resolved IANA zone, forwarded down to the run
+   *  modal's scheduled-activation stamp. Absent ⇒ this browser's, as before. */
+  serverTimeZone?: () => string | undefined;
   /** Root element where the route chrome (header + tab bar + content) is
    *  appended. The caller chooses the root's width / height / position
    *  (in the PWA this is the app shell's content root). */
@@ -546,6 +549,7 @@ export const bootstrapReceptionRoute = (
     // ⛔ Must sit ABOVE the final `else`: that branch is the Inbox DEFAULT, and
     // an unmatched section silently renders the Inbox rather than this.
     mount = mountReceptionRecordsSection({
+      ...(opts.serverTimeZone ? { serverTimeZone: opts.serverTimeZone } : {}),
       host: content,
       conn: opts.conn,
       ...(opts.document !== undefined ? { document: opts.document } : {}),

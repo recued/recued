@@ -160,10 +160,21 @@ export interface MailSenderSourceOption {
   /** Account email address — used as the `From` header on the outbound
    *  send + as the sender-loop guard's reference value. */
   account_email: string;
-  /** True iff the Source is wired for outbound send. The picker omits
-   *  any Source where this is false; the dispatch helper rejects send
-   *  payloads keyed on a non-send-capable id. */
+  /** True iff the Source is wired for outbound send. The dispatch helper
+   *  rejects SEND payloads keyed on a non-send-capable id.
+   *
+   *  ⚠ The picker no longer omits a Source where this is false — D-264 —
+   *  because a mailbox that cannot send can still hold a draft. Read this
+   *  for the Send gate; read `draft_capable` for the Save-draft gate. */
   send_capable: boolean;
+  /** D-264 — true iff the Source can park a message in its Drafts folder.
+   *
+   *  ⛔ **Independent of `send_capable` in BOTH directions.** IMAP without
+   *  SMTP can APPEND; a Gmail grant of `gmail.send` without `gmail.modify`
+   *  can send and cannot draft. Never read one as a proxy for the other, and
+   *  never `||` them into a single "usable" boolean — the two gates they feed
+   *  are different gates. */
+  draft_capable: boolean;
   /** `data.mail.<slug>` instance the rpc dispatches against. The host
    *  populates from its Source registry — each registered mail Source
    *  is 1:1 with an enrolled mail collection instance. The substrate

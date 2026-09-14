@@ -139,8 +139,8 @@ export const renderHousekeepingRunNowConfirmDialog = (
       aiBlocked = true;
       aiBlockedCopy =
         preview.ai_path_reason === 'quota_exhausted'
-          ? 'AI quota is exhausted — wait for the daily reset, or add another key in Settings → AI.'
-          : 'No AI configured — set up a BYOK slot or a free-pool key in Settings → AI before running this producer.';
+          ? 'You have used up your AI for today. Wait until tomorrow, or add another key under Settings, AI.'
+          : 'No AI set up. Add your own key, or a free one, under Settings, AI, before you run this.';
       body = `
         <p class="housekeeping-runnow-dialog-warn">${e(aiBlockedCopy)}</p>
         <p>This producer needs an AI call against ${enrichment.source_collection_count} source records.</p>

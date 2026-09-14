@@ -51,11 +51,11 @@ export const PASSPORT_PROFILE_OPTIONS: ReadonlyArray<PassportProfileOption> = [
     profile: 'support_redacted',
     label: 'Support (redacted)',
     exposes: [
-      'Server identity fingerprint',
+      'A fingerprint that proves which server this is',
       'Current handle',
-      'Software version + OS + arch',
-      'Per-port public/lan/off booleans',
-      'Per-key-class status badges (no fingerprints)',
+      'The version, the system it runs on, and the kind of machine',
+      'Whether each port is open, local only, or off',
+      'How each kind of key is doing, with no fingerprints',
     ],
     requires_confirmation: false,
   },
@@ -63,12 +63,12 @@ export const PASSPORT_PROFILE_OPTIONS: ReadonlyArray<PassportProfileOption> = [
     profile: 'enterprise_audit',
     label: 'Enterprise audit',
     exposes: [
-      'Full identity bundle (server + publisher fingerprints)',
-      'LAN URLs + per-port port numbers',
-      'Per-client paired_at + last_seen_at + labels',
-      'Installed pack list + per-vendor entity counts',
-      'Backup location + recovery state',
-      'Per-key-class fingerprints + last_rotated_at',
+      'Both fingerprints: the server’s and your publisher one',
+      'Its addresses on your own network, and the port numbers',
+      'Each device: its name, when it paired, and when it was last seen',
+      'Which Packs are installed, and how much each service holds',
+      'Where the backups are, and how recovery is going',
+      'A fingerprint for each key, and when it was last replaced',
     ],
     requires_confirmation: true,
   },
@@ -76,10 +76,10 @@ export const PASSPORT_PROFILE_OPTIONS: ReadonlyArray<PassportProfileOption> = [
     profile: 'migration_full',
     label: 'Migration (new server)',
     exposes: [
-      'Everything in the enterprise-audit profile',
-      'Handle history with reservation + release timestamps',
-      'Publisher identity fingerprint',
-      'Capability profile (recipe counts, AI pool config, BYOK slots)',
+      'Everything in the audit one',
+      'Every name you have held, and when',
+      'A fingerprint for the key you sign Recipes with',
+      'What this server can do: how many Recipes, which AI, and your own keys',
     ],
     requires_confirmation: true,
   },
@@ -235,27 +235,27 @@ export const describeImportFailure = (
 ): string => {
   switch (reason) {
     case 'invalid_json':
-      return 'That doesn’t look like a valid passport file (couldn’t parse the JSON).';
+      return 'Recued could not read that file.';
     case 'profile_not_migration_full':
-      return 'That passport isn’t a “Migration (new server)” export. Re-export it from the old server with the migration profile.';
+      return 'That file was not made for moving to a new server. Save it again from the old server, choosing the moving option.';
     case 'unsupported_passport_version':
-      return 'That passport was produced by an incompatible Recued version.';
+      return 'That file came from a Recued that does not match this one.';
     case 'identity_block_incomplete':
-      return 'That passport is missing required identity fields and can’t be imported.';
+      return 'That file is missing things Recued needs, so it cannot be used.';
     case 'identity_block_missing_public_key':
-      return 'That passport has no server public key, so its identity can’t be verified.';
+      return 'That file has no server key, so Recued cannot tell whether it is genuine.';
     case 'identity_fingerprint_mismatch':
-      return 'That passport’s claimed identity doesn’t match the key that signed it — it may be forged or corrupted.';
+      return 'That file says it is from one server, but it was signed by another. It may be fake, or damaged.';
     case 'signature_missing':
     case 'signature_malformed':
     case 'signature_invalid':
-      return 'That passport’s signature didn’t verify — it may have been tampered with.';
+      return 'That file’s signature is wrong. Somebody may have changed it.';
     case 'profile_unknown':
-      return 'That passport has an unrecognized profile.';
+      return 'Recued does not know that kind of file.';
     case 'same_identity':
-      return 'That passport already describes THIS server — there’s nothing to migrate.';
+      return 'That file is about THIS server, so there is nothing to move.';
     default:
-      return 'That passport couldn’t be imported.';
+      return 'Recued could not use that file.';
   }
 };
 
@@ -266,13 +266,13 @@ export const summarizeImportCommit = (
   result: Extract<ServerPassportImportCommitResult, { ok: true }>,
 ): string[] => {
   const lines = [
-    `Previous server identity: ${result.previous_publisher_id}`,
-    `This server’s identity: ${result.new_publisher_id}`,
+    `The old server: ${result.previous_publisher_id}`,
+    `This server: ${result.new_publisher_id}`,
   ];
   lines.push(
     result.current_handle
-      ? `Handle “${result.current_handle}” — re-anchor ${result.handle_reanchor_pending ? 'pending (completes once this server’s account is bound)' : 'complete'}.`
-      : 'No handle to carry forward.',
+      ? `Handle “${result.current_handle}” — re-anchor ${result.handle_reanchor_pending ? 'waiting. This finishes once your server is hooked up to your account' : 'complete'}.`
+      : 'There is no name to bring over.',
   );
   lines.push(
     `Recorded ${result.handle_history_count} prior handle${result.handle_history_count === 1 ? '' : 's'} in the lineage.`,

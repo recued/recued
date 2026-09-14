@@ -48,9 +48,9 @@ describe('classifyRpcError — a browser-blocked connection', () => {
     noteDialledServerUrl('ws://192.168.1.42:7717/ws');
     const c = classifyRpcError(rpc('server_offline', 'webclient rpc: server offline'));
     expect(c.kind).toBe('offline');
-    expect(c.copy).toMatch(/browser blocked the connection/i);
+    expect(c.copy).toMatch(/browser blocked this/i);
     // It must say what to DO, not just what happened.
-    expect(c.copy).toMatch(/webclient from the server|certificate/i);
+    expect(c.copy).toMatch(/Open Recued from your server|certificate/i);
     expect(c.copy).not.toMatch(/Can't reach your server right now/);
   });
 
@@ -86,7 +86,7 @@ describe('classifyRpcError — a browser-blocked connection', () => {
     expect(classifyRpcError(rpc('timeout', 'x')).copy)
       .toBe("Your server isn't responding right now.");
     expect(classifyRpcError(rpc('webclient_reauth_required', 'x')).copy)
-      .toBe('Your session needs to be re-paired.');
+      .toBe('This browser has to be paired again.');
     expect(classifyRpcError(rpc('aborted', 'x')).copy).toBe('Cancelled.');
   });
 });
@@ -133,7 +133,7 @@ describe('classifyRpcError', () => {
     const c = classifyRpcError(rpc('connection_lost', 'webclient rpc: connection lost — …'));
     expect(c.kind).toBe('in_doubt');
     expect(c.connectionCaused).toBe(true);
-    expect(c.copy.toLowerCase()).toContain('unknown');
+    expect(c.copy.toLowerCase()).toContain('does not know what happened');
   });
 
   it('maps transport to offline', () => {
@@ -263,7 +263,7 @@ describe('resolveSurfaceErrorDisplay (Tier 2 routing)', () => {
     // Shown inline (alert tone), with the in-doubt warning the user must see.
     expect(out!.connectionCaused).toBe(false);
     expect(out!.text).toBe(
-      "Couldn't send: The connection dropped before this finished, so its result is unknown.",
+      "Couldn't send: The connection dropped before this finished, so Recued does not know what happened.",
     );
   });
 

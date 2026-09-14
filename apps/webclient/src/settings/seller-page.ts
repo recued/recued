@@ -185,7 +185,7 @@ const SELLER_SUBPAGE_META: Readonly<Record<
 >> = {
   overview: {
     label: 'Overview',
-    description: 'A quick health check of your offers, customer access, and seller setup.',
+    description: 'A quick look at your offers, your customers, and how your shop is set up.',
   },
   offers: {
     label: 'Offers',
@@ -193,23 +193,23 @@ const SELLER_SUBPAGE_META: Readonly<Record<
   },
   orders: {
     label: 'Orders',
-    description: 'Track purchases from payment through delivery and resolve orders that need attention.',
+    description: 'Follow each sale from payment to delivery, and sort out the ones that need you.',
   },
   tiers: {
     label: 'Tiers',
-    description: 'Define reusable access packages, pass limits, and the contract template behind each tier.',
+    description: 'Set up the packages people can buy, what each one allows, and the agreement behind it.',
   },
   customers: {
     label: 'Customers',
-    description: 'Issue access and manage the lifecycle of customer contracts.',
+    description: 'Give people access, and look after their agreements.',
   },
   usage: {
     label: 'Usage',
-    description: 'Review metered customer activity by contract and period.',
+    description: 'See how much each customer has used, and when.',
   },
   setup: {
     label: 'Setup',
-    description: 'Defaults, payment providers, and paid model access - each on its own screen.',
+    description: 'Your normal settings, who takes the payments, and paid AI access. Each has its own page.',
   },
 };
 
@@ -220,15 +220,15 @@ const SELLER_SETUP_SECTION_META: Readonly<Record<
 >> = {
   defaults: {
     label: 'Defaults',
-    description: 'Grace window, status and email policy, and the mail account that sends claim and status messages.',
+    description: 'How long you give people, what emails go out, and which mailbox sends them.',
   },
   providers: {
     label: 'Providers',
-    description: 'Seed access tiers from a payment provider: Stripe entitlement features, or Paddle and Lemon Squeezy products.',
+    description: 'Bring your packages in from whoever takes your payments: Stripe, Paddle or Lemon Squeezy.',
   },
   gateway: {
-    label: 'Paid model access',
-    description: 'The OpenAI-compatible route customers can buy, and its one-time paid-access acknowledgment.',
+    label: 'Paid AI access',
+    description: 'The AI access customers can buy, and the one-off note they see when they pay.',
   },
 };
 
@@ -239,18 +239,18 @@ const SELLER_CREATE_META: Readonly<Record<
 >> = {
   tiers: {
     manual: {
-      label: 'New manual tier',
-      description: 'Register a tier you run by hand, or load an existing manual tier by id to edit it.',
+      label: 'New package you run yourself',
+      description: 'Add a package you look after yourself, or open one you already have.',
     },
     pass: {
-      label: 'New pass tier',
-      description: 'Mint a time-boxed pass with its own contract template.',
+      label: 'New timed pass',
+      description: 'Make a pass that runs out, with its own agreement.',
     },
   },
   customers: {
     manual: {
-      label: 'Issue customer',
-      description: 'Grant a customer access on a manual tier and hand over the one-time claim link.',
+      label: 'Give someone access',
+      description: 'Put someone on a package you run yourself, and give them their one-off link.',
     },
   },
 };
@@ -262,11 +262,11 @@ const SELLER_TIER_TAB_META: Readonly<Record<
 >> = {
   edit: {
     label: 'Edit',
-    description: 'Change this manual tier\'s name, template, limits, and status.',
+    description: 'Change this package\'s name, agreement, limits and status.',
   },
   customers: {
     label: 'Customers',
-    description: 'Adjust every customer on this manual tier at once.',
+    description: 'Change everyone on this package at the same time.',
   },
 };
 
@@ -592,7 +592,7 @@ const formatMinorCurrency = (amountMinor: number, currency: string): string => {
     const fractionDigits = formatter.resolvedOptions().maximumFractionDigits ?? 2;
     return formatter.format(amountMinor / (10 ** fractionDigits));
   } catch {
-    return `${currency} ${amountMinor} minor units`;
+    return `${currency} ${amountMinor} in the smallest coins`;
   }
 };
 
@@ -657,7 +657,7 @@ const readinessStateLabel = (
     case 'needs_setup':
       return 'Needs setup';
     case 'not_wired':
-      return 'Not wired';
+      return 'Not set up';
   }
 };
 
@@ -771,9 +771,9 @@ const appendContractId = (
  *  behind Advanced; only a seller with two products whose tier keys clash
  *  ever changes it. */
 const CATEGORY_LABEL = 'Category';
-const CATEGORY_HELP = 'Groups tiers with their customers. Keep the default unless you '
-  + 'sell separate products whose tier keys would clash. It cannot change once '
-  + 'a tier exists.';
+const CATEGORY_HELP = 'Keeps packages and their customers together. Leave this as it is unless you '
+  + 'sell separate things whose names would clash. You cannot change it once '
+  + 'a package exists.';
 
 const appendFieldHelp = (doc: Document, wrap: HTMLElement, text: string): void => {
   const help = append(doc, wrap, 'span', 'seller-form-help');
@@ -860,7 +860,7 @@ const appendSettingsMailChooser = (
   },
 ): HTMLSelectElement => {
   const wrap = append(doc, parent, 'label', 'seller-form-field');
-  appendText(doc, wrap, 'span', 'Sender mail instance');
+  appendText(doc, wrap, 'span', 'Which mailbox sends');
   const select = doc.createElement('select');
   select.setAttribute(SELLER_SETTINGS_FORM_FIELD_ATTR, 'sender_mail_instance_id');
 
@@ -900,23 +900,23 @@ const appendSettingsMailChooser = (
   guidance.setAttribute(SELLER_MAIL_CHOOSER_STATUS_ATTR, '');
   if (!state.callerAvailable) {
     guidance.textContent =
-      'Mail account listing is unavailable on this paired server. Keep the saved sender or choose No sender.';
+      'This server cannot list your mailboxes. Keep the one you saved, or choose No sender.';
   } else if (state.loading && instances === null) {
-    guidance.textContent = 'Loading send-capable mail accounts.';
+    guidance.textContent = 'Loading the mailboxes that can send.';
   } else if (state.error !== null && instances === null) {
     guidance.textContent =
-      'Could not load send-capable mail accounts. The saved sender is unverified.';
+      'Recued could not load your mailboxes, so it cannot check the one you saved.';
   } else if (state.error !== null) {
     guidance.textContent =
-      'Could not refresh mail accounts. Showing the last known send-capable accounts.';
+      'Recued could not load your mailboxes. These are the ones it knew about last.';
   } else if (instances !== null && !currentAvailable) {
     guidance.textContent =
-      'The saved sender is no longer send-capable. Choose another sender or No sender before saving.';
+      'The mailbox you saved can no longer send. Pick another one, or No sender, before you save.';
   } else if (instances !== null && instances.length === 0) {
     guidance.textContent =
-      'No send-capable mail accounts. Configure one in Mail settings or choose No sender.';
+      'You have no mailbox that can send. Set one up under Mail, or choose No sender.';
   } else {
-    guidance.textContent = 'Only send-capable mail accounts are listed.';
+    guidance.textContent = 'Only mailboxes that can send are shown.';
   }
   return select;
 };
@@ -1103,7 +1103,7 @@ const parseUsagePolicy = (textarea: HTMLTextAreaElement): Readonly<Record<string
   if (raw.length === 0) return {};
   const parsed = JSON.parse(raw) as unknown;
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw new Error('Usage policy must be a JSON object.');
+    throw new Error('The usage rules have to be a JSON object.');
   }
   return parsed as Record<string, unknown>;
 };
@@ -1113,7 +1113,7 @@ const parseOptionalWholeSeconds = (input: HTMLInputElement): number | null => {
   if (raw.length === 0) return null;
   const value = Number(raw);
   if (!Number.isInteger(value) || value < 0) {
-    throw new Error('Pass seconds must be a non-negative integer.');
+    throw new Error('How long the pass lasts has to be a whole number, 0 or more.');
   }
   return value;
 };
@@ -1133,7 +1133,7 @@ const parseOptionalWholeNumber = (
   if (raw.length === 0) return undefined;
   const value = Number(raw);
   if (!Number.isInteger(value) || value < 0) {
-    throw new Error(`${label} must be a non-negative integer.`);
+    throw new Error(`${label} has to be a whole number, 0 or more.`);
   }
   return value;
 };
@@ -1146,7 +1146,7 @@ const parseRequiredWholeNumber = (
   if (raw.length === 0) throw new Error(`${label} is required.`);
   const value = Number(raw);
   if (!Number.isInteger(value) || value < 0) {
-    throw new Error(`${label} must be a non-negative integer.`);
+    throw new Error(`${label} has to be a whole number, 0 or more.`);
   }
   return value;
 };
@@ -1161,10 +1161,10 @@ const parseJsonObjectTextarea = (
   try {
     parsed = JSON.parse(raw) as unknown;
   } catch {
-    throw new Error(`${label} must be valid JSON.`);
+    throw new Error(`${label} has to be JSON that Recued can read.`);
   }
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw new Error(`${label} must be a JSON object.`);
+    throw new Error(`${label} has to be a JSON object.`);
   }
   return parsed as Record<string, unknown>;
 };
@@ -1177,10 +1177,10 @@ const parseCustomerIds = (
     .map((value) => value.trim())
     .filter((value) => value.length > 0);
   if (values.length === 0) {
-    throw new Error('Customer IDs are required.');
+    throw new Error('You need to give at least one customer id.');
   }
   if (new Set(values).size !== values.length) {
-    throw new Error('Customer IDs must not contain duplicates.');
+    throw new Error('Each customer id can only appear once.');
   }
   return values;
 };
@@ -1192,12 +1192,12 @@ const renderSummary = (
 ): void => {
   const section = append(doc, parent, 'section', 'seller-section');
   section.setAttribute(SELLER_SUMMARY_ATTR, '');
-  appendText(doc, section, 'h4', 'Seller snapshot');
+  appendText(doc, section, 'h4', 'How your shop is doing');
   const grid = append(doc, section, 'dl', 'seller-stat-grid');
   const stats: ReadonlyArray<readonly [string, string, SellerSubpage]> = [
-    ['Outcome offers', `${overview.offers?.length ?? 0}`, 'offers'],
+    ['Things you sell', `${overview.offers?.length ?? 0}`, 'offers'],
     ['Tiers', `${overview.counts.tiers}`, 'tiers'],
-    ['Active tiers', `${overview.counts.active_tiers}`, 'tiers'],
+    ['Packages in use', `${overview.counts.active_tiers}`, 'tiers'],
     ['Customers', `${overview.counts.customers}`, 'customers'],
     ['Active', `${overview.counts.active_customers}`, 'customers'],
     ['Grace', `${overview.counts.grace_customers}`, 'customers'],
@@ -1225,7 +1225,7 @@ const renderSummary = (
 // bucket in contracts forces both a label here AND a place in the display order.
 const SELLER_ORDER_BUCKET_LABEL: Record<SellerOrderBucket, string> = {
   active: 'Active',
-  needs_owner: 'Needs owner',
+  needs_owner: 'Needs you',
   timed_out: 'Timed out',
   closed: 'Closed',
 };
@@ -1309,15 +1309,15 @@ const renderOrders = (
 ): void => {
   const section = append(doc, parent, 'section', 'seller-section');
   section.setAttribute(SELLER_ORDERS_ATTR, '');
-  appendText(doc, section, 'h4', 'Order activity');
+  appendText(doc, section, 'h4', 'What is happening with orders');
   appendText(
     doc,
     section,
     'p',
-    'Every purchase of an outcome offer, grouped by lifecycle bucket. This is '
-      + 'the durable record of fulfilment — amount, phase, delivered artifact, '
-      + 'and errors. Orders are not edited in place. When a recovery action is '
-      + 'available, it runs the order\'s workflow and then reloads this record.',
+    'Every sale, grouped by where it has got to. This is '
+      + 'the record that matters: the amount, how far it has got, what was delivered, '
+      + 'and anything that went wrong. You do not edit an order. When Recued can '
+      + 'put something right, it runs the order again and then reloads this.',
     'seller-section-copy',
   );
 
@@ -1337,7 +1337,7 @@ const renderOrders = (
     return;
   }
   if (state.error !== null) {
-    status.textContent = 'Could not refresh orders. Showing the last known list.';
+    status.textContent = 'Recued could not load your orders. This is the list it knew about last.';
   }
 
   const orders = state.orders;
@@ -1362,7 +1362,7 @@ const renderOrders = (
       doc,
       section,
       'p',
-      `Showing ${orders.length} order${orders.length === 1 ? '' : 's'} on this page. More orders exist after it.`,
+      `Showing ${orders.length} order${orders.length === 1 ? '' : 's'} on this page. There are more after it.`,
       'seller-table-detail',
     );
   }
@@ -1458,7 +1458,7 @@ const renderOrders = (
         const errors = response.errors ?? [];
         if (response.success === false || errors.length > 0) {
           throw new Error(
-            'The close recipe refused this order. Open it in Recipes for the reason.',
+            'The Recipe that closes orders said no. Open it under Recipes to see why.',
           );
         }
         status.textContent = `Closed ${formatOrderHandle(order.order_handle)}.`;
@@ -1474,7 +1474,7 @@ const renderOrders = (
 
   if (state.runRecipe !== undefined && orders.some(isCloseableStrandedOrder)) {
     columns.push({
-      label: 'Owner actions',
+      label: 'What you can do',
       render: (order, td) => {
         if (!isCloseableStrandedOrder(order)) {
           td.textContent = '—';
@@ -1494,9 +1494,9 @@ const renderOrders = (
               title: 'Close this order?',
               body: `Order ${formatOrderHandle(order.order_handle)} issued access to `
                 + `customer ${order.customer_id ?? ''}, but its claim link was not `
-                + 'delivered. Closing records that the customer HAS their access — '
-                + 'you are attesting to that; Recued cannot verify a link you sent '
-                + 'by hand arrived. Use "Message customer" first if they do not.',
+                + 'delivered. Closing it says the customer HAS their access. '
+                + 'You are the one saying so. Recued cannot check whether a link you sent '
+                + 'by hand ever arrived. If they do not have it, message them first.',
               confirmLabel: 'Confirm & close',
               onConfirm: () => runClose(order, button),
             });
@@ -1549,16 +1549,16 @@ const renderSellerOffers = (
 ): void => {
   const section = append(doc, parent, 'section', 'seller-section');
   section.setAttribute(SELLER_OFFERS_ATTR, '');
-  appendText(doc, section, 'h4', 'Outcome offers');
+  appendText(doc, section, 'h4', 'Things you sell');
   appendText(
     doc,
     section,
     'p',
-    'Offers describe one-time outcomes such as a paid document or completed job. '
-      + 'Their source recipes remain the place to change price and fulfillment. '
-      + 'The state here records publication intent: pausing or archiving an offer '
-      + 'does not cancel in-flight orders, and you must also pause any recipe or '
-      + 'intake path that can start a new order.',
+    'An offer is a one-off thing you sell, like a paid document or a finished job. '
+      + 'Change the price and how it is delivered in the Recipe behind it. '
+      + 'What you set here is only about showing it. Pausing or putting an offer away '
+      + 'does not cancel orders already going, and you also have to pause any Recipe or '
+      + 'form that could start a new one.',
     'seller-section-copy',
   );
   const status = append(doc, section, 'p', 'seller-form-status');
@@ -1617,7 +1617,7 @@ const renderSellerOffers = (
           || projectedOffers[0]?.state !== next_state
           || projectedOffers[0]?.updated_at !== response.offer.updated_at
         ) {
-          throw new Error('Seller returned an unexpected offer transition result.');
+          throw new Error('Recued got an answer it did not expect.');
         }
         applyResult(response, {
           kind: 'success',
@@ -1671,12 +1671,12 @@ const renderSellerOffers = (
       label: 'Definition',
       render: (offer, td) => {
         if (offer.created_by_recipe_id === null) {
-          td.textContent = 'Creator not recorded';
+          td.textContent = 'Recued did not note who made it';
           return;
         }
         const href = serializeShellRoute('recipes', offer.created_by_recipe_id);
         const link = createReferenceElement(doc, {
-          label: 'Open recorded creator recipe',
+          label: 'Open the Recipe that made it',
           referenceId: offer.created_by_recipe_id,
           href,
           attributes: {
@@ -1695,7 +1695,7 @@ const renderSellerOffers = (
         }
         const href = serializeShellRoute('recipes', offer.fulfillment_recipe_id);
         const link = createReferenceElement(doc, {
-          label: 'Open fulfillment recipe',
+          label: 'Open the Recipe that delivers it',
           referenceId: offer.fulfillment_recipe_id,
           href,
           attributes: {
@@ -1708,11 +1708,11 @@ const renderSellerOffers = (
   ];
   if (runTransitionOfferState !== undefined) {
     columns.push({
-      label: 'Owner actions',
+      label: 'What you can do',
       render: (offer, td) => {
         const nextStates = SELLER_OFFER_STATE_TRANSITIONS[offer.state];
         if (nextStates.length === 0) {
-          td.textContent = 'Archived permanently';
+          td.textContent = 'Put away for good';
           return;
         }
         const actions = append(doc, td, 'div', 'seller-offer-actions');
@@ -1724,7 +1724,7 @@ const renderSellerOffers = (
               doc,
               details,
               'span',
-              'Archived offers cannot be restored.',
+              'Once an offer is put away, you cannot bring it back.',
               'seller-table-detail',
             );
             const button = appendButton(
@@ -1760,7 +1760,7 @@ const renderSellerOffers = (
 
   appendTable<SellerOffer>(doc, section, {
     className: 'seller-table seller-offer-table',
-    empty: 'No Seller outcome offers.',
+    empty: 'You are not selling anything yet.',
     rows: offers,
     markRow: (offer, tr) =>
       tr.setAttribute(SELLER_OFFER_ROW_ATTR, offer.offer_id),
@@ -1779,13 +1779,13 @@ const renderAccessOffersIntro = (
     doc,
     section,
     'p',
-    'Continuing or time-boxed access is managed through Tiers and Customers, '
-      + 'separately from one-time outcome offers and orders.',
+    'Access that carries on, or runs out after a while, lives under Packages and Customers. '
+      + 'That is separate from one-off things you sell.',
     'seller-section-copy',
   );
   const links = append(doc, section, 'div', 'seller-related-links');
   for (const [id, label] of [
-    ['tiers', 'Manage tiers'],
+    ['tiers', 'Manage packages'],
     ['customers', 'Manage customers'],
   ] as const) {
     const link = doc.createElement('a');
@@ -1803,10 +1803,10 @@ const renderReadiness = (
   overview: SellerOverview,
 ): void => {
   const section = append(doc, parent, 'section', 'seller-section');
-  appendText(doc, section, 'h4', 'Setup health');
+  appendText(doc, section, 'h4', 'How your setup looks');
   const list = append(doc, section, 'div', 'seller-readiness-list');
   if (overview.readiness.length === 0) {
-    appendText(doc, list, 'p', 'No setup checks were returned.', 'seller-empty');
+    appendText(doc, list, 'p', 'Recued has nothing to report.', 'seller-empty');
     return;
   }
   for (const item of overview.readiness) {
@@ -1868,14 +1868,14 @@ const renderProviderTierSynchronizeForm = (
     overview.readiness.find((item) => item.key === sellerProviderFor(source).readiness_key);
   const section = append(doc, parent, 'section', 'seller-section');
   section.setAttribute(SELLER_PROVIDER_TIER_SYNC_FORM_ATTR, '');
-  appendText(doc, section, 'h4', 'Provider tiers');
+  appendText(doc, section, 'h4', 'Packages from your payment provider');
   appendText(
     doc,
     section,
     'p',
-    'Import the provider\'s tier identities (Stripe entitlement features, Paddle or '
-      + 'Lemon Squeezy products) as access tiers. New tiers start with an empty '
-      + 'contract template; existing grants and tier policy are left unchanged.',
+    'Bring in the packages from whoever takes your payments: Stripe, Paddle or '
+      + 'Lemon Squeezy. New packages start with no '
+      + 'agreement. Anything you have already given out stays as it is.',
     'seller-section-copy',
   );
   const fields = append(doc, section, 'div', 'seller-settings-form-grid');
@@ -1912,12 +1912,12 @@ const renderProviderTierSynchronizeForm = (
   const connectionName = appendSyncInput(
     'Connection name',
     'connection_name',
-    'Optional when only one connection of that provider is ready',
+    'You can leave this empty if you only have one connection for them',
   );
   const storeId = appendSyncInput(
     'Lemon Squeezy store id',
     'store_id',
-    'Numeric store id (Lemon Squeezy only)',
+    'Your store number. Lemon Squeezy only',
   );
   const doorTypeWrap = append(doc, fields, 'label', 'seller-form-field');
   appendText(doc, doorTypeWrap, 'span', 'Access type');
@@ -1926,7 +1926,7 @@ const renderProviderTierSynchronizeForm = (
   for (const [value, label] of [
     ['mcp', 'MCP tools'],
     ['mcp_chat', 'MCP chat'],
-    ['llm_gateway', 'OpenAI-compatible LLM gateway'],
+    ['llm_gateway', 'AI access through your own door'],
   ] as const) {
     const option = doc.createElement('option');
     option.value = value;
@@ -1957,10 +1957,10 @@ const renderProviderTierSynchronizeForm = (
     const spec = sellerProviderFor(selectedProvider());
     const readiness = readinessFor(spec.source);
     status.textContent = !selectedServable()
-      ? `${spec.label} synchronization needs a newer paired server.`
+      ? `${spec.label} needs a newer server to bring things in.`
       : readiness?.state === 'ready'
         ? ''
-        : readiness?.detail ?? `${spec.label} provider readiness is unavailable.`;
+        : readiness?.detail ?? `${spec.label} cannot tell you whether they are ready.`;
   };
   if (formMessage !== null) {
     status.textContent = formMessage.text;
@@ -1989,7 +1989,7 @@ const renderProviderTierSynchronizeForm = (
       }
     }
     if (payload.provider !== 'stripe' || runSynchronizeStripe === undefined) {
-      throw new Error(`${sellerProviderFor(payload.provider).label} synchronization needs a newer paired server.`);
+      throw new Error(`${sellerProviderFor(payload.provider).label} needs a newer server to bring things in.`);
     }
     const { features_seen, ...legacy } = await runSynchronizeStripe({
       ...(payload.connection_name !== undefined ? { connection_name: payload.connection_name } : {}),
@@ -2003,7 +2003,7 @@ const renderProviderTierSynchronizeForm = (
   const submit = appendButton(
     doc,
     footer,
-    'Synchronize tiers',
+    'Bring packages in',
     () => {
       if (pending || !selectedReady() || !selectedServable()) return;
       pending = true;
@@ -2067,18 +2067,18 @@ const renderSettings = (
 ): void => {
   const section = append(doc, parent, 'section', 'seller-section');
   section.setAttribute(SELLER_SETTINGS_ATTR, '');
-  appendText(doc, section, 'h4', 'Current defaults');
+  appendText(doc, section, 'h4', 'Your normal settings');
   const dl = append(doc, section, 'dl', 'seller-kv-grid');
   appendKeyValue(
     doc,
     dl,
-    'Default grace',
+    'How long you give people',
     `${overview.settings.default_grace_hours}h`,
   );
   appendKeyValue(
     doc,
     dl,
-    'Sender mail instance',
+    'Which mailbox sends',
     formatOptional(overview.settings.sender_mail_instance_id),
   );
 };
@@ -2102,12 +2102,12 @@ const renderSettingsForm = (
 ): void => {
   const section = append(doc, parent, 'section', 'seller-section');
   section.setAttribute(SELLER_SETTINGS_FORM_ATTR, '');
-  appendText(doc, section, 'h4', 'Edit defaults');
+  appendText(doc, section, 'h4', 'Change these');
   const fields = append(doc, section, 'div', 'seller-settings-form-grid');
   const defaultGrace = appendSettingsField(
     doc,
     fields,
-    'Default grace hours',
+    'How long you give people hours',
     'default_grace_hours',
     {
       type: 'number',
@@ -2127,8 +2127,8 @@ const renderSettingsForm = (
     doc,
     advanced,
     'p',
-    'These policies are intended for advanced lifecycle and email overrides. '
-      + 'Leave them unchanged unless a workflow requires specific JSON values.',
+    'These are for advanced changes to how things run and what emails go out. '
+      + 'Leave them alone unless something you use needs particular values.',
     'seller-form-intro',
   );
   const advancedFields = append(
@@ -2179,7 +2179,7 @@ const renderSettingsForm = (
             if (!mailInstances.some((instance) =>
               instance.slug === sender_mail_instance_id)) {
               throw new Error(
-                'Sender mail instance is unavailable. Choose a send-capable account or No sender.',
+                'That mailbox cannot send. Pick an account that can, or No sender.',
               );
             }
           } else if (
@@ -2187,14 +2187,14 @@ const renderSettingsForm = (
             !== (overview.settings.sender_mail_instance_id?.trim() || null)
           ) {
             throw new Error(
-              'Sender mail instances are unavailable. Keep the saved sender or choose No sender.',
+              'Recued cannot see your mailboxes right now. Keep the one you saved, or choose No sender.',
             );
           }
         }
         return {
           default_grace_hours: parseRequiredWholeNumber(
             defaultGrace,
-            'Default grace hours',
+            'How long you give people hours',
           ),
           sender_mail_instance_id,
           status_policy_json: parseJsonObjectTextarea(statusPolicy, 'Status policy'),
@@ -2228,7 +2228,7 @@ const renderLlmGateway = (
 ): void => {
   const section = append(doc, parent, 'section', 'seller-section');
   section.setAttribute(SELLER_LLM_GATEWAY_ATTR, '');
-  appendText(doc, section, 'h4', 'Paid model access');
+  appendText(doc, section, 'h4', 'Paid AI access');
   const dl = append(doc, section, 'dl', 'seller-kv-grid');
   appendKeyValue(
     doc,
@@ -2236,12 +2236,12 @@ const renderLlmGateway = (
     'Route',
     overview.llm_gateway.configured
       ? formatOptional(overview.llm_gateway.default_route)
-      : 'Not configured',
+      : 'Not set up',
   );
   appendKeyValue(
     doc,
     dl,
-    'Model alias',
+    'What customers call the AI',
     formatOptional(overview.llm_gateway.model_alias),
   );
   appendKeyValue(
@@ -2259,7 +2259,7 @@ const renderLlmGateway = (
     'Paid access',
     overview.llm_gateway.paid_acknowledged
       ? `Acknowledged (${formatTimestamp(overview.llm_gateway.paid_ack_at)})`
-      : 'Not acknowledged',
+      : 'You have not agreed yet',
   );
 };
 
@@ -2281,15 +2281,15 @@ const renderLlmGatewayAckForm = (
 ): void => {
   const section = append(doc, parent, 'section', 'seller-section');
   section.setAttribute(SELLER_LLM_GATEWAY_ACK_FORM_ATTR, '');
-  appendText(doc, section, 'h4', 'Acknowledge paid model access');
+  appendText(doc, section, 'h4', 'Agree to sell AI access');
   appendText(
     doc,
     section,
     'p',
-    'Before selling model access, confirm that your agreements allow every '
-      + 'configured route to serve paying customers, including routes in the free '
-      + 'pool. Recued cannot determine those rights for you. Free customer service, '
-      + 'booking, and internal use do not require this acknowledgment.',
+    'Before you sell AI access, check that your own agreements let every '
+      + 'AI you have set up serve paying customers. That includes the free '
+      + 'ones. Recued cannot work this out for you. Free help, '
+      + 'booking and your own use do not need this.',
     'seller-section-copy',
   );
 
@@ -2302,27 +2302,27 @@ const renderLlmGatewayAckForm = (
     if (formMessage.kind === 'error') status.setAttribute('role', 'alert');
   } else {
     status.textContent =
-      'Required before a paid gateway customer’s chat turn can run.';
+      'A paying customer cannot use Chat until you agree to this.';
   }
 
   let pending = false;
   const submit = appendButton(
     doc,
     footer,
-    'I acknowledge — enable paid access',
+    'I agree. Turn on paid access',
     () => {
       if (pending) return;
       pending = true;
       submit.disabled = true;
       status.removeAttribute('role');
       status.removeAttribute('data-kind');
-      status.textContent = 'Recording the acknowledgment.';
+      status.textContent = 'Saving…';
       void Promise.resolve()
         .then(() => runAcknowledge({ ack_version: LLM_GATEWAY_PAID_ACK_VERSION }))
         .then((response) => {
           applyResult(response, {
             kind: 'success',
-            text: 'Paid gateway access acknowledged.',
+            text: 'Saved. Paid access is on.',
           });
         })
         .catch((err) => {
@@ -2346,18 +2346,18 @@ const renderTiers = (
   linkRows = false,
 ): void => {
   const section = append(doc, parent, 'section', 'seller-section');
-  appendText(doc, section, 'h4', 'Access tiers');
+  appendText(doc, section, 'h4', 'Packages');
   appendText(
     doc,
     section,
     'p',
-    'Each tier points to a customer contract template. Edit that template in '
-      + 'Contracts to change what newly issued or re-stamped customers can access.',
+    'Each package has an agreement behind it. Change that agreement under '
+      + 'Contracts, and new customers get the new one.',
     'seller-section-copy',
   );
   appendTable<SellerTier>(doc, section, {
     className: 'seller-table seller-tier-table',
-    empty: 'No tiers yet.',
+    empty: 'No packages yet.',
     rows: tiers,
     markRow: (tier, tr) => tr.setAttribute(SELLER_TIER_ROW_ATTR, tier.tier_id),
     columns: [
@@ -2399,7 +2399,7 @@ const renderTiers = (
       },
       {
         // D-250 § D — limits, not raw JSON, and "no limit" said out loud.
-        label: 'Usage limits',
+        label: 'How much they may use',
         value: (tier) => formatUsagePolicy(tier.usage_policy_json),
       },
     ],
@@ -2443,14 +2443,14 @@ const renderTierUsagePolicyForm = (
   // opens expanded; a collapsed disclosure on a screen named for the form hid it.
   section.open = true;
   section.setAttribute(SELLER_TIER_USAGE_FORM_ATTR, tier.tier_id);
-  appendText(doc, section, 'summary', 'Usage limits');
+  appendText(doc, section, 'summary', 'How much they may use');
   appendText(
     doc,
     section,
     'p',
-    'Leave a field blank for no limit. Limits are checked before each call and '
-      + 'a customer is refused once the period allowance is used up; token cost '
-      + 'is recorded either way, so an unlimited tier still reports what it spent.',
+    'Leave a box empty for no limit. Recued checks before every use, and '
+      + 'turns a customer away once they have used up their share. What it cost '
+      + 'is written down either way, so even a package with no limit shows its spending.',
     'seller-form-intro',
   );
 
@@ -2487,7 +2487,7 @@ const renderTierUsagePolicyForm = (
       'h4',
       kind === 'chat_turn' ? 'Chat turns' : 'Tool calls',
         );
-    fieldFor(group, kind, 'period_limit', 'Allowance per period', obj.period_limit);
+    fieldFor(group, kind, 'period_limit', 'How much they get', obj.period_limit);
     const periodWrap = append(doc, group, 'label', 'seller-form-field');
     appendText(doc, periodWrap, 'span', 'Period');
     const period = doc.createElement('select');
@@ -2501,7 +2501,7 @@ const renderTierUsagePolicyForm = (
     period.setAttribute(SELLER_TIER_USAGE_FIELD_ATTR, `${kind}.period_granularity`);
     periodWrap.appendChild(period);
     granularities.set(kind, period);
-    fieldFor(group, kind, 'rate_limit_per_minute', 'Rate limit per minute', obj.rate_limit_per_minute);
+    fieldFor(group, kind, 'rate_limit_per_minute', 'Most per minute', obj.rate_limit_per_minute);
   }
 
   const footer = append(doc, section, 'div', 'seller-form-footer');
@@ -2551,7 +2551,7 @@ const renderTierUsagePolicyForm = (
         .then(build)
         .then((payload) => runSetTierUsagePolicy(payload))
         .then((response) => {
-          applyResult(response, { kind: 'success', text: 'Usage limits saved.' });
+          applyResult(response, { kind: 'success', text: 'How much they may use saved.' });
         })
         .catch((err) => {
           status.setAttribute('role', 'alert');
@@ -2593,13 +2593,13 @@ const renderManualTierBulkAdjustForm = (
   // opens expanded; a collapsed disclosure on a screen named for the form hid it.
   section.open = true;
   section.setAttribute(SELLER_TIER_BULK_ADJUST_FORM_ATTR, '');
-  appendText(doc, section, 'summary', 'Apply tier changes to customers');
+  appendText(doc, section, 'summary', 'Give everyone the new package');
   appendText(
     doc,
     section,
     'p',
-    'Re-stamp selected open customers from the tier template. This replaces any '
-      + 'per-customer grant changes; closed customers are always skipped.',
+    'Re-issue these customers from the package’s agreement. This wipes any '
+      + 'changes you made for one person. Closed customers are always left alone.',
     'seller-form-intro',
   );
   const fields = append(doc, section, 'div', 'seller-tier-bulk-adjust-grid');
@@ -2629,7 +2629,7 @@ const renderManualTierBulkAdjustForm = (
   const allOpenCustomers = appendBulkAdjustCheckbox(
     doc,
     checks,
-    'All open customers',
+    'Everyone still active',
     'all_open_customers',
     true,
   );
@@ -2651,14 +2651,14 @@ const renderManualTierBulkAdjustForm = (
   const submit = appendButton(
     doc,
     footer,
-    'Restamp customers',
+    'Re-issue them',
     () => {
       if (pending) return;
       pending = true;
       submit.disabled = true;
       status.removeAttribute('role');
       status.removeAttribute('data-kind');
-      status.textContent = 'Restamping customers.';
+      status.textContent = 'Re-issuing…';
       const request = (): SellerManualTierBulkAdjustRequest => ({
         tier_id: requiredFieldValue(tierId, 'Tier'),
         ...(!allOpenCustomers.checked
@@ -2671,7 +2671,7 @@ const renderManualTierBulkAdjustForm = (
         .then((response) => {
           applyResult(response, {
             kind: 'success',
-            text: `Tier customers adjusted. ${
+            text: `Done. ${
               response.adjusted_customers.length
             } adjusted, ${response.skipped_closed_customers.length} skipped.`,
           });
@@ -2711,16 +2711,16 @@ const renderCreatePassTierForm = (
   // opens expanded; a collapsed disclosure on a screen named for the form hid it.
   section.open = true;
   section.setAttribute(SELLER_PASS_TIER_FORM_ATTR, '');
-  appendText(doc, section, 'summary', 'Create a pass tier');
+  appendText(doc, section, 'summary', 'Make a timed pass');
   appendText(
     doc,
     section,
     'p',
-    'Mints an empty customer template for the chosen access type and binds a new pass tier '
-      + 'to it in one step. Set the three pass axes — time (pass seconds), the '
-      + 'LLM turn limit and tool-call limit (usage policy JSON). After it is '
-      + 'created, open the template in Contracts to author which tools and data '
-      + 'the pass grants.',
+    'Makes an empty agreement for the kind of access you pick, and ties a new pass '
+      + 'to it in one go. Set three things: how long it lasts, how many '
+      + 'AI turns it allows, and how many tool uses. Once it is '
+      + 'made, open the agreement under Contracts to say which tools and which things '
+      + 'the pass allows.',
   ).className = 'seller-form-intro';
   const fields = append(doc, section, 'div', 'seller-tier-form-grid');
   const appendPassField = (
@@ -2746,7 +2746,7 @@ const renderCreatePassTierForm = (
   for (const [value, label] of [
     ['mcp', 'MCP tools'],
     ['mcp_chat', 'MCP chat'],
-    ['llm_gateway', 'OpenAI-compatible LLM gateway'],
+    ['llm_gateway', 'AI access through your own door'],
   ] as const) {
     const option = doc.createElement('option');
     option.value = value;
@@ -2754,10 +2754,10 @@ const renderCreatePassTierForm = (
     doorType.appendChild(option);
   }
   doorTypeWrap.appendChild(doorType);
-  const entitlementKey = appendPassField('Entitlement key', 'entitlement_key');
+  const entitlementKey = appendPassField('The package’s key', 'entitlement_key');
   const displayName = appendPassField('Display name', 'display_name');
   const passDuration = appendPassField(
-    'Pass duration (seconds)',
+    'How long the pass lasts, in seconds',
     'pass_duration_seconds',
     'number',
   );
@@ -2788,7 +2788,7 @@ const renderCreatePassTierForm = (
   }
   if (createdTemplateContractId !== null) {
     const hint = append(doc, footer, 'div', 'seller-form-hint');
-    appendText(doc, hint, 'span', 'Author its grants: ');
+    appendText(doc, hint, 'span', 'Say what it allows: ');
     appendContractLink(doc, hint, createdTemplateContractId);
   }
 
@@ -2796,18 +2796,18 @@ const renderCreatePassTierForm = (
   const submit = appendButton(
     doc,
     footer,
-    'Create pass tier',
+    'Make the pass',
     () => {
       if (pending) return;
       pending = true;
       submit.disabled = true;
       status.removeAttribute('role');
       status.removeAttribute('data-kind');
-      status.textContent = 'Creating pass tier.';
+      status.textContent = 'Making it…';
       const request = (): SellerCreatePassTierRequest => ({
         door_id: requiredFieldValue(doorId, CATEGORY_LABEL),
         door_type: doorType.value as SellerCreatePassTierRequest['door_type'],
-        entitlement_key: requiredFieldValue(entitlementKey, 'Entitlement key'),
+        entitlement_key: requiredFieldValue(entitlementKey, 'The package’s key'),
         display_name: requiredFieldValue(displayName, 'Display name'),
         pass_duration_seconds: parseOptionalWholeSeconds(passDuration),
         usage_policy_json: parseUsagePolicy(usagePolicy),
@@ -2820,7 +2820,7 @@ const renderCreatePassTierForm = (
             kind: 'success',
             text:
               `Pass tier "${response.tier.display_name}" created. `
-              + 'Open its template in Contracts to author the pass grants.',
+              + 'Open its template in Contracts to author the pass allows.',
           });
         })
         .catch((err) => {
@@ -2859,37 +2859,37 @@ const renderManualTierForm = (
   // opens expanded; a collapsed disclosure on a screen named for the form hid it.
   section.open = true;
   section.setAttribute(SELLER_TIER_FORM_ATTR, '');
-  appendText(doc, section, 'summary', 'Tier details');
+  appendText(doc, section, 'summary', 'About this package');
   appendText(
     doc,
     section,
     'p',
     initialTierId === undefined
-      ? 'Use a stable Tier ID for a new access package, or enter an existing manual '
-        + 'Tier ID to load its editable fields. The category and entitlement key cannot change later.'
-      : 'The category and entitlement key are fixed once a tier exists. Change the name, template, '
-        + 'pass duration, limits, or status, then save.',
+      ? 'Pick an id for a new package that will never change, or type an existing '
+        + 'one to open it. You cannot change the kind or the key afterwards.'
+      : 'Once a package exists you cannot change what kind it is, or its key. You can change the name, template, '
+        + 'how long it lasts, the limits, or the status. Then save.',
     'seller-form-intro',
   );
   const fields = append(doc, section, 'div', 'seller-tier-form-grid');
-  const tierId = appendField(doc, fields, 'Tier ID', 'tier_id');
+  const tierId = appendField(doc, fields, 'Package id', 'tier_id');
   const entitlementKey = appendField(
     doc,
     fields,
-    'Entitlement key',
+    'The package’s key',
     'entitlement_key',
   );
   const displayName = appendField(doc, fields, 'Display name', 'display_name');
   const templateContractId = appendField(
     doc,
     fields,
-    'Template contract',
+    'The agreement behind it',
     'template_contract_id',
   );
   const passDuration = appendField(
     doc,
     fields,
-    'Pass duration (seconds)',
+    'How long the pass lasts, in seconds',
     'pass_duration_seconds',
     { type: 'number' },
   );
@@ -2909,7 +2909,7 @@ const renderManualTierForm = (
   const customerStatusEnabled = appendCheckboxField(
     doc,
     checks,
-    'Enable customer status updates',
+    'Tell customers when things change',
     'customer_status_enabled_default',
     false,
   );
@@ -2954,22 +2954,22 @@ const renderManualTierForm = (
   const submit = appendButton(
     doc,
     footer,
-    'Save tier',
+    'Save the package',
     () => {
       if (pending) return;
       pending = true;
       submit.disabled = true;
       status.removeAttribute('role');
       status.removeAttribute('data-kind');
-      status.textContent = 'Saving tier.';
+      status.textContent = 'Saving…';
       const request = (): SellerManualTierUpsertRequest => ({
-        tier_id: requiredFieldValue(tierId, 'Tier ID'),
+        tier_id: requiredFieldValue(tierId, 'Package id'),
         door_id: requiredFieldValue(doorId, CATEGORY_LABEL),
-        entitlement_key: requiredFieldValue(entitlementKey, 'Entitlement key'),
+        entitlement_key: requiredFieldValue(entitlementKey, 'The package’s key'),
         display_name: requiredFieldValue(displayName, 'Display name'),
         template_contract_id: requiredFieldValue(
           templateContractId,
-          'Template contract',
+          'The agreement behind it',
         ),
         usage_policy_json: parseUsagePolicy(usagePolicy),
         pass_duration_seconds: parseOptionalWholeSeconds(passDuration),
@@ -2980,7 +2980,7 @@ const renderManualTierForm = (
         .then(request)
         .then((payload) => runUpsertManualTier(payload))
         .then((response) => {
-          applyResult(response, { kind: 'success', text: 'Tier saved.' });
+          applyResult(response, { kind: 'success', text: 'Saved.' });
         })
         .catch((err) => {
           status.setAttribute('role', 'alert');
@@ -3023,13 +3023,13 @@ const renderManualCustomerForm = (
   // opens expanded; a collapsed disclosure on a screen named for the form hid it.
   section.open = true;
   section.setAttribute(SELLER_CUSTOMER_FORM_ATTR, '');
-  appendText(doc, section, 'summary', 'Issue customer access');
+  appendText(doc, section, 'summary', 'Give someone access');
   appendText(
     doc,
     section,
     'p',
-    'Create a customer contract from an active manual tier. Keep the one-time '
-      + 'claim link until the customer has claimed access.',
+    'Set someone up on a package you run yourself. Keep the one-off '
+      + 'link until they have used it.',
     'seller-form-intro',
   );
   const fields = append(doc, section, 'div', 'seller-customer-form-grid');
@@ -3059,8 +3059,8 @@ const renderManualCustomerForm = (
     doc,
     fields,
     claimEmailReady
-      ? 'Email the one-time claim link'
-      : 'Email the one-time claim link (configure a sender first)',
+      ? 'Email them the one-off link'
+      : 'Email them the one-off link. Set up a mailbox first',
     'send_claim_email',
     false,
   );
@@ -3068,7 +3068,7 @@ const renderManualCustomerForm = (
   const currentPeriodEnd = appendCustomerField(
     doc,
     fields,
-    'Period end (Unix ms)',
+    'When it ends',
     'current_period_end',
     { type: 'number' },
   );
@@ -3082,12 +3082,12 @@ const renderManualCustomerForm = (
   appendText(doc, advanced, 'summary', 'Advanced');
   const doorId = appendCustomerField(doc, advanced, CATEGORY_LABEL, 'door_id', {
     value: defaultTier.door_id,
-    help: 'Set from the chosen tier. Change these only to issue against a tier that is not listed.',
+    help: 'Filled in from the package you picked. Only change these to use a package that is not listed.',
   });
   const entitlementKey = appendCustomerField(
     doc,
     advanced,
-    'Entitlement key',
+    'The package’s key',
     'entitlement_key',
     { value: defaultTier.entitlement_key },
   );
@@ -3109,18 +3109,18 @@ const renderManualCustomerForm = (
   const submit = appendButton(
     doc,
     footer,
-    'Issue customer',
+    'Give someone access',
     () => {
       if (pending) return;
       pending = true;
       submit.disabled = true;
       status.removeAttribute('role');
       status.removeAttribute('data-kind');
-      status.textContent = 'Issuing customer.';
+      status.textContent = 'Setting them up…';
       const request = (): SellerManualCustomerIssueRequest => {
         const payload: SellerManualCustomerIssueRequest = {
           door_id: requiredFieldValue(doorId, CATEGORY_LABEL),
-          entitlement_key: requiredFieldValue(entitlementKey, 'Entitlement key'),
+          entitlement_key: requiredFieldValue(entitlementKey, 'The package’s key'),
           source_customer_id: requiredFieldValue(
             sourceCustomerId,
             'Source customer ID',
@@ -3128,12 +3128,12 @@ const renderManualCustomerForm = (
         };
         const emailValue = optionalInputValue(email);
         if (sendClaimEmail.checked && emailValue === undefined) {
-          throw new Error('Email is required when claim email delivery is selected.');
+          throw new Error('You need an email address to send them the link.');
         }
         const sourceStatusValue = optionalInputValue(sourceStatus);
         const periodEnd = parseOptionalWholeNumber(
           currentPeriodEnd,
-          'Period end (Unix ms)',
+          'When it ends',
         );
         return {
           ...payload,
@@ -3148,18 +3148,18 @@ const renderManualCustomerForm = (
         .then((payload) => runIssueManualCustomer(payload))
         .then((response) => {
           const claimText = response.claim
-            ? ` One-time claim link: ${response.claim.claim_url}`
+            ? ` Their one-off link: ${response.claim.claim_url}`
             : '';
           const deliveryText = response.claim_email_delivery?.status === 'sent'
-            ? ' Claim email sent.'
+            ? ' The email is on its way.'
             : response.claim_email_delivery?.status === 'failed'
-              ? ` Claim email failed (${response.claim_email_delivery.error_code}); deliver the link manually.`
+              ? ` Recued could not send the email (${response.claim_email_delivery.error_code}); deliver the link manually.`
               : '';
           applyResult(response, {
             kind: response.claim_email_delivery?.status === 'failed' ? 'error' : 'success',
             text: response.result === 'created'
-              ? `Customer issued.${deliveryText}${claimText}`
-              : 'Customer extended.',
+              ? `They are set up.${deliveryText}${claimText}`
+              : 'Their access now lasts longer.',
           });
         })
         .catch((err) => {
@@ -3386,13 +3386,13 @@ const renderManualCustomerLifecycleControls = (
 
   const section = append(doc, parent, 'section', 'seller-section');
   section.setAttribute(SELLER_CUSTOMER_LIFECYCLE_FORM_ATTR, '');
-  appendText(doc, section, 'h4', 'Manage customer access');
+  appendText(doc, section, 'h4', 'Look after someone’s access');
   appendText(
     doc,
     section,
     'p',
-    'Choose an action below for an existing manual customer. Customer contracts '
-      + 'stay here in Seller; tier templates are edited in Contracts.',
+    'Pick what to do for one of your customers. Their agreements '
+      + 'live here. The package agreements are changed under Contracts.',
     'seller-form-intro',
   );
   const status = append(doc, section, 'div', 'seller-form-status');
@@ -3447,7 +3447,7 @@ const renderManualCustomerLifecycleControls = (
       'Customer',
       'extend.customer_id',
       openCustomerOptions,
-    ), 'Customer to extend');
+    ), 'Who to give longer');
     const email = withAccessibleName(appendLifecycleField(
       doc,
       fields,
@@ -3458,10 +3458,10 @@ const renderManualCustomerLifecycleControls = (
     const currentPeriodEnd = withAccessibleName(appendLifecycleField(
       doc,
       fields,
-      'Period end (Unix ms)',
+      'When it ends',
       'extend.current_period_end',
       { type: 'number' },
-    ), 'Extension period end (Unix ms)');
+    ), 'New end time');
     const sourceStatus = withAccessibleName(appendLifecycleField(
       doc,
       fields,
@@ -3474,13 +3474,13 @@ const renderManualCustomerLifecycleControls = (
       footer,
       'Extend',
       () => runAction(
-        'Extending customer.',
-        'Customer extended.',
+        'Giving them longer…',
+        'Their access now lasts longer.',
         () => {
           const emailValue = optionalInputValue(email);
           const periodEnd = parseOptionalWholeNumber(
             currentPeriodEnd,
-            'Period end (Unix ms)',
+            'When it ends',
           );
           const sourceStatusValue = optionalInputValue(sourceStatus);
           return callers.runExtendManualCustomer!({
@@ -3500,7 +3500,7 @@ const renderManualCustomerLifecycleControls = (
 
   if (canSwap) {
     const action = append(doc, section, 'details', 'seller-lifecycle-action');
-    appendText(doc, action, 'summary', 'Swap tier');
+    appendText(doc, action, 'summary', 'Move to another package');
     // D-196 micro-call — a swap RE-STAMPS the customer's contract from the new
     // tier's template (`restampCustomerFromTierTemplate`, whose sole caller is
     // `swapCustomerTier`), which resets any per-customer grant edits made in
@@ -3511,9 +3511,9 @@ const renderManualCustomerLifecycleControls = (
       doc,
       action,
       'p',
-      'A swap re-issues this customer\'s contract from the new tier\'s template. '
-        + 'Any per-customer grant changes you made in Contracts are reset to that '
-        + 'template — extending or reissuing does not do this, only swapping.',
+      'Moving them re-issues their agreement from the new package. '
+        + 'Anything you changed just for them, under Contracts, goes back to the '
+        + 'package’s own wording. Only moving does this. Giving them longer does not.',
       'seller-table-detail',
     ).setAttribute(SELLER_SWAP_RESTAMP_HINT_ATTR, '');
     const fields = append(doc, action, 'div', 'seller-customer-lifecycle-grid');
@@ -3523,14 +3523,14 @@ const renderManualCustomerLifecycleControls = (
       'Customer',
       'swap.customer_id',
       swapCustomerOptions,
-    ), 'Customer to swap');
+    ), 'Who to move');
     const entitlementKey = withAccessibleName(appendLifecycleSelect(
       doc,
       fields,
       'Entitlement',
       'swap.entitlement_key',
       tierOptionsForCustomer(customerId.value),
-    ), 'Swap entitlement');
+    ), 'Swap what it unlocks');
     customerId.addEventListener('change', () => {
       clearChildren(entitlementKey);
       for (const [value, label] of tierOptionsForCustomer(customerId.value)) {
@@ -3543,10 +3543,10 @@ const renderManualCustomerLifecycleControls = (
     const currentPeriodEnd = withAccessibleName(appendLifecycleField(
       doc,
       fields,
-      'Period end (Unix ms)',
+      'When it ends',
       'swap.current_period_end',
       { type: 'number' },
-    ), 'Swap period end (Unix ms)');
+    ), 'New end time');
     const sourceStatus = withAccessibleName(appendLifecycleField(
       doc,
       fields,
@@ -3557,14 +3557,14 @@ const renderManualCustomerLifecycleControls = (
     const button = appendButton(
       doc,
       footer,
-      'Swap tier',
+      'Move to another package',
       () => runAction(
-        'Swapping tier.',
-        'Customer tier swapped.',
+        'Moving them…',
+        'They are on the new package.',
         () => {
           const periodEnd = parseOptionalWholeNumber(
             currentPeriodEnd,
-            'Period end (Unix ms)',
+            'When it ends',
           );
           const sourceStatusValue = optionalInputValue(sourceStatus);
           return callers.runSwapManualCustomerTier!({
@@ -3656,7 +3656,7 @@ const renderManualCustomerLifecycleControls = (
       () => runAction(
         'Reissuing token.',
         (response) => {
-          return `Customer token reissued. One-time claim link: ${response.claim.claim_url}`;
+          return `Customer token reissued. Their one-off link: ${response.claim.claim_url}`;
         },
         () => callers.runReissueManualCustomerToken!({
           customer_id: requiredFieldValue(customerId, 'Customer'),
@@ -3691,7 +3691,7 @@ const renderManualCustomerLifecycleControls = (
         doc,
         footer,
         'div',
-        'Configure a send-capable mail sender in Seller settings to message a customer.',
+        'Set up a mailbox that can send, in Seller settings, before you message a customer.',
       ).className = 'seller-form-hint';
     }
     const button = appendButton(
@@ -4001,10 +4001,10 @@ const renderSetupDirectory = (
     },
     gateway: {
       text: !overview.llm_gateway.configured
-        ? 'No route configured'
+        ? 'No route set up'
         : overview.llm_gateway.paid_acknowledged
-          ? 'Configured and acknowledged'
-          : 'Configured · paid access not acknowledged',
+          ? 'Set up, and you have said yes'
+          : 'Set up · you have not said yes to paid access',
       state: overview.llm_gateway.configured
         ? overview.llm_gateway.paid_acknowledged ? 'ready' : 'needs_setup'
         : 'not_wired',
@@ -4585,7 +4585,7 @@ export const mountSellerPage = (
       case 'orders':
         if (opts.runListOrders === undefined) {
           renderUnavailable(
-            'Orders unavailable',
+            'Recued cannot show orders',
             'This paired server does not expose the Seller orders list. Update the server to use this page.',
           );
           break;
@@ -4671,7 +4671,7 @@ export const mountSellerPage = (
           if (createVariant === 'pass') {
             if (opts.runCreatePassTier === undefined) {
               renderUnavailable(
-                'Pass tiers unavailable',
+                'Recued cannot show pass tiers',
                 'This paired server does not expose pass-tier creation. Update the server to use this screen.',
               );
               break;
@@ -4698,7 +4698,7 @@ export const mountSellerPage = (
           }
           if (opts.runUpsertManualTier === undefined) {
             renderUnavailable(
-              'Manual tiers unavailable',
+              'Recued cannot show manual tiers',
               'This paired server does not expose manual tier writes. Update the server to use this screen.',
             );
             break;
@@ -4758,7 +4758,7 @@ export const mountSellerPage = (
           if (detailTab === 'edit') {
             if (!manualEditable || opts.runUpsertManualTier === undefined) {
               renderUnavailable(
-                'Edit unavailable',
+                'You cannot edit this now',
                 manualEditable
                   ? 'This paired server does not expose manual tier writes.'
                   : 'A provider-synchronized tier is edited at the provider; only its usage limits are set here.',
@@ -4779,7 +4779,7 @@ export const mountSellerPage = (
           if (detailTab === 'customers') {
             if (!manualEditable || opts.runBulkAdjustManualTierCustomers === undefined) {
               renderUnavailable(
-                'Bulk adjustment unavailable',
+                'You cannot change them all at once now',
                 manualEditable
                   ? 'This paired server does not expose the bulk adjustment.'
                   : 'A provider-synchronized tier moves its customers through the provider\'s own events.',
@@ -4819,10 +4819,10 @@ export const mountSellerPage = (
         const list = appendCollectionHost('tiers', null);
         renderListToolbar(doc, list, [
           ...(opts.runUpsertManualTier !== undefined
-            ? [{ key: 'tiers:manual', label: 'New manual tier', hash: sellerCreateAddress('tiers', 'manual').hash }]
+            ? [{ key: 'tiers:manual', label: 'New package you run yourself', hash: sellerCreateAddress('tiers', 'manual').hash }]
             : []),
           ...(opts.runCreatePassTier !== undefined
-            ? [{ key: 'tiers:pass', label: 'New pass tier', hash: sellerCreateAddress('tiers', 'pass').hash }]
+            ? [{ key: 'tiers:pass', label: 'New timed pass', hash: sellerCreateAddress('tiers', 'pass').hash }]
             : []),
         ]);
         renderTiers(doc, list, paged.rows, true);
@@ -4856,7 +4856,7 @@ export const mountSellerPage = (
           const create = appendCreateHost('customers', createVariant);
           if (opts.runIssueManualCustomer === undefined) {
             renderUnavailable(
-              'Issuing unavailable',
+              'You cannot give one out now',
               'This paired server does not expose manual customer issue. Update the server to use this screen.',
             );
             break;
@@ -4926,7 +4926,7 @@ export const mountSellerPage = (
         const paged = localPage(overview.customers);
         const list = appendCollectionHost('customers', null);
         renderListToolbar(doc, list, opts.runIssueManualCustomer !== undefined
-          ? [{ key: 'customers:manual', label: 'Issue customer', hash: sellerCreateAddress('customers', 'manual').hash }]
+          ? [{ key: 'customers:manual', label: 'Give someone access', hash: sellerCreateAddress('customers', 'manual').hash }]
           : []);
         renderCustomers(doc, list, paged.rows, true);
         renderSellerPager(doc, list, {
@@ -5013,7 +5013,7 @@ export const mountSellerPage = (
                 && opts.runSynchronizeStripeEntitlements === undefined
               ) {
                 renderUnavailable(
-                  'Provider tiers unavailable',
+                  'Recued cannot show packages from your payment service',
                   'This paired server does not expose the provider tier seed. Update the server to use this screen.',
                 );
                 break;
@@ -5100,7 +5100,7 @@ export const mountSellerPage = (
       id: itemId,
       eyebrow: `${label} preview`,
       title,
-      summary: `Review this ${label.toLocaleLowerCase()} item before opening its full controls and provenance.`,
+      summary: `Review this ${label.toLocaleLowerCase()} item before you open everything about it, and where it came from.`,
       facts: [
         { label: 'Collection', value: label },
         { label: 'Record', value: itemId },

@@ -971,6 +971,9 @@ export interface ExecuteHandlerDeps {
   preapprovalRuntime?: ReturnType<typeof import('./preapproval-execution.js').createPreapprovalExecutionRuntime>;
   preapprovalDriver?: import('./preapproval-driver.js').PreapprovalDriver;
   mailDraft?: import('@recued/ingredients').KernelDispatchers['mailDraft'];
+  /** D-264 — `core.mail.draft.save-to-mailbox`. Optional: a server with no mail stack
+   *  wired leaves it absent and the kernel case says so. */
+  mailDraftSaveToMailbox?: import('@recued/ingredients').KernelDispatchers['mailDraftSaveToMailbox'];
   preapprovalRequest?: (request: import('@recued/contracts').PreparePreapproval,
     meta: import('@recued/contracts').StepMeta | undefined) => Promise<import('@recued/contracts').PreapprovalResult>;
   recipeStore: RecipeStore;
@@ -6380,6 +6383,22 @@ const handleExecuteInner = async (
               : {}),
             ...(awaitingApproval.reason !== undefined
               ? { reason: awaitingApproval.reason }
+              : {}),
+            // D-161 Part B (display) — name the STARTER when this run came in
+            // through a door, so the ask stops reading identically whether the
+            // owner typed it or a stranger posted a public form.
+            //
+            // ⛔ CLASSIFIED WITH THE SHARED PREDICATE, never a local
+            // `actor === 'anonymous' || actor === 'contracted_user'` arm. The
+            // channel forces the owner's OWN stdio MCP client to
+            // `contracted_user`, and only `isDoorDispatchSource` consults the
+            // token that tells the two apart — a hand-rolled twin would tell
+            // the owner their own desktop session was "an outside AI".
+            // ⚠ It does not classify an `llm_gateway` door (its own note says
+            // so); that stays one arm to fix rather than two to disagree.
+            ...(executionSource !== undefined
+              && isDoorDispatchSource(executionSource)
+              ? { origin_actor: executionSource.actor }
               : {}),
             ...(awaitingApproval.egress_bound !== undefined
               ? { egress_bound: awaitingApproval.egress_bound }

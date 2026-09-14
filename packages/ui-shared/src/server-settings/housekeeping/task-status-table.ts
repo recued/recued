@@ -110,7 +110,7 @@ export const renderHousekeepingTaskStatusTable = (
   if (filtered.length === 0) {
     const hint =
       props.kind === 'core'
-        ? 'Core tasks register at server boot. None registered yet.'
+        ? 'These are set up when your server starts. None yet.'
         : 'No enrichment producers registered yet.';
     return `<p class="housekeeping-task-empty">${e(hint)}</p>`;
   }

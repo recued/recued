@@ -16,11 +16,13 @@ import { build } from 'esbuild';
 import { cpSync, existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { copyFilePreviewAssets } from '../../scripts/file-preview-assets.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const PKG_ROOT = resolve(here, '../..'); // apps/webclient
+copyFilePreviewAssets(here);
 
-const ENTRIES = ['kitchen-harness.ts', 'full-app-harness.ts'];
+const ENTRIES = ['kitchen-harness.ts', 'full-app-harness.ts', 'chat-queue-harness.ts', 'file-lifecycle-harness.ts', 'existing-files-harness.ts'];
 for (const entry of ENTRIES) {
   // An entry may legitimately be absent from a source projection: the public
   // export withholds `kitchen-harness.ts`, because it stress-tests marketplace

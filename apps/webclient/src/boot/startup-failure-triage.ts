@@ -113,10 +113,10 @@ export interface BuildStartupDiagnosticSummaryOptions {
 const diagnosticFailureLabel = (kind: StartupFailureKind): string => {
   switch (kind) {
     case 'offline': return 'Browser appears offline';
-    case 'insecure_socket_blocked': return 'Insecure socket blocked by the browser';
+    case 'insecure_socket_blocked': return 'Browser blocked an unsafe connection';
     case 'server_unreachable': return 'Server unreachable';
-    case 'storage': return 'Browser storage read failed';
-    case 'unknown': return 'Unexpected startup failure';
+    case 'storage': return 'Browser storage could not be read';
+    case 'unknown': return 'Something went wrong while starting';
   }
 };
 
@@ -147,10 +147,10 @@ export const buildStartupDiagnosticSummary = (
     `Failure category: ${diagnosticFailureLabel(options.kind)}`,
     `Startup attempts in this tab: ${attemptCountCopy}`,
     `Browser network signal: ${networkSignal}`,
-    `Saved browser access: ${options.savedAccessVerified ? 'Verified present' : 'Not verified; no local access was cleared'}`,
+    `Saved sign-in on this browser: ${options.savedAccessVerified ? 'Verified present' : 'Not checked. Nothing saved here was cleared'}`,
     `Server host: ${serverHost}`,
-    `Webclient shell: ${WEBCLIENT_SHELL_CACHE_NAME}`,
-    'Privacy: The server host and any port shown above are included. Raw errors, credentials, pairing codes, Chat drafts, URL paths, query parameters, and fragments are not included.',
+    `Recued version: ${WEBCLIENT_SHELL_CACHE_NAME}`,
+    'What this shares: only your server’s address and port, shown above. It leaves out error details, sign-in details, pairing codes, Chat messages, and the rest of the web address.',
   ].join('\n');
 };
 
@@ -292,70 +292,70 @@ const failureCopy = (kind: StartupFailureKind): StartupFailureCopy => {
       return {
         title: 'This browser appears offline',
         summary:
-          'Recued cannot finish opening while this tab has no network connection.',
+          'Recued cannot finish opening while this tab is offline.',
         steps: [
-          'Reconnect this device to Wi-Fi, Ethernet, or its mobile network.',
-          'Keep this tab open, then try startup again.',
+          'Put this device back on Wi-Fi, a cable, or mobile data.',
+          'Keep this tab open, then try starting again.',
         ],
         primary: 'Try again when online',
         retryError:
-          'This browser still appears offline. Reconnect it, then try again.',
+          'This browser still looks offline. Get it back online, then try again.',
       };
     case 'insecure_socket_blocked':
       return {
         title: 'This browser blocked the connection',
         summary:
-          'Your server answered, but this page is served over https and the server’s '
-          + 'address is not — so the browser refused to open the socket before Recued '
-          + 'could ask.',
+          'Your server answered, but this page uses https and your server’s address '
+          + 'does not. So the browser blocked the connection before Recued '
+          + 'could even ask.',
         steps: [
           'Open the webclient from the server itself — its own address, ending in '
             + '/webclient/ — which is the same origin and needs no certificate.',
-          'Or give the server a domain and certificate, then pair to its https address.',
+          'Or give the server its own name and certificate, then pair with its https address.',
         ],
         primary: 'Try the connection again',
         retryError:
-          'The browser still refused the connection. Open the webclient from the '
+          'The browser still blocked the connection. Open Recued from the '
           + 'server’s own address instead.',
       };
     case 'server_unreachable':
       return {
         title: 'Recued can’t reach your server',
         summary:
-          'The server did not answer this startup attempt, so Recued could not finish opening your page.',
+          'Your server did not answer, so Recued could not finish opening your page.',
         steps: [
-          'Make sure your Recued server is running and reachable from this device.',
-          'If you use a VPN or private network, reconnect it, then try again.',
+          'Check that your Recued server is switched on, and that this device can reach it.',
+          'If you use a VPN or a private network, turn it back on, then try again.',
         ],
         primary: 'Try reaching the server again',
         retryError:
-          'Recued still can’t reach your server. Check its connection, then try again.',
+          'Recued still cannot reach your server. Check that it is on and online, then try again.',
       };
     case 'storage':
       return {
-        title: 'Browser storage interrupted startup',
+        title: 'Browser storage stopped Recued starting',
         summary:
-          'Recued opened this site, but the browser stopped a later read of saved access or local settings.',
+          'Recued opened, but then the browser would not let it read your saved sign-in and settings.',
         steps: [
-          'Make sure this site is allowed to store data and is not open in a private window.',
-          'Close other Recued tabs if needed, then try again.',
+          'Check that this address is allowed to save data, and that this is not a private window.',
+          'Close any other Recued tabs, then try again.',
         ],
         primary: 'Try browser storage again',
         retryError:
-          'Browser storage still cannot finish the read. Check the site’s storage permission, then try again.',
+          'Browser storage still will not open. Check that this address may save data, then try again.',
       };
     case 'unknown':
       return {
-        title: 'Recued couldn’t finish opening',
+        title: 'Recued could not finish opening',
         summary:
-          'This tab hit an unexpected startup problem before your page was ready.',
+          'Something went wrong while this tab was starting, before your page was ready.',
         steps: [
-          'Keep this tab open and try startup again.',
-          'If it keeps happening, reload this tab or ask your Recued administrator to check the server logs.',
+          'Keep this tab open and try starting again.',
+          'If it keeps happening, reload this tab. You can also ask whoever looks after your server to check its logs.',
         ],
         primary: 'Try opening Recued again',
         retryError:
-          'Recued still couldn’t finish opening. Try again, or reload this tab if no unsent work is held here.',
+          'Recued still could not finish opening. Try again. If nothing unsent is waiting here, you can reload this tab.',
       };
   }
 };
@@ -690,27 +690,27 @@ export const mountStartupFailureTriage = (
     const busy = phase === 'busy' || phase === 'handoff';
     const repeated = failedAttemptCount >= 2;
     const retryError = options.draftPreserved && kind === 'unknown'
-      ? 'Recued still couldn’t finish opening. Keep this tab open, ask your Recued administrator to check the server logs, then try startup again.'
+      ? 'Recued still could not finish opening. Keep this tab open. Ask whoever looks after your server to check its logs, then try starting again.'
       : copy.retryError;
     const siblingCompleted =
       options.completedInAnotherTab === true
       && options.savedAccessVerified;
     const handoffCopy = options.handoffKind === 'startup_check_complete'
-      ? 'Saved access check complete. Continuing startup…'
-      : 'Startup is ready. Opening your page…';
+      ? 'Your saved sign-in is fine. Carrying on…'
+      : 'Ready. Opening your page…';
     const busyStatusCopy = siblingCompleted
-      ? 'Trying this tab again with the access already saved…'
-      : 'Trying startup again without changing saved access…';
+      ? 'Trying this tab again with the sign-in already saved…'
+      : 'Trying again. Your saved sign-in is not being changed…';
     const busyPrimaryCopy = siblingCompleted
       ? 'Trying this tab…'
-      : 'Trying startup…';
+      : 'Trying again…';
     const kickerCopy = siblingCompleted
-      ? 'Access saved in another tab'
+      ? 'Sign-in saved in another tab'
       : repeated
-        ? 'Startup still needs attention'
-        : 'Startup needs attention';
+        ? 'Recued still needs your help to start'
+        : 'Recued needs your help to start';
     const summaryCopy = siblingCompleted
-      ? `Another tab already finished saving secure access for this browser. ${copy.summary}`
+      ? `Another tab has already saved the sign-in for this browser. ${copy.summary}`
       : copy.summary;
     const status = phase === 'busy'
       ? `<p class="startup-failure-triage-status" ${STARTUP_FAILURE_TRIAGE_STATUS_ATTR} role="status" tabindex="-1">${busyStatusCopy}</p>`
@@ -720,26 +720,26 @@ export const mountStartupFailureTriage = (
           ? `<p class="startup-failure-triage-status is-error" ${STARTUP_FAILURE_TRIAGE_STATUS_ATTR} role="alert">${retryError}</p>`
           : `<p class="startup-failure-triage-status" ${STARTUP_FAILURE_TRIAGE_STATUS_ATTR} aria-live="polite"></p>`;
     const safeTitle = siblingCompleted
-      ? 'Pairing is still complete.'
+      ? 'This browser is still paired.'
       : options.savedAccessVerified
-        ? 'Your saved access is still here.'
-        : 'Recued has not cleared your saved access.';
+        ? 'Your saved sign-in is still here.'
+        : 'Recued has not cleared your saved sign-in.';
     const safeDetail = siblingCompleted
-      ? 'Only this tab is retrying startup. The saved access stays in place; retrying does not resend a pairing code or recovery key, clear saved access, or change data on your server.'
+      ? 'Only this tab is trying again. Your saved sign-in stays where it is. Trying again does not send your pairing code or recovery key, does not clear the sign-in, and does not change anything on your server.'
       : options.savedAccessVerified
-        ? 'Retrying only tries to open the app. It does not clear saved access, send another pairing request, or change data on your server.'
-        : 'Retrying only attempts startup again. It does not clear local access, send a pairing request, or change data on your server.';
+        ? 'Trying again only opens Recued. It does not clear your sign-in, ask to pair again, or change anything on your server.'
+        : 'Trying again only starts Recued again. It does not clear your sign-in, ask to pair again, or change anything on your server.';
     const context = options.draftPreserved
       ? siblingCompleted
-        ? 'Your exact page and unsent Chat draft are still held in this tab. The access saved by the other tab remains ready.'
-        : 'Your exact page and unsent Chat draft are still held in this tab. Keep it open while you recover startup.'
+        ? 'Your page and the Chat message you had not sent are still here. The sign-in the other tab saved is ready.'
+        : 'Your page and the Chat message you had not sent are still here. Keep this tab open while you sort out the start-up.'
       : siblingCompleted
-        ? 'The exact page you opened is still selected in this tab. The completed pairing does not need to be repeated.'
+        ? 'The page you opened is still chosen in this tab. You do not need to pair again.'
         : options.reloadAttempted
-          ? 'This tab reloaded, but startup still did not finish. The exact page you opened is still selected, so you can keep recovering here.'
-          : 'The exact page you opened is still selected. Retrying here keeps that route.';
+          ? 'This tab reloaded, but Recued still did not finish opening. The page you opened is still chosen, so you can keep trying here.'
+          : 'The page you opened is still chosen. Trying again here keeps you on it.';
     const secondStep = options.draftPreserved && kind === 'unknown'
-      ? 'If it keeps happening, keep this tab open and ask your Recued administrator to check the server logs.'
+      ? 'If it keeps happening, keep this tab open and ask whoever looks after your server to check its logs.'
       : copy.steps[1];
     const reloadButton = options.draftPreserved || siblingCompleted
       ? ''
@@ -750,9 +750,9 @@ export const mountStartupFailureTriage = (
     const diagnosticStatus = diagnosticCopyInFlight
       ? 'Copying the reviewed summary…'
       : diagnosticCopyState === 'copied'
-        ? 'Safe diagnostic copied. Paste it into your support conversation when you’re ready; nothing was sent automatically.'
+        ? 'Copied. Paste it wherever you are getting help. Recued sent nothing by itself.'
         : diagnosticCopyState === 'unavailable'
-          ? 'Copy is unavailable here. The summary is focused so you can select and copy it manually.'
+          ? 'Copying is not available here. The summary is selected, so you can copy it yourself.'
           : '';
     const diagnosticCopyLabel = diagnosticCopyInFlight
       ? 'Copying…'

@@ -210,7 +210,7 @@ describe('D-149 follow-on — renderLaunchWizard: current step frame', () => {
       validation: null,
       plan,
     });
-    expect(html).toContain('Exposure profile ready');
+    expect(html).toContain('Your server can be reached');
     // The recommended profile already serves anonymous visitors ⇒ no switch.
     expect(html).not.toContain('data-action="reception-wizard-switch-profile"');
   });
@@ -225,7 +225,7 @@ describe('D-149 follow-on — renderLaunchWizard: current step frame', () => {
       validation: null,
       plan,
     });
-    expect(html).toContain('Switch your exposure profile');
+    expect(html).toContain('Change who can reach your server');
     expect(html).toContain('data-action="reception-wizard-switch-profile"');
     expect(html).toContain('private_clients_only');
   });
@@ -233,7 +233,7 @@ describe('D-149 follow-on — renderLaunchWizard: current step frame', () => {
   it('the drop_link step renders the include / skip toggle', () => {
     const includedHtml = renderLaunchWizard(stepperView('drop_link', true));
     expect(includedHtml).toContain('data-action="reception-wizard-toggle-drop-link"');
-    expect(includedHtml).toContain('Skip this optional step');
+    expect(includedHtml).toContain('Skip this one');
 
     const excludedHtml = renderLaunchWizard(stepperView('drop_link', false));
     // When drop_link is excluded the stepper resolves the cursor forward;
@@ -243,7 +243,7 @@ describe('D-149 follow-on — renderLaunchWizard: current step frame', () => {
 
   it('the profile gate is absent when no plan has been built yet', () => {
     const html = renderLaunchWizard(stepperView('profile_check'));
-    expect(html).not.toContain('Exposure profile ready');
+    expect(html).not.toContain('Your server can be reached');
     expect(html).not.toContain('data-action="reception-wizard-switch-profile"');
   });
 });
@@ -264,7 +264,7 @@ describe('D-149 follow-on — renderLaunchWizard: validation gate', () => {
       validation,
       plan: null,
     });
-    expect(html).not.toContain('before finishing setup');
+    expect(html).not.toContain('before you finish');
   });
 
   it('renders the gate + per-failure goto-step jumps for an invalid input', () => {
@@ -281,7 +281,7 @@ describe('D-149 follow-on — renderLaunchWizard: validation gate', () => {
       validation,
       plan: null,
     });
-    expect(html).toContain('before finishing setup');
+    expect(html).toContain('before you finish');
     expect(html).toContain('data-action="reception-wizard-goto-step"');
     // The failing step is referenced in a goto-step jump.
     const failedStep = validation.failures[0]!.step;
@@ -300,7 +300,7 @@ describe('D-149 follow-on — renderLaunchWizard: validation gate', () => {
       validation,
       plan: null,
     });
-    expect(html).toContain('Needs attention');
+    expect(html).toContain('Needs a look');
   });
 });
 
@@ -311,7 +311,7 @@ describe('D-149 follow-on — renderLaunchWizard: validation gate', () => {
 describe('D-149 follow-on — renderLaunchWizard: plan preview', () => {
   it('renders no plan preview when no plan is supplied', () => {
     const html = renderLaunchWizard(stepperView('view_as_visitor'));
-    expect(html).not.toContain('What this wizard will set up');
+    expect(html).not.toContain('What this will set up for you');
   });
 
   it('renders the plan preview — page-upsert row + the endpoint draft rows', () => {
@@ -324,7 +324,7 @@ describe('D-149 follow-on — renderLaunchWizard: plan preview', () => {
       validation: null,
       plan,
     });
-    expect(html).toContain('What this wizard will set up');
+    expect(html).toContain('What this will set up for you');
     expect(html).toContain('Reception page');
     expect(html).toContain('scheduling link');
     expect(html).toContain('intake form');

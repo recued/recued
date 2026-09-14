@@ -246,7 +246,7 @@ describe('D-169 P1 notifications panel bridge rows', () => {
     const bridgeChannel = findByAttr(host, NOTIFICATIONS_ROW_CHANNEL_ATTR, 'bridge')!;
     const empty = findByAttr(bridgeChannel, NOTIFICATIONS_BRIDGE_EMPTY_ATTR);
     expect(empty).not.toBeNull();
-    expect(textOf(empty!)).toContain('No bridges paired yet');
+    expect(textOf(empty!)).toContain('No Bridges yet');
   });
 
   it('renders one row per bridge with labels, presence, mode buttons, and ARIA states', async () => {
@@ -354,10 +354,10 @@ describe('D-169 P1 notifications panel bridge rows', () => {
 
     await panel.clickBridgeMode('bridge-1', 'approval');
 
-    expect(panel.getBridgeRowError('bridge-1')).toContain('unpaired elsewhere');
+    expect(panel.getBridgeRowError('bridge-1')).toContain('unpaired somewhere else');
     const err = findByAttr(host, NOTIFICATIONS_BRIDGE_ROW_ERROR_ATTR);
     expect(err).not.toBeNull();
-    expect(textOf(err!)).toContain('unpaired elsewhere');
+    expect(textOf(err!)).toContain('unpaired somewhere else');
   });
 
   it('does not fire a duplicate rpc for a re-entry while a bridge toggle is in flight', async () => {
@@ -449,6 +449,6 @@ describe('D-169 P1 notifications panel bridge rows', () => {
     expect(panel.getBridgeRows()).toEqual(bridgeRows);
     expect(panel.getBridgeRowToggling().size).toBe(0);
     await panel.clickBridgeMode('bridge-2', 'notification');
-    expect(panel.getBridgeRowError('bridge-2')).toContain('unpaired elsewhere');
+    expect(panel.getBridgeRowError('bridge-2')).toContain('unpaired somewhere else');
   });
 });

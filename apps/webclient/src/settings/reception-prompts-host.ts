@@ -178,7 +178,7 @@ const isPromptFieldKey = (value: string | undefined): value is PromptFieldKey =>
 /** The literal phrase the user types to confirm the irreversible
  *  emergency-disable-all kill switch (see DD#6). Exported so tests can
  *  assert the exact string + a future copy pass has one place to land. */
-export const RECEPTION_EMERGENCY_DISABLE_CONFIRM_PHRASE = 'EMERGENCY DISABLE ALL';
+export const RECEPTION_EMERGENCY_DISABLE_CONFIRM_PHRASE = 'TURN EVERYTHING OFF NOW';
 
 /** Closed list of rotate reasons + their human copy. Mirrors the
  *  contract type — three reasons + a `''` "no reason" sentinel for the
@@ -188,9 +188,9 @@ const ROTATE_REASON_OPTIONS: ReadonlyArray<{
   label: string;
 }> = [
   { value: '', label: 'No reason given' },
-  { value: 'lost_url', label: 'Lost the share URL' },
-  { value: 'suspected_leak', label: 'Suspected leak / compromise' },
-  { value: 'hygiene', label: 'Routine hygiene rotation' },
+  { value: 'lost_url', label: 'I lost the link' },
+  { value: 'suspected_leak', label: 'I think it got out' },
+  { value: 'hygiene', label: 'Just swapping it, to be tidy' },
 ];
 
 /** Kinds with a hard-ceiling expiry — they reject long-lived at the
@@ -390,7 +390,7 @@ const renderExtendForm = (state: ExtendState): string => {
     ${renderInlineError(state.error)}
     ${renderActionBar('Extend', 'primary')}
   `;
-  return panel({ tone: 'neutral', title: 'Extend endpoint', body });
+  return panel({ tone: 'neutral', title: 'Give it more time', body });
 };
 
 const renderRotateForm = (state: RotateState): string => {
@@ -409,9 +409,9 @@ const renderRotateForm = (state: RotateState): string => {
       </select>
     </div>
     ${renderInlineError(state.error)}
-    ${renderActionBar('Rotate token', 'primary')}
+    ${renderActionBar('Swap the secret', 'primary')}
   `;
-  return panel({ tone: 'neutral', title: 'Rotate token', body });
+  return panel({ tone: 'neutral', title: 'Swap the secret', body });
 };
 
 const renderRevokeForm = (state: RevokeState): string => {
@@ -427,7 +427,7 @@ const renderRevokeForm = (state: RevokeState): string => {
     ${renderInlineError(state.error)}
     ${renderActionBar('Revoke', 'danger')}
   `;
-  return panel({ tone: 'danger', title: 'Revoke endpoint', body });
+  return panel({ tone: 'danger', title: 'Take this link back', body });
 };
 
 const renderEmergencyDisableForm = (state: EmergencyDisableState): string => {
@@ -459,7 +459,7 @@ const renderEmergencyDisableForm = (state: EmergencyDisableState): string => {
   `;
   return panel({
     tone: 'danger',
-    title: 'Emergency: disable Reception?',
+    title: 'Turn Reception off right now?',
     body,
   });
 };
@@ -753,13 +753,13 @@ export const mountReceptionPromptsHost = (
           } else {
             const parsed = parseDateInputToEpochMs(state.date_value);
             if (parsed === null) {
-              setError('Pick a valid expiry date.');
+              setError('Pick a date it should run out.');
               return;
             }
             // The substrate rejects past expiries; pre-check here so the
             // user sees the message inside the modal without a round-trip.
             if (parsed <= now()) {
-              setError('Expiry date must be in the future.');
+              setError('That date has already gone. Pick a later one.');
               return;
             }
             new_expires_at = parsed;

@@ -4,9 +4,12 @@ import type {
   RecordsGlobalQuotaSnapshot,
   RecordsNamespaceView,
   RecordsOwnerRecordDiagnostics,
+  RecordsOwnerSearchRequest,
+  RecordsSearchResult,
   RecordsSchemaSnapshot,
 } from '@recued/contracts';
 import { bootstrapDataRoute } from '../bootstrap-data-route.js';
+import { initialRecordsBrowseState } from '../records-view-controls.js';
 import {
   RECORDS_EXPLORER_STYLES,
   RECORDS_KIND_PANEL_ATTR,
@@ -81,6 +84,7 @@ const globalQuota: RecordsGlobalQuotaSnapshot = {
 };
 
 const state = (overrides: Partial<RecordsExplorerState> = {}): RecordsExplorerState => ({
+  ...initialRecordsBrowseState(),
   namespaces: [namespace('publisher-a'), namespace('publisher-b')],
   globalQuota,
   selectedNamespace: namespace('publisher-a'),
@@ -121,6 +125,41 @@ const state = (overrides: Partial<RecordsExplorerState> = {}): RecordsExplorerSt
 });
 
 describe('D-221 #data Records explorer', () => {
+  // ⛔ THE QUOTA LINES ARE THE ONLY PLACE THIS SCREEN SPEAKS IN BYTES, and they
+  // used to read `42 / 1,000 bytes` / `1,048,576 / 10,000,000 bytes` — digit
+  // soup at the width a ceiling actually has. Pin the RENDERED text: nothing
+  // asserted it before, so the formatter could be dropped silently.
+  it('renders every quota byte value at human scale, not as a raw count', () => {
+    const html = renderRecordsExplorer(state({
+      selectedNamespace: {
+        ...namespace('publisher-a'),
+        quota: {
+          row_count: 1,
+          payload_bytes: 1_572_864,     // 1.5 MB
+          row_limit: 100,
+          byte_limit: 5 * 1024 * 1024,  // 5.0 MB
+          outbox_count: 0,
+          outbox_limit: 100,
+          data_generation: 1,
+        },
+      },
+      globalQuota: {
+        row_count: 2,
+        payload_bytes: 2 * 1024 * 1024 * 1024,        // 2.00 GB
+        outbox_count: 1,
+        reserved_payload_bytes: 40 * 1024,            // 40 KB
+        row_limit: 10_000,
+        byte_limit: 1024 * 1024 * 1024 * 1024,        // 1.00 TB
+        outbox_limit: 1_000,
+      },
+    }));
+    expect(html).toContain('1.5 MB / 5.0 MB');
+    expect(html).toContain('2.00 GB / 1.00 TB');
+    expect(html).toContain('<dt>Migration reserve</dt><dd>40 KB</dd>');
+    // The bare unit word is gone with the raw number — the value carries it now.
+    expect(html).not.toContain(' bytes');
+  });
+
   it('gives Records controls a consistent full-size interaction target', () => {
     expect(RECORDS_EXPLORER_STYLES).toContain(
       '.records-explorer button{box-sizing:border-box;min-height:36px',
@@ -408,6 +447,105 @@ const fakeDocument = (): Document => {
 };
 
 describe('D-221 Records route control-plane seam', () => {
+  const browsingRoute = (search: (args: RecordsOwnerSearchRequest) => Promise<RecordsSearchResult>) => {
+    const root = fakeElement();
+    const broadcasts = new Map<string, () => void>();
+    const definition = { tab: 'records' as const, owner: namespace('publisher-a').owner, entity: 'job',
+      filters: { amount: { op: 'gte' as const, value: '0.0000' } }, sort: '-amount' };
+    const route = bootstrapDataRoute({
+      root: root as unknown as HTMLElement, document: fakeDocument(), initialTab: 'records',
+      savedView: { id: 'view_00000000-0000-4000-8000-000000000001', name: 'Jobs', revision: 1, created_at: 1, updated_at: 1, definition },
+      recordsNamespaceListCaller: async () => ({ namespaces: [namespace('publisher-a')], global_quota: globalQuota }),
+      recordsKindListCaller: async () => ({ kinds: [{ kind: 'job', rows: 3, payload_bytes: 42 }] }),
+      recordsSearchCaller: search, sharedListCaller: async () => ({ entries: [] }),
+      liveRefreshDebounceMs: 0,
+      subscribe: (kind, handler) => {
+        if (kind === 'warehouse' || kind === 'memory') broadcasts.set(kind, () => handler({} as never));
+        return () => broadcasts.delete(kind);
+      },
+    });
+    const click = (action: string) => {
+      const control = { getAttribute: (key: string) => key === 'data-recued-data-action' ? action : null };
+      const target = { closest: (selector: string) => selector === '[data-recued-data-action]' ? control : null };
+      for (const listener of root.children[0]!.listeners.get('click') ?? []) listener({ target, preventDefault: () => {} } as unknown as Event);
+    };
+    return { root, route, click, definition, broadcast: (kind: string) => broadcasts.get(kind)?.() };
+  };
+
+  it('does not let background broadcasts reset a later page or an unfinished filter', async () => {
+    const search = vi.fn<(args: RecordsOwnerSearchRequest) => Promise<RecordsSearchResult>>()
+      .mockResolvedValueOnce({ records: [record], next_cursor: 'next-page' })
+      .mockResolvedValueOnce({ records: [{ ...record, id: 'second-page' }], prev_cursor: 'previous-page' })
+      .mockResolvedValue({ records: [record], next_cursor: 'fresh-page' });
+    const { root, route, click, broadcast } = browsingRoute(search);
+    await route.whenLoaded();
+    click('records-next-page'); await route.whenLoaded();
+    broadcast('warehouse'); await route.whenLoaded();
+    expect(search).toHaveBeenCalledTimes(2);
+    expect(root.children[0]!.innerHTML).toContain('Page 2');
+    click('records-first-page'); await route.whenLoaded();
+    expect(search).toHaveBeenCalledTimes(3);
+    click('records-add-filter');
+    broadcast('memory'); await route.whenLoaded();
+    expect(search).toHaveBeenCalledTimes(3);
+    expect(route.currentView()).toBeNull();
+    expect(root.children[0]!.innerHTML).toContain('Unapplied changes');
+    route.dispose();
+  });
+
+  it('allows background refreshes on the idle first page', async () => {
+    const search = vi.fn(async () => ({ records: [record] }));
+    const { route, broadcast } = browsingRoute(search);
+    await route.whenLoaded();
+    broadcast('warehouse'); await route.whenLoaded();
+    expect(search).toHaveBeenCalledTimes(2);
+    route.dispose();
+  });
+
+  it('keeps a failed page retryable with the same filters and cursors and refreshes from the start', async () => {
+    const search = vi.fn<(args: RecordsOwnerSearchRequest) => Promise<RecordsSearchResult>>()
+      .mockResolvedValueOnce({ records: [record], next_cursor: 'next-page' })
+      .mockRejectedValueOnce(new Error('Records cursor is unknown or expired'))
+      .mockResolvedValueOnce({ records: [{ ...record, id: 'second-page' }], prev_cursor: 'previous-page' })
+      .mockResolvedValue({ records: [record], next_cursor: 'new-next-page' });
+    const { root, route, click, definition } = browsingRoute(search);
+    await route.whenLoaded();
+    expect(search.mock.calls[0]![0]).toEqual({ owner: definition.owner, entity: 'job', filters: definition.filters,
+      sort: '-amount', limit: 100, include_orphaned: true });
+    click('records-next-page'); await route.whenLoaded();
+    expect(root.children[0]!.innerHTML).toContain('cursor is unknown or expired');
+    expect(root.children[0]!.innerHTML).toContain('Page 1');
+    click('records-next-page'); await route.whenLoaded();
+    expect(search.mock.calls[2]![0]).toEqual({ ...search.mock.calls[0]![0], cursor: 'next-page' });
+    expect(root.children[0]!.innerHTML).toContain('Page 2');
+    expect(route.currentView()).toEqual(definition);
+    click('records-prev-page'); await route.whenLoaded();
+    expect(search.mock.calls[3]![0].cursor).toBe('previous-page');
+    click('records-first-page'); await route.whenLoaded();
+    expect(search.mock.calls[4]![0]).not.toHaveProperty('cursor');
+    expect(route.currentView()).toEqual(definition);
+    route.dispose();
+  });
+
+  it('ignores duplicate page clicks and discards an old page after leaving Records', async () => {
+    let resolve!: (result: RecordsSearchResult) => void;
+    const deferred = new Promise<RecordsSearchResult>(done => { resolve = done; });
+    const search = vi.fn<(args: RecordsOwnerSearchRequest) => Promise<RecordsSearchResult>>()
+      .mockResolvedValueOnce({ records: [record], next_cursor: 'next-page' }).mockReturnValueOnce(deferred);
+    const { root, route, click } = browsingRoute(search);
+    await route.whenLoaded();
+    click('records-next-page'); click('records-next-page');
+    const pending = route.whenLoaded();
+    expect(search).toHaveBeenCalledTimes(2);
+    await route.selectTab('shared');
+    resolve({ records: [{ ...record, id: 'obsolete-page' }], prev_cursor: 'old-previous' });
+    await pending;
+    expect(route.activeTab()).toBe('shared');
+    expect(root.children[0]!.innerHTML).not.toContain('obsolete-page');
+    expect(route.currentView()).toEqual({ tab: 'shared' });
+    route.dispose();
+  });
+
   it.each(['pack', 'kind'] as const)('keeps a changed saved-view %s pinned through repeated unavailability', async (missing) => {
     const root = fakeElement();
     const first = namespace('publisher-a');

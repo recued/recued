@@ -22,9 +22,9 @@
  *
  *  Design: D-192 (Fork E). */
 
-import { RpcError } from '@recued/contracts';
+import { RpcError, type FileMetaProjection } from '@recued/contracts';
 
-import type { RemoteFileByteResolver } from '../remote-file-byte-resolver.js';
+import type { RemoteFileByteResolver, RemoteFileByteRequest, RemoteFileDownload } from '../remote-file-byte-resolver.js';
 import type { FileFetch } from '../../../file-source-adapters/index.js';
 import { NOTION_API, NOTION_VERSION } from '../../../file-source-adapters/notion.js';
 import { fetchFileSourceApi } from '../../../file-source-adapters/http-json.js';
@@ -57,15 +57,19 @@ export interface NotionRemoteByteResolverDeps {
   fetchImpl: FileFetch;
 }
 
+const describe = (meta: FileMetaProjection): RemoteFileDownload => meta.remote_id.includes(':')
+  ? { unavailable_reason: 'This Notion file cannot be downloaded here. Download it from Notion, then upload it.' } : {};
+
 /** Build the `notion` `RemoteFileByteResolver`. */
 export const buildNotionRemoteByteResolver = (
   deps: NotionRemoteByteResolverDeps,
-): RemoteFileByteResolver => async (req) => {
+): RemoteFileByteResolver => Object.assign(async (req: RemoteFileByteRequest) => {
   // A colon ⇒ a prong-2 synthetic key — permanently unresolvable (no block).
-  if (req.remote_id.includes(':')) {
+  const unavailable = describe({ ...req.meta, remote_id: req.remote_id }).unavailable_reason;
+  if (unavailable) {
     throw new RpcError(
       'remote_unresolvable',
-      `notion property file '${req.remote_id}' has no re-resolvable block (data-source prong-2)`,
+      unavailable,
       422,
     );
   }
@@ -118,4 +122,4 @@ export const buildNotionRemoteByteResolver = (
     vendorLabel: 'notion',
     ref: req.remote_id,
   });
-};
+}, { describe });

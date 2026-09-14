@@ -13,6 +13,7 @@ import {
   hydrateThreadFromSnapshot,
   initialChatThreadState,
   prependOlderMessages,
+  appendNewerMessages,
 } from '../chat/state.js';
 import { scrollTopAfterPrepend } from '../chat/bootstrap-chat-route.js';
 
@@ -136,5 +137,96 @@ describe('scrollTopAfterPrepend', () => {
 
   it('is a no-op when nothing was added', () => {
     expect(scrollTopAfterPrepend(300, 1000, 1000)).toBe(300);
+  });
+});
+
+describe('message-link windows', () => {
+  it('recovers recent completions and closes the intervening gap when paging reaches the tail', () => {
+    const thread = hydrateThreadFromSnapshot(initialChatThreadState(), {
+      ...session(), messages: [message('m3', 30), message('m4', 40)],
+      has_more: true, oldest_cursor: { ts: 30, message_id: 'm3' },
+      has_more_after: true, newest_cursor: { ts: 40, message_id: 'm4' },
+    }, {
+      ...session(), messages: [message('m8', 80), { ...message('m9', 90), turn_id: 'finished_offline' }],
+      has_more: true, oldest_cursor: { ts: 80, message_id: 'm8' },
+      has_more_after: false, newest_cursor: { ts: 90, message_id: 'm9' },
+    });
+    expect(thread.messages.map(message => message.id)).toEqual(['m3', 'm4', 'm8', 'm9']);
+    expect(thread.completed_turn_ids).toContain('finished_offline');
+    expect(thread.has_more_after).toBe(true);
+    expect(thread.newest_cursor).toEqual({ ts: 40, message_id: 'm4' });
+    const middle = appendNewerMessages(thread, [message('m5', 50), message('m6', 60)], {
+      has_more_after: true, newest_cursor: { ts: 60, message_id: 'm6' },
+    });
+    expect(middle.has_more_after).toBe(true);
+    const joined = appendNewerMessages(middle, [message('m7', 70), message('m8', 80)], {
+      has_more_after: true, newest_cursor: { ts: 80, message_id: 'm8' },
+    });
+    expect(joined.messages.map(message => message.id)).toEqual(['m3', 'm4', 'm5', 'm6', 'm7', 'm8', 'm9']);
+    expect(joined.has_more_after).toBe(false);
+    expect(joined.oldest_cursor).toEqual(thread.oldest_cursor);
+    expect(joined.completed_turn_ids).toContain('finished_offline');
+  });
+
+  it('joins overlapping recovery windows using the newer row and the earliest loaded cursor', () => {
+    const thread = hydrateThreadFromSnapshot(initialChatThreadState(), {
+      ...session(), messages: [message('m4', 40), message('m5', 40)],
+      has_more: true, oldest_cursor: { ts: 40, message_id: 'm4' },
+      has_more_after: true, newest_cursor: { ts: 40, message_id: 'm5' },
+    }, {
+      ...session(), messages: [message('m3', 40), message('m4', 40), { ...message('m5', 40), content: 'Refreshed' }],
+      has_more: true, oldest_cursor: { ts: 40, message_id: 'm3' },
+      has_more_after: false, newest_cursor: { ts: 40, message_id: 'm5' },
+    });
+    expect(thread.messages.map(message => message.id)).toEqual(['m3', 'm4', 'm5']);
+    expect(thread.messages.at(-1)?.content).toBe('Refreshed');
+    expect(thread.has_more_after).toBe(false);
+    expect(thread.oldest_cursor).toEqual({ ts: 40, message_id: 'm3' });
+  });
+
+  it('respects deletion when the newer recovery read contains the complete retained history', () => {
+    const thread = hydrateThreadFromSnapshot(initialChatThreadState(), {
+      ...session(), messages: [message('deleted', 10)],
+      has_more_after: true, newest_cursor: { ts: 10, message_id: 'deleted' },
+    }, {
+      ...session(), messages: [message('retained', 90)], has_more: false,
+    });
+    expect(thread.messages.map(message => message.id)).toEqual(['retained']);
+    expect(thread.has_more_before).toBe(false);
+    expect(thread.has_more_after).toBe(false);
+  });
+
+  it('retains both directions of an anchored window', () => {
+    const thread = hydrateThreadFromSnapshot(initialChatThreadState(), {
+      ...session(), messages: [message('m3', 30), message('m4', 40)],
+      has_more: true, oldest_cursor: { ts: 30, message_id: 'm3' },
+      has_more_after: true, newest_cursor: { ts: 40, message_id: 'm4' },
+    });
+    const older = prependOlderMessages(thread, [message('m2', 20)], {
+      has_more: true, oldest_cursor: { ts: 20, message_id: 'm2' },
+    });
+    expect(older.has_more_after).toBe(true);
+    expect(older.newest_cursor).toEqual({ ts: 40, message_id: 'm4' });
+  });
+
+  it('fills intervening history before a live tail and advances only the contiguous cursor', () => {
+    const thread = hydrateThreadFromSnapshot(initialChatThreadState(), {
+      ...session(), messages: [message('m3', 30), message('m4', 40)],
+      has_more: true, oldest_cursor: { ts: 30, message_id: 'm3' },
+      has_more_after: true, newest_cursor: { ts: 40, message_id: 'm4' },
+    });
+    const live = { ...thread, messages: [...thread.messages, { ...message('m9', 90), content: 'Live answer' }] };
+    const next = appendNewerMessages(live, [message('m4', 40), message('m5', 50), message('m6', 60)], {
+      has_more_after: true, newest_cursor: { ts: 60, message_id: 'm6' },
+    });
+    expect(next.messages.map(message => message.id)).toEqual(['m3', 'm4', 'm5', 'm6', 'm9']);
+    expect(next.newest_cursor).toEqual({ ts: 60, message_id: 'm6' });
+    expect(next.oldest_cursor).toEqual(thread.oldest_cursor);
+    const last = appendNewerMessages(next, [message('m7', 70), message('m8', 80), message('m9', 90)], {
+      has_more_after: false, newest_cursor: { ts: 90, message_id: 'm9' },
+    });
+    expect(last.messages.at(-1)?.content).toBe('Live answer');
+    expect(last.has_more_after).toBe(false);
+    expect(last.completed_turn_ids).toEqual(thread.completed_turn_ids);
   });
 });

@@ -2,7 +2,10 @@
  * §D.L1 — the [✎ Create] overlay (shell-frame Step 5; extracted from the chat
  * route's Step 4b inline opener).
  *
- * A floating 4-kind quick-capture modal (Contact · Task · Note · Commitment)
+ * A floating quick-capture modal over the targets `COMPOSE_LOCAL_TARGETS`
+ * declares. ⛔ The count is deliberately NOT written here: this line said
+ * "4-kind (Contact · Task · Note · Commitment)" through the arrivals of both
+ * Project and Booking, and two other places said 5 after that.
  * that absorbs the retired `#compose` route. It is a self-contained opener that
  * owns its DOM, its own injected styles, and its lifecycle — invoked from BOTH
  * the chat composer's [✎ Create] button (L1) and the §D.L2 drawer's "Create"
@@ -286,13 +289,13 @@ export const openCreateOverlay = (
     guard.setAttribute('tabindex', '-1');
     const guardTitle = doc.createElement('h3');
     guardTitle.id = `recued-create-discard-title-${overlayA11yId}`;
-    guardTitle.textContent = 'Discard this unfinished item?';
+    guardTitle.textContent = 'Throw this away?';
     guard.setAttribute('aria-labelledby', guardTitle.id);
     guard.appendChild(guardTitle);
     const guardCopy = doc.createElement('p');
     guardCopy.id = `recued-create-discard-description-${overlayA11yId}`;
     guardCopy.textContent =
-      'Your unfinished fields across Create types will be lost.';
+      'Everything you have typed will be lost.';
     guard.setAttribute('aria-describedby', guardCopy.id);
     guard.appendChild(guardCopy);
     const actions = doc.createElement('div');
@@ -306,7 +309,7 @@ export const openCreateOverlay = (
     const discard = doc.createElement('button');
     discard.type = 'button';
     discard.setAttribute(CREATE_OVERLAY_DISCARD_COMMIT_ATTR, '');
-    discard.textContent = 'Discard item';
+    discard.textContent = 'Throw it away';
     discard.addEventListener('click', teardown);
     actions.appendChild(discard);
     guard.appendChild(actions);

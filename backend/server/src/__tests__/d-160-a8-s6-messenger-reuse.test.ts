@@ -353,7 +353,7 @@ describe('D-160 A.8 step 6 — messenger reuses the s5 hooks over the same regis
         {
           recall_eligibility:
             CHAT_MESSAGE_RECALL_ELIGIBILITY.UNAUTHENTICATED_MESSENGER,
-          count: 1,
+          count: 2,
         },
       ]);
     } finally {
@@ -480,18 +480,13 @@ describe('D-160 A.8 step 6 — framework-owned delivery over the messenger chann
   });
 });
 
-describe('D-160 A.8 step 6 — selective projection (N.6): no chat.* leakage', () => {
-  it('emits NO chat.* events to the D-121 bus on a messenger turn (no-op emit)', async () => {
+describe('D-265 — Messenger publishes the retained transcript to webclients', () => {
+  it('broadcasts both committed roles while the native surface receives one final answer', async () => {
     const { broadcast, sends } = await runMessengerTurn({ aiResponse: 'quiet' });
-    // Guard against a vacuous pass: the turn genuinely completed + delivered
-    // (one transport send) — yet produced ZERO D-121 bus events.
     expect(sends.map((s) => s.text)).toEqual(['quiet']);
-    // The messenger surface renders neither token deltas nor transparency
-    // notes; the rich emits route to the no-op `emit`, the generic token
-    // delta is dropped by the messenger channel, and the slim finalize emits
-    // no chat.message_complete. So the chat orchestrator's broadcast bus —
-    // the webclient surface — sees nothing from a messenger turn this slice.
-    expect(broadcast.emit).not.toHaveBeenCalled();
+    expect(broadcast.emit).toHaveBeenCalledWith(expect.objectContaining({ kind: 'chat.session_changed', field: 'message' }));
+    expect(broadcast.emit).toHaveBeenCalledWith(expect.objectContaining({ kind: 'chat.message_complete',
+      final: expect.objectContaining({ role: 'assistant', content: 'quiet' }) }));
   });
 });
 

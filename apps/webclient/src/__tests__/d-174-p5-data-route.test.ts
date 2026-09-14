@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type {
+  CollectionInstanceRow,
   ContactImportFilePlan,
   ContactMergeCandidate,
   ContactRecord,
@@ -608,7 +609,12 @@ const mountRoute = (overrides: {
   annotationListCaller?: BootstrapDataRouteOptions['annotationListCaller'];
   linkListCaller?: BootstrapDataRouteOptions['linkListCaller'];
   sharedListCaller?: BootstrapDataRouteOptions['sharedListCaller'];
-  initialTab?: string;
+  /** `null` sends NO `initialTab` at all — the tabless mount the drawer's Data
+   *  seat performs. Anything else (including omitting it) pins Contacts; see the
+   *  note at the call site. */
+  initialTab?: string | null;
+  /** D-267 — Today's zero-state capture button. */
+  openCreateOverlay?: () => void;
   initialCollectionSlug?: string;
   initialEntityId?: string;
   chatReturn?: BootstrapDataRouteOptions['chatReturn'];
@@ -846,8 +852,21 @@ const mountRoute = (overrides: {
       ? { sharedListCaller: overrides.sharedListCaller }
       : {}),
     ...(overrides.fileReadCaller !== undefined ? { fileReadCaller: overrides.fileReadCaller } : {}),
-    ...(overrides.initialTab !== undefined ? { initialTab: overrides.initialTab } : {}),
+    // ⚠ D-267 moved the ROUTE's bare-mount default from Contacts to Today. This
+    // rig keeps pinning Contacts because ~44 cases below are about contacts,
+    // import, and dialogs — not about which tab a tabless mount lands on. The
+    // route's real default is asserted separately, by a mount that does NOT go
+    // through this rig, so pinning it here cannot mask a regression in it.
+    ...(overrides.initialTab === null
+      ? {}
+      : { initialTab: overrides.initialTab ?? 'contact' }),
     ...(overrides.savedView !== undefined ? { savedView: overrides.savedView } : {}),
+    ...(overrides.openCreateOverlay !== undefined
+      ? { openCreateOverlay: overrides.openCreateOverlay }
+      : {}),
+    ...(overrides.timelineCaller !== undefined
+      ? { timelineCaller: overrides.timelineCaller }
+      : {}),
     ...(overrides.initialCollectionSlug !== undefined
       ? { initialCollectionSlug: overrides.initialCollectionSlug }
       : {}),
@@ -1107,7 +1126,7 @@ describe('saved Data view hydration', () => {
     const rig = mountRoute({ initialTab: 'task', savedView: saved(definition) });
     await rig.route.whenLoaded();
     expect(rig.workEntityListCaller).not.toHaveBeenCalled();
-    expect(rig.route.getLoadErrors().work_entities).toContain('no longer available');
+    expect(rig.route.getLoadErrors().work_entities).toContain('is gone');
     expect(rig.route.currentView()).toEqual(definition);
     rig.route.dispose();
   });
@@ -1172,7 +1191,7 @@ describe('saved Data view hydration', () => {
     await rig.route.whenLoaded();
     rig.route.refresh(); await rig.route.whenLoaded();
     expect(list).not.toHaveBeenCalled();
-    expect(rig.root.children[0]!.innerHTML).toContain('no longer available');
+    expect(rig.root.children[0]!.innerHTML).toContain('is gone');
     rig.route.dispose();
   });
 
@@ -1940,7 +1959,7 @@ describe('D-174 P5 Data route', () => {
     expect(formResponseUpdateCaller).not.toHaveBeenCalled();
     expect(formResponseSetStateCaller).not.toHaveBeenCalled();
     const html = rig.root.children[0]?.innerHTML ?? '';
-    expect(html).toContain('Answers must be a JSON object');
+    expect(html).toContain('Answers have to be a JSON object');
     expect(html).toContain('[&quot;not&quot;, &quot;an&quot;, &quot;object&quot;]');
     rig.route.dispose();
   });
@@ -2282,7 +2301,7 @@ describe('D-174 P5 Data route', () => {
     expect(recipeListCaller).toHaveBeenCalledTimes(1);
     const html = rig.root.children[0]?.innerHTML ?? '';
     const trigger = html.match(
-      /<button[^>]*data-recued-data-form-response-run[^>]*>Finding automations…<\/button>/,
+      /<button[^>]*data-recued-data-form-response-run[^>]*>Looking for things that can run…<\/button>/,
     )?.[0] ?? '';
     expect(trigger).toContain('aria-disabled="true"');
     expect(trigger).toContain('aria-busy="true"');
@@ -2356,8 +2375,8 @@ describe('D-174 P5 Data route', () => {
     await failing.route.selectTab('form_response');
     await failing.route.openFormResponse('submission-1');
     let html = failing.root.children[0]?.innerHTML ?? '';
-    expect(html).toContain('Could not load this form response');
-    expect(html).not.toContain('This form response was not found');
+    expect(html).toContain('could not open this answer');
+    expect(html).not.toContain('could not find this answer');
     failing.route.dispose();
 
     const missing = mountRoute({
@@ -2369,8 +2388,8 @@ describe('D-174 P5 Data route', () => {
     await missing.route.selectTab('form_response');
     await missing.route.openFormResponse('missing');
     html = missing.root.children[0]?.innerHTML ?? '';
-    expect(html).toContain('This form response was not found');
-    expect(html).not.toContain('Could not load this form response');
+    expect(html).toContain('could not find this answer');
+    expect(html).not.toContain('could not open this answer');
     missing.route.dispose();
   });
 
@@ -2603,7 +2622,7 @@ describe('D-174 P5 Data route', () => {
     expect(contactUpsertCaller).toHaveBeenCalledTimes(1);
     expect(rig.route.hasInFlightWork()).toBe(true);
     expect(rig.route.inFlightWorkPrompt()).toBe(
-      'A Data action is still in progress. Leave Data anyway?',
+      'Something is still happening. Leave Data anyway?',
     );
     expect(rig.root.children[0]?.innerHTML).toContain('Saving…');
     expect(rig.root.children[0]?.innerHTML).toContain('aria-disabled="true"');
@@ -2830,7 +2849,7 @@ describe('D-174 P5 Data route', () => {
     expect(writeText).toHaveBeenCalledWith(
       'https://recued.test/reception/manage/one-time-secret',
     );
-    expect(rig.root.children[0]?.innerHTML).toContain('single-use and expires soon');
+    expect(rig.root.children[0]?.innerHTML).toContain('works once, and only for a short while');
     expect(rig.root.children[0]?.innerHTML).not.toContain('one-time-secret');
     rig.route.dispose();
 
@@ -2889,7 +2908,7 @@ describe('D-174 P5 Data route', () => {
     const html = rig.root.children[0]?.innerHTML ?? '';
     expect(html).toContain('Second booking');
     expect(html).not.toContain('stale-secret');
-    expect(html).not.toContain('single-use and expires soon');
+    expect(html).not.toContain('works once, and only for a short while');
     rig.route.dispose();
 
     const fallbackCaller = vi.fn<DataManageRescheduleLinkCaller>(async () => ({
@@ -3351,7 +3370,7 @@ describe('D-174 P5 Data route', () => {
     // Recued's own two internal writers are described by their RUNG, never named
     // as if they were a vendor.
     expect(html).toContain('you typed this');
-    expect(html).toContain('derived from your mail and calendar');
+    expect(html).toContain('worked out from your mail and calendar');
     expect(html).not.toContain('from manual');
     expect(html).not.toContain('from Recued');
 
@@ -3612,11 +3631,11 @@ describe('D-174 P5 Data route', () => {
     expect(html).toContain('1 of 1 need attention');
     // Each red counter is a DISTINCT failure with a distinct consequence — named,
     // not summed.
-    expect(html).toContain('12 records failed to import');
-    expect(html).toContain('3 records had no usable id (deletions paused)');
+    expect(html).toContain('12 records could not be brought in');
+    expect(html).toContain('3 records had no id Recued could use, so deleting is paused');
     // An incomplete walk is NOT degradation, but the user must see it: it means
     // nothing was disconnected this cycle (fail-closed).
-    expect(html).toContain('could not confirm it saw every record');
+    expect(html).toContain('could not be sure it saw every record');
     // The samples, verbatim — a bug report, not a lossy re-parse.
     expect(html).toContain('attributes.address promised by the declaration but absent');
 
@@ -4500,7 +4519,7 @@ describe('D-174 P5 Data route', () => {
     await flushOpen();
 
     html = rig.root.children[0]?.innerHTML ?? '';
-    expect(html).toContain('Reschedule failed. Please try again.');
+    expect(html).toContain('Recued could not move it. Try again.');
     expect(html).toContain('reschedule-submit">Save');
     expect(html).not.toContain('aria-busy="true"');
     rig.route.dispose();
@@ -4730,7 +4749,7 @@ describe('D-174 P5 Data route', () => {
     const rig = mountRoute(); // no annotationListCaller
     await rig.route.whenLoaded();
     await rig.route.selectTab('annotation');
-    expect(rig.root.children[0]?.innerHTML ?? '').toContain('not wired');
+    expect(rig.root.children[0]?.innerHTML ?? '').toContain('Recued cannot show this here');
     rig.route.dispose();
   });
 
@@ -5062,9 +5081,9 @@ describe('R18 — Data deep-linking (#data/<tab>/<entity_id>)', () => {
     );
     const html = rig.root.children[0]?.innerHTML ?? '';
     expect(html).toContain(DATA_ROUTE_LOGS_RETURN_ATTR);
-    expect(html).toContain('Confirm the created or changed record');
+    expect(html).toContain('Check the record that was made or changed');
     expect(html).toContain(
-      'This record was written by the run.',
+      'The run wrote this.',
     );
     expect(html).toContain(
       `${DATA_ROUTE_VERIFICATION_ACTION_ATTR}="reviewed"`,
@@ -5080,7 +5099,7 @@ describe('R18 — Data deep-linking (#data/<tab>/<entity_id>)', () => {
     expect(html).toContain('I reviewed it — continue in Chat');
     expect(html).toContain('I need help interpreting this');
     expect(html).toContain(
-      'nothing retries from this page',
+      'You cannot run anything again from this page',
     );
     expect(html).toContain(
       'href="#logs/run%2Fone/return/chat/session/chat%201/plan/plan%2F2"',
@@ -5166,9 +5185,9 @@ describe('R18 — Data deep-linking (#data/<tab>/<entity_id>)', () => {
 
     const html = rig.root.children[0]?.innerHTML ?? '';
     expect(html).toContain(
-      'This record id appears in more than one connected source.',
+      'More than one connected source has this id.',
     );
-    expect(html).toContain('Choose the source you want to verify.');
+    expect(html).toContain('Pick the one you want Recued to check.');
     expect(html).toContain('gcal · personal');
     expect(html).toContain('gcal · work');
     expect(html).toContain(DATA_ROUTE_LOGS_RETURN_ATTR);
@@ -5253,7 +5272,7 @@ describe('R18 — Data deep-linking (#data/<tab>/<entity_id>)', () => {
     expect(html).toContain(
       'Recued could not check every connected source.',
     );
-    expect(html).toContain('Choose a source to verify this item.');
+    expect(html).toContain('Pick one for it to check.');
     expect(html).toContain('gcal · personal');
     expect(html).toContain('gcal · work');
     expect(html).toContain(DATA_ROUTE_LOGS_RETURN_ATTR);
@@ -5296,9 +5315,9 @@ describe('R18 — Data deep-linking (#data/<tab>/<entity_id>)', () => {
 
     const html = rig.root.children[0]?.innerHTML ?? '';
     expect(html).toContain(
-      'This affected item is not currently in connected Data.',
+      'Recued cannot find this item in your Data.',
     );
-    expect(html).toContain('It may have been deleted or not synced yet.');
+    expect(html).toContain('It may have been deleted, or it may not have been brought in yet.');
     expect(html).toContain('Back to run outcome');
     expect(html).not.toContain('Record detail');
 
@@ -5328,7 +5347,7 @@ describe('R18 — Data deep-linking (#data/<tab>/<entity_id>)', () => {
       '#data/contact/item/sam%40example.com/relationship/action/'
       + 'return/logs/run-1',
     );
-    expect(html).toContain('Review the record used by the action');
+    expect(html).toContain('Look at the record that was used');
     expect(html).not.toContain(
       `${DATA_ROUTE_VERIFICATION_ACTION_ATTR}="reviewed"`,
     );
@@ -5416,7 +5435,7 @@ describe('R18 — Data deep-linking (#data/<tab>/<entity_id>)', () => {
 
     const html = rig.root.children[0]?.innerHTML ?? '';
     expect(html).toContain(
-      'The connected source for this cited record is no longer available.',
+      'The source this record came from is gone.',
     );
     expect(html).toContain('Back to cited answer');
     expect(get).not.toHaveBeenCalled();
@@ -5468,11 +5487,22 @@ describe('R18 — Data deep-linking (#data/<tab>/<entity_id>)', () => {
     rig.route.dispose();
   });
 
-  it('falls back to the Contacts tab on an unknown initialTab', async () => {
-    const rig = mountRoute({ initialTab: 'bogus-kind' });
-    await rig.route.whenLoaded();
-    expect(rig.route.activeTab()).toBe('contact');
-    rig.route.dispose();
+  it('⛔ D-267 — a tabless or unknown address lands on TODAY, not Contacts', async () => {
+    // ⛔ BOTH ARMS, AND THE SECOND IS THE ONE THAT MATTERS. The rig pins
+    // `initialTab: 'contact'` for the contact-heavy cases around it, so an
+    // assertion that only went through the rig would be asserting the RIG's
+    // default and would stay green if the route's own fallback regressed. The
+    // bare mount below bypasses it: `undefined` is what the drawer's Data seat
+    // and every tabless link actually send.
+    const unknown = mountRoute({ initialTab: 'bogus-kind' });
+    await unknown.route.whenLoaded();
+    expect(unknown.route.activeTab()).toBe('today');
+    unknown.route.dispose();
+
+    const bare = mountRoute({ initialTab: null });
+    await bare.route.whenLoaded();
+    expect(bare.route.activeTab()).toBe('today');
+    bare.route.dispose();
   });
 
   it('syncs tab/detail URLs through the replace-only History fallback', async () => {
@@ -6199,7 +6229,7 @@ describe('D-174 P5 Data route — work-entity edit dialog robustness', () => {
     expect(submit).toContain('Saving…');
     expect(rig.route.hasInFlightWork()).toBe(true);
     expect(rig.route.inFlightWorkPrompt()).toBe(
-      'A Data action is still in progress. Leave Data anyway?',
+      'Something is still happening. Leave Data anyway?',
     );
 
     saved.resolve({ entity: taskEntity({ title: 'Saved task' }) });
@@ -6599,8 +6629,8 @@ describe('D-205 #5b — the import page', () => {
     const html = rig.root.children[0]?.innerHTML ?? '';
     // Nothing new is computed. `skipped` IS the stranger count — it has been persisted
     // on every cycle since #1 and this is the first surface to say what it MEANS.
-    expect(html).toContain('12 of your contacts enriched');
-    expect(html).toContain('9988 people you have not corresponded with');
+    expect(html).toContain('12 of your contacts now have more detail');
+    expect(html).toContain('9988 people you have never written to');
     expect(html).toContain('Browse &amp; add');
     rig.route.dispose();
   });
@@ -6647,7 +6677,7 @@ describe('D-205 #5b — the import page', () => {
     let html = rig.root.children[0]?.innerHTML ?? '';
     expect(html).toContain('Carol Jones');
     expect(html).toContain('10000 records in this CRM');
-    expect(html).toContain('9988 people you have not corresponded with');
+    expect(html).toContain('9988 people you have never written to');
 
     rig.route.toggleImportTarget('hubspot:contact:work:hs_2');
     await rig.route.promoteImport();
@@ -7159,7 +7189,7 @@ describe('Data → Search wiring', () => {
     await rig.route.selectTab('search');
     typeInto(rig, 'kestrel');
     await new Promise((r) => setTimeout(r, 20));
-    expect(rig.root.children[0]!.innerHTML).toContain('not wired');
+    expect(rig.root.children[0]!.innerHTML).toContain('This server cannot search');
   });
 
   it('opening a result does not throw', async () => {
@@ -7290,5 +7320,180 @@ describe('Data → Search never reaches the cloud on its own', () => {
     await new Promise((r) => setTimeout(r, 20));
     expect(cloudCalls).toEqual(['invoicing']);
     expect(rig.root.children[0]!.innerHTML).toContain('Invoice book');
+  });
+});
+
+describe('D-267 — Today is the landing, and it can start you off', () => {
+  it('⛔ dispatches the Today capture to the SHARED opener, not a fourth form', async () => {
+    const openCreateOverlay = vi.fn();
+    const rig = mountRoute({ initialTab: 'today', openCreateOverlay });
+    await rig.route.whenLoaded();
+    expect(rig.route.activeTab()).toBe('today');
+
+    emitClick(rig.root.children[0]!, 'today-create');
+    expect(openCreateOverlay).toHaveBeenCalledTimes(1);
+    // ⛔ AND IT DOES NOT OPEN A DIALOG OF ITS OWN. The Data route already has a
+    // work-entity dialog and a contact dialog; routing Today at either would
+    // make a capture from Today a different act from one made in chat or the
+    // drawer, with a different commit path to keep honest.
+    expect(rig.route.workEntityState().dialog).toBeNull();
+    rig.route.dispose();
+  });
+
+  it('stays inert when no host wired an opener', async () => {
+    const rig = mountRoute({ initialTab: 'today' });
+    await rig.route.whenLoaded();
+    // The markup carries no button at all (asserted in today-view.test.ts), and
+    // a stray dispatch is a no-op rather than a throw.
+    expect(() => emitClick(rig.root.children[0]!, 'today-create')).not.toThrow();
+    rig.route.dispose();
+  });
+});
+
+describe('D-267 — both ways into Search mount the same surface', () => {
+  const searchRig = () => ({ collectionSearchAllCaller: vi.fn(async () => ({ groups: [] })) });
+
+  /** ⚠ SCOPE, STATED. These assert the SURFACE, not the focus claim: this
+   *  harness's fake `routeRoot` has no `querySelector`, so the entry-focus code
+   *  (`pendingUniversalSearchFocus`) cannot reach an element here and a focus
+   *  assertion would be vacuous — green whether or not the box is ever claimed.
+   *  Focus + caret retention are driven in a real browser instead; see the
+   *  D-267 note in internal design notes. What IS worth pinning here is that
+   *  the two arrival paths behave the same, because the chord and the drawer
+   *  seat arrive by HASH (a fresh mount) while the in-page tablist arrives by
+   *  `selectTab` — wiring only one would leave the tab click behaving
+   *  differently from the chord that names the same destination. */
+  it('mounts search from a deep-linked arrival', async () => {
+    const { collectionSearchAllCaller } = searchRig();
+    const rig = mountRoute({ initialTab: 'search', collectionSearchAllCaller });
+    await rig.route.whenLoaded();
+    expect(rig.route.activeTab()).toBe('search');
+    expect(rig.root.children[0]!.innerHTML).toContain('rq-search');
+    rig.route.dispose();
+  });
+
+  it('mounts search from an in-page tab selection', async () => {
+    const { collectionSearchAllCaller } = searchRig();
+    const rig = mountRoute({ initialTab: 'today', collectionSearchAllCaller });
+    await rig.route.whenLoaded();
+    await rig.route.selectTab('search');
+    expect(rig.route.activeTab()).toBe('search');
+    expect(rig.root.children[0]!.innerHTML).toContain('rq-search');
+    rig.route.dispose();
+  });
+});
+
+describe('D-267 — the work-entity edit dialog carries its provenance', () => {
+  const entry = (
+    over: Partial<TimelineResponse['entries'][number]> = {},
+  ): TimelineResponse['entries'][number] => ({
+    ts: 1_700_000_000_000, source: 'link', kind: 'execution.write',
+    payload: { run_id: 'run-1', recipe_id: 'invoice-intake' }, ...over,
+  });
+
+  it('⛔ asks for THIS entity, addressed the way the timeline expects', async () => {
+    const timelineCaller = vi.fn(async () => ({ entries: [entry()] }));
+    const rig = mountRoute({
+      initialTab: 'task', timelineCaller,
+      workEntityListCaller: async () => ({ entities: [taskEntity({ id: 't1' })], total: 1 }),
+      workEntityGetCaller: async () => ({ entity: taskEntity({ id: 't1' }) }),
+    });
+    await rig.route.whenLoaded();
+    await rig.route.openEditWorkEntityDialog('task', 't1');
+    await new Promise((r) => setTimeout(r, 20));
+
+    // `<collection>:<id>` — the address `data.timeline` parses on the first
+    // colon. A kind-less id would query nothing and return an empty feed that
+    // reads as "nothing has touched this".
+    expect(timelineCaller).toHaveBeenCalledWith({ entity_id: 'task:t1' });
+    expect(rig.root.children[0]!.innerHTML).toContain('invoice-intake');
+    rig.route.dispose();
+  });
+
+  it('⛔ shows NOTHING while the read is in flight, and nothing when it is empty', async () => {
+    // Both silences are the same rule: a provenance section is a claim that
+    // this is what happened. An empty one asserts "nothing has touched this",
+    // which is false while loading and unhelpful when simply unrecorded.
+    let release!: (v: { entries: unknown[] }) => void;
+    const held = new Promise<{ entries: unknown[] }>((r) => { release = r; });
+    const rig = mountRoute({
+      initialTab: 'task', timelineCaller: () => held as never,
+      workEntityListCaller: async () => ({ entities: [taskEntity({ id: 't1' })], total: 1 }),
+      workEntityGetCaller: async () => ({ entity: taskEntity({ id: 't1' }) }),
+    });
+    await rig.route.whenLoaded();
+    await rig.route.openEditWorkEntityDialog('task', 't1');
+    await new Promise((r) => setTimeout(r, 20));
+    expect(rig.root.children[0]!.innerHTML).not.toContain('work-entity-dialog-history');
+
+    release({ entries: [] });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(rig.root.children[0]!.innerHTML).not.toContain('work-entity-dialog-history');
+    rig.route.dispose();
+  });
+
+  it('⛔ a feed that arrives for a CLOSED dialog paints nothing', async () => {
+    // The open is sequence-guarded; so is this. Otherwise a slow history read
+    // would attribute one row's past to whatever is on screen when it lands.
+    let release!: (v: { entries: unknown[] }) => void;
+    const held = new Promise<{ entries: unknown[] }>((r) => { release = r; });
+    const rig = mountRoute({
+      initialTab: 'task', timelineCaller: () => held as never,
+      workEntityListCaller: async () => ({ entities: [taskEntity({ id: 't1' })], total: 1 }),
+      workEntityGetCaller: async () => ({ entity: taskEntity({ id: 't1' }) }),
+    });
+    await rig.route.whenLoaded();
+    await rig.route.openEditWorkEntityDialog('task', 't1');
+    await new Promise((r) => setTimeout(r, 20));
+    await rig.route.selectTab('note');
+    release({ entries: [entry()] });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(rig.root.children[0]!.innerHTML).not.toContain('invoice-intake');
+    rig.route.dispose();
+  });
+});
+
+describe('D-267 — the built-in local calendar names itself once', () => {
+  const instance = (over: Partial<CollectionInstanceRow> = {}): CollectionInstanceRow => ({
+    platform: 'calendar', slug: 'local', adapter_type: 'local',
+    auth_state: 'healthy', last_synced_at: null,
+    caps: { read: 'yes', list_calendars: 'yes', create_event: 'yes', update_event: 'yes',
+      delete_event: 'yes', rsvp: 'no', search: 'local', watch: 'none', auth: 'none', recurrence: 'client' },
+    ...over,
+  });
+  // ⚠ The bar only renders with MORE THAN ONE instance — a lone instance is
+  // auto-selected and needs no picker. So the local calendar's label is only
+  // ever seen beside a connected one, which is exactly when saying the same
+  // word twice is most confusing.
+  const mount = () => mountRoute({
+    initialTab: 'calendar',
+    collectionListInstancesCaller: async () => ({
+      instances: [instance(), instance({ slug: 'work-calendar', adapter_type: 'gcal' })],
+    }),
+    collectionListCaller: async () => ({ records: [] }),
+  });
+
+  it('⛔ renders "local", not "local · local"', async () => {
+    const rig = mount();
+    await rig.route.whenLoaded();
+    const html = rig.root.children[0]!.innerHTML;
+    // The chip exists to tell instances apart; `<adapter> · <slug>` is
+    // informative for gcal and pure noise when both words are the same.
+    expect(html).not.toContain('local · local');
+    expect(html).toContain('>local<');
+    // ...while a genuinely two-part instance keeps both halves.
+    expect(html).toContain('gcal · work-calendar');
+    rig.route.dispose();
+  });
+
+  it('says whose it is, since the TAB cannot', async () => {
+    const rig = mount();
+    await rig.route.whenLoaded();
+    const html = rig.root.children[0]!.innerHTML;
+    // Calendar sits under "Connected" because the GROUP is per-collection,
+    // while ownership is per-INSTANCE: this one needs no credential and lives
+    // on the owner's server. The tab cannot express that; the chip can.
+    expect(html).toContain('On this server');
+    rig.route.dispose();
   });
 });

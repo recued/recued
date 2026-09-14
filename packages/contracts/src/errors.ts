@@ -452,6 +452,32 @@ export type RecipeErrorCode =
    *  received the email; the user's local Sent folder is one
    *  record off until the next reconcile. Warning, not fatal. */
   | 'MAIL_SEND_APPEND_FAILED'
+  /** D-264 — this mail account cannot hold a draft. IMAP: the client has no
+   *  `list`/`append`, or no folder is connected. Gmail/Graph: the grant is
+   *  missing `gmail.modify` / `Mail.ReadWrite`. ⚠ A DIFFERENT capability from
+   *  sending — a mailbox may do either, both or neither. */
+  | 'MAIL_DRAFT_NOT_CAPABLE'
+  /** D-264 — IMAP only. The mailbox published no `\Drafts` special-use folder
+   *  and none of the known fallback names exists. Nothing was written. */
+  | 'MAIL_DRAFT_FOLDER_NOT_FOUND'
+  /** D-264 — the provider refused the draft on its merits (4xx, or an IMAP
+   *  APPEND the server rejected). A per-call problem, not a credential one. */
+  | 'MAIL_DRAFT_WRITE_FAILED'
+  /** D-264 — provider-side 401 / 403 saving the draft. Token revoked or the
+   *  write scope dropped. Re-enroll to refresh the grant. */
+  | 'MAIL_DRAFT_AUTH_FAILED'
+  /** D-264 — transient failure saving the draft (5xx, reset, timeout).
+   *  Retryable; nothing about the message is wrong. */
+  | 'MAIL_DRAFT_NETWORK_FAILED'
+  /** D-264 — the draft SAVED, and an earlier copy could not be superseded, so
+   *  the mailbox now holds two. A warning, never a failure: IMAP has no update
+   *  verb, and a provider update can fail on its own. */
+  | 'MAIL_DRAFT_PRIOR_NOT_REMOVED'
+  /** D-264 — the draft SAVED, and its attachments stayed in Recued. The mailbox
+   *  copy carries the message only. A warning, because the owner would
+   *  otherwise open the draft on their phone and find the files missing with no
+   *  explanation. */
+  | 'MAIL_DRAFT_ATTACHMENTS_OMITTED'
   /** D-172 P2 — a `mail-send` `attachments` ref could not be turned
    *  into bytes: the `data.file` record is missing, its CAS blob is
    *  gone, the ref points at a (reserved, unreadable) remote storage
@@ -652,6 +678,16 @@ export const ERR: Record<RecipeErrorCode, ErrorSeverity> = {
   MAIL_SEND_NETWORK_FAILED: 'error',
   MAIL_SEND_SELF_LOOP_TO: 'error',
   MAIL_SEND_APPEND_FAILED: 'warn',
+  // D-264 — saved-draft taxonomy. Mirrors the send tiers: a capability or
+  // per-call refusal is an `error`, a transient one is an `error` the caller
+  // may retry, and the two-copies outcome is a `warn` because the draft SAVED.
+  MAIL_DRAFT_NOT_CAPABLE: 'error',
+  MAIL_DRAFT_FOLDER_NOT_FOUND: 'error',
+  MAIL_DRAFT_WRITE_FAILED: 'error',
+  MAIL_DRAFT_AUTH_FAILED: 'error',
+  MAIL_DRAFT_NETWORK_FAILED: 'error',
+  MAIL_DRAFT_PRIOR_NOT_REMOVED: 'warn',
+  MAIL_DRAFT_ATTACHMENTS_OMITTED: 'warn',
   // D-172 P2 — attachments-v2.
   MAIL_SEND_ATTACHMENT_UNRESOLVABLE: 'error',
   // D-127 P2.1 — kernel `mail-send` ingredient surface.
@@ -828,6 +864,14 @@ export const ERROR_MESSAGES: Record<RecipeErrorCode, string> = {
   MAIL_SEND_NETWORK_FAILED: 'A network error stopped the send. Check your connection and try again.',
   MAIL_SEND_SELF_LOOP_TO: 'This recipe is configured to send mail to itself, which is almost always a configuration mistake. Adjust the recipient or move the address to bcc.',
   MAIL_SEND_APPEND_FAILED: 'The mail was sent but Recued could not save a copy to your Sent folder. The recipient still received it; your Sent folder will reconcile on the next sync.',
+  // D-264 — saved-draft taxonomy.
+  MAIL_DRAFT_NOT_CAPABLE: 'This mail account cannot save drafts to your mailbox. Re-enroll it with write access from Settings → Connections, or keep the draft in Recued.',
+  MAIL_DRAFT_FOLDER_NOT_FOUND: 'Recued could not find a Drafts folder in this mailbox, so nothing was saved there. Your draft is still safe in Recued.',
+  MAIL_DRAFT_WRITE_FAILED: 'The mail provider refused to save this draft. Your draft is still safe in Recued.',
+  MAIL_DRAFT_AUTH_FAILED: 'The mail account refused the draft save. Reconnect the account from Settings → Connections.',
+  MAIL_DRAFT_NETWORK_FAILED: 'A network error stopped the draft from saving to your mailbox. Your draft is still safe in Recued — try again.',
+  MAIL_DRAFT_PRIOR_NOT_REMOVED: 'The draft was saved, but the earlier copy could not be removed — your mailbox now has two. Delete the older one in your mail app.',
+  MAIL_DRAFT_ATTACHMENTS_OMITTED: 'The draft was saved to your mailbox without its attachments — those stay in Recued. Send from Recued to include them.',
   MAIL_SEND_ATTACHMENT_UNRESOLVABLE: 'An attachment could not be read, so the email was not sent. Re-drop the file, or send without it.',
   // D-127 P2.1 — kernel `mail-send` ingredient surface.
   MAIL_INSTANCE_NOT_FOUND: 'No mail account with that name is connected. Pick a different account, or connect this one in Settings → Mail.',
@@ -1025,6 +1069,13 @@ export const ERROR_ATTRIBUTION: Record<RecipeErrorCode, ErrorAttribution> = {
   MAIL_SEND_NETWORK_FAILED: 'environment',
   MAIL_SEND_SELF_LOOP_TO: 'choice',
   MAIL_SEND_APPEND_FAILED: 'environment',
+  MAIL_DRAFT_NOT_CAPABLE: 'choice',
+  MAIL_DRAFT_FOLDER_NOT_FOUND: 'environment',
+  MAIL_DRAFT_WRITE_FAILED: 'choice',
+  MAIL_DRAFT_AUTH_FAILED: 'environment',
+  MAIL_DRAFT_NETWORK_FAILED: 'environment',
+  MAIL_DRAFT_PRIOR_NOT_REMOVED: 'environment',
+  MAIL_DRAFT_ATTACHMENTS_OMITTED: 'environment',
   MAIL_SEND_ATTACHMENT_UNRESOLVABLE: 'choice',
   MAIL_INSTANCE_NOT_FOUND: 'choice',
   DISPATCH_DEPTH_EXCEEDED: 'owner',

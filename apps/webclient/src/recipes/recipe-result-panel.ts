@@ -910,14 +910,14 @@ export const copyRecipeResultValue = async (
   target.setAttribute('aria-live', 'polite');
   const clipboard = doc.defaultView?.navigator?.clipboard;
   if (clipboard?.writeText === undefined) {
-    target.textContent = 'Copy unavailable';
+    target.textContent = 'Recued cannot copy here';
     return;
   }
   try {
     await clipboard.writeText(value);
     target.textContent = 'Copied';
   } catch {
-    target.textContent = 'Copy failed';
+    target.textContent = 'Recued could not copy it';
   }
 };
 
@@ -980,20 +980,20 @@ const normalizeResultAction = (
 ): ResultActionValidation => {
   const row = asRecord(value);
   if (row === null) {
-    return resultActionError('Unavailable action', 'Action descriptor is malformed.');
+    return resultActionError('You cannot do this', 'Recued could not read what this does.');
   }
   const rawLabel = row.label;
   const label = typeof rawLabel === 'string' && rawLabel.trim().length > 0
     ? rawLabel.trim()
-    : 'Unavailable action';
+    : 'You cannot do this';
   if (row.kind !== 'recipe.run') {
-    return resultActionError(label, 'Only recipe.run actions can be opened.');
+    return resultActionError(label, 'You can only open things that run a Recipe.');
   }
   if (typeof rawLabel !== 'string' || rawLabel.trim().length === 0) {
-    return resultActionError(label, 'Action label is missing.');
+    return resultActionError(label, 'This has no name.');
   }
   if (typeof row.recipe_id !== 'string' || row.recipe_id.trim().length === 0) {
-    return resultActionError(label, 'Target recipe is missing.');
+    return resultActionError(label, 'Recued does not know which Recipe to run.');
   }
   const recipeId = row.recipe_id.trim();
   const targetEntry = registry.installed.get(recipeId);
@@ -1006,7 +1006,7 @@ const normalizeResultAction = (
     if (parsedConfig === null || !isJsonCompatible(parsedConfig)) {
       return resultActionError(
         label,
-        'Action config must be a JSON-compatible object.',
+        'The settings have to be a JSON object.',
       );
     }
     config = parsedConfig;
@@ -1017,7 +1017,7 @@ const normalizeResultAction = (
     if (parsedContext === null || !isJsonCompatible(parsedContext)) {
       return resultActionError(
         label,
-        'Action context must be a JSON-compatible object.',
+        'The details have to be a JSON object.',
       );
     }
     context = parsedContext;
@@ -1026,34 +1026,34 @@ const normalizeResultAction = (
     row.variant !== undefined
     && (typeof row.variant !== 'string' || !RESULT_ACTION_VARIANTS.has(row.variant))
   ) {
-    return resultActionError(label, 'Action variant is not supported.');
+    return resultActionError(label, 'Recued does not know that kind.');
   }
   if (row.confirm !== undefined && typeof row.confirm !== 'string') {
-    return resultActionError(label, 'Action confirmation text must be a string.');
+    return resultActionError(label, 'The confirmation message has to be text.');
   }
   if (context !== undefined) {
     const reserved = Object.keys(context)
       .find((key) => RESULT_ACTION_RESERVED_CONTEXT_KEYS.has(key));
     if (reserved !== undefined) {
-      return resultActionError(label, `Action context cannot set reserved key "${reserved}".`);
+      return resultActionError(label, `You cannot use the name Recued keeps for itself: "${reserved}".`);
     }
   }
   if (registry.runnability === null) {
-    return resultActionError(label, 'Recipe runnability is unavailable.');
+    return resultActionError(label, 'Recued cannot tell whether this can run.');
   }
   const targetRunnability = registry.runnability.get(recipeId);
   if (targetRunnability === undefined) {
-    return resultActionError(label, 'Target recipe runnability is unavailable.');
+    return resultActionError(label, 'Recued cannot tell whether that Recipe can run.');
   }
   if (targetRunnability?.status === 'blocked') {
     const missingPacks = missingPackRefsFromRunnability(targetRunnability);
     return resultActionError(
       label,
       missingPacks.length === 0
-        ? 'Target recipe is blocked by missing providers.'
+        ? 'That Recipe cannot run. It needs a provider you do not have.'
         : missingPacks.length === 1
-          ? 'Target recipe needs a pack that is not installed.'
-          : 'Target recipe needs packs that are not installed.',
+          ? 'That Recipe needs a Pack you have not installed.'
+          : 'That Recipe needs Packs you have not installed.',
     );
   }
   return {
@@ -1161,21 +1161,21 @@ const normalizeResultFileArtifact = (
   value: unknown,
 ): ResultFileArtifactValidation => {
   const row = asRecord(value);
-  if (row === null) return { ok: false, reason: 'File artifact descriptor is malformed.' };
+  if (row === null) return { ok: false, reason: 'Recued could not read the file details.' };
   const recordId = readNonEmptyString(row.record_id);
   const filename = readNonEmptyString(row.filename);
   const mimeType = readNonEmptyString(row.mime_type);
   const sha256 = readNonEmptyString(row.sha256);
   const sizeBytes = readOptionalFiniteNumber(row.size_bytes);
   const generatedAt = readOptionalFiniteNumber(row.generated_at);
-  if (recordId === undefined) return { ok: false, reason: 'File reference is missing.' };
-  if (filename === undefined) return { ok: false, reason: 'Filename is missing.' };
-  if (mimeType === undefined) return { ok: false, reason: 'File MIME type is missing.' };
+  if (recordId === undefined) return { ok: false, reason: 'Recued does not know which file.' };
+  if (filename === undefined) return { ok: false, reason: 'The file has no name.' };
+  if (mimeType === undefined) return { ok: false, reason: 'Recued does not know what kind of file it is.' };
   if (sha256 === undefined || !/^[a-f0-9]{64}$/.test(sha256)) {
-    return { ok: false, reason: 'File SHA-256 is invalid.' };
+    return { ok: false, reason: 'The file’s fingerprint is wrong.' };
   }
   if (sizeBytes === undefined || !Number.isSafeInteger(sizeBytes) || sizeBytes <= 0) {
-    return { ok: false, reason: 'File size must be a positive integer.' };
+    return { ok: false, reason: 'The file size has to be a whole number above zero.' };
   }
   if (
     generatedAt === undefined
@@ -1183,13 +1183,13 @@ const normalizeResultFileArtifact = (
     || generatedAt < 0
     || generatedAt > 8_640_000_000_000_000
   ) {
-    return { ok: false, reason: 'Generation timestamp is invalid.' };
+    return { ok: false, reason: 'The time it was made is not valid.' };
   }
   if (
     row.decision_actions !== undefined
     && (!Array.isArray(row.decision_actions) || row.decision_actions.length > 3)
   ) {
-    return { ok: false, reason: 'File decision actions are malformed.' };
+    return { ok: false, reason: 'Recued could not read what you can do with this file.' };
   }
 
   const originRow = asRecord(row.origin);
@@ -1282,7 +1282,7 @@ const displayResultFileMoney = (
   currency: string | undefined,
 ): string => {
   if (amountMinor === undefined || currency === undefined) return '—';
-  return `${amountMinor.toLocaleString('en-US')} ${currency.toUpperCase()} minor units`;
+  return `${amountMinor.toLocaleString('en-US')} ${currency.toUpperCase()} in the smallest coins`;
 };
 
 const getPathValue = (row: unknown, path: string): unknown => {
@@ -1316,13 +1316,13 @@ const sectionTitle = (section: RenderedOutputSection): string => {
     case 'copyable':
       return 'Copyable';
     case 'ai_analysis':
-      return 'AI analysis';
+      return 'What the AI found';
     case 'text':
       return 'Text';
     case 'button':
       return 'Actions';
     case 'file_artifact':
-      return 'File artifacts';
+      return 'Files';
     case 'link_button':
       return 'Links';
     case 'json':
@@ -1332,7 +1332,7 @@ const sectionTitle = (section: RenderedOutputSection): string => {
     case 'record_fields':
       return 'Record';
     default:
-      return `Unsupported output: ${section.type}`;
+      return `Recued cannot show this: ${section.type}`;
   }
 };
 
@@ -1426,13 +1426,13 @@ const validatePinnedResultApprovalAction = (
   if (submissionId === undefined) {
     return resultActionError(
       validation.action.label,
-      'Approval action is missing its originating response pin.',
+      'Recued cannot tell which answer this belongs to.',
     );
   }
   if (actionSubmissionId !== submissionId || reviewedSha256 !== artifact.sha256) {
     return resultActionError(
       validation.action.label,
-      'Approval action does not match this exact response and file hash.',
+      'This does not match the answer and the file Recued has.',
     );
   }
   if (
@@ -1443,7 +1443,7 @@ const validatePinnedResultApprovalAction = (
   ) {
     return resultActionError(
       validation.action.label,
-      'Approval action target or config is not the closed exact-artifact action.',
+      'This is not the exact thing Recued expected.',
     );
   }
   return validation;
@@ -1465,7 +1465,7 @@ const validatePinnedResultDecisionAction = (
   ) {
     return resultActionError(
       validation.action.label,
-      'Decision action does not match this exact response and file hash.',
+      'This does not match the answer and the file Recued has.',
     );
   }
   const configKeys = Object.keys(config).sort().join(',');
@@ -1480,7 +1480,7 @@ const validatePinnedResultDecisionAction = (
   if (!isRegenerate && !isRejectOrCancel) {
     return resultActionError(
       validation.action.label,
-      'Decision action target or config is outside the closed artifact-decision set.',
+      'This is not one of the things you can do with a file.',
     );
   }
   return validation;
@@ -1498,14 +1498,14 @@ const renderGatedPinnedFileActions = (
     return renderDisabledResultAction(
       actionValidation.action.label,
       kind === 'approval'
-        ? 'Authenticated preview/download is required before approval.'
-        : 'Authenticated preview/download is required before this decision.',
+        ? 'Open or download the file first, then you can say yes.'
+        : 'Open or download the file first, then you can decide.',
     );
   }
   if (busy) {
     return renderDisabledResultAction(
       actionValidation.action.label,
-      'The exact file is still being verified.',
+      'Recued is still checking the file.',
     );
   }
   if (!registry.fileVerified.has(registered.stableKey)) {
@@ -1536,7 +1536,7 @@ const renderOneFileArtifact = (
   const busy = registry.fileBusy.has(registered.stableKey);
   const readDisabled = !registry.canReadFiles || busy;
   const readReason = !registry.canReadFiles
-    ? 'Authenticated file preview is not available from this client.'
+    ? 'This browser cannot show a signed-in file.'
     : busy
       ? 'Reading the exact file…'
       : '';
@@ -2228,7 +2228,7 @@ export const renderRecipeResultPanel = (
     ? ''
     : installedRecipeName(installed, panel.render_recipe_id);
   const empty = panel === null
-    ? '<p class="recipes-detail-note">No current-session result yet. Run a recipe to render its returned output here.</p>'
+    ? '<p class="recipes-detail-note">No current-session result yet. Run a Recipe to render its returned output here.</p>'
     : '';
   const result = panel?.result ?? null;
   const status = result === null
@@ -2369,22 +2369,22 @@ export const exactResultFileReadError = (
   actual: ResultFileReadResult,
 ): string | null => {
   if (actual.record_id !== expected.record_id) {
-    return 'Authenticated file read returned a different file reference.';
+    return 'The file that came back is a different one.';
   }
   if (actual.blob_hash !== expected.sha256) {
-    return 'Authenticated file read no longer matches the reviewed SHA-256.';
+    return 'The file that came back does not match the fingerprint you checked.';
   }
   if (actual.mime_type !== expected.mime_type) {
-    return 'Authenticated file read returned a different MIME type.';
+    return 'The file that came back is a different kind.';
   }
   if (actual.filename !== expected.filename) {
-    return 'Authenticated file read returned a different filename.';
+    return 'The file that came back has a different name.';
   }
   if (actual.size_bytes !== expected.size_bytes) {
-    return 'Authenticated file read returned a different file size.';
+    return 'The file that came back is a different size.';
   }
   if (typeof actual.bytes_b64 !== 'string' || actual.bytes_b64.length === 0) {
-    return 'Authenticated file read returned no file bytes.';
+    return 'Nothing came back at all.';
   }
   return null;
 };
@@ -2410,7 +2410,7 @@ export const triggerResultFileOpen = (
     || typeof view.URL?.createObjectURL !== 'function'
     || typeof view.URL.revokeObjectURL !== 'function'
   ) {
-    throw new Error('This browser cannot safely open authenticated file bytes.');
+    throw new Error('This browser cannot safely open the file.');
   }
   if (mode === 'preview' && file.mime_type !== 'application/pdf') {
     throw new Error('Inline preview is available only for verified PDF files.');
@@ -2421,7 +2421,7 @@ export const triggerResultFileOpen = (
     bytes[i] = binary.charCodeAt(i);
   }
   if (bytes.length !== file.size_bytes) {
-    throw new Error('Authenticated file bytes do not match the returned file size.');
+    throw new Error('The file is not the size it said it was.');
   }
   const blob = new view.Blob([bytes], { type: file.mime_type });
   const url = view.URL.createObjectURL(blob);

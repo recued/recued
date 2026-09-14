@@ -27,6 +27,9 @@
  *  the `rebuildAll()` walk read names + `rebuild?` only. */
 
 import type Database from 'better-sqlite3';
+import type { NotificationMessage } from '@recued/notification';
+import type { AutomationUnitRef } from '../../../automation-failure-reporter.js';
+import type { MissedRunReport } from '@recued/scheduler';
 import type { ScheduleStore } from '../../../schedule-store.js';
 import type { SchedulerHandle } from '../../../scheduler.js';
 import type {
@@ -49,6 +52,9 @@ import {
  *  prerequisites (e.g., no `scheduleStore` for cron, no `db` for
  *  auto-run) return `undefined` from `boot()` so the slot is skipped. */
 export interface SchedulerBootContext {
+  /** D-269 — the server's declared IANA zone, for cron schedules that carry
+   *  none. Absent ⇒ host-local, the pre-D-269 behaviour. */
+  serverTimeZone?: () => string | undefined;
   /** Background-services registry the boot registers its stop closure
    *  with. Typically the module singleton. */
   readonly registry: BackgroundServiceRegistry;
@@ -75,6 +81,25 @@ export interface SchedulerBootContext {
    *  no-op while the vault is sealed. Optional — absent (dbless / legacy
    *  harness) leaves the schedulers un-gated. */
   readonly isVaultUnlocked?: () => boolean;
+  /** D-266 — per-tick hand-off of the misses waiting on an owner who
+   *  chose `missed_policy: 'ask'`. Threaded into the CRON scheduler only
+   *  (auto-run and housekeeping have no cron cycle to miss). Optional —
+   *  absent leaves `Ask me` reaching the owner through the Automation
+   *  card alone. */
+  readonly onMissedRuns?: (report: MissedRunReport) => void | Promise<void>;
+  /** D-268 — deliver one owner notice about a failed unattended run. Threaded
+   *  into BOTH the cron and auto-run schedulers, which is why it lives on the
+   *  shared boot context rather than on one boot's own options. Optional —
+   *  absent leaves failures recorded on the row and reaching nobody, which is
+   *  the behaviour before this seam existed.
+   *
+   *  ⚠ SYNCHRONOUS AND FIRE-AND-FORGET BY CONTRACT. A scheduler tick must never
+   *  await an owner channel; the binding at the composition root swallows the
+   *  promise. Same posture `update/owner-alert.ts` takes for boot. */
+  readonly onAutomationFailure?: (
+    notice: NotificationMessage,
+    unit: AutomationUnitRef,
+  ) => void;
 }
 
 /** Per-scheduler slot returned from `boot()`. Carries the typed handle

@@ -129,44 +129,44 @@ export const ABUSE_INBOX_SIGNAL_COPY: Readonly<
   spam_burst: {
     label: 'Spam burst',
     description:
-      'A cluster of rate-limit hits from one source — the per-IP submission ceiling fired repeatedly in the window.',
+      'One place sent far too many requests, over and over, and Recued turned them away.',
     suggested_action:
-      'Most often bot form spam. Ban the source IP when the cluster is large, or tighten the endpoint’s per-IP rate limit.',
+      'This is usually junk from a robot. Block the address if there is a lot of it, or lower how much one place may send.',
   },
   mime_rejection: {
-    label: 'MIME rejection',
+    label: 'Wrong kind of file',
     description:
-      'Repeated drop-link uploads rejected because the file type is outside the endpoint’s closed MIME allowlist.',
+      'Someone kept uploading files of a kind this link does not accept.',
     suggested_action:
-      'Usually a misconfigured client or a content probe — nothing was stored. Confirm the allowlist is what you expect, then ban the source if it persists.',
+      'Usually a badly set up app, or someone poking around. Nothing was saved. Check which file kinds you allow, then block the address if it keeps happening.',
   },
   invalid_token_burst: {
-    label: 'Invalid token burst',
+    label: 'Lots of bad keys',
     description:
-      'Repeated requests carrying a missing or bad bearer token — a brute-force candidate scanning for live endpoints.',
+      'Someone kept turning up with a missing or wrong key, looking for a way in.',
     suggested_action:
-      'Bearer tokens are HMAC-keyed and not guessable, so this is noise unless sustained. Ban the source IP if the cluster keeps growing.',
+      'Your keys cannot be guessed, so this is usually just noise. Block the address if it keeps growing.',
   },
   endpoint_ddos: {
-    label: 'Endpoint flood',
+    label: 'Too much traffic to one link',
     description:
-      'A cluster of per-endpoint rate-limit hits — one source hammering a single endpoint past its capacity ceiling.',
+      'One place sent far more than a single link can handle.',
     suggested_action:
-      'Ban the source IP to shed the load. If many IPs are involved, consider disabling the endpoint from its spine row until the flood subsides.',
+      'Block the address to take the load off. If many addresses are involved, switch the link off until it calms down.',
   },
   oversized_upload: {
-    label: 'Oversized upload',
+    label: 'File too big',
     description:
-      'Drop-link uploads rejected at the body-stream parse for exceeding the endpoint’s size cap.',
+      'Someone tried to upload files bigger than this link allows.',
     suggested_action:
-      'Could be a legitimate large file or a storage-exhaustion probe. Raise the cap if the size is expected, otherwise ban the source.',
+      'It might be a real big file, or someone trying to fill up your storage. Raise the limit if you expected it. Otherwise block the address.',
   },
   suspicious_payload: {
-    label: 'Suspicious payload',
+    label: 'Something suspicious was sent',
     description:
-      'Form submissions rejected at sanitization — HTML or script tags in fields that should be plain text.',
+      'Someone put code into boxes that should only hold plain words.',
     suggested_action:
-      'An injection probe. The payload was stripped at the boundary and never stored; ban the source IP when the cluster is sustained.',
+      'Someone was trying to slip code in. Recued removed it and saved nothing. Block the address if it keeps happening.',
   },
 };
 
@@ -193,10 +193,10 @@ export const ABUSE_INBOX_RPC_ERROR_CODES: ReadonlyArray<AbuseInboxRpcErrorCode> 
  *  Mirrors `RECEPTION_ERROR_COPY` in `reception.ts`. */
 export const ABUSE_INBOX_ERROR_COPY: Readonly<Record<AbuseInboxRpcErrorCode, string>> = {
   permission_denied:
-    'The Abuse Inbox is admin-only. Re-pair this client with an admin token, or open Settings from an admin-bound device.',
-  bad_request: 'The Abuse Inbox request was malformed. Refresh the page + try again.',
+    'Only an administrator can see this. Pair this browser again with an administrator key, or open Settings on a device that has one.',
+  bad_request: 'Recued could not read that request. Load the page again and try once more.',
   not_configured:
-    'The server’s IP block list is unavailable, so ban / unban can’t be applied right now. The abuse-signal clusters above still load — this usually clears on a server restart.',
+    'Recued cannot reach the list of blocked addresses, so you cannot block or unblock right now. Everything above still works. Restarting the server usually fixes it.',
 };
 
 // ════════════════════════════════════════════════════════════════
@@ -362,7 +362,7 @@ export const buildAbuseInboxSubviewModel = (args: {
       window_end_at: summary.window_end_at,
       window_label: computeWindowLabel(summary.window_start_at, summary.window_end_at),
       cluster_threshold: threshold,
-      threshold_explanation: `Showing clusters of ${threshold} or more events — a single drive-by hit is noise, a cluster is a signal.`,
+      threshold_explanation: `Showing clusters of ${threshold} or more. One stray hit is nothing. A lot of them means something.`,
       blocked_count: blocked.length,
     },
     rows: summary.rows.map((row) => buildAbuseInboxRowModel(row, now)),

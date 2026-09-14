@@ -3109,7 +3109,7 @@ const renderOperationArgsSubsection = (
   if (entry.args.length === 0) {
     const empty = doc.createElement('div');
     empty.className = 'ingredient-builder-arg-empty';
-    empty.textContent = 'No callable inputs — add an argument to declare one.';
+    empty.textContent = 'Nothing can be passed in yet. Add an argument.';
     list.appendChild(empty);
   }
 
@@ -3799,12 +3799,12 @@ const renderTable = (
   if (onlyBlankDefault) {
     const empty = doc.createElement('div');
     empty.className = 'ingredient-builder-op-empty';
-    appendText(doc, empty, 'strong', 'Author your first operation');
+    appendText(doc, empty, 'strong', 'Write your first operation');
     appendText(
       doc,
       empty,
       'span',
-      'Name an operation and pick its binding kind below, then add more.',
+      'Give an operation a name, choose how it connects, then add more.',
     );
     container.appendChild(empty);
   }
@@ -4271,12 +4271,12 @@ const reviewBannerText = (
 ): string => {
   if (review === undefined) {
     return fallbackIssues.length > 0
-      ? `Validation failed: ${plural(fallbackIssues.length, 'issue')}`
+      ? `Check failed: ${plural(fallbackIssues.length, 'issue')}`
       : 'Review pending';
   }
   const counts = review.summary.counts;
   if (!review.valid) {
-    return `Validation failed: ${plural(review.issues.length, 'issue')}`;
+    return `Check failed: ${plural(review.issues.length, 'issue')}`;
   }
   return [
     'Valid',
@@ -4395,10 +4395,10 @@ const draftSummaryLabel = (draft: IngredientDraftSummary): string => {
 
 const installBlockedReason = (state: IngredientBuilderState): string | null => {
   if (state.draftId === undefined) {
-    return 'Install blocked until reviewed: save and review a draft first';
+    return 'You cannot install this yet. Save a draft and review it first';
   }
   if (state.saveStage !== 'saved' || state.review?.valid !== true) {
-    return 'Install blocked until reviewed: server review must pass after the latest edit';
+    return 'You cannot install this yet. Your server has to check it again after your latest change';
   }
   return null;
 };
@@ -4422,7 +4422,7 @@ const previewStatusText = (state: IngredientBuilderState): string => {
   if (preview === undefined) {
     return canPreview(state)
       ? 'Preview ready'
-      : 'Preview blocked until the draft is saved and reviewed';
+      : 'You cannot preview this until the draft is saved and checked';
   }
   if (!preview.ok) return `Preview failed: ${preview.code}`;
   if (!preview.execution.executed) return `Preview skipped: ${preview.execution.reason}`;
@@ -4430,7 +4430,7 @@ const previewStatusText = (state: IngredientBuilderState): string => {
     return `Preview error: ${preview.execution.error.code}`;
   }
   return preview.execution.status === undefined
-    ? 'Preview executed: ok'
+    ? 'Preview ran: ok'
     : `Preview executed: ${preview.execution.status}`;
 };
 
@@ -4440,15 +4440,15 @@ const installStatusText = (
   installBelongsToCurrentDraft = true,
 ): string => {
   if (installInFlight) {
-    if (!installBelongsToCurrentDraft) return 'Finishing install for previous draft';
+    if (!installBelongsToCurrentDraft) return 'Finishing the last install';
     return state.installStage === 'installing'
-      ? 'Installing reviewed draft'
-      : 'Installing earlier reviewed draft';
+      ? 'Installing the checked draft'
+      : 'Installing an earlier checked draft';
   }
   if (state.installStage === 'installed' || state.installStage === 'error') {
     return state.installMessage;
   }
-  return installBlockedReason(state) ?? 'Ready to install from reviewed draft';
+  return installBlockedReason(state) ?? 'Checked, and ready to install';
 };
 
 const parsePreviewArgs = (
@@ -4547,7 +4547,7 @@ const renderDraftPicker = (
     if (draftHasUnsavedContent(state)) {
       const target = state.drafts.find((draft) => draft.draft_id === nextDraftId);
       const prompt = nextDraftId === ''
-        ? 'Discard unsaved changes and start a new draft?'
+        ? 'Throw away your unsaved changes and start again?'
         : `Discard unsaved changes and open "${
             target?.title?.trim() || target?.slug?.trim() || nextDraftId
           }"?`;
@@ -4593,7 +4593,7 @@ const renderDraftPicker = (
   save.setAttribute('aria-disabled', String(busy));
   save.setAttribute('aria-busy', String(busy));
   save.setAttribute(INGREDIENT_BUILDER_SAVE_ATTR, '');
-  save.setAttribute('title', 'Save and validate draft (⌘S or Ctrl+S)');
+  save.setAttribute('title', 'Save and check the draft (⌘S or Ctrl+S)');
   draftActions.appendChild(save);
 
   const refresh = makeButton(
@@ -4611,7 +4611,7 @@ const renderDraftPicker = (
   refresh.setAttribute('aria-disabled', String(refreshBusy));
   refresh.setAttribute('aria-busy', String(refreshBusy));
   refresh.setAttribute(INGREDIENT_BUILDER_DRAFT_REFRESH_ATTR, '');
-  refresh.setAttribute('title', 'Reload saved drafts');
+  refresh.setAttribute('title', 'Load saved drafts again');
   draftActions.appendChild(refresh);
 
   // New, guarded by a two-tap confirm when the current draft has unsaved edits.
@@ -4640,7 +4640,7 @@ const renderDraftPicker = (
     error.setAttribute('role', 'alert');
     error.textContent = state.draftsError.trim().length > 0
       ? state.draftsError
-      : 'Drafts unavailable';
+      : 'Cannot load drafts';
     wrap.appendChild(error);
   }
   host.appendChild(wrap);
@@ -4661,8 +4661,8 @@ const renderPackSettings = (
     host,
     target === 'setup' ? 'Connection setup' : 'Publish details',
     target === 'setup'
-      ? 'Choose how this pack reaches its service, then describe the result and request conventions.'
-      : 'Finish the pack identity, marketplace metadata, and install defaults before previewing it.',
+      ? 'Choose how this Pack reaches its service, then say what it sends and what comes back.'
+      : 'Finish naming the Pack, filling in its Marketplace details, and setting what it does by default, before you preview it.',
   );
   const grid = doc.createElement('div');
   grid.className = 'ingredient-builder-pack-grid ingredient-builder-card';
@@ -4916,7 +4916,7 @@ const renderPreviewDetail = (
     'span',
     `Auth ${preview.target.auth.model}`
       + (preview.target.auth.connection === null ? '' : ` via ${preview.target.auth.connection}`)
-      + (preview.target.auth.connection_enrolled ? '' : ' (not enrolled)'),
+      + (preview.target.auth.connection_enrolled ? '' : ' (not set up yet)'),
   );
   if (preview.execution.executed && preview.execution.outcome === 'ok') {
     appendText(doc, detail, 'span', `${plural(preview.execution.mapping_preview.length, 'mapping')} checked`);
@@ -5109,8 +5109,8 @@ const renderWorkflow = (
   );
   if (installInFlight) {
     install.title = installBelongsToCurrentDraft
-      ? 'A reviewed version of this draft is installing'
-      : 'Another reviewed draft is still installing';
+      ? 'A checked version of this draft is installing'
+      : 'Another checked draft is still installing';
   } else if (blocked !== null) install.title = blocked;
   install.setAttribute(INGREDIENT_BUILDER_INSTALL_ATTR, '');
   controls.appendChild(install);
@@ -5231,7 +5231,7 @@ export const bootstrapIngredientBuilderRoute = (
     const toolbar = doc.createElement('div'); toolbar.className = 'ingredient-builder-search';
     const search = doc.createElement('input'); search.type = 'search';
     search.value = kind === 'operations' ? operationSearch : fieldSearch;
-    search.setAttribute('aria-label', kind === 'operations' ? 'Search pack operations' : 'Search pack data fields');
+    search.setAttribute('aria-label', kind === 'operations' ? 'Search the operations' : 'Search the data fields');
     search.setAttribute('data-recued-pack-search', kind);
     search.setAttribute('placeholder', kind === 'operations' ? 'Find an operation…' : 'Find a data field…');
     toolbar.appendChild(search);
@@ -5240,7 +5240,7 @@ export const bootstrapIngredientBuilderRoute = (
       if (kind === 'operations') operationSearch = ''; else fieldSearch = '';
       filter(); search.focus();
     });
-    clear.setAttribute('aria-label', kind === 'operations' ? 'Clear operation search' : 'Clear data field search');
+    clear.setAttribute('aria-label', kind === 'operations' ? 'Clear the operation search' : 'Clear the data field search');
     toolbar.appendChild(clear);
     const count = doc.createElement('p'); count.setAttribute('role', 'status');
     toolbar.appendChild(count);
@@ -5605,7 +5605,7 @@ export const bootstrapIngredientBuilderRoute = (
         genEntitled = draftGeneration;
         const epochAtLoad = state.editEpoch;
         state.saveStage = 'reviewing';
-        state.status = 'Validating draft';
+        state.status = 'Checking the draft';
         rerender();
 
         const decompose = await options.conn('ingredient.compose.decompose', {
@@ -5620,16 +5620,16 @@ export const bootstrapIngredientBuilderRoute = (
           state.review = undefined;
           state.reviewIssues = [];
           state.saveStage = 'idle';
-          state.status = 'Loaded — unsaved edits pending';
+          state.status = 'Opened — you have unsaved changes';
         } else {
           state.review = decompose.review;
           state.reviewIssues = decompose.ok ? [] : decompose.issues;
           state.saveStage = decompose.ok ? 'saved' : 'error';
           if (decompose.ok) {
-            state.status = 'Draft loaded and validated';
+            state.status = 'Draft opened and checked';
             state.previewOperationKey = state.previewOperationKey || firstOperationKey(state.rows);
           } else if (decompose.code === 'validation_failed') {
-            state.status = 'Validation failed';
+            state.status = 'Check failed';
           } else {
             state.status = decompose.message;
           }
@@ -5712,7 +5712,7 @@ export const bootstrapIngredientBuilderRoute = (
     installFlight = flight;
     let installRequestSent = false;
     state.installStage = 'installing';
-    state.installMessage = 'Installing reviewed draft';
+    state.installMessage = 'Installing the checked draft';
     state.installResult = undefined;
     state.installWarnings = [];
     rerender();
@@ -5869,7 +5869,7 @@ export const bootstrapIngredientBuilderRoute = (
         // directly rather than via applyDraftState, so fire the hook here too.
         options.onDraftChange?.(state.draftId);
         state.saveStage = 'reviewing';
-        state.status = 'Validating draft';
+        state.status = 'Checking the draft';
         rerender();
 
         const decompose = await options.conn('ingredient.compose.decompose', {
@@ -5883,7 +5883,7 @@ export const bootstrapIngredientBuilderRoute = (
           state.review = undefined;
           state.reviewIssues = [];
           state.saveStage = 'idle';
-          state.status = 'Saved — newer edits pending';
+          state.status = 'Saved — you have changed things since';
           state.previewOperationKey = state.previewOperationKey || firstOperationKey(state.rows);
           refreshDrafts(true);
         } else {
@@ -5893,11 +5893,11 @@ export const bootstrapIngredientBuilderRoute = (
           if (decompose.ok) {
             // Everything through epochAtSave is durable — new clean baseline.
             state.cleanEpoch = epochAtSave;
-            state.status = 'Draft saved and validated';
+            state.status = 'Draft saved and checked';
             state.previewOperationKey = state.previewOperationKey || firstOperationKey(state.rows);
             refreshDrafts(true);
           } else if (decompose.code === 'validation_failed') {
-            state.status = 'Validation failed';
+            state.status = 'Check failed';
           } else {
             state.status = decompose.message;
           }
@@ -6034,7 +6034,7 @@ export const bootstrapIngredientBuilderRoute = (
     // metrics, and review detail live in non-sticky content below.
     const topbar = doc.createElement('section');
     topbar.className = 'ingredient-builder-topbar';
-    topbar.setAttribute('aria-label', 'Pack editor controls');
+    topbar.setAttribute('aria-label', 'Pack editor buttons');
 
     const header = doc.createElement('div');
     header.className = 'ingredient-builder-header';
@@ -6047,7 +6047,7 @@ export const bootstrapIngredientBuilderRoute = (
       doc,
       header,
       'span',
-      'Define, review, and install a reusable capability.',
+      'Build something reusable, check it, and install it.',
     );
     subtitle.className = 'ingredient-builder-subtitle';
     topbar.appendChild(header);
@@ -6067,7 +6067,7 @@ export const bootstrapIngredientBuilderRoute = (
     const nav = doc.createElement('nav');
     nav.className = 'ingredient-builder-nav';
     nav.setAttribute('data-recued-scroll-rail', '');
-    nav.setAttribute('aria-label', 'Pack editor sections');
+    nav.setAttribute('aria-label', 'Parts of the Pack editor');
     nav.setAttribute('role', 'tablist');
     nav.setAttribute('aria-orientation', 'horizontal');
     const focusSectionTab = (id: SectionId): void => {
@@ -6174,7 +6174,7 @@ export const bootstrapIngredientBuilderRoute = (
       doc,
       overview,
       'Draft overview',
-      'Name the pack and track its operation, field, privacy, and connection readiness at a glance.',
+      'Name the Pack, and see at a glance how ready its operations, fields, privacy and connections are.',
     );
     const identity = doc.createElement('div');
     identity.className = 'ingredient-builder-card ingredient-builder-identity-card';
@@ -6236,7 +6236,7 @@ export const bootstrapIngredientBuilderRoute = (
       doc,
       operationsView,
       'Operations',
-      'Define the calls this pack can make and the approval policy each family carries.',
+      'Say what this Pack may do, and when each group of things should ask you first.',
     );
     const operations = doc.createElement('section');
     operations.className = 'ingredient-builder-editor-section ingredient-builder-card';
@@ -6276,7 +6276,7 @@ export const bootstrapIngredientBuilderRoute = (
       doc,
       dataView,
       'Data fields',
-      'Describe the records these operations read or write, including aliases and privacy tags.',
+      'Say which records these read or write, including their other names and anything private.',
     );
     const entitySection = doc.createElement('section');
     entitySection.className = 'ingredient-builder-editor-section ingredient-builder-card';
@@ -6319,7 +6319,7 @@ export const bootstrapIngredientBuilderRoute = (
       const hint = doc.createElement('p');
       hint.className = 'ingredient-builder-publish-hint';
       hint.textContent = `${
-        installBlockedReason(state) ?? 'Save and validate this draft'
+        installBlockedReason(state) ?? 'Save and check this draft'
       } — Preview and Install unlock once the server review passes.`;
       publishView.appendChild(hint);
     }

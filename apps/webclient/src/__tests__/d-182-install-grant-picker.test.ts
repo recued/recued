@@ -477,7 +477,7 @@ describe('D-182 §7.1 (5b.2) — renderInstallGrantPicker', () => {
     ]);
     expect(checks.map((r) => r.checked)).toEqual([true, false, false]);
     expect(collectText(scope!)).toContain('All customers');
-    expect(collectText(scope!)).toContain('All other contracts');
+    expect(collectText(scope!)).toContain('Everyone else you have an agreement with');
     // Audience hints disclose the Option-A future-door limitation.
     expect(collectText(scope!)).toContain('added later');
   });
@@ -881,9 +881,9 @@ describe('install grant picker — the two steps say they are two steps', () => 
   it('each half points at the other', () => {
     const text = collectText(render());
     // Access says where its grants land…
-    expect(text).toContain('contracts you choose in step 2');
+    expect(text).toContain('people you choose in step 2');
     // …and Scope says what it is distributing.
-    expect(text).toContain('chosen in step 1');
+    expect(text).toContain('what you chose in step 1');
   });
 
   it('⛔ says the tiers are cumulative, and that YOU are one of the contracts', () => {
@@ -892,7 +892,7 @@ describe('install grant picker — the two steps say they are two steps', () => 
     expect(text).toContain('includes the ones above it');
     // The fact that explains why a read-only install denies the pack's OWN write
     // recipes when the owner runs them.
-    expect(text).toContain('is a contract like any other');
+    expect(text).toContain('counts as one of them, like any other');
   });
 
   it('the per-tier op list says it ADDS, not that it is the whole grant', () => {

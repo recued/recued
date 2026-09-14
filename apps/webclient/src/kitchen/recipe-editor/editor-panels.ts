@@ -27,7 +27,7 @@ export const renderRecipeSettings = (context: RecipePanelsContext): HTMLElement 
   section.setAttribute('data-recued-recipe-settings', '');
   const summary = text(doc, section, 'summary', '');
   text(doc, summary, 'span', 'Recipe settings');
-  text(doc, summary, 'span', 'Description, variables & output').className = 'recipe-editor-panel-hint';
+  text(doc, summary, 'span', 'What it does, what goes in, what comes out').className = 'recipe-editor-panel-hint';
   const body = doc.createElement('div'); body.className = 'recipe-editor-panel-body'; section.appendChild(body);
   const grid = doc.createElement('div'); grid.className = 'recipe-editor-field-grid'; body.appendChild(grid);
   const value = (label: string, key: string, current: unknown, schema: ParamDef | undefined,
@@ -35,12 +35,12 @@ export const renderRecipeSettings = (context: RecipePanelsContext): HTMLElement 
   value('Description', 'metadata.description', context.recipe.metadata.description, { type: 'string' }, next => {
     context.change({ ...context.recipe, metadata: { ...context.recipe.metadata, description: String(next ?? '') } });
   });
-  value('Cache lifetime (seconds)', 'ttl', context.recipe.ttl, { type: 'number', required: true }, next => {
+  value('Keep the answer for (seconds)', 'ttl', context.recipe.ttl, { type: 'number', required: true }, next => {
     context.change({ ...context.recipe, ttl: next as number });
   });
   const vars = doc.createElement('div'); vars.className = 'recipe-editor-settings-block';
-  text(doc, vars, 'h3', 'Variables');
-  text(doc, vars, 'p', 'Set defaults here. Use a JSON declaration for required inputs or choices.');
+  text(doc, vars, 'h3', 'Inputs');
+  text(doc, vars, 'p', 'Set what these start as. Use JSON to say which are needed, or to offer choices.');
   for (const [name, initial] of Object.entries(context.recipe.variables)) {
     if (initial && typeof initial === 'object' && !Array.isArray(initial)
       && 'type' in initial && String(initial.type) === 'connection') continue;
@@ -58,16 +58,16 @@ export const renderRecipeSettings = (context: RecipePanelsContext): HTMLElement 
     vars.appendChild(row);
   }
   const add = doc.createElement('div'); add.className = 'recipe-editor-variable-row';
-  const name = doc.createElement('input'); name.placeholder = 'Variable name'; name.setAttribute('aria-label', 'New variable name'); name.setAttribute('data-recued-recipe-editor-field', 'variable_new_name');
+  const name = doc.createElement('input'); name.placeholder = 'Input name'; name.setAttribute('aria-label', 'New input name'); name.setAttribute('data-recued-recipe-editor-field', 'variable_new_name');
   const error = doc.createElement('span'); error.setAttribute('role', 'status');
   error.className = 'recipe-editor-field-error';
   add.appendChild(name);
-  add.appendChild(button(doc, 'Add input variable', () => {
+  add.appendChild(button(doc, 'Add input', () => {
     const key = name.value.trim();
     if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(key) || ['__proto__', 'constructor', 'prototype'].includes(key)) {
-      error.textContent = 'Use letters, numbers, and underscores, starting with a letter.'; return;
+      error.textContent = 'Use letters, numbers and underscores. Start with a letter.'; return;
     }
-    if (Object.hasOwn(context.recipe.variables, key)) { error.textContent = 'This variable already exists.'; return; }
+    if (Object.hasOwn(context.recipe.variables, key)) { error.textContent = 'You already have an input with this name.'; return; }
     context.change({ ...context.recipe, variables: { ...context.recipe.variables, [key]: null } }, true);
   }));
   vars.appendChild(add); vars.appendChild(error); body.appendChild(vars);
@@ -76,7 +76,7 @@ export const renderRecipeSettings = (context: RecipePanelsContext): HTMLElement 
   text(doc, run, 'h3', 'Automatic runs');
   const enabled = doc.createElement('input'); enabled.type = 'checkbox'; enabled.checked = context.recipe.auto_run !== undefined;
   enabled.setAttribute('data-recued-recipe-auto-run', ''); enabled.setAttribute('data-recued-recipe-editor-field', 'auto_run_enabled');
-  const label = doc.createElement('label'); label.appendChild(enabled); text(doc, label, 'span', 'Run on an interval'); run.appendChild(label);
+  const label = doc.createElement('label'); label.appendChild(enabled); text(doc, label, 'span', 'Run every so often'); run.appendChild(label);
   enabled.addEventListener('change', () => {
     const next = { ...context.recipe };
     if (enabled.checked) next.auto_run = { interval_ms: 60_000, default_enabled: false };
@@ -86,8 +86,8 @@ export const renderRecipeSettings = (context: RecipePanelsContext): HTMLElement 
   if (context.recipe.auto_run) {
     for (const [key, labelText, schema] of [
       ['interval_ms', 'Interval (milliseconds)', { type: 'number', required: true }],
-      ['dynamic', 'Use the next run time produced by the recipe', { type: 'boolean' }],
-      ['default_enabled', 'Start enabled on first installation', { type: 'boolean' }],
+      ['dynamic', 'Use the next run time the Recipe works out', { type: 'boolean' }],
+      ['default_enabled', 'Switch this on as soon as it is installed', { type: 'boolean' }],
     ] as const) {
       const current = context.recipe.auto_run[key] ?? (key === 'default_enabled' ? true : false);
       run.appendChild(context.value(labelText, `auto_run.${key}`, current, schema, next => {
@@ -96,13 +96,13 @@ export const renderRecipeSettings = (context: RecipePanelsContext): HTMLElement 
     }
   }
   if (context.recipe.trigger_steps?.length && !context.recipe.auto_run) {
-    text(doc, run, 'p', 'Trigger steps require an automatic interval. Enable it or remove those steps before saving.');
+    text(doc, run, 'p', 'Steps that set things off need this Recipe to run on its own. Turn that on, or remove those steps, before you save.');
   }
   body.appendChild(run);
   const output = doc.createElement('div'); output.className = 'recipe-editor-settings-block';
   text(doc, output, 'h3', 'Output');
-  text(doc, output, 'p', 'Define what this recipe displays or sends to an exchange.');
-  output.appendChild(context.value('Output definition (JSON)', 'output', context.recipe.output, { type: 'object', required: true }, next => {
+  text(doc, output, 'p', 'Say what this Recipe shows, or sends to somebody else.');
+  output.appendChild(context.value('What it gives back (JSON)', 'output', context.recipe.output, { type: 'object', required: true }, next => {
     context.change({ ...context.recipe, output: next as RecipeDefinition['output'] });
   }));
   body.appendChild(output);

@@ -233,9 +233,9 @@ export const mountExecutionCaseDraftRoute = (
     const line = doc.createElement('p');
     line.setAttribute(EXECUTION_CASE_DRAFT_MISSING_ATTR, '');
     line.textContent =
-      'That draft is no longer available — it lives only in the tab that '
-      + 'generated it, and is not saved anywhere. Open Settings → Learning and '
-      + 'make a recipe from the turn again.';
+      'That draft is gone. It only ever lived in the tab that '
+      + 'made it, and it is not saved anywhere. Open Settings, then Learning, and '
+      + 'make a Recipe from it again.';
     host.appendChild(line);
     host.appendChild(backLink());
     return {
@@ -258,10 +258,10 @@ export const mountExecutionCaseDraftRoute = (
     const note = doc.createElement('p');
     note.setAttribute(EXECUTION_CASE_DRAFT_THIN_ATTR, '');
     note.textContent =
-      'Your original request was not sent to the AI — Recued could not '
-      + 'establish which parts of it were personal, and does not send it '
-      + 'unprotected. This draft was written from the steps alone, so expect '
-      + 'to fill in more of it than usual.';
+      'Recued did not send your original words to the AI. It could not '
+      + 'tell which parts were personal, and it will not send them '
+      + 'unprotected. This draft comes from the steps alone, so expect '
+      + 'to fill in more than usual.';
     host.appendChild(note);
   }
 
@@ -278,7 +278,7 @@ export const mountExecutionCaseDraftRoute = (
     injectExecutionCaseDraftStyles(doc);
     refineBlock.className = 'execution-case-refine';
     refineBlock.setAttribute(EXECUTION_CASE_DRAFT_REFINE_PANEL_ATTR, '');
-    refineBlock.setAttribute('aria-label', 'Refine AI draft');
+    refineBlock.setAttribute('aria-label', 'Change the AI draft');
     // Keep the revision affordance discoverable before a potentially enormous
     // recipe. It still sends editor.getRecipe() at click time, so manual edits
     // made below are included even though this panel precedes the editor.
@@ -317,7 +317,7 @@ export const mountExecutionCaseDraftRoute = (
     const line = doc.createElement('p');
     line.setAttribute(EXECUTION_CASE_DRAFT_MISSING_ATTR, '');
     line.textContent =
-      `Couldn't open that draft: ${humanizeRpcError(error)}`;
+      `Recued could not open that draft: ${humanizeRpcError(error)}`;
     host.appendChild(line);
     host.appendChild(backLink());
   }
@@ -345,13 +345,13 @@ export const mountExecutionCaseDraftRoute = (
     eyebrow.textContent = 'AI draft';
     header.appendChild(eyebrow);
     const heading = doc.createElement('h2');
-    heading.textContent = 'Refine this draft';
+    heading.textContent = 'Change this draft';
     header.appendChild(heading);
     const copy = doc.createElement('p');
     copy.className = 'execution-case-refine-copy';
     copy.textContent =
-      'Describe a focused change. Your current manual edits are included, and '
-      + 'Recued asks for confirmation before spending model quota.';
+      'Say what one thing should change. Recued includes the edits you have made, and '
+      + 'asks you before it spends anything.';
     header.appendChild(copy);
     block.appendChild(header);
 
@@ -361,7 +361,7 @@ export const mountExecutionCaseDraftRoute = (
     instruction.rows = 3;
     instruction.setAttribute(
       'placeholder',
-      'What should be different? (e.g. only my own meetings, and send it on Mondays)',
+      'What should be different? For example: only my own meetings, and send it on Mondays.',
     );
 
     const button = doc.createElement('button');
@@ -376,8 +376,8 @@ export const mountExecutionCaseDraftRoute = (
 
     const paint = (): void => {
       button.textContent = busy
-        ? 'Asking your AI...'
-        : armed ? 'Yes, revise it' : 'Ask AI to revise this';
+        ? 'Asking your AI…'
+        : armed ? 'Yes, change it' : 'Ask your AI to change this';
       // This is the keyboard owner's exact control through the slow, paid
       // request. Native `disabled` blurs it to <body> in Chromium; keep it in
       // the tab order and let the busy guard above enforce single-flight.
@@ -421,10 +421,10 @@ export const mountExecutionCaseDraftRoute = (
           });
           if (!result.ok || result.recipe === undefined) {
             note.textContent = result.reason === 'already_running'
-              ? result.issues[0] ?? 'A revision is already being written.'
+              ? result.issues[0] ?? 'A new version is already being written.'
               : result.issues.length > 0
-                ? `Your AI's revision was not a valid recipe: ${result.issues[0]}`
-                : 'Your AI did not return a recipe. Try saying more about what '
+                ? `What your AI wrote was not a working Recipe: ${result.issues[0]}`
+                : 'Your AI did not give back a Recipe. Try saying more about what '
                   + 'should change.';
             return;
           }
@@ -437,8 +437,8 @@ export const mountExecutionCaseDraftRoute = (
           });
           if (disposed) return;
           if (handed === false) {
-            note.textContent = 'Your AI wrote the revision, but this browser '
-              + 'could not open it. Free up space and try again.';
+            note.textContent = 'Your AI wrote it, but this browser '
+              + 'could not open it. Make some room and try again.';
           }
         } catch (error) {
           note.textContent = humanizeRpcError(error);

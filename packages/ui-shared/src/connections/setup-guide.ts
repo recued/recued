@@ -124,7 +124,7 @@ export const canonicalizeConnectionSetupGuideUrl = (
   if (input.length === 0) {
     return {
       ok: false,
-      error: 'Enter the provider or developer-page URL to create a setup guide.',
+      error: 'Type the service’s address, or its developer page, and Recued will write you a guide.',
     };
   }
   if (input.length > MAX_TARGET_URL) {
@@ -136,7 +136,7 @@ export const canonicalizeConnectionSetupGuideUrl = (
   } catch {
     return {
       ok: false,
-      error: 'Enter a complete HTTPS provider URL, such as https://developer.example.com.',
+      error: 'Type the whole address, starting with https, like https://developer.example.com.',
     };
   }
   if (parsed.protocol !== 'https:') {
@@ -145,13 +145,13 @@ export const canonicalizeConnectionSetupGuideUrl = (
   if (parsed.username.length > 0 || parsed.password.length > 0) {
     return {
       ok: false,
-      error: 'Remove the username or password embedded in the provider URL.',
+      error: 'Take the username and password out of that address.',
     };
   }
   if (isPrivateHost(parsed.hostname)) {
     return {
       ok: false,
-      error: 'Use a public provider or developer-page URL, not a local or private address.',
+      error: 'Use a public address, not one on your own network.',
     };
   }
   parsed.search = '';

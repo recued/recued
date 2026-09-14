@@ -84,7 +84,7 @@ describe('D-222 typed output-filter state', () => {
       query: 'edited',
       cursor: '',
     });
-    expect(() => outputFilterPageConfig(d, dirty, 'page-3')).toThrow(/Run Search/);
+    expect(() => outputFilterPageConfig(d, dirty, 'page-3')).toThrow(/Search first/);
     expect(outputFilterPageConfig(d, initial, 'page-3')).toMatchObject({
       query: 'executed',
       cursor: 'page-3',

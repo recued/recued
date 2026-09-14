@@ -180,6 +180,7 @@ export const createWebhookPortHandler = (
 ): ((req: IncomingMessage, res: ServerResponse) => Promise<void>) => {
   const cap = options.max_body_bytes ?? DEFAULT_MAX_BODY_BYTES;
   const { vendors, ledger, log } = options;
+  const admitting = new Map<string, Promise<Awaited<ReturnType<WebhookVendorDescriptor['dispatch']>>>>();
   return async (req, res) => {
     const url = req.url ?? '/';
     const [pathname] = url.split('?');
@@ -304,21 +305,25 @@ export const createWebhookPortHandler = (
     // handler would echo `{deduped: true}` instead of the
     // challenge — breaking URL re-verification.
     const shouldSkipDedup = matchedVendor.descriptor.shouldSkipDedup?.(req, bodyResult.body) ?? false;
-    if (!shouldSkipDedup) {
-      const event_id = matchedVendor.descriptor.extractEventId(req, bodyResult.body);
-      const dedup_key = event_id ?? `body:${createHash('sha256').update(bodyResult.body).digest('hex')}`;
-      const dedup = ledger.record(matchedVendor.slug, dedup_key);
-      if (!dedup.fresh) {
-        writeJson(res, 200, { ok: true, deduped: true });
-        return;
-      }
+    const eventId = matchedVendor.descriptor.extractEventId(req, bodyResult.body);
+    const dedupKey = `${matchedVendor.connection_name}:${eventId ?? `body:${createHash('sha256').update(bodyResult.body).digest('hex')}`}`;
+    const claimKey = `${matchedVendor.slug}:${dedupKey}`;
+    if (!shouldSkipDedup && ledger.seen(matchedVendor.slug, dedupKey)) {
+      writeJson(res, 200, { ok: true, deduped: true }); return;
     }
-
-    const dispatchResult = await matchedVendor.descriptor.dispatch({
-      connection_name: matchedVendor.connection_name,
-      body: bodyResult.body,
-      headers: normaliseHeaders(req),
-    });
+    let pending = shouldSkipDedup ? undefined : admitting.get(claimKey);
+    if (!pending) {
+      if (admitting.size >= 1024) { writeJson(res, 503, { error: { code: 'admission_busy' } }); return; }
+      pending = Promise.resolve().then(() => matchedVendor!.descriptor.dispatch({
+        connection_name: matchedVendor!.connection_name, body: bodyResult.body, headers: normaliseHeaders(req),
+      })).catch(() => ({ ok: false as const }));
+      if (!shouldSkipDedup) admitting.set(claimKey, pending);
+    }
+    const dispatchResult = await pending;
+    if (!shouldSkipDedup) {
+      if (dispatchResult.ok) ledger.record(matchedVendor.slug, dedupKey);
+      if (admitting.get(claimKey) === pending) admitting.delete(claimKey);
+    }
     if (!dispatchResult.ok) {
       writeJson(res, 502, { error: { code: 'dispatch_failed' } });
       return;

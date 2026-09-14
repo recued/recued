@@ -132,12 +132,12 @@ export const CONNECTION_KIND_CHOICES = [
   {
     kind: 'api' as const,
     label: 'HTTP API',
-    description: 'Connect to an online app or service through its web API.',
+    description: 'Connect to an online service.',
   },
   {
     kind: 'mcp' as const,
     label: 'MCP Server',
-    description: 'Connect to an MCP server — a service that gives Recued tools it can use.',
+    description: 'Connect to a tools server, which gives Recued extra things it can do.',
   },
   {
     kind: 'notification' as const,

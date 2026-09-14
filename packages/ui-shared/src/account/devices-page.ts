@@ -267,7 +267,7 @@ export const renderDevicesPage = (state: DevicesPageState): string => {
 
   return section({
     title: 'Devices',
-    hint: 'Connected devices paired to this server. Revoke from another device — self-revoke is blocked.',
+    hint: 'Devices paired to this server. Use a different device to remove one. A device cannot remove itself.',
     body,
     id: 'account-devices',
   });

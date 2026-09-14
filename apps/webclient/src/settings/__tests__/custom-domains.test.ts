@@ -248,7 +248,7 @@ describe('D-235 P5 — the Domains panel', () => {
       expect(copy, `copy must not say "${ordinal}"`).not.toContain(ordinal);
     }
     // …and the § 2.5 warning is still made, without counting.
-    expect(copy).toContain('no certificate can ever be issued');
+    expect(copy).toContain('no certificate will ever work');
   });
 
   it('the delegation step never reads as optional or advanced', async () => {
@@ -262,7 +262,7 @@ describe('D-235 P5 — the Domains panel', () => {
       expect(copy, `delegation copy must not contain "${hedge}"`).not.toContain(hedge);
     }
     // States the consequence of skipping it, in the same breath as the ask.
-    expect(copy).toContain('every certificate order fails');
+    expect(copy).toContain('no certificate will ever work');
   });
 
   it('reports each check separately, so a half-right setup reads as half-right', async () => {
@@ -369,7 +369,7 @@ describe('D-235 P5 — the Domains panel', () => {
     const t = setup();
     t.click(CUSTOM_DOMAINS_CHECK_BTN_ATTR);
     await t.settle();
-    expect(textOf(firstByAttr(t.host, CUSTOM_DOMAINS_ERROR_ATTR)!)).toContain('Enter the hostname');
+    expect(textOf(firstByAttr(t.host, CUSTOM_DOMAINS_ERROR_ATTR)!)).toContain('Type the name you want to use');
   });
 
   it('surfaces an rpc failure rather than pretending the check passed', async () => {

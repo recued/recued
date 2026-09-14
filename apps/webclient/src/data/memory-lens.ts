@@ -95,8 +95,8 @@ export const MEMORY_BODY_PLACEHOLDER =
   + '— abbreviations, product names, synonyms';
 
 export const MEMORY_KEYWORDS_HINT =
-  'Tip: end with a "keywords:" line. Recall searches the whole entry, so '
-  + 'listing abbreviations and synonyms (2FA, MFA, OTP) finds it when the '
+  'Tip: end with a "keywords:" line. Recued searches the whole thing, so '
+  + 'writing down short forms and other words for it (2FA, MFA, OTP) finds it when the '
   + 'wording differs.';
 
 export const MEMORY_IMPORT_ACTION = 'memory-import';
@@ -746,7 +746,7 @@ export const renderMemoryLens = (props: MemoryLensProps): string => {
     body = `<p class="memory-lens-loading">Loading memory…</p>`;
   } else if (props.entries.length === 0) {
     body = `<p class="memory-lens-empty">No memory entries${
-      props.originFilter === 'all' ? '' : ' for this origin'
+      props.originFilter === 'all' ? '' : ' from here'
     } yet.</p>`;
   } else {
     body = `<ul class="memory-list" role="list">${props.entries

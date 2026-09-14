@@ -126,6 +126,18 @@ export interface MailEnrollDeps {
   /** Called before a row is deleted so the composition root can stop
    *  the adapter cleanly. Optional. */
   onDeleted?: (slug: string) => Promise<void> | void;
+  /** D-264 — draft capability of the LIVE provider for `slug`, or `undefined`
+   *  when no collection is running for it.
+   *
+   *  ⚠ A seam rather than a second scope computation here, deliberately. The
+   *  `send_capable` path derives the same fact twice — once in the provider,
+   *  once at this layer — and `computeSendCapable` below warns in its own
+   *  words that the two "could disagree about the same account". Repeating
+   *  that shape for a second axis would double a known hazard, so the
+   *  provider stays the only place that decides, and this rpc reports what it
+   *  says. Unwired or not-running ⇒ `false`: a mailbox we cannot ask is a
+   *  mailbox we do not advertise. */
+  draftCapable?: (slug: string) => boolean | undefined;
   now?: () => number;
 }
 
@@ -689,6 +701,12 @@ export interface MailInstanceRow extends CollectionInstanceRow {
    *  surfaces the row but the connection-form's display label will
    *  show the slug only. */
   account_email: string;
+  /** D-264 — true iff the live provider can park a NEW message in the
+   *  mailbox's Drafts folder. **Independent of `send_capable` in both
+   *  directions**: IMAP-without-SMTP can APPEND, and a Gmail grant of
+   *  `gmail.send` without `gmail.modify` can send and cannot draft. Reported
+   *  `false` for any instance with no running collection. */
+  draft_capable: boolean;
 }
 
 const computeSendCapable = async (
@@ -743,6 +761,7 @@ export const handleMailList = async (
       auth_state: r.auth_state,
       last_synced_at: r.last_synced_at,
       send_capable,
+      draft_capable: deps.draftCapable?.(r.slug) ?? false,
       account_email: accountEmailFromConfig(r.config),
     });
   }

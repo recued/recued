@@ -39,6 +39,7 @@
  *  `not_configured`, mirroring every other db-gated handler family. */
 
 import type Database from 'better-sqlite3';
+import { deriveRunYield, runYieldIsTotalRefusal } from '@recued/contracts';
 import type { AuditLogStore } from '@recued/storage';
 import type { WarehouseEventBus } from '@recued/warehouse-events';
 
@@ -54,6 +55,7 @@ import { reconcileDeclarativeTriggers } from '../../triggers/declarative-reconci
 import {
   createEventTriggerDispatcher,
   type EventTriggerDispatcher,
+  type EventTriggerDispatcherDeps,
 } from '../../triggers/dispatcher.js';
 import { createEventTriggersStore, type EventTriggersStore } from '../../triggers/store.js';
 
@@ -82,6 +84,9 @@ export interface ComposeEventTriggersInput {
   /** R21.1 — live vault-unlocked predicate. The dispatcher drops the
    *  reactive fan-out while sealed. Absent → un-gated. */
   isVaultUnlocked?: () => boolean;
+  /** D-268 — deliver one owner notice about a failed fire. Absent ⇒ failures
+   *  reach the trigger row and nobody else. */
+  onAutomationFailure?: EventTriggerDispatcherDeps['onAutomationFailure'];
 }
 
 export interface EventTriggersBundle {
@@ -104,7 +109,10 @@ export interface EventTriggersBundle {
 export const composeEventTriggers = (
   input: ComposeEventTriggersInput,
 ): EventTriggersBundle | undefined => {
-  const { db, warehouseBus, executeDeps, auditLog, eventBus, localManifestStore, isVaultUnlocked } = input;
+  const {
+    db, warehouseBus, executeDeps, auditLog, eventBus, localManifestStore, isVaultUnlocked,
+    onAutomationFailure,
+  } = input;
   if (!db) return undefined;
 
   const store = createEventTriggersStore(db);
@@ -172,8 +180,25 @@ export const composeEventTriggers = (
         // failure — only real execution errors feed the dispatcher's
         // 24h error cap.
         if (!result.success && !result.trigger_skipped && !result.awaiting_approval && !result.awaiting_peer) {
-          const first = result.errors[0] as { message?: string } | undefined;
-          throw new Error(first?.message ?? 'execution failed');
+          const first = result.errors[0] as { message?: string; code?: string } | undefined;
+          // ⛔⛔ D-268 — THE CODE HAS TO SURVIVE THE THROW. This raised a bare
+          // `new Error(message)`, which was harmless while the only consumer
+          // COUNTED failures — and became a live defect the moment the count
+          // depended on the KIND. An unclassified failure stops at the first
+          // occurrence (fail closed), so discarding the code here would disarm
+          // every trigger on its first transient network blip. The code is the
+          // whole difference between "wait, it may pass" and "waiting buys
+          // nothing".
+          const error = new Error(first?.message ?? 'execution failed') as Error & { code?: string };
+          if (typeof first?.code === 'string') error.code = first.code;
+          throw error;
+        }
+        // D-268 — the success-shaped failure: a `foreach` is continue-on-error,
+        // so a run whose every item was refused arrives here reporting success.
+        // REPORTED, never thrown — the run did complete, and throwing would make
+        // the dispatcher write a `last_error` for a run that had none.
+        if (result.success && runYieldIsTotalRefusal(deriveRunYield(result.steps))) {
+          return { total_refusal: true };
         }
       },
     },
@@ -181,6 +206,7 @@ export const composeEventTriggers = (
     ...(eventBus ? { eventBus } : {}),
     backfillState,
     ...(isVaultUnlocked ? { isVaultUnlocked } : {}),
+    ...(onAutomationFailure ? { onAutomationFailure } : {}),
   });
   // G6 — materialize installed recipes' declarative `event_triggers`
   // into store rows BEFORE the first rebuild, so boot subscribes them

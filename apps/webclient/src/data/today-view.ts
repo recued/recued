@@ -38,18 +38,24 @@ export interface TodaySnapshot {
   items: TodayItem[];
   sources: TodaySource[];
   issues: string[];
+  /** ⛔ FALSE WHILE READS ARE STILL OUTSTANDING, and every claim the view makes
+   *  depends on it. A partial snapshot may not say "No overdue tasks" or
+   *  "Nothing due in the next seven days" — those are statements about a
+   *  FINISHED read, and on a first load they would be asserted about sources
+   *  that have not answered yet. */
+  complete: boolean;
 }
 
 const PAGE_SIZE = 100;
 const MAX_PAGES = 100;
 const kindLabel = { task: 'Task', commitment: 'Commitment', calendar: 'Calendar event' };
-const unknownFreshness = (): Freshness => ({ label: 'Freshness unknown', detail: 'This source did not report sync freshness.', warning: true });
-const localFreshness = (): Freshness => ({ label: 'Local', detail: 'Stored directly in Recued; no external sync is needed.', warning: false });
+const unknownFreshness = (): Freshness => ({ label: 'Recued does not know how old this is', detail: 'This source did not say how old its information is.', warning: true });
+const localFreshness = (): Freshness => ({ label: 'Local', detail: 'Kept in Recued itself, so there is nothing to bring in.', warning: false });
 const validDate = (value: unknown): value is number =>
   typeof value === 'number' && Number.isSafeInteger(value) && Math.abs(value) <= 8.64e15;
 const dateLabel = (value: number): string => new Date(value).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 const syncLabel = (last: number | null | undefined): string =>
-  validDate(last) ? `Last synced ${new Date(last).toLocaleString()}.` : 'No successful sync reported.';
+  validDate(last) ? `Last brought in ${new Date(last).toLocaleString()}.` : 'Nothing has been brought in yet.';
 
 // Google and CalDAV encode date-only events as UTC midnight, not instants.
 // Translate only those adapters: Graph/local events already carry instants.
@@ -70,15 +76,15 @@ const utcDayAsLocal = (value: number): number => {
 
 const workFreshness = (fresh: WorkEntitySourceFreshness | undefined, source: SourceRegistration | undefined, now: number): Freshness => {
   if (source?.sync_posture === 'read_through' || fresh?.state === 'read_through') return {
-    label: 'Not included', detail: 'This source is read on demand and has no stored records for Today.', warning: true,
+    label: 'Not included', detail: 'Recued reads this source only when you ask, so it has nothing saved for Today.', warning: true,
   };
   if (fresh === undefined) return source?.source_kind === 'builtin' ? localFreshness() : unknownFreshness();
   const state = fresh.state === 'fresh' && validDate(fresh.last_success_at)
     && fresh.stale_after_ms !== undefined && now - fresh.last_success_at > fresh.stale_after_ms
     ? 'stale' : fresh.state;
   const label = {
-    local: 'Local', read_through: 'Read from source', fresh: 'Synced', stale: 'Sync stale',
-    degraded: 'Sync problem', never_synced: 'Never synced',
+    local: 'Local', read_through: 'Read from source', fresh: 'Synced', stale: 'Out of date',
+    degraded: 'Something went wrong', never_synced: 'Never brought in',
   }[state];
   return {
     label: fresh.list_complete === false ? `${label} · Partial sync` : label,
@@ -89,8 +95,8 @@ const workFreshness = (fresh: WorkEntitySourceFreshness | undefined, source: Sou
 const calendarFreshness = (fresh: CollectionSourceFreshness | undefined, instance: CollectionInstanceRow): Freshness => {
   if (instance.adapter_type === 'local') return localFreshness();
   if (fresh === undefined) return unknownFreshness();
-  const label = fresh.degraded ? 'Sync problem' : fresh.pending > 0 ? 'Sync catching up'
-    : fresh.last_success_at === null ? 'Never synced' : fresh.stale ? 'Sync stale' : 'Synced';
+  const label = fresh.degraded ? 'Something went wrong' : fresh.pending > 0 ? 'Catching up'
+    : fresh.last_success_at === null ? 'Never brought in' : fresh.stale ? 'Out of date' : 'Synced';
   return { label, detail: syncLabel(fresh.last_success_at), warning: fresh.stale || fresh.degraded || fresh.pending > 0 || fresh.last_success_at === null };
 };
 
@@ -98,7 +104,7 @@ const calendarFreshness = (fresh: CollectionSourceFreshness | undefined, instanc
 export const todayWindow = (now: number): Pick<TodaySnapshot, 'now' | 'tomorrow' | 'before'> => {
   const today = resolveTaskListFilter({ completion: 'open', due: 'today', sort: 'due_asc' }, now);
   const week = resolveTaskListFilter({ completion: 'open', due: 'next_7_days', sort: 'due_asc' }, now);
-  if (today.due.kind !== 'range' || week.due.kind !== 'range') throw new Error('Expected calendar-day windows');
+  if (today.due.kind !== 'range' || week.due.kind !== 'range') throw new Error('Expected whole days');
   return { now, tomorrow: today.due.before, before: week.due.before };
 };
 
@@ -124,14 +130,48 @@ export const loadToday = async (
   opts: Pick<BootstrapDataRouteOptions, 'workEntitySourceListCaller' | 'workEntityListCaller' | 'collectionListInstancesCaller' | 'collectionListCaller'>,
   now: number,
   isCurrent: () => boolean = () => true,
+  /** ⛔⛔ CALLED AS EACH READ SETTLES, because the four are independent and
+   *  waiting for all of them hands back NOTHING while three have answered.
+   *  Measured before this existed, with one calendar source unanswered and
+   *  tasks + commitments already returned: 0 rows, 0 groups, a bare
+   *  "Loading Today…". The same source ERRORING rendered 4 rows and an
+   *  incomplete-notice — so the header's promise that "a failed source cannot
+   *  erase the other sources' results" was true for a FAILURE and false for a
+   *  DELAY, and D-267 put this view on the first screen of a fresh install. */
+  onPartial?: (snapshot: TodaySnapshot) => void,
 ): Promise<TodaySnapshot> => {
-  const snapshot: TodaySnapshot = { ...todayWindow(now), items: [], sources: [], issues: [] };
+  const span = todayWindow(now);
+  const items: TodayItem[] = [];
+  const issues: string[] = [];
+  const calendarSources: TodaySource[] = [];
   let registrations: readonly SourceRegistration[] = [];
   const workSources = new Map<string, { kind: 'task' | 'commitment'; fresh?: WorkEntitySourceFreshness }>();
-  const fail = (scope: string, error: unknown): void => { snapshot.issues.push(`${scope}: ${humanizeRpcError(error)}`); };
+  const fail = (scope: string, error: unknown): void => { issues.push(`${scope}: ${humanizeRpcError(error)}`); };
+  /** One sorted, source-annotated view of whatever has arrived so far.
+   *  ⚠ The calendar `TodaySource` objects are shared by REFERENCE, not copied:
+   *  `readCalendar` keeps mutating their freshness as pages land, and a deep
+   *  copy here would freeze the first page's staleness label forever. */
+  const project = (complete: boolean): TodaySnapshot => {
+    const sources: TodaySource[] = [...calendarSources];
+    for (const source of registrations) {
+      if ((source.top_tier_kind === 'task' || source.top_tier_kind === 'commitment') && !workSources.has(source.id)) {
+        workSources.set(source.id, { kind: source.top_tier_kind });
+      }
+    }
+    for (const [id, info] of workSources) {
+      const registration = registrations.find((source) => source.id === id);
+      sources.push({ key: `work:${id}`, kind: info.kind, label: registration?.source_label ?? id,
+        freshness: workFreshness(info.fresh, registration, now) });
+    }
+    return { ...span, complete,
+      items: [...items].sort((a, b) => a.when - b.when || a.key.localeCompare(b.key)),
+      sources: sources.sort((a, b) => a.label.localeCompare(b.label) || a.key.localeCompare(b.key)),
+      issues: [...issues].sort() };
+  };
+  const emit = (): void => { if (onPartial !== undefined && isCurrent()) onPartial(project(false)); };
   const readWork = async (kind: 'task' | 'commitment'): Promise<void> => {
     const label = kind === 'task' ? 'Tasks' : 'Commitments';
-    if (opts.workEntityListCaller === undefined) { fail(label, new Error('Records are unavailable.')); return; }
+    if (opts.workEntityListCaller === undefined) { fail(label, new Error('Recued cannot reach your records.')); return; }
     const seen = new Set<string>();
     let offset = 0;
     let initialTotal: number | undefined;
@@ -139,7 +179,7 @@ export const loadToday = async (
       for (let page = 0; page < MAX_PAGES && isCurrent(); page++) {
         const args: WorkEntityListRpcRequest = { kind, limit: PAGE_SIZE, offset };
         if (kind === 'task') args.task_filter = {
-          completion: 'open', sort: 'due_asc', due: { kind: 'range', from: -8.64e15, before: snapshot.before },
+          completion: 'open', sort: 'due_asc', due: { kind: 'range', from: -8.64e15, before: span.before },
         };
         const result = await opts.workEntityListCaller(args);
         if (!isCurrent()) return;
@@ -151,36 +191,36 @@ export const loadToday = async (
           if (seen.has(entity.id)) continue;
           seen.add(entity.id);
           added++;
-          const item = workItem(entity, snapshot);
-          if (item !== null && entity._kind === kind) snapshot.items.push(item);
+          const item = workItem(entity, span);
+          if (item !== null && entity._kind === kind) items.push(item);
         }
         offset += result.entities.length;
         if (result.total !== initialTotal || added !== result.entities.length) {
-          fail(label, new Error('The list changed while loading. Refresh to check remaining records.'));
+          fail(label, new Error('The list changed while it was loading. Load it again to see the rest.'));
           return;
         }
         if (offset >= result.total) return;
-        if (added === 0) { fail(label, new Error('The list changed while loading. Refresh to check remaining records.')); return; }
+        if (added === 0) { fail(label, new Error('The list changed while it was loading. Load it again to see the rest.')); return; }
       }
-      if (isCurrent()) fail(label, new Error('The read reached its 100-page limit. Open the original list for more.'));
+      if (isCurrent()) fail(label, new Error('Recued stopped after 100 pages. Open the full list to see more.'));
     } catch (error) { fail(label, error); }
   };
   const readCalendar = async (instance: CollectionInstanceRow): Promise<void> => {
     const source: TodaySource = { key: `calendar:${instance.slug}`, label: instance.slug, kind: 'calendar', freshness: unknownFreshness() };
-    snapshot.sources.push(source);
-    if (opts.collectionListCaller === undefined) { fail(instance.slug, new Error('Calendar records are unavailable.')); return; }
+    calendarSources.push(source);
+    if (opts.collectionListCaller === undefined) { fail(instance.slug, new Error('Recued cannot reach your calendar.')); return; }
     const seen = new Set<string>();
     const dateOnlyAdapter = instance.adapter_type === 'gcal' || instance.adapter_type === 'caldav';
     const windows = dateOnlyAdapter ? [
-      { from: now, before: snapshot.before, allDay: false },
-      { from: localDayAsUtc(now), before: localDayAsUtc(snapshot.before), allDay: true },
-    ] : [{ from: now, before: snapshot.before }];
+      { from: now, before: span.before, allDay: false },
+      { from: localDayAsUtc(now), before: localDayAsUtc(span.before), allDay: true },
+    ] : [{ from: now, before: span.before }];
     let pages = 0;
     try {
       for (const window of windows) {
         let offset = 0;
         while (isCurrent()) {
-          if (pages++ >= MAX_PAGES) { fail(instance.slug, new Error('The calendar read reached its 100-page limit. Open Calendar for more.')); return; }
+          if (pages++ >= MAX_PAGES) { fail(instance.slug, new Error('Recued stopped after 100 pages. Open Calendar to see more.')); return; }
           const result = await opts.collectionListCaller({ platform: 'calendar', slug: instance.slug,
             calendar_window: { from: window.from, before: window.before }, limit: PAGE_SIZE, offset,
             ...('allDay' in window ? { filters: { is_all_day: window.allDay } } : {}) });
@@ -196,24 +236,24 @@ export const loadToday = async (
             const allDay = fields.is_all_day === true || fields.is_all_day === 1;
             const start = allDay && dateOnlyAdapter ? utcDayAsLocal(fields.start_at) : fields.start_at;
             const end = allDay && dateOnlyAdapter ? utcDayAsLocal(fields.end_at) : fields.end_at;
-            if (end <= now || start >= snapshot.before || fields.status === 'cancelled') continue;
-            snapshot.items.push({
+            if (end <= now || start >= span.before || fields.status === 'cancelled') continue;
+            items.push({
               key: `${source.key}:${record.record_id}`, title: typeof fields.summary === 'string' && fields.summary.trim() ? fields.summary : 'Untitled event',
-              when: start, group: start < snapshot.tomorrow ? 'today' : 'next', kind: 'calendar', sourceKey: source.key,
+              when: start, group: start < span.tomorrow ? 'today' : 'next', kind: 'calendar', sourceKey: source.key,
               href: serializeSourceRecordAddress({ tab: 'calendar', collectionSlug: instance.slug, recordId: record.record_id }),
               allDay,
               ongoing: start < now,
             });
           }
           offset += result.records.length;
-          if (added !== result.records.length) { fail(instance.slug, new Error('Calendar pagination did not advance consistently. Refresh to check this source.')); return; }
+          if (added !== result.records.length) { fail(instance.slug, new Error('Recued got stuck reading your calendar. Load it again to check this source.')); return; }
           if (result.records.length < PAGE_SIZE) break;
         }
       }
     } catch (error) { fail(instance.slug, error); }
   };
   const readCalendars = async (): Promise<void> => {
-    if (opts.collectionListInstancesCaller === undefined) { fail('Calendars', new Error('Calendar sources are unavailable.')); return; }
+    if (opts.collectionListInstancesCaller === undefined) { fail('Calendars', new Error('Recued cannot reach your calendar sources.')); return; }
     try {
       const { instances } = await opts.collectionListInstancesCaller();
       const queue = instances.filter((instance) => instance.platform === 'calendar');
@@ -228,25 +268,21 @@ export const loadToday = async (
   };
   const readSources = async (): Promise<void> => {
     try {
-      if (opts.workEntitySourceListCaller === undefined) throw new Error('Source labels are unavailable.');
+      if (opts.workEntitySourceListCaller === undefined) throw new Error('Recued cannot read the source names.');
       registrations = (await opts.workEntitySourceListCaller()).sources;
     } catch (error) { fail('Sources', error); }
   };
-  await Promise.all([readSources(), readWork('task'), readWork('commitment'), readCalendars()]);
-  for (const source of registrations) {
-    if ((source.top_tier_kind === 'task' || source.top_tier_kind === 'commitment') && !workSources.has(source.id)) {
-      workSources.set(source.id, { kind: source.top_tier_kind });
-    }
-  }
-  for (const [id, info] of workSources) {
-    const registration = registrations.find((source) => source.id === id);
-    snapshot.sources.push({ key: `work:${id}`, kind: info.kind, label: registration?.source_label ?? id,
-      freshness: workFreshness(info.fresh, registration, now) });
-  }
-  snapshot.items.sort((a, b) => a.when - b.when || a.key.localeCompare(b.key));
-  snapshot.sources.sort((a, b) => a.label.localeCompare(b.label) || a.key.localeCompare(b.key));
-  snapshot.issues.sort();
-  return snapshot;
+  // ⛔ `.then(emit)` per reader, NOT `await` in sequence: the four stay
+  // concurrent (serialising them would make every load pay all four latencies)
+  // and each paints the moment it lands. `readSources` emits too — it supplies
+  // the source LABELS, so without it the first paint names sources by raw id.
+  await Promise.all([
+    readSources().then(emit),
+    readWork('task').then(emit),
+    readWork('commitment').then(emit),
+    readCalendars().then(emit),
+  ]);
+  return project(true);
 };
 
 export const TODAY_VIEW_STYLES = `
@@ -271,18 +307,34 @@ export const TODAY_VIEW_STYLES = `
 .today-freshness { font-size:12px; padding:2px 6px; border:1px solid var(--border, #303642); border-radius:4px; }
 .today-freshness[data-warning] { color:var(--fg); background:var(--warn-soft); font-weight:600; }
 .today-notice { padding:10px 12px; border-left:3px solid var(--warn); background:var(--surface-sunk); }
+.today-empty { display:grid; justify-items:start; gap:8px; margin:18px 0 4px; padding:16px; border:1px solid var(--border); border-radius:10px; background:var(--surface); }
+.today-empty-lead { margin:0; font-size:15px; color:var(--fg); }
+.today-empty-sub { margin:0; font-size:13px; }
+.today-empty-create { min-height:38px; padding:7px 14px; font:inherit; font-size:13px; font-weight:650; color:var(--on-accent); background:var(--accent); border:1px solid var(--accent); border-radius:8px; cursor:pointer; }
 @media (max-width:540px) { .today-row { grid-template-columns:minmax(0,1fr); gap:6px; } }
 `;
 
+/** D-267 — the Today zero-state's one action. Today is now what bare `#data`
+ *  resolves to, so on a fresh install it is the first look an owner gets at
+ *  their own warehouse; three empty group headings were an accurate answer to a
+ *  question nobody had asked yet. ⚠ The lead line does NOT claim emptiness when
+ *  a source failed — "nothing due" and "nothing answered" are different facts,
+ *  and it does not render at all until the read is COMPLETE, or a fresh install
+ *  would be told "nothing due" by a snapshot still waiting on three sources.
+ *  ⛔ The whole block is gated on `canCreate`: a host with no Create opener
+ *  wired (embedded + test mounts) renders none of it rather than a button that
+ *  does nothing, which is the one outcome worse than no button. */
+export const TODAY_CREATE_ACTION = 'today-create';
+
 const renderFreshness = (freshness: Freshness): string => `<span class="today-freshness"${freshness.warning ? ' data-warning' : ''} title="${e(freshness.detail)}">${e(freshness.label)}</span>`;
-export const renderToday = (snapshot: TodaySnapshot | null, loading: boolean, actionAttr: string, sourcesOpen?: boolean): string => {
+export const renderToday = (snapshot: TodaySnapshot | null, loading: boolean, actionAttr: string, sourcesOpen?: boolean, canCreate?: boolean): string => {
   const warning = snapshot !== null && (snapshot.issues.length > 0 || snapshot.sources.some((source) => source.freshness.warning)
     || snapshot.items.some((item) => item.unreachable));
   const sources = new Map(snapshot?.sources.map((source) => [source.key, source]));
   const sourceWarnings = snapshot?.sources.filter((source) => source.freshness.warning).length ?? 0;
   const groups: Array<{ id: TodayGroup; label: string; empty: string }> = [
-    { id: 'overdue', label: 'Overdue', empty: 'No overdue tasks or commitments.' },
-    { id: 'today', label: 'Today', empty: 'Nothing else due or upcoming today.' },
+    { id: 'overdue', label: 'Overdue', empty: 'Nothing is late.' },
+    { id: 'today', label: 'Today', empty: 'Nothing else is due today.' },
     { id: 'next', label: 'Next seven days', empty: 'Nothing else in the next seven days.' },
   ];
   return `<section class="today-view" data-today-view aria-busy="${loading}">
@@ -291,21 +343,31 @@ export const renderToday = (snapshot: TodaySnapshot | null, loading: boolean, ac
       ${snapshot === null ? '' : `<p>Seven-day window: ${e(dateLabel(snapshot.now))}–${e(dateLabel(snapshot.before - 1))} · Your local time</p>`}
     </div><button type="button" class="today-refresh" ${actionAttr}="refresh-today" aria-disabled="${loading}">Refresh</button></header>
     ${snapshot === null ? '<p role="status">Loading Today…</p>' : `
-      <p class="today-updated">${loading ? 'Refreshing… Previous results shown.' : `Checked ${e(new Date(snapshot.now).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }))}`}</p>
+      <p class="today-updated" role="status">${snapshot.complete === false
+        ? 'Still reading your sources. Here is what has come in so far.'
+        : loading ? 'Loading again. These are the old results.'
+        : `Checked ${e(new Date(snapshot.now).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }))}`}</p>
       ${warning ? `<div class="today-notice" role="status"><p>Some sources may be missing or out of date. Results below may be incomplete.</p>${snapshot.issues.map((issue) => `<p>${e(issue)}</p>`).join('')}</div>` : ''}
       <details class="today-sources"${sourcesOpen ? ' open' : ''}><summary>Sources · ${snapshot.sources.length}${sourceWarnings > 0 ? ` · ${sourceWarnings} need attention` : ''}</summary><ul>
       ${snapshot.sources.map((source) => `<li><span>${e(source.label)} · ${e(kindLabel[source.kind])}</span>${renderFreshness(source.freshness)}<span>${e(source.freshness.detail)}</span></li>`).join('')}
       </ul></details>
+      ${snapshot.items.length === 0 && snapshot.complete && canCreate === true ? `<div class="today-empty" data-today-empty>
+        <p class="today-empty-lead">${warning
+          ? 'The sources that answered had nothing to show.'
+          : 'Nothing is due in the next seven days.'}</p>
+        <button type="button" class="today-empty-create" ${actionAttr}="${TODAY_CREATE_ACTION}">Capture something</button>
+        <p class="today-empty-sub">A task, a note, a contact, or something you promised. No setup needed — it stays on this server.</p>
+      </div>` : ''}
       ${groups.map((group) => {
         const items = snapshot.items.filter((item) => item.group === group.id);
         return `<section class="today-group" data-today-group="${group.id}" aria-labelledby="today-group-${group.id}">
           <h3 id="today-group-${group.id}">${group.label}<span class="today-count">${items.length}</span></h3>
-          ${items.length === 0 ? `<p>${warning ? 'No items found in the available data.' : group.empty}</p>` : `<ul class="today-list">${items.map((item) => {
+          ${items.length === 0 ? `<p>${snapshot.complete === false ? 'Still loading…' : warning ? 'Recued found nothing.' : group.empty}</p>` : `<ul class="today-list">${items.map((item) => {
             const source = sources.get(item.sourceKey);
             const when = `${dateLabel(item.when)} · ${item.allDay ? 'All day' : new Date(item.when).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}`;
             return `<li class="today-row" data-today-item="${e(item.key)}"><time datetime="${e(new Date(item.when).toISOString())}">${e(when)}${item.ongoing ? ' · In progress' : ''}</time><div>
               <a href="${e(item.href)}">${e(item.title)}</a><div class="today-meta"><span>${e(kindLabel[item.kind])}</span><span>${e(source?.label ?? item.sourceKey)}</span>
-              ${item.direction === undefined ? '' : `<span>${e(item.direction)}</span>`}${renderFreshness(item.unreachable ? { label: 'Source unreachable', detail: 'This record may be out of date.', warning: true } : source?.freshness ?? unknownFreshness())}
+              ${item.direction === undefined ? '' : `<span>${e(item.direction)}</span>`}${renderFreshness(item.unreachable ? { label: 'Recued cannot reach this source', detail: 'This may be out of date.', warning: true } : source?.freshness ?? unknownFreshness())}
               </div></div></li>`;
           }).join('')}</ul>`}</section>`;
       }).join('')}`}

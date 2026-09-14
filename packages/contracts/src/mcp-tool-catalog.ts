@@ -70,8 +70,15 @@ export const isMcpToolName = (name: string): boolean => {
  *  Prefixes are matched against the full rpc method name (e.g.
  *  `'contact.merge.list'.startsWith('contact.merge.')` is true). */
 export const MCP_RESERVED_RPC_PREFIXES = [
+  // Retained conversation text belongs to the paired owner's History UI.
+  'chat.messages.',
+  'chat.turn.',
+  'chat.turns.',
+  'chat.deliveries.', 'chat.delivery.', 'chat.messenger.',
   // Private owner-authored Data navigation, never an agent capability.
   'data_views.',
+  // The paired owner's retained-file chooser; agents use governed file tools.
+  'data.file.attachments.',
   // D-261 decisions require a trusted owner response; the model only gets
   // the separately governed core.preapproval.request kernel operation.
   'preapproval.',
@@ -413,6 +420,29 @@ export const MCP_RESERVED_RPC_PREFIXES = [
   // serve). Owner / local-UI only: an MCP-channel agent must never take a
   // user's tunnel offline nor stand up a daemon. Channel-isolation invariant.
   'supervision.',
+  // ⛔⛔ D-269 step 1 — the server's own timezone is a control-plane switch, not
+  // a clock read. An MCP-channel agent that could set it would move the wall
+  // clock every wall-clock POLICY resolves through — and once quiet hours can
+  // be opted in for approvals, moving the clock is how an agent arranges not to
+  // be ASKED about its own next action. Same class as `pii.` (never let an agent
+  // widen its own egress) and `housekeeping.` (never let it retune the server's
+  // background behaviour). Reserved for read as well as write: the deployment
+  // fact — whether this machine travels with its owner — is not an agent's to
+  // learn.
+  'server.timezone.',
+  // ⛔⛔ D-269 step 2 — the per-kind reminder policy. An agent that could write
+  // this would switch off the owner's deadline reminders, or push the horizon
+  // out so far that everything is permanently "due soon" and the signal is
+  // worthless. Either way it decides what its owner gets to notice. Reserved
+  // for READ too, on the same ground as `pii.`: the owner's attention settings
+  // are not an agent's to enumerate.
+  // ⚠ `notification.` is NOT reserved wholesale — `notification.recent` /
+  // `.pending_asks` are reads the Bridge side panel needs. The prefix is
+  // narrowed to this family on purpose.
+  'notification.kind_policy.',
+  // ⛔ D-269 step 3 — the quiet-hours window. An agent that could write it could
+  // silence its owner for nine hours a day, or read when they are asleep.
+  'notification.quiet_hours.',
   // Recipe-editor authoring seam — the `recipe.*` rpc family is owner /
   // local-UI only. The read surfaces (`recipe.list` / `recipe.runnability` /
   // `recipe.pii`) already stay off MCP by `MCP_TOOL_CATALOG` omission, but the

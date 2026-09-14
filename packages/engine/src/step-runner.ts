@@ -1427,8 +1427,17 @@ const readWriteEntityId = (
   result: unknown,
   field: string,
 ): string | undefined => {
-  if (result === null || typeof result !== 'object') return undefined;
-  const value = (result as Record<string, unknown>)[field];
+  // ⛔ A DOTTED PATH, because the flat assumption was an accident of which ops
+  // happened to declare `writes` first. Mail and calendar return the written id
+  // as a TOP-LEVEL scalar (`record_id` / `source_id`), so a bare key was enough
+  // — and every work-entity op returns `{ <kind>: { id, … } }`, putting the id
+  // one level down and out of reach. The format could not express the shape of
+  // the ops that most need it. A path with no dot behaves exactly as before.
+  let value: unknown = result;
+  for (const segment of field.split('.')) {
+    if (value === null || typeof value !== 'object') return undefined;
+    value = (value as Record<string, unknown>)[segment];
+  }
   if (typeof value === 'string') return value.length > 0 ? value : undefined;
   if (typeof value === 'number' && Number.isFinite(value)) return String(value);
   return undefined;

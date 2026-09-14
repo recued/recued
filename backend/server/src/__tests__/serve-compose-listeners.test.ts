@@ -117,6 +117,9 @@ import { createWebhookIngressStore } from '../storage/webhook-ingress-store.js';
 import { createWebhookDeliveryStore } from '../storage/webhook-delivery-store.js';
 import { createWebhookConsumerStore } from '../storage/webhook-consumer-store.js';
 import { createConnectionStore } from '../storage/connection-store.js';
+import { createChatStore, ensureChatSchema } from '../storage/chat-store.js';
+import { createChatOrchestrator } from '../chat-orchestrator.js';
+import type { ChatRpcDeps } from '../chat-handler.js';
 import { encodeAuthForStorage } from '../connection-handler.js';
 import {
   createWebhookPrefixedPositiveDecimalIdCodec,
@@ -250,6 +253,8 @@ const makeOptions = (
     connectionStoreRef: undefined,
     contactStoreRef: undefined,
     chatDeps: undefined,
+    workEntityCrudDepsRef: { current: null },
+    calendarWriteDepsRef: { current: null },
     keys: undefined,
   },
   collection: {
@@ -315,6 +320,33 @@ const makeOptions = (
 }) as unknown as ComposeListenersOptions;
 
 describe('composeListeners', () => {
+  it('reads Chat receive health from the live supervisor and overrides it when paused or locked', async () => {
+    const base = makeOptions(); const connectionStore = createConnectionStore(storageDb);
+    connectionStore.upsert({ kind: 'notification', name: 'telegram', subtype: 'telegram', display_name: 'Telegram',
+      config_json: JSON.stringify({ chat_id: '1', webhook_secret: 'fixture-secret' }),
+      auth_ciphertext: Buffer.from(JSON.stringify({ type: 'bearer', token: 'fixture-token' })).toString('base64'),
+      enrolled_at: 1, updated_at: 1 });
+    ensureChatSchema(storageDb); const store = createChatStore(storageDb);
+    const selfSignature = { server_kind: 'recued' as const, version: '1', instance_id: 'health-composition' };
+    const orchestrator = createChatOrchestrator({ chatStore: store, selfSignature,
+      registry: { list: () => [], listByTier: () => [], getByName: () => null,
+        dispatch: async () => ({ ok: true, result: {} }), subscribeRefresh: () => () => {} } });
+    const chatDeps: ChatRpcDeps = { store, orchestrator, selfSignature };
+    let locked = false; let paused = false;
+    const result = await composeListeners(makeOptions({ app: { ...base.app, chatDeps, connectionStoreRef: connectionStore,
+      isVaultUnlocked: () => !locked, serverState: { isPaused: () => paused } } }));
+    try {
+      expect(result.messengerIngressSupervisor?.status('telegram', 'telegram')?.state).toBe('webhook');
+      expect(chatDeps.messengerReceiveStatus?.('telegram')).toBe('webhook');
+      paused = true; expect(chatDeps.messengerReceiveStatus?.('telegram')).toBe('paused');
+      locked = true; expect(chatDeps.messengerReceiveStatus?.('telegram')).toBe('locked');
+      paused = false; locked = false;
+      connectionStore.upsert({ ...connectionStore.get('notification', 'telegram')!, config_json: '{broken', updated_at: 2 });
+      await vi.waitFor(() => expect(chatDeps.messengerReceiveStatus?.('telegram')).toBe('invalid'));
+      expect(chatDeps.messengerReceiveStatus?.('slack')).toBe('unknown');
+    } finally { await result.server.close(); }
+  });
+
   it('reconciles installed packs before composing any intake surface, then validates the result', async () => {
     const contractStore = createContractStore(storageDb, { now: () => 1 });
     contractStore.seedSchema(D165_CONTRACT_SCHEMA);
@@ -2138,18 +2170,7 @@ describe('composeListeners — D-165 vendor OAuth wiring (slice 2b Piece W)', ()
   const appWith = (
     over: Record<string, unknown> = {},
   ): Record<string, unknown> => ({
-    authDeps: undefined,
-    llmManager: undefined,
-    cacheDeps: undefined,
-    sharedDeps: undefined,
-    annotationDeps: undefined,
-    annotationStoreRef: undefined,
-    enrichmentStoreRef: undefined,
-    enrichmentCascadeRef: undefined,
-    connectionStoreRef: undefined,
-    contactStoreRef: undefined,
-    chatDeps: undefined,
-    keys: undefined,
+    ...makeOptions().app,
     ...over,
   });
 

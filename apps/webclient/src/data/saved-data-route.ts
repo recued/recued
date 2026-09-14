@@ -6,6 +6,7 @@ import {
   type SavedDataViewUpdateRequest, type SavedDataViewDefinition,
 } from '@recued/contracts';
 import { bootstrapDataRoute, type BootstrapDataRouteOptions, type DataRoute } from './bootstrap-data-route.js';
+import { stampZone } from '@recued/ui-shared';
 import { serializeShellRoute } from '../shell/route.js';
 import { classifyRpcError, humanizeRpcError } from '../shell/rpc-error-copy.js';
 
@@ -18,6 +19,9 @@ export interface SavedDataViewsClient {
   delete(args: SavedDataViewDeleteRequest): Promise<{ deleted: boolean }>;
 }
 export interface SavedDataRouteOptions extends BootstrapDataRouteOptions {
+  /** D-269 step 1 — the server's resolved IANA zone for a new alert's stamp.
+   *  Absent ⇒ this browser's, as before. */
+  serverTimeZone?: () => string | undefined;
   savedViews: SavedDataViewsClient;
   savedViewId?: string;
 }
@@ -46,8 +50,17 @@ const settingsSummary = (definition: SavedDataViewDefinition): string => {
     }
   }
   if ('collection_slug' in definition) parts.push(`Source: ${definition.collection_slug ?? 'None selected'}`);
-  if (definition.tab === 'records') parts.push(definition.owner === null ? 'No pack selected'
-    : `Pack: ${definition.owner.publisher}/${definition.owner.pack_slug}`, `Kind: ${definition.entity ?? 'None selected'}`);
+  if (definition.tab === 'records') {
+    parts.push(definition.owner === null ? 'No pack selected'
+      : `Pack: ${definition.owner.publisher}/${definition.owner.pack_slug}`, `Kind: ${definition.entity ?? 'None selected'}`);
+    const operators = { eq: '=', ne: '≠', lt: '<', lte: '≤', gt: '>', gte: '≥', in: 'is any of', prefix: 'starts with' };
+    const filters = Object.entries(definition.filters ?? {}).map(([field, filter]) =>
+      filter.op === 'is_null' ? `${field} ${filter.value ? 'is not set' : 'is set'}`
+        : `${field} ${operators[filter.op]} ${JSON.stringify(filter.value)}`);
+    parts.push(filters.length ? `Filters: ${filters.join('; ')}` : 'No field filters');
+    const sort = definition.sort ?? 'id';
+    parts.push(`Sort: ${sort.startsWith('-') ? `${sort.slice(1)} descending` : `${sort} ascending`}`);
+  }
   if (definition.tab === 'memory') parts.push(({ all: 'All origins', user_self: 'You', contracted_user: 'Agents', system: 'System' })[definition.origin]);
   return parts.join(' · ');
 };
@@ -55,7 +68,7 @@ const alertSummary = (view: SavedDataView): string => {
   const alert = view.alert;
   if (!alert) return 'Alerts off';
   if (!alert.enabled) return 'Alerts paused';
-  const status = alert.status === 'unavailable' ? 'Alerts waiting for task data' : 'Alerts on';
+  const status = alert.status === 'unavailable' ? 'Alerts waiting for your tasks' : 'Alerts on';
   return `${status} · ${alert.time_zone}${alert.last_checked_at === null ? ''
     : ` · Checked ${new Date(alert.last_checked_at).toLocaleString()}`}`;
 };
@@ -280,9 +293,9 @@ export const bootstrapSavedDataRoute = (opts: SavedDataRouteOptions) => {
     try {
       const { view } = await opts.savedViews.get({ id });
       if (disposed || seq !== loadSeq) return;
-      if (view === null) { showLoadError('This saved view is no longer available on this server.'); return; }
+      if (view === null) { showLoadError('This server does not have that saved view any more.'); return; }
       const definition = parseSavedDataViewDefinition(view.definition);
-      if (view.id !== id || definition === null) { showLoadError('This saved view has settings this version cannot open.'); return; }
+      if (view.id !== id || definition === null) { showLoadError('This saved view has settings this version of Recued cannot open.'); return; }
       await mountData({ ...view, definition }).whenLoaded();
     } catch (error) {
       if (!disposed && seq === loadSeq) showLoadError(humanizeRpcError(error));
@@ -294,9 +307,9 @@ export const bootstrapSavedDataRoute = (opts: SavedDataRouteOptions) => {
     const editing = edit;
     const definition = child?.currentView();
     if (editing.kind === 'create' && (definition === null || definition === undefined)) {
-      actionError = 'Return to a Data list or search before saving a view.'; render(); return;
+      actionError = 'Go back to a list or a search before you save a view.'; render(); return;
     }
-    if (!editing.name.trim()) { actionError = 'Enter a name for this view.'; render(); return; }
+    if (!editing.name.trim()) { actionError = 'Give this view a name.'; render(); return; }
     busy = true;
     actionError = null;
     render();
@@ -333,7 +346,7 @@ export const bootstrapSavedDataRoute = (opts: SavedDataRouteOptions) => {
     if (busy || base === null || definition == null
       || (!replace && (conflictView !== null || sameSavedDataViewDefinition(definition, base.definition)))) return;
     if (child?.hasInFlightWork()) {
-      actionError = 'Finish the current Data action before updating a saved view.'; render(); return;
+      actionError = 'Finish what you are doing before you change a saved view.'; render(); return;
     }
     busy = true; actionError = null; notice = null;
     render();
@@ -368,7 +381,7 @@ export const bootstrapSavedDataRoute = (opts: SavedDataRouteOptions) => {
     try {
       const result = await opts.savedViews.delete({ id: view.id, expected_revision: view.revision });
       if (disposed) return;
-      if (!result.deleted) throw new Error('The view was not deleted. Refresh saved views and try again.');
+      if (!result.deleted) throw new Error('The view was not deleted. Load your saved views again and try once more.');
       views = views.filter((entry) => entry.id !== view.id);
       listSeq += 1;
       listing = false;
@@ -394,7 +407,11 @@ export const bootstrapSavedDataRoute = (opts: SavedDataRouteOptions) => {
     const enabled = !view.alert?.enabled;
     try {
       const { view: saved } = await opts.savedViews.update({ id: view.id, expected_revision: view.revision,
-        alert: { enabled, time_zone: view.alert?.time_zone ?? Intl.DateTimeFormat().resolvedOptions().timeZone },
+        // D-269 — the SERVER's zone. This alert is evaluated by a server-side
+        // sweep with no client attached, so the browser's zone was never right;
+        // and because the value is FROZEN at first enable, an alert switched on
+        // from a laptop abroad carried the travel zone for good.
+        alert: { enabled, time_zone: view.alert?.time_zone ?? stampZone(opts.serverTimeZone) },
       });
       if (disposed) return;
       views = [...views.filter(entry => entry.id !== saved.id), saved].sort((a, b) => a.name.localeCompare(b.name));
@@ -428,7 +445,7 @@ export const bootstrapSavedDataRoute = (opts: SavedDataRouteOptions) => {
     if (busy) { event.preventDefault(); return; }
     if (action === 'open') {
       if (child !== null && (child.hasInFlightWork() || child.currentView() === null)) {
-        event.preventDefault(); actionError = 'Finish or close the current Data action before opening a saved view.'; render();
+        event.preventDefault(); actionError = 'Finish or close what you are doing before you open a saved view.'; render();
       } else if (doc.defaultView?.location.hash === control.getAttribute('href')) {
         event.preventDefault(); pending = loadView();
       }
@@ -449,7 +466,7 @@ export const bootstrapSavedDataRoute = (opts: SavedDataRouteOptions) => {
     }
     if (action === 'new') {
       if (child?.currentView() == null || child.hasInFlightWork()) {
-        actionError = 'Return to a Data list or search before saving a view.'; render(); return;
+        actionError = 'Go back to a list or a search before you save a view.'; render(); return;
       }
       edit = { kind: 'create', view: null, name: '' }; deleting = null;
     } else if (view !== undefined && action === 'rename') {
@@ -493,7 +510,7 @@ export const bootstrapSavedDataRoute = (opts: SavedDataRouteOptions) => {
       }
     },
     hasInFlightWork: () => busy || child?.hasInFlightWork() === true,
-    inFlightWorkPrompt: () => busy ? 'A saved view is being changed. Leave Data anyway?' : child?.inFlightWorkPrompt() ?? null,
+    inFlightWorkPrompt: () => busy ? 'You are part-way through changing a saved view. Leave anyway?' : child?.inFlightWorkPrompt() ?? null,
     dispose: () => {
       disposed = true; listSeq += 1; loadSeq += 1;
       child?.dispose();

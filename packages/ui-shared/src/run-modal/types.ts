@@ -25,6 +25,7 @@ import type {
   ServerExecuteResponse,
   ServerRecipeListEntry,
   ServerSchedule,
+  MissedSchedulePolicy,
 } from '@recued/contracts';
 import type { RefPickerSearchCaller } from '../ref-picker/types.js';
 import type { RecordRefVariableSearch } from '../record-ref-variable.js';
@@ -68,6 +69,8 @@ export type RunModalSchedulesCreateCaller = (args: {
 
 export type RunModalSchedulesUpdateCaller = (args: {
   schedule_id: string;
+  /** D-266 — the owner's missed-run policy for this schedule. */
+  missed_policy?: MissedSchedulePolicy;
   enabled?: boolean;
   /** D-179 — edit the schedule's headless-fire config (immutably
    *  re-versioned on a managed dish server-side; `{}` clears). */
@@ -113,6 +116,15 @@ export type RunModalTriggersDeleteCaller = (args: {
 export interface RunModalState {
   /** Active tab. */
   tab: RunModalTab;
+  /** D-269 — the SERVER's resolved zone, so the one-shot field can say what the
+   *  picked time means there.
+   *
+   *  ⚠ THE ONE-SHOT'S EXECUTION IS NOT WRONG — it stores an absolute instant and
+   *  fires exactly when the owner meant. What was missing is the sentence saying
+   *  which clock they were reading, which matters once the server may keep a
+   *  different one. (The CRON case was a real defect, because a wall clock with
+   *  no zone has no answer at all.) */
+  server_time_zone?: string;
   // ── Run tab ──
   /** Raw-JSON config (advanced field + the variable-widget sync target). */
   config_text: string;
@@ -132,6 +144,11 @@ export interface RunModalState {
   /** Loaded schedules (already filtered to this recipe), or null when not
    *  yet loaded / the caller is absent (→ "not available" note). */
   schedules: readonly ServerSchedule[] | null;
+  /** D-266 — the missed-run policy the next Add will arm the schedule
+   *  with. Chosen WHEN THE SCHEDULE IS WRITTEN, which is the moment the
+   *  owner actually knows whether a late run is worth having; editing it
+   *  afterwards on the row is the same choice made later, not instead. */
+  missed_policy: MissedSchedulePolicy;
   /** The selected "Add schedule" preset CRON expression. */
   preset_expression: string;
   /** D-215 slice 5 — the Repeat toggle. `true` (default) keeps the CRON
@@ -164,6 +181,12 @@ export interface RunModalState {
 
 /** Options for `wireRunModal`. */
 export interface WireRunModalOptions {
+  /** D-269 step 1 — the server's resolved IANA zone, for the scheduled-run
+   *  activation stamp. A thunk because the host fetches it once, asynchronously.
+   *  ⚠ Absent ⇒ falls back to THIS browser's zone, which is what every caller
+   *  did before — so an unwired caller keeps working rather than writing an
+   *  empty zone into a durable row. */
+  serverTimeZone?: () => string | undefined;
   /** The recipe to run — needs `recipe_id` + `recipe` (for variable
    *  widgets + targeting derivation + the display name). */
   recipe: ServerRecipeListEntry;
@@ -232,6 +255,8 @@ export interface RunModalHandle {
   setContextValues(context: Record<string, unknown>): void;
   /** Set the selected "Add schedule" preset CRON expression. */
   setPreset(expression: string): void;
+  /** D-266 — set the policy the next Add arms the schedule with. */
+  setNewMissedPolicy(policy: MissedSchedulePolicy): void;
   /** D-215 slice 5 — flip Repeat. Off ⇒ the next Add creates a one-shot. */
   setRepeat(repeat: boolean): void;
   /** D-215 slice 5 — the one-shot fire time (datetime-local wall clock). */
@@ -244,6 +269,8 @@ export interface RunModalHandle {
   reviewSchedule(): Promise<void>;
   /** Pause / resume one schedule. */
   toggleSchedule(scheduleId: string, enabled: boolean): Promise<void>;
+  /** D-266 — set one schedule's missed-run policy. */
+  setMissedPolicy(scheduleId: string, policy: MissedSchedulePolicy): Promise<void>;
   /** Delete one schedule. */
   removeSchedule(scheduleId: string): Promise<void>;
   /** Set the "Add trigger" pattern text (mirrors the input). R21. */

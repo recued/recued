@@ -62,21 +62,21 @@ export const EXPOSURE_PRESET_COPY: Record<
 > = {
   lan_only: {
     label: 'LAN Only',
-    subtitle: 'Home-network safe baseline',
+    subtitle: 'Safe for a home network',
     description:
-      'Only LAN clients reach the server. No public ports bound. Safe default for home networks; pick this when you do not need vendor webhooks, remote webclients, or AI-agent ingress from outside your LAN.',
+      'Only devices on your own network can reach the server. Nothing is open to the internet. This is the safe choice at home. Pick it when nothing outside your network needs to reach in.',
   },
   public: {
     label: 'Public',
-    subtitle: 'Full open — vendors + remote clients + AI agents',
+    subtitle: 'Fully open: services, devices anywhere, and AI apps',
     description:
-      'LAN clients still work; vendors deliver webhooks, anonymous visitors reach Reception, remote webclients connect, AI agents reach MCP after acknowledgement. Requires DDNS configured; surfaces the /mcp.public acknowledgement modal when MCP is included.',
+      'Your own network still works. Services can tell your server things, visitors can reach your Reception page, you can connect from anywhere, and AI apps can reach it once you agree. You need a web address set up first.',
   },
   maintenance: {
     label: 'Maintenance',
-    subtitle: 'Everything closed — recover via CLI',
+    subtitle: 'Everything shut. Use the terminal to get back in',
     description:
-      'No listeners bound. Useful for incident response or while reconfiguring. Recover via CLI access or by editing config files locally to flip a different preset; the webclient will be unreachable until you do.',
+      'Nothing is open at all. Use this if something has gone wrong, or while you change things. To get back in, use the terminal on the server itself. Until then, you cannot reach Recued in a browser.',
   },
 };
 
@@ -87,31 +87,31 @@ export const EXPOSURE_PATH_COPY: Record<
 > = {
   health: {
     label: '/health',
-    subtitle: 'Liveness probe',
+    subtitle: 'The are-you-alive check',
   },
   ws: {
     label: '/ws',
-    subtitle: 'Webclient access channel (Settings)',
+    subtitle: 'Reaching Recued in a browser',
   },
   mcp: {
     label: '/mcp',
-    subtitle: 'AI-agent ingress (MCP)',
+    subtitle: 'AI apps reaching in',
   },
   llm_gateway: {
     label: '/llm-gateway',
-    subtitle: 'OpenAI-compatible AI ingress',
+    subtitle: 'AI reaching in through your own door',
   },
   webhooks: {
     label: '/webhooks',
-    subtitle: 'Vendor inbound (HubSpot / Salesforce / …)',
+    subtitle: 'Services telling your server things (HubSpot, Salesforce and so on)',
   },
   reception: {
     label: '/reception',
-    subtitle: 'Anonymous visitor surfaces',
+    subtitle: 'Your public pages',
   },
   oauth: {
     label: '/oauth/complete',
-    subtitle: 'Vendor OAuth callback (HubSpot / Salesforce / …)',
+    subtitle: 'Signing in to services (HubSpot, Salesforce and so on)',
   },
   ask: {
     label: '/ask',
@@ -129,7 +129,7 @@ export const EXPOSURE_PATH_COPY: Record<
 export const EXPOSURE_ERROR_COPY: Record<NetworkErrorCode, string> = {
   preset_unknown: 'Unknown preset. Refresh the page + try again.',
   preset_unachievable_no_ddns:
-    'This preset requires a public address. Configure DDNS in Settings → Server → DDNS, or stay on LAN-only.',
+    'This choice needs an address people outside can use. Set up DDNS in Settings, then Server, then DDNS, or stay on your own network only.',
   public_mcp_not_acknowledged:
     'Public MCP requires an explicit acknowledgement. Click "Enable public MCP" and type the confirmation phrase first.',
   public_mcp_phrase_mismatch:
@@ -139,12 +139,12 @@ export const EXPOSURE_ERROR_COPY: Record<NetworkErrorCode, string> = {
   cert_pin_mismatch:
     'The cert fingerprint does not match the pinned value. Possible MITM — re-pair every client and rotate the cert.',
   rotation_notice_signature_invalid:
-    'A cert rotation notice arrived without a valid signature + was rejected. Review Settings → Server → Reachability.',
+    'A message about swapping your certificate arrived unsigned, so Recued threw it away. Look in Settings, then Server, then Reachability.',
   telegram_port_unsupported:
-    'Telegram only accepts webhooks on ports 443 / 80 / 88 / 8443. Adjust the connection configuration.',
+    'Telegram only takes webhooks on ports 443, 80, 88 and 8443. Change the Connection to use one of those.',
   port_in_use: 'A port is already bound by another process. Free the port + retry.',
   lan_address_unresolved:
-    'The LAN bind address could not be detected. Configure the address manually in Settings → Server → Network.',
+    'Recued could not work out your own network address. Type it in yourself under Settings, then Server, then Network.',
   path_unknown: 'Unknown path role. Refresh the page + try again.',
   ws_lockout_unconfirmed:
     'Disabling /ws would lock you out of Settings. Type the confirmation phrase shown in the modal to continue.',
@@ -166,7 +166,7 @@ export const EXPOSURE_ERROR_COPY: Record<NetworkErrorCode, string> = {
   pro_acme_not_found:
     'No Pro-managed cert exists for this domain. The handle may already be unbound, or it was managed manually (BYO upload) — use Remove on the cert row instead.',
   pro_acme_ddns_release_failed:
-    'Releasing the Pro DDNS handle failed at the cloud helper. The cert row is preserved — try again, or check Reachability Doctor for a cloud-side outage.',
+    'Giving back your Pro DDNS name did not work in the cloud. Your certificate is still safe. Try again, or use Reachability Doctor to see if the cloud is having trouble.',
   // Not a cloud outage — the opposite. The helper answered; it said this
   // server has issued enough certificates for today. Nothing to go fix.
   acme_rate_limited:

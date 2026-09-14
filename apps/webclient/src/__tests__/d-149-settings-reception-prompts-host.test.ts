@@ -263,7 +263,7 @@ describe('D-149 follow-on — prompts host closed lists', () => {
   });
 
   it('emergency-disable confirm phrase is the literal expected by the gate', () => {
-    expect(RECEPTION_EMERGENCY_DISABLE_CONFIRM_PHRASE).toBe('EMERGENCY DISABLE ALL');
+    expect(RECEPTION_EMERGENCY_DISABLE_CONFIRM_PHRASE).toBe('TURN EVERYTHING OFF NOW');
   });
 });
 
@@ -294,7 +294,7 @@ describe('D-149 follow-on — mountReceptionPromptsHost: lifecycle', () => {
       now: () => NOW,
     });
     prompts.open('reception-revoke', { endpointId: 'ep-sched' });
-    expect(h.getHtml()).toContain('Revoke endpoint');
+    expect(h.getHtml()).toContain('Take this link back');
     prompts.dispose();
     expect(h.listenerCount()).toBe(0);
     expect(h.getHtml()).toBe('');
@@ -330,7 +330,7 @@ describe('D-149 follow-on — prompts host open() dispatch', () => {
       now: () => NOW,
     });
     prompts.open('reception-extend', { endpointId: 'ep-sched' });
-    expect(h.getHtml()).toContain('Extend endpoint');
+    expect(h.getHtml()).toContain('Give it more time');
     expect(h.getHtml()).toContain('ep-sched');
     prompts.dispose();
   });
@@ -344,7 +344,7 @@ describe('D-149 follow-on — prompts host open() dispatch', () => {
       now: () => NOW,
     });
     prompts.open('reception-rotate-token', { endpointId: 'ep-sched' });
-    expect(h.getHtml()).toContain('Rotate token');
+    expect(h.getHtml()).toContain('Swap the secret');
     prompts.dispose();
   });
 
@@ -357,7 +357,7 @@ describe('D-149 follow-on — prompts host open() dispatch', () => {
       now: () => NOW,
     });
     prompts.open('reception-revoke', { endpointId: 'ep-sched' });
-    expect(h.getHtml()).toContain('Revoke endpoint');
+    expect(h.getHtml()).toContain('Take this link back');
     prompts.dispose();
   });
 
@@ -370,7 +370,7 @@ describe('D-149 follow-on — prompts host open() dispatch', () => {
       now: () => NOW,
     });
     prompts.open('reception-emergency-disable-all', {});
-    expect(h.getHtml()).toContain('Emergency: disable Reception?');
+    expect(h.getHtml()).toContain('Turn Reception off right now?');
     expect(h.getHtml()).toContain(RECEPTION_EMERGENCY_DISABLE_CONFIRM_PHRASE);
     prompts.dispose();
   });
@@ -416,10 +416,10 @@ describe('D-149 follow-on — prompts host open() dispatch', () => {
       now: () => NOW,
     });
     prompts.open('reception-revoke', { endpointId: 'ep-sched' });
-    expect(h.getHtml()).toContain('Revoke endpoint');
+    expect(h.getHtml()).toContain('Take this link back');
     prompts.open('reception-extend', { endpointId: 'ep-sched' });
-    expect(h.getHtml()).toContain('Extend endpoint');
-    expect(h.getHtml()).not.toContain('Revoke endpoint');
+    expect(h.getHtml()).toContain('Give it more time');
+    expect(h.getHtml()).not.toContain('Take this link back');
     prompts.dispose();
   });
 
@@ -434,7 +434,7 @@ describe('D-149 follow-on — prompts host open() dispatch', () => {
       onClose,
     });
     prompts.open('reception-revoke', { endpointId: 'ep-sched' });
-    expect(h.getHtml()).toContain('Revoke endpoint');
+    expect(h.getHtml()).toContain('Take this link back');
     h.click({ action: 'reception-prompt-cancel' });
     expect(h.getHtml()).toBe('');
     expect(onClose).toHaveBeenCalledWith('revoke');
@@ -552,7 +552,7 @@ describe('D-149 follow-on — extend prompt', () => {
     h.click({ action: 'reception-prompt-submit' });
     await flush();
     expect(fns.extendEndpoint).not.toHaveBeenCalled();
-    expect(h.getHtml()).toContain('Pick a valid expiry date');
+    expect(h.getHtml()).toContain('Pick a date it should run out');
     prompts.dispose();
   });
 
@@ -570,7 +570,7 @@ describe('D-149 follow-on — extend prompt', () => {
     h.click({ action: 'reception-prompt-submit' });
     await flush();
     expect(fns.extendEndpoint).not.toHaveBeenCalled();
-    expect(h.getHtml()).toContain('Expiry date must be in the future');
+    expect(h.getHtml()).toContain('That date has already gone');
     prompts.dispose();
   });
 
@@ -610,7 +610,7 @@ describe('D-149 follow-on — extend prompt', () => {
     await flush();
     expect(fns.extendEndpoint).toHaveBeenCalledTimes(1);
     expect(h.getHtml()).toContain('endpoint_revoked_cannot_extend');
-    expect(h.getHtml()).toContain('Extend endpoint');
+    expect(h.getHtml()).toContain('Give it more time');
     prompts.dispose();
   });
 });
@@ -708,7 +708,7 @@ describe('D-149 follow-on — rotate-token prompt', () => {
     await flush();
     expect(fns.setEndpointShare).not.toHaveBeenCalled();
     expect(h.getHtml()).toContain('endpoint_not_found');
-    expect(h.getHtml()).toContain('Rotate token');
+    expect(h.getHtml()).toContain('Swap the secret');
     prompts.dispose();
   });
 });
@@ -780,7 +780,7 @@ describe('D-149 follow-on — revoke prompt', () => {
     await flush();
     expect(fns.revokeEndpoint).toHaveBeenCalledTimes(1);
     expect(h.getHtml()).toContain('endpoint_already_revoked');
-    expect(h.getHtml()).toContain('Revoke endpoint');
+    expect(h.getHtml()).toContain('Take this link back');
     prompts.dispose();
   });
 });
@@ -901,7 +901,7 @@ describe('D-149 follow-on — emergency-disable-all prompt', () => {
     await flush();
     expect(fns.emergencyDisableAll).toHaveBeenCalledTimes(1);
     expect(h.getHtml()).toContain('emergency_disable_failed');
-    expect(h.getHtml()).toContain('Emergency: disable Reception?');
+    expect(h.getHtml()).toContain('Turn Reception off right now?');
     prompts.dispose();
   });
 });
@@ -1119,7 +1119,7 @@ describe('D-149 follow-on — stale-completion guard', () => {
     //    for a different endpoint. The rotate rpc is still in flight.
     h.click({ action: 'reception-prompt-cancel' });
     prompts.open('reception-revoke', { endpointId: 'ep-drop' });
-    expect(h.getHtml()).toContain('Revoke endpoint');
+    expect(h.getHtml()).toContain('Take this link back');
 
     // 3. Now resolve the stale rotate. The success path should NOT
     //    register a share (the user moved on) and NOT close the revoke
@@ -1131,7 +1131,7 @@ describe('D-149 follow-on — stale-completion guard', () => {
     await flush();
     expect(fns.setEndpointShare).not.toHaveBeenCalled();
     // The revoke modal is still up.
-    expect(h.getHtml()).toContain('Revoke endpoint');
+    expect(h.getHtml()).toContain('Take this link back');
     prompts.dispose();
   });
 
@@ -1157,7 +1157,7 @@ describe('D-149 follow-on — stale-completion guard', () => {
     await flush();
     // The revoke modal must NOT carry the stale rotate's error message.
     expect(h.getHtml()).not.toContain('stale_rotate_failure');
-    expect(h.getHtml()).toContain('Revoke endpoint');
+    expect(h.getHtml()).toContain('Take this link back');
     prompts.dispose();
   });
 

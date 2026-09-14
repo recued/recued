@@ -689,7 +689,7 @@ export const mountAccountsLanePanel = (
           if (background) return;
           state.loading = false;
           state.rows = [];
-          state.error = 'This lane is not available on this server yet.';
+          state.error = 'This server cannot do this yet.';
           render(preserveFocus);
           return;
         }
@@ -825,17 +825,17 @@ export const mountAccountsLanePanel = (
     try {
       let enrolledSlug: string;
       if (provider.transport === 'mail-imap') {
-        if (opts.mail === undefined) throw new Error('Mail enrollment is not available.');
+        if (opts.mail === undefined) throw new Error('You cannot set up Mail here.');
         const enrolled = await opts.mail.enrollImap(payload);
         enrolledSlug = enrolled.slug;
       } else if (provider.transport === 'calendar-caldav') {
         if (opts.calendar?.enrollBasic === undefined) {
-          throw new Error('CalDAV enrollment is not available.');
+          throw new Error('You cannot set up CalDAV here.');
         }
         const enrolled = await opts.calendar.enrollBasic(payload);
         enrolledSlug = enrolled.slug;
       } else {
-        if (opts.file === undefined) throw new Error('File enrollment is not available.');
+        if (opts.file === undefined) throw new Error('You cannot set up Files here.');
         const enrolled = await opts.file.enroll(payload);
         enrolledSlug = enrolled.instance.slug;
       }
@@ -1426,7 +1426,7 @@ export const mountAccountsLanePanel = (
         return;
       }
       if (opts.setOAuthAppConfig === undefined) {
-        state.formError = 'Saving sign-in credentials is not available on this server.';
+        state.formError = 'This server cannot save sign-in keys.';
         render();
         return;
       }
@@ -1680,7 +1680,7 @@ export const mountAccountsLanePanel = (
         ? undefined
         : (text: string) => doc.defaultView!.navigator.clipboard.writeText(text));
     if (copy === undefined) {
-      feedback('Copy manually', 'Clipboard unavailable. Select and copy the callback URL manually.');
+      feedback('Copy manually', 'Recued could not copy it. Select the address to come back to and copy it yourself.');
       return;
     }
     try {

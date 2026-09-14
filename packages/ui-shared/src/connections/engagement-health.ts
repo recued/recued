@@ -366,7 +366,7 @@ export const renderEngagementHealthPanel = (
       ${renderRelationshipsPanel(data)}
       ${renderPushTopicCreationStatus(props.lastReprobe ?? null)}
       ${renderActions(props, data.vendor)}
-      ${props.reprobing ? inlineHint('Re-probing Salesforce capabilities — this may take a few seconds.') : ''}
+      ${props.reprobing ? inlineHint('Checking what Salesforce can do. This takes a few seconds.') : ''}
     </div>
   `;
 };

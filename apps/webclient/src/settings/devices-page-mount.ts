@@ -159,9 +159,9 @@ const REVOKE_ERROR_COPY = (detail: string): string => {
       ? trimmed
       : `${trimmed}.`;
   const firstSentence = punctuatedDetail
-    ? `Could not revoke this device: ${punctuatedDetail}`
-    : 'Could not revoke this device.';
-  return `${firstSentence} Try again, or revoke from a different paired device.`;
+    ? `Recued could not shut this device out: ${punctuatedDetail}`
+    : 'Recued could not shut this device out.';
+  return `${firstSentence} Try again, or do it from another device you have paired.`;
 };
 
 const toDevicesPageRow = (
@@ -329,7 +329,7 @@ export const mountDevicesPage = (
       : '';
     const successReceipt = state.revokeSucceeded
       ? '<p class="account-devices-revoke-success" role="status" tabindex="-1" data-device-revoke-success>'
-        + 'Device revoked. It no longer has access to this server.'
+        + 'Done. That device can no longer reach this server.'
         + '</p>'
       : '';
     host.innerHTML = errorBanner

@@ -70,6 +70,7 @@ import {
   classifyOAuthFailure,
   type MailMutationResult,
   type MailSyncOutcome,
+  type SavedDraftMeta,
 } from './provider.js';
 // The auth-vs-transient discriminant for `classifySyncFailure`. Same module the
 // providers throw from, so the classification cannot drift from the thrower.
@@ -436,6 +437,24 @@ export interface MailCollection extends Collection {
    *  capability gate reads it without reaching through the provider, the
    *  same way `sendCapable` is surfaced for the sender picker. */
   readonly mutationCapable: boolean;
+  /** D-264 — mirrors `MailProvider.draftCapable` for the same reason, and
+   *  narrowed to a plain boolean here: the provider field is optional so an
+   *  out-of-tree adapter keeps compiling, but every consumer of a live
+   *  collection should read a definite answer, not `undefined`. */
+  readonly draftCapable: boolean;
+  /** D-264 — park a message in the mailbox's Drafts folder.
+   *
+   *  ⛔ NOT a send, and never becomes one. The gate is `draftCapable`, the
+   *  audit action is `mail_draft_saved_to_mailbox`, and there is no self-loop guard
+   *  because nothing is delivered: a draft addressed to yourself is a note to
+   *  yourself, which is a legitimate thing to park. */
+  saveDraft(args: {
+    to: string[]; cc?: string[]; bcc?: string[];
+    subject: string; body_text: string; body_html?: string;
+    in_reply_to?: string; references?: string[]; reply_to?: string;
+    prior_source_id?: string;
+    recipe_id?: string; step_id?: string;
+  }): Promise<SavedDraftMeta>;
   readonly accountEmail: string;
   /** D-239 — the live provider, for the dispatcher's verified-then-
    *  reflected write path. Exposed rather than proxying all four verbs
@@ -1060,6 +1079,104 @@ export const createMailCollection = (
   // count is ≤ MAIL_SEND_AUDIT_RECIPIENT_REDACTION_THRESHOLD.
   // Emission errors are swallowed via best-effort try/catch so a
   // back-pressured audit log can't break a recipe send.
+  /** D-264 — park a message in the mailbox's Drafts folder.
+   *
+   *  Deliberately thin next to `send`, and each omission is a decision:
+   *
+   *    - **no self-loop guard.** That guard exists because mailing yourself on
+   *      `To:` is almost always a mistake. Parking a message addressed to
+   *      yourself is a note to yourself — a normal thing to want.
+   *    - **no attachment resolution.** Attachment bytes are a gated egress path
+   *      (`data-file-read`), and nothing about parking a draft needs them yet.
+   *      An export drops `attachments` rather than half-resolving them, and the
+   *      caller is told via a warning rather than left to infer it.
+   *    - **no reconciliation id.** Nothing was submitted, so there is no
+   *      response-less accepted message to find later.
+   *
+   *  What it keeps is the capability gate and the audit row, because both
+   *  answer "what did Recued do to my mailbox". */
+  const saveDraft = async (args: {
+    to: string[]; cc?: string[]; bcc?: string[];
+    subject: string; body_text: string; body_html?: string;
+    in_reply_to?: string; references?: string[]; reply_to?: string;
+    prior_source_id?: string;
+    recipe_id?: string; step_id?: string;
+  }): Promise<SavedDraftMeta> => {
+    const emitDraftAudit = async (
+      success: boolean, sourceId: string,
+      extras: {
+        // ⛔ THE PROVIDER'S ANSWER, not `prior !== undefined`. Graph's
+        // update-then-create fallback returns `replaced: false` with a warning;
+        // an audit row keyed on "a prior was supplied" then asserted a
+        // replacement that did not happen — durably, to the owner investigating
+        // why they have two drafts.
+        replaced?: boolean;
+        warnings?: Array<{ code: string; message: string }>;
+        error?: { code: string; message: string };
+      } = {},
+    ): Promise<void> => {
+      if (!opts.auditLog) return;
+      try {
+        const ts = Date.now();
+        await opts.auditLog.logActivity({
+          activity_id: `md-${ts}-${Math.random().toString(36).slice(2, 8)}`,
+          timestamp: ts,
+          action: 'mail_draft_saved_to_mailbox',
+          target: `mail:${slug}`,
+          detail: JSON.stringify({
+            subject: args.subject,
+            body_bytes: Buffer.byteLength(args.body_text, 'utf8'),
+            recipient_count: args.to.length + (args.cc?.length ?? 0) + (args.bcc?.length ?? 0),
+            draft_source_id: sourceId,
+            replaced_prior: extras.replaced === true,
+            success,
+            ...(extras.warnings && extras.warnings.length > 0 ? { warnings: extras.warnings } : {}),
+            ...(extras.error ? { error: extras.error } : {}),
+            ...(args.recipe_id ? { recipe_id: args.recipe_id } : {}),
+            ...(args.step_id ? { step_id: args.step_id } : {}),
+          }),
+        });
+      } catch (err) {
+        bumpError('mail_draft_saved_to_mailbox audit emission failed', err);
+      }
+    };
+
+    if (!provider.draftCapable || typeof provider.saveDraft !== 'function') {
+      const err = new IngredientError(
+        'MAIL_DRAFT_NOT_CAPABLE',
+        `Mail account ${provider.kind}/${slug} cannot save drafts to the mailbox. `
+        + `Re-enroll it with write access, or keep the draft in Recued.`,
+        { kind: provider.kind, slug },
+      );
+      await emitDraftAudit(false, '', { error: { code: err.code, message: err.message } });
+      throw err;
+    }
+
+    try {
+      const saved = await provider.saveDraft({
+        to: args.to,
+        ...(args.cc ? { cc: args.cc } : {}),
+        ...(args.bcc ? { bcc: args.bcc } : {}),
+        subject: args.subject,
+        body_text: args.body_text,
+        ...(args.body_html !== undefined ? { body_html: args.body_html } : {}),
+        ...(args.in_reply_to !== undefined ? { in_reply_to: args.in_reply_to } : {}),
+        ...(args.references ? { references: args.references } : {}),
+        ...(args.reply_to !== undefined ? { reply_to: args.reply_to } : {}),
+      }, args.prior_source_id !== undefined ? { source_id: args.prior_source_id } : undefined);
+      await emitDraftAudit(true, saved.source_id, {
+        replaced: saved.replaced,
+        ...(saved.warnings ? { warnings: saved.warnings } : {}),
+      });
+      return saved;
+    } catch (err) {
+      const code = err instanceof IngredientError ? err.code : 'MAIL_DRAFT_WRITE_FAILED';
+      const message = err instanceof Error ? err.message : String(err);
+      await emitDraftAudit(false, '', { error: { code, message } });
+      throw err;
+    }
+  };
+
   const send = async (args: MailSendInput): Promise<MailSendResult> => {
     const reviewed = currentPreapprovalIo();
     reviewed?.validateMail(slug, args);
@@ -1501,6 +1618,11 @@ export const createMailCollection = (
     get mutationCapable() {
       return provider.mutationCapable;
     },
+    // D-264 — lazy for the same reason, and `?? false` because the provider
+    // field is optional: an adapter that never declares it advertises nothing.
+    get draftCapable() {
+      return provider.draftCapable ?? false;
+    },
     provider,
     applyVerifiedMutation,
     accountEmail: provider.accountEmail,
@@ -1519,6 +1641,7 @@ export const createMailCollection = (
     health,
     runRetention,
     send,
+    saveDraft,
     lookupSentByReconciliationId,
     async close() {
       closed = true;

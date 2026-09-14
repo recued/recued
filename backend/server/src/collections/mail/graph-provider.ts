@@ -78,6 +78,7 @@ import {
   type OutgoingMessage,
   type ProviderHealth,
   type ProviderSyncCallback,
+  type SavedDraftMeta,
   type SentMessageMeta,
 } from './provider.js';
 import {
@@ -876,15 +877,15 @@ export const createGraphProvider = (
     return res;
   };
 
-  const sendImpl = async (msg: OutgoingMessage): Promise<SentMessageMeta> => {
-    const sentAt = nowOf();
-    const messageJson = buildGraphMessage(msg);
-
-    // Step 1 — create draft. Graph echoes back the resource with
-    // server-assigned `id` + `internetMessageId` + `conversationId`.
+  /** `POST /me/messages` — the create-draft step, shared by `send` (which then
+   *  posts `/send`) and by D-264's `saveDraft` (which stops here). One body, so
+   *  the two paths cannot drift in how a message becomes a Graph resource. */
+  const createGraphDraft = async (
+    msg: OutgoingMessage,
+  ): Promise<GraphCreatedDraft & { id: string }> => {
     const createRes = await postWithRetry(
       `${GRAPH_API_BASE}/me/messages`,
-      JSON.stringify(messageJson),
+      JSON.stringify(buildGraphMessage(msg)),
     );
     if (!createRes.ok) {
       const text = await createRes.text().catch(() => '');
@@ -898,6 +899,100 @@ export const createGraphProvider = (
         { kind: 'graph', slug: opts.slug, status: createRes.status },
       );
     }
+    return draft as GraphCreatedDraft & { id: string };
+  };
+
+  /** D-264 — park the message as a Graph draft and stop.
+   *
+   *  A `prior` is superseded with `PATCH /me/messages/{id}`, which keeps the
+   *  SAME resource id. That matters beyond tidiness: the id the caller stored
+   *  stays valid, so a third export supersedes the second rather than
+   *  accumulating. A PATCH that fails falls back to creating a new draft and
+   *  says so in `warnings` + `replaced: false` — the owner has two copies and
+   *  is told, rather than losing the edit. */
+  /** D-264 — the DRAFT taxonomy. Reusing `throwSendError` classified a 429 on a
+   *  draft save as `MAIL_SEND_RECIPIENT_INVALID`, so a throttled save reached the
+   *  owner as "check the addresses for typos" — about a message that was never
+   *  sent and whose recipients were fine. */
+  const throwDraftError = (status: number, text: string): never => {
+    const detail = { kind: 'graph' as const, slug: opts.slug, status };
+    if (status === 401 || status === 403) {
+      markError(`graph draft auth ${status}`, text);
+      throw new IngredientError('MAIL_DRAFT_AUTH_FAILED',
+        `Graph rejected the draft save (${status}): ${text.slice(0, 200)}`, detail);
+    }
+    if (status >= 400 && status < 500 && status !== 429) {
+      throw new IngredientError('MAIL_DRAFT_WRITE_FAILED',
+        `Graph rejected the draft (${status}): ${text.slice(0, 200)}`, detail);
+    }
+    markError(`graph draft transient ${status}`, text);
+    throw new IngredientError('MAIL_DRAFT_NETWORK_FAILED',
+      `Graph draft save failed transiently (${status}): ${text.slice(0, 200)}`, detail);
+  };
+
+  const saveDraftImpl = async (
+    msg: OutgoingMessage,
+    prior?: { source_id: string },
+  ): Promise<SavedDraftMeta> => {
+    const savedAt = nowOf();
+    /** The create step, with the DRAFT taxonomy rather than the send one. */
+    const createDraftOnly = async (): Promise<GraphCreatedDraft & { id: string }> => {
+      const res = await postWithRetry(`${GRAPH_API_BASE}/me/messages`, JSON.stringify(buildGraphMessage(msg)));
+      if (!res.ok) throwDraftError(res.status, await res.text().catch(() => ''));
+      const draft = (await res.json()) as GraphCreatedDraft;
+      if (!draft || typeof draft.id !== 'string' || draft.id.length === 0) {
+        throw new IngredientError('MAIL_DRAFT_NETWORK_FAILED',
+          'Graph create-draft returned a malformed response (missing id)',
+          { kind: 'graph', slug: opts.slug, status: res.status });
+      }
+      return draft as GraphCreatedDraft & { id: string };
+    };
+    if (prior) {
+      // ⛔ PATCH IS A MERGE, SO ABSENT MEANS UNCHANGED, NOT CLEARED.
+      // `buildGraphMessage` omits empty `cc` / `bcc` / `replyTo` — correct for a
+      // CREATE, and a disclosure bug on an UPDATE: remove a Bcc recipient in
+      // Recued, re-export, and Graph keeps the OLD Bcc while taking the new
+      // body. Sending that mailbox copy would deliver edited content to someone
+      // the owner had removed, with `replaced: true` reported. So the update
+      // sends the empty arrays explicitly.
+      const built = buildGraphMessage(msg);
+      const patchBody = {
+        ...built,
+        ccRecipients: built.ccRecipients ?? [],
+        bccRecipients: built.bccRecipients ?? [],
+        replyTo: built.replyTo ?? [],
+      };
+      const patchRes = await patchWithRetry(
+        `${GRAPH_API_BASE}/me/messages/${encodeURIComponent(prior.source_id)}`,
+        JSON.stringify(patchBody),
+      );
+      if (patchRes.ok) {
+        lastSuccessfulSyncAt = nowOf();
+        return { source_id: prior.source_id, saved_at: savedAt, replaced: true };
+      }
+      const text = await patchRes.text().catch(() => '');
+      // 401/403 is a grant problem and will fail the create too — surface it
+      // rather than burning a second call to produce the same error.
+      if (patchRes.status === 401 || patchRes.status === 403) {
+        throwDraftError(patchRes.status, text);
+      }
+      const draft = await createDraftOnly();
+      lastSuccessfulSyncAt = nowOf();
+      return {
+        source_id: draft.id, saved_at: savedAt, replaced: false,
+        warnings: [{ code: 'MAIL_DRAFT_PRIOR_NOT_REMOVED',
+          message: `the earlier draft ${prior.source_id} could not be updated `
+            + `(${patchRes.status}); a new draft was saved instead` }],
+      };
+    }
+    const draft = await createDraftOnly();
+    lastSuccessfulSyncAt = nowOf();
+    return { source_id: draft.id, saved_at: savedAt, replaced: false };
+  };
+
+  const sendImpl = async (msg: OutgoingMessage): Promise<SentMessageMeta> => {
+    const sentAt = nowOf();
+    const draft = await createGraphDraft(msg);
 
     // Step 2 — send the draft. 202 Accepted with empty body on success.
     const sendRes = await postWithRetry(
@@ -1359,6 +1454,12 @@ export const createGraphProvider = (
     slug: opts.slug,
     sendCapable,
     mutationCapable,
+    // D-264 — creating a draft needs the same grant mutation does
+    // (`GRAPH_MODIFY_SCOPE`), so the VALUE coincides here. Kept as its own field
+    // because the QUESTIONS differ: a later change to what counts as
+    // mutation must not silently redefine what counts as draftable.
+    draftCapable: mutationCapable,
+    ...(mutationCapable ? { saveDraft: saveDraftImpl } : {}),
     accountEmail,
 
     async connect() {

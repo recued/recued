@@ -271,7 +271,7 @@ describe('mountReceptionRecordsPanel — what reaches the DOM', () => {
     await panel.setOutcome('waiting');
     const html = rootOf(host).innerHTML;
     expect(html).toContain(RECEPTION_RECORDS_EMPTY_ATTR);
-    expect(html).toContain('No records match these filters');
+    expect(html).toContain('No records match what you picked');
   });
 
   it('renders an error with a retry instead of an empty list', async () => {

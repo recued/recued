@@ -974,7 +974,7 @@ describe('ref-picker — a truncated read admits it', () => {
     const rows = renderRefPickerResultRows(empty, CONFIG);
     // The bare "no matches" line must not stand alone over a capped read.
     expect(rows).toContain('ref-picker-status--truncated');
-    expect(rows).toContain('Only the first page was searched');
+    expect(rows).toContain('Recued only searched the first page');
   });
 
   it('⛔ says so alongside results too — a partial list is still partial', () => {

@@ -28,7 +28,7 @@ describe('connected-source first answer projection', () => {
       failed: false,
     })).toMatchObject({
       state: 'preparing',
-      badge: 'Checking activity',
+      badge: 'Checking what it did',
       tone: 'neutral',
     });
     expect(projectConnectedSourceAnswer(mail, [], {
@@ -36,7 +36,7 @@ describe('connected-source first answer projection', () => {
       failed: false,
     })).toMatchObject({
       state: 'unverified',
-      badge: 'Search not verified',
+      badge: 'Recued could not check the search',
       tone: 'warning',
     });
   });
@@ -60,7 +60,7 @@ describe('connected-source first answer projection', () => {
       failed: false,
     })).toMatchObject({
       state: 'reviewing',
-      badge: 'Search complete',
+      badge: 'Search finished',
     });
     expect(projectConnectedSourceAnswer(mail, [{
       tool_name: 'mail.search',
@@ -70,7 +70,7 @@ describe('connected-source first answer projection', () => {
       failed: false,
     })).toMatchObject({
       state: 'search_complete',
-      badge: 'Mail search completed',
+      badge: 'Mail search finished',
       tone: 'positive',
     });
     expect(projectConnectedSourceAnswer(mail, [{
@@ -80,7 +80,7 @@ describe('connected-source first answer projection', () => {
       complete: true,
       failed: false,
     }).detail).toContain(
-      'does not show which records, if any, informed the answer',
+      'does not say which records, if any, went into the answer',
     );
   });
 
@@ -93,7 +93,7 @@ describe('connected-source first answer projection', () => {
       failed: false,
     })).toMatchObject({
       state: 'search_failed',
-      badge: 'Search incomplete',
+      badge: 'The search did not finish',
       tone: 'warning',
     });
     expect(projectConnectedSourceAnswer(mail, [
@@ -124,8 +124,8 @@ describe('connected-source first answer projection', () => {
       context: 'context',
     })).toMatchObject({
       state: 'continuing',
-      badge: 'Conversation context',
-      pendingText: 'Continuing from the previous answer…',
+      badge: 'Carrying on from before',
+      pendingText: 'Carrying on from the last answer…',
       tone: 'neutral',
     });
     expect(projectConnectedSourceAnswer(mail, [], {
@@ -134,8 +134,8 @@ describe('connected-source first answer projection', () => {
       context: 'context',
     })).toMatchObject({
       state: 'context_only',
-      badge: 'No new search',
-      detail: expect.stringContaining('No new mail search was recorded'),
+      badge: 'Nothing new was searched',
+      detail: expect.stringContaining('No new mail search was noted'),
       tone: 'neutral',
     });
     expect(projectConnectedSourceAnswer(mail, [], {
@@ -144,8 +144,8 @@ describe('connected-source first answer projection', () => {
       context: 'refresh',
     })).toMatchObject({
       state: 'preparing',
-      badge: 'Search requested',
-      pendingText: 'Preparing to search connected mail…',
+      badge: 'A search was asked for',
+      pendingText: 'Getting ready to search your connected mail…',
     });
     expect(projectConnectedSourceAnswer(mail, [], {
       complete: true,
@@ -154,7 +154,7 @@ describe('connected-source first answer projection', () => {
     })).toMatchObject({
       state: 'unverified',
       detail: expect.stringContaining(
-        'requested a new mail search, but none was recorded',
+        'asked for a new mail search, but none was noted',
       ),
       tone: 'warning',
     });
@@ -168,11 +168,11 @@ describe('connected-source first answer projection', () => {
       edited: true,
     })).toMatchObject({
       state: 'continuing',
-      badge: 'Edited request',
+      badge: 'You changed this',
       detail: expect.stringContaining(
-        'Any new mail search will appear here',
+        'Any new mail search shows up here',
       ),
-      pendingText: 'Following your edited request…',
+      pendingText: 'Doing what you changed it to…',
       tone: 'neutral',
     });
     expect(projectConnectedSourceAnswer(mail, [], {
@@ -182,9 +182,9 @@ describe('connected-source first answer projection', () => {
       edited: true,
     })).toMatchObject({
       state: 'context_only',
-      badge: 'No new search',
+      badge: 'Nothing new was searched',
       detail: expect.stringContaining(
-        'Source use followed your edited request',
+        'What Chat read followed your change',
       ),
       tone: 'neutral',
     });
@@ -195,9 +195,9 @@ describe('connected-source first answer projection', () => {
       edited: true,
     })).toMatchObject({
       state: 'unverified',
-      badge: 'Search not verified',
+      badge: 'Recued could not check the search',
       detail: expect.stringContaining(
-        'started from a suggestion that requested a new mail search',
+        'came from a suggestion that asked for a new mail search',
       ),
       tone: 'warning',
     });
@@ -211,7 +211,7 @@ describe('connected-source first answer projection', () => {
       edited: true,
     })).toMatchObject({
       state: 'search_complete',
-      badge: 'Mail search completed',
+      badge: 'Mail search finished',
       tone: 'positive',
     });
   });
@@ -239,9 +239,9 @@ describe('connected-source first answer projection', () => {
       context: 'context',
     })).toMatchObject({
       state: 'context_only',
-      badge: 'No new source check',
+      badge: 'Nothing new was searched',
       detail: expect.stringContaining(
-        'does not currently record a source-specific search',
+        'keeps no note of what it searched',
       ),
     });
     expect(connectedSourceAnswerFollowups(file).every(
@@ -254,8 +254,8 @@ describe('connected-source first answer projection', () => {
       edited: true,
     })).toMatchObject({
       state: 'continuing',
-      badge: 'Edited request',
-      pendingText: 'Following your edited request…',
+      badge: 'You changed this',
+      pendingText: 'Doing what you changed it to…',
     });
   });
 
@@ -264,27 +264,27 @@ describe('connected-source first answer projection', () => {
       ({ label, mode, outcome }) => ({ label, mode, outcome }),
     )).toEqual([
       {
-        label: 'Draft the replies',
+        label: 'Write the replies',
         mode: 'refresh',
         outcome: 'Reply drafts',
       },
       {
-        label: 'Make an action list',
+        label: 'Make a to-do list',
         mode: 'context',
-        outcome: 'Prioritized action list',
+        outcome: 'To-do list, most important first',
       },
     ]);
     expect(connectedSourceAnswerFollowups(mail)[0]!.prompt).toContain(
       'Search my connected mail again',
     );
     expect(connectedSourceAnswerFollowups(mail)[0]!.boundary).toBe(
-      'Chat will show drafts here first. '
-      + 'If you ask it to send email, you’ll review and approve '
-      + 'that separately.',
+      'Chat shows the drafts here first. '
+      + 'If you ask it to send email, you will say yes '
+      + 'separately.',
     );
     expect(connectedSourceAnswerFollowups(mail)[1]!.boundary).toContain(
-      'If you ask it to create tasks, you’ll review and approve '
-      + 'that separately.',
+      'If you ask it to make tasks, you will say yes '
+      + 'separately.',
     );
     const calendar: ChatConnectedSource = {
       lane: 'calendar',
@@ -293,7 +293,7 @@ describe('connected-source first answer projection', () => {
     };
     expect(connectedSourceAnswerFollowups(calendar).map(
       ({ outcome }) => outcome,
-    )).toEqual(['Meeting prep', 'Conflict review']);
+    )).toEqual(['Meeting prep', 'Clashes']);
     expect(connectedSourceAnswerFollowups(calendar).every(
       ({ boundary }) => boundary.includes('change your calendar'),
     )).toBe(true);
@@ -304,15 +304,15 @@ describe('connected-source first answer projection', () => {
     };
     expect(connectedSourceAnswerFollowups(file).map(
       ({ outcome }) => outcome,
-    )).toEqual(['Action plan', 'Supporting details']);
+    )).toEqual(['The plan', 'Why']);
     expect(connectedSourceAnswerFollowups(file).every(
-      ({ boundary }) => boundary.includes('review and approve'),
+      ({ boundary }) => boundary.includes('you will say yes'),
     )).toBe(true);
     expect(connectedSourceFollowupContextDetail(mail, 'refresh')).toBe(
-      'Requests a new mail search',
+      'Asks for a new mail search',
     );
     expect(connectedSourceFollowupContextDetail(mail, 'context')).toBe(
-      'Continues from the previous answer · no new search requested',
+      'Carries on from the last answer · nothing new searched',
     );
     expect(connectedSourceSearchRetryPrompt(mail, 'What needs me?')).toBe(
       'Search my connected mail before answering this question: What needs me?',
@@ -396,7 +396,7 @@ describe('connected-source first answer projection', () => {
       {
         label: 'orphan-1',
         sourceId: '',
-        sourceLabel: 'Source not recorded',
+        sourceLabel: 'Recued did not note where this came from',
         collectionSlug: null,
         dataTab: null,
         recordId: 'orphan-1',

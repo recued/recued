@@ -45,6 +45,17 @@ export interface ScheduleStore {
    *  cadence from those two timestamps. */
   updateRun(schedule_id: string, patch: Partial<Pick<Schedule,
     'last_run_at' | 'next_run_at' | 'last_status' | 'last_error' | 'enabled'
+    // D-268 — failures since the last success; the breaker's counter for the
+    // cron path. Runtime state like `missed_answer` below, never reviewed
+    // material, so it rides `updateRun` and not `set`.
+    | 'consecutive_failures'
+    // D-266 — the owner's one-shot answer about a missed run. Runtime
+    // parking, not reviewed material (`schedulePreapprovalMaterial`
+    // excludes it), so it rides `updateRun` rather than `set`: `set`
+    // notes an owner mutation unconditionally and would bump a
+    // pre-approval's lifecycle revision for what is not a change to
+    // what was reviewed.
+    | 'missed_answer'
   >>): void;
 }
 
@@ -168,11 +179,18 @@ export const createScheduleStore = (
         if (!existing) return;
         const schedule = JSON.parse(existing.data) as Schedule;
         // Roll prev_run_at = old last_run_at whenever the patch advances
-        // last_run_at — Smart Backfill (Phase 5) reconstructs the
-        // observed cadence from these two timestamps without parsing
-        // the cron expression. Skip the roll when the new last_run_at
-        // is identical to the old (idempotent re-write) so prev doesn't
+        // last_run_at. Skip the roll when the new last_run_at is
+        // identical to the old (idempotent re-write) so prev doesn't
         // collapse to last on a no-op patch.
+        //
+        // ⚠ THIS NO LONGER FEEDS ANY MEASURE, AND IS STILL WORTH DOING.
+        // It existed so Smart Backfill could reconstruct an observed
+        // cadence; that measure was replaced because the pair spans an
+        // outage. What the roll leaves behind is a one-deep UNDO LOG of
+        // `last_run_at` — the one field every scheduling decision
+        // measures forward from, and whose silent corruption far into
+        // the future stops a schedule with nothing else on the row to
+        // restore from. See its declaration in `@recued/scheduler`.
         const rollPrev =
           patch.last_run_at !== undefined &&
           patch.last_run_at !== null &&

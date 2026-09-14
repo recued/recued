@@ -94,16 +94,16 @@ export interface ActionReceiptFollow {
 const titleFor = (group: GatedActionApprovalGroup): string => {
   const plural = group.action_refs.length > 1 || group.items > 1;
   switch (group.status) {
-    case 'succeeded': return plural ? 'Approved actions completed' : 'Approved action completed';
-    case 'partial': return 'Approved actions partially completed';
-    case 'failed': return plural ? 'Approved actions failed' : 'Approved action failed';
-    case 'dispatched': return plural ? 'Approved actions dispatched' : 'Approved action dispatched';
+    case 'succeeded': return plural ? 'Everything you allowed is done' : 'What you allowed is done';
+    case 'partial': return 'Some of what you allowed is done';
+    case 'failed': return plural ? 'The actions you allowed failed' : 'What you allowed failed';
+    case 'dispatched': return plural ? 'The actions you allowed were sent' : 'What you allowed was sent';
     case 'denied': return plural ? 'Actions denied' : 'Action denied';
     case 'cancelled': return plural ? 'Actions cancelled' : 'Action cancelled';
     case 'in_doubt': return plural ? 'Action outcomes need review' : 'Action outcome needs review';
     // A non-terminal group is never presented.
     case 'awaiting_approval': return 'Waiting for approval';
-    case 'dispatching': return 'Approved action dispatching';
+    case 'dispatching': return 'Sending what you allowed';
   }
 };
 

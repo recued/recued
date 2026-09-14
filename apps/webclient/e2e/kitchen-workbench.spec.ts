@@ -51,7 +51,7 @@ test('outline search opens a collapsed match and focuses its step', async ({ pag
   await page.waitForFunction(() => window.__harness?.mounted === true);
   const last = await page.locator('[data-recued-recipe-editor-step]').last().getAttribute('data-recued-recipe-editor-step');
   await expect(page.locator('[data-recued-recipe-editor-step][open]')).toHaveCount(1);
-  await page.getByRole('searchbox', { name: 'Search recipe steps' }).fill(last!);
+  await page.getByRole('searchbox', { name: 'Search the steps' }).fill(last!);
   await page.locator(`[data-recued-recipe-outline-step="${last}"]`).click();
   await expect(step(page, last!)).toHaveAttribute('open', '');
   await expect(field(page, last!, 'step_id')).toBeFocused();
@@ -59,10 +59,10 @@ test('outline search opens a collapsed match and focuses its step', async ({ pag
 
 test('outline supports search clearing, Enter navigation, and section shortcuts', async ({ page }) => {
   await open(page);
-  const outline = page.getByRole('navigation', { name: 'Recipe step outline' });
-  const search = outline.getByRole('searchbox', { name: 'Search recipe steps' });
+  const outline = page.getByRole('navigation', { name: 'The steps in this Recipe' });
+  const search = outline.getByRole('searchbox', { name: 'Search the steps' });
   await search.fill('no-match-xyz');
-  await expect(outline).toContainText('No matching steps');
+  await expect(outline).toContainText('No steps match');
   await search.press('Escape');
   await expect(search).toBeFocused();
   await expect(search).toHaveValue('');
@@ -73,7 +73,7 @@ test('outline supports search clearing, Enter navigation, and section shortcuts'
   await search.press('Enter');
   await expect(field(page, 'count', 'step_id')).toBeFocused();
   await expect(outline.locator('[data-recued-recipe-outline-step="count"]')).toHaveAttribute('aria-current', 'step');
-  await outline.getByRole('button', { name: 'Clear step search' }).click();
+  await outline.getByRole('button', { name: 'Clear the step search' }).click();
   await expect(search).toBeFocused();
   await outline.getByRole('button', { name: 'Settings', exact: true }).click();
   await expect(page.locator('[data-recued-recipe-settings] > summary')).toBeFocused();
@@ -119,8 +119,8 @@ test('settings author variables, complete output definitions, and automatic runs
   await open(page);
   await page.locator('[data-recued-recipe-settings] > summary').click();
   await page.locator('[data-recued-recipe-editor-field="variables.threshold"]').fill('20');
-  await page.getByRole('textbox', { name: 'New variable name' }).fill('label');
-  await page.getByRole('button', { name: 'Add input variable', exact: true }).click();
+  await page.getByRole('textbox', { name: 'New input name' }).fill('label');
+  await page.getByRole('button', { name: 'Add input', exact: true }).click();
   await page.locator('[data-recued-recipe-editor-field="variables.label"]').fill('"Total"');
   await page.locator('[data-recued-recipe-auto-run]').check();
   await page.locator('[data-recued-recipe-editor-field="auto_run.interval_ms"]').fill('120000');
@@ -176,16 +176,16 @@ test('pack searches filter operations and data rows without changing the draft',
   await page.goto('http://127.0.0.1:4319/kitchen-harness.html?surface=pack&fixture=largest');
   await page.waitForFunction(() => window.__harness?.mounted === true);
   await page.locator('[data-recued-ingredient-builder-section-nav="operations"]').click();
-  await page.getByRole('searchbox', { name: 'Search pack operations' }).fill('no-such-operation-xyz');
+  await page.getByRole('searchbox', { name: 'Search the operations' }).fill('no-such-operation-xyz');
   await expect(page.locator('[data-recued-ingredient-operation-row]:visible')).toHaveCount(0);
-  await page.getByRole('button', { name: 'Clear operation search' }).click();
-  await expect(page.getByRole('searchbox', { name: 'Search pack operations' })).toBeFocused();
+  await page.getByRole('button', { name: 'Clear the operation search' }).click();
+  await expect(page.getByRole('searchbox', { name: 'Search the operations' })).toBeFocused();
   expect(await page.locator('[data-recued-ingredient-operation-row]:visible').count()).toBeGreaterThan(0);
   await page.locator('[data-recued-ingredient-builder-section-nav="data"]').click();
-  await page.getByRole('searchbox', { name: 'Search pack data fields' }).fill('no-such-field-xyz');
+  await page.getByRole('searchbox', { name: 'Search the data fields' }).fill('no-such-field-xyz');
   await expect(page.locator('[data-recued-ingredient-entity-field-row]:visible')).toHaveCount(0);
-  await page.getByRole('searchbox', { name: 'Search pack data fields' }).press('Escape');
-  await expect(page.getByRole('searchbox', { name: 'Search pack data fields' })).toHaveValue('');
+  await page.getByRole('searchbox', { name: 'Search the data fields' }).press('Escape');
+  await expect(page.getByRole('searchbox', { name: 'Search the data fields' })).toHaveValue('');
   expect(await page.locator('[data-recued-ingredient-entity-field-row]:visible').count()).toBeGreaterThan(0);
 });
 

@@ -416,37 +416,37 @@ export interface UpdatesPageMount {
 const CHECK_STATUS_COPY: Readonly<Record<ReleaseCheckStatus, string>> = {
   'update-available': '',
   'up-to-date': "You're on the latest version.",
-  'not-configured': "Automatic updates aren't configured on this server yet.",
+  'not-configured': 'This server is not set up to update itself yet.',
   // ⛔ LEGACY — only a server old enough to still gate on `expires_at` can
   // produce this; the freshness gate was removed 2026-09-01. Say what is
   // actionable (update that server) rather than teaching a retired concept.
-  'stale-feed': 'This server is on an older release check that ignores the current feed. Re-run the installer on it to update.',
-  'launcher-outdated': 'The launcher is too old to apply updates; update the launcher first.',
-  replay: 'The release feed served an older manifest than this server has already seen (ignored).',
+  'stale-feed': 'This server checks for updates in an old way that ignores the current list. Run the installer on it again.',
+  'launcher-outdated': 'The launcher is too old to install updates. Update the launcher first.',
+  replay: 'The update list was older than one this server has already seen, so Recued ignored it.',
   'fetch-failed': "Couldn't reach the release feed.",
-  'bad-signature': 'The release manifest failed signature verification.',
+  'bad-signature': 'Recued could not check who signed the update.',
 };
 
 const BASELINE_POSTURE_COPY: Readonly<Record<ReleaseCheckStatus, string>> = {
-  'update-available': 'A newer release is available now.',
-  'up-to-date': 'The release feed reports this version is current.',
-  'not-configured': 'In-place release checks are not configured on this server.',
-  'stale-feed': 'This server is on an older release check that ignores the current feed.',
-  'launcher-outdated': 'The launcher must be updated before an in-place update.',
-  replay: 'The server ignored an older release manifest.',
-  'fetch-failed': 'The running version is confirmed, but the release feed is unreachable.',
-  'bad-signature': 'The running version is confirmed, but the release manifest was rejected.',
+  'update-available': 'A newer version is ready now.',
+  'up-to-date': 'The update list says this version is the newest.',
+  'not-configured': 'This server is not set up to check for updates by itself.',
+  'stale-feed': 'This server checks for updates in an old way that ignores the current list.',
+  'launcher-outdated': 'The launcher has to be updated first.',
+  replay: 'The server ignored an older update list.',
+  'fetch-failed': 'The running version is confirmed, but Recued cannot reach the update service.',
+  'bad-signature': 'Recued is sure which version is running, but it would not take the update list.',
 };
 
 const APPLY_STATUS_COPY: Readonly<Record<UpdateApplyResponse['status'], string>> = {
   applying: 'Downloading and verifying the update — this takes a few minutes. You can leave this page.',
-  restarting: 'Updating now — the server will restart and be briefly unavailable.',
+  restarting: 'Updating now. The server will restart and be away for a moment.',
   deferred: "The server is busy, so the update did not start. Try again once it's idle.",
   busy: 'Another update is already in progress.',
   'major-blocked': 'This is a major update — review the notes, then confirm below to proceed.',
   'insufficient-storage': 'Not enough free disk space on the server to apply this update.',
   'download-failed': 'Downloading the update failed.',
-  'verify-failed': 'The downloaded update failed signature verification.',
+  'verify-failed': 'Recued could not check who signed the update it downloaded.',
   'stage-failed': 'Staging the update failed.',
   'not-applicable': 'This install updates via its image or package, not in place.',
   // ⛔ NOT AN ERROR — the offer changed under the card. The server refused rather
@@ -454,13 +454,13 @@ const APPLY_STATUS_COPY: Readonly<Record<UpdateApplyResponse['status'], string>>
   'review-stale': 'A newer release was published while you were reading. Reviewing it now — '
     + 'confirm again to install it.',
   'not-available': 'No installable update is available right now.',
-  'not-configured': "Automatic updates aren't configured on this server yet.",
+  'not-configured': 'This server is not set up to update itself yet.',
 };
 
 const ROLLBACK_STATUS_COPY: Readonly<Record<UpdateRollbackResponse['status'], string>> = {
   'rolled-back': 'Rolled back to the previous version — the server is restarting.',
   refused: 'Rollback refused.',
-  busy: 'An update is in progress; rollback is unavailable right now.',
+  busy: 'An update is happening, so you cannot go back right now.',
   'not-configured': "This install can't roll back in place.",
   'not-applicable': 'This install updates via its image or package, not in place.',
 };
@@ -549,7 +549,7 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
     attrs: { [UPDATES_CREDENTIAL_RETRY_ATTR]: '' },
   });
   const credentialRetryTitleEl = make('h3', {
-    text: 'Finish credential replacement',
+    text: 'Finish swapping the key',
   });
   credentialRetryEl.appendChild(credentialRetryTitleEl);
   const credentialRetryIdentityEl = make('p', {
@@ -573,7 +573,7 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
     className: 'updates-credential-retry-actions',
   });
   const credentialRetryReturn = make('button', {
-    text: 'Return and check now',
+    text: 'Go back and check now',
     className: 'rx-btn rx-btn-primary',
     attrs: { type: 'button', [UPDATES_CREDENTIAL_RETRY_RETURN_ATTR]: '' },
   });
@@ -670,7 +670,7 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
   const receiptBaselineEl = make('section', {
     attrs: {
       [UPDATES_RECEIPT_BASELINE_ATTR]: '',
-      'aria-label': 'Authoritative current server state',
+      'aria-label': 'What your server says is true now',
     },
   });
   receiptBaselineEl.appendChild(make('strong', {
@@ -689,7 +689,7 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
   receiptRecoveryEl.appendChild(receiptBaselineEl);
   setHidden(receiptBaselineEl, true);
   const receiptRecoveryRetry = make('button', {
-    text: 'Retry receipt check',
+    text: 'Check the result again',
     className: 'rx-btn rx-btn-secondary',
     attrs: { type: 'button', [UPDATES_RECEIPT_RETRY_ATTR]: '' },
   });
@@ -698,7 +698,7 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
   });
   receiptRecoveryEl.appendChild(receiptRecoveryRetry);
   const receiptClosureReviewButton = make('button', {
-    text: 'Review server closure',
+    text: 'See how the server finished',
     className: 'rx-btn rx-btn-secondary',
     attrs: {
       type: 'button',
@@ -968,7 +968,7 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
       if (disposed || generation !== receiptDiagnosticGeneration) return;
       receiptDiagnosticCopyInFlight = false;
       receiptDiagnosticStatusEl.textContent =
-        'Copy was unavailable. The summary is focused so you can select and copy it manually.';
+        'Recued could not copy it. The summary is selected, so you can copy it yourself.';
       render();
       focusElement(receiptDiagnosticSummaryEl);
     };
@@ -1132,10 +1132,11 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
             + 'open — it reconnects on its own, and this can take a few minutes.';
     }
     tabProgressPrivacyEl.textContent =
-      'Tabs share only an opaque ID for the selected server profile, the '
-      + 'operation, phase, and start time. Credentials, connection details, '
-      + 'endpoints, form values, versions, and raw errors stay out of the '
-      + 'handoff; an accepted action adds only an opaque server receipt.';
+      'Tabs pass each other only a meaningless id for the server you picked, '
+      + 'what is happening, how far it has got, and when it started. Keys, '
+      + 'connection details, addresses, what you typed, version numbers and '
+      + 'raw errors are never passed on. If you say yes to something, only a '
+      + 'meaningless receipt from your server is added.';
     return progress;
   };
 
@@ -1361,77 +1362,76 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
       ? progress.phase === 'applying'
         ? 'Server change is in progress'
         : exactVerification?.phase === 'checking_baseline'
-          ? 'Confirming current server state'
+          ? 'Checking how the server is'
           : exactVerification?.phase === 'baseline_retryable'
-            ? 'Current server state not confirmed'
+            ? 'Recued could not check how the server is'
             : exactVerification?.phase === 'baseline_confirmed'
               ? exactVerification.reason === 'finish_unavailable'
-                ? 'Current state confirmed — finish needs retry'
-                : 'Current server state confirmed'
+                ? 'Checked. Finishing needs another go'
+                : 'Checked how the server is'
               : exactVerification?.phase === 'closed'
-                ? 'Closure recorded — confirm current state'
+                ? 'Closed. Now check how things are'
         : exactVerification?.phase === 'retryable'
-          ? 'Server result is not confirmed'
+          ? 'Server did not give a clear answer'
           : exactVerification?.phase === 'unknown'
-            ? 'Server receipt needs attention'
+            ? 'Server result needs a look'
             : exactVerification?.phase === 'waiting'
               ? 'Confirming the server result'
               : checkingReceipt
                 ? 'Checking the server restart'
                 : 'Waiting for the server to restart'
       : resolvedElsewhere
-      ? 'Credential check is ready'
+      ? 'The key check is ready'
       : checkingReturn
       ? exactReturnActive
-        ? 'Credential check underway'
-        : 'Resume credential check'
+        ? 'Checking the key'
+        : 'Carry on checking the key'
       : cleanEditorReady
-      ? 'Resume credential replacement'
-      : 'Finish credential replacement';
+      ? 'Carry on replacing the key'
+      : 'Finish swapping the key';
     credentialRetryIdentityEl.textContent = `${marker.kind}/${marker.name}`;
     const durable =
       opts.credentialRotationServerUpdateContinuity?.isDurable() === true;
     credentialRetryPrivacyEl.textContent = progress !== null
-      ? 'Tabs share only an opaque ID for the selected server profile, the '
-        + 'operation, phase, and start time. This exact retry remains in this '
-        + 'tab; credentials, connection details, endpoints, form values, '
-        + 'versions, and raw errors stay out of the handoff. After acceptance, '
-        + 'only an opaque server receipt is added so a reload can verify the '
-        + 'exact outcome.'
+      ? 'Tabs pass each other only a meaningless id for the server you picked, '
+        + 'what is happening, how far it has got, and when it started. This '
+        + 'try stays in this tab. Keys, connection details, addresses, what '
+        + 'you typed, version numbers and raw errors are never passed on. '
+        + 'Once you say yes, only a meaningless receipt from your server is '
+        + 'added, so a reload can check what really happened.'
       : resolvedElsewhere
-      ? 'This one-time confirmation is kept only in this tab and will not '
-        + 'replay after reload. No replacement credential, form value, or '
-        + 'server configuration was stored or sent.'
+      ? 'This is kept only in this tab and is gone after a '
+        + 'reload. No new key, typed value, or server setting was saved or sent.'
       : checkingReturn
       ? durable
-        ? 'The interrupted return stores only the selected-profile ID, exact '
-          + 'connection identity, recovery timestamp, safe preflight phase, '
-          + 'and any privacy-safe pre-update version evidence. Credentials, '
-          + 'form values, current-state baselines, and the one-shot completion '
-          + 'receipt are not stored or replayed.'
-        : 'This browser could not save the interrupted return for reload. Keep '
-          + 'this tab open; credentials, form values, current-state baselines, '
-          + 'and the one-shot completion receipt are still not stored or replayed.'
+        ? 'Coming back here keeps only the id of the server you picked, which '
+          + 'connection it was, the time, how far the safety check got, and '
+          + 'which version was running before. Keys, what you typed, what was '
+          + 'true before, and the one-time finish receipt are not kept, and '
+          + 'are never done again.'
+        : 'This browser could not save your place for a reload. Keep this tab '
+          + 'open. Keys, what you typed, what was true before, and the '
+          + 'one-time finish receipt are still not kept, and never done again.'
       : cleanEditorReady
       ? durable
-        ? 'The clean-editor handoff stores only the selected-profile ID, exact '
-          + 'connection identity, recovery timestamp, and ready-to-enter phase. '
-          + 'Credentials, field values, current-state baselines, and the '
-          + 'server-recovery receipt are not stored or replayed.'
-        : 'This browser could not save the clean-editor return for reload. No '
-          + 'credential, field value, current-state baseline, or recovery '
-          + 'receipt was stored.'
+        ? 'This keeps only the id of the server you picked, which connection '
+          + 'it was, the time, and that a blank form is ready. Keys, what you '
+          + 'typed, what was true before, and the receipt from your server '
+          + 'are not kept, and are never done again.'
+        : 'This browser could not save your place for a reload. No key, '
+          + 'nothing you typed, nothing about what was true before, and no '
+          + 'receipt was kept.'
       : durable
-      ? 'Reload recovery stores only an opaque selected-profile ID, the '
-        + 'connection identity, a recovery timestamp, and privacy-safe server '
-        + 'version/update evidence in this tab. Replacement credentials, form '
-        + 'values, raw errors, and server configuration are never stored here.'
-      : 'This browser could not save the latest reload recovery. Keep this tab '
-        + 'open; replacement credentials, form values, raw errors, and server '
-        + 'configuration are still never stored here.';
+      ? 'For a reload, this tab keeps only a meaningless id for the server you '
+        + 'picked, which connection it was, the time, and safe notes about the '
+        + 'server version and update. New keys, what you typed, raw errors and '
+        + 'server settings are never kept here.'
+      : 'This browser could not save your place for a reload. Keep this tab '
+        + 'open. New keys, what you typed, raw errors and server settings are '
+        + 'still never kept here.';
     const retainedCopy = durable
       ? 'The exact retry remains saved.'
-      : 'Keep this tab open; reload recovery is unavailable.';
+      : 'Keep this tab open. Nothing is saved for a reload.';
     const connection: WebclientConnectionStatus | null =
       opts.serverConnectionStatus?.status() ?? null;
     const connected = connection === 'connected';
@@ -1439,29 +1439,29 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
     if (progress?.phase === 'applying') {
       credentialRetryStatusEl.textContent =
         `An open Recued tab is applying the server ${progressOperationCopy(progress.operation)}. `
-        + 'This exact credential retry stays saved; no duplicate server action '
+        + 'Your try stays saved, and Recued will not do the same thing twice '
         + 'will be sent from this tab.';
       credentialRetryReturn.textContent = 'Update in progress…';
     } else if (progress?.phase === 'awaiting_reconnect') {
       credentialRetryStatusEl.textContent =
         exactVerification?.phase === 'checking_baseline'
-          ? `Recued is reading this server’s current version and release posture before returning to ${marker.kind}/${marker.name}. The original ${progressOperationCopy(progress.operation)} outcome remains unknown.`
+          ? `Recued is reading this server’s current version and release posture before returning to ${marker.kind}/${marker.name}. The original ${progressOperationCopy(progress.operation)} result is still unknown.`
           : exactVerification?.phase === 'baseline_retryable'
-            ? 'The current-state read failed safely. Retry it in the receipt recovery below; this credential handoff and every server-change control remain paused.'
+            ? 'Recued could not read what is true now, and nothing was changed. Try again below. Swapping the key, and everything that changes the server, stays paused.'
             : exactVerification?.phase === 'baseline_confirmed'
               ? exactVerification.reason === 'finish_unavailable'
-                ? `The server baseline remains confirmed, but this browser could not retire the exact recovery latch. Retry Finish recovery below before returning to ${marker.kind}/${marker.name}; no server action will repeat.`
-                : `A fresh server baseline is ready to review below, including the current activity state for ${marker.kind}/${marker.name}. The original ${progressOperationCopy(progress.operation)} outcome remains unknown.`
+                ? `Recued still knows how the server is, but this browser could not finish tidying up. Choose Finish below before you go back to ${marker.kind}/${marker.name}; no server action will repeat.`
+                : `A fresh server baseline is ready to review below, including the current activity state for ${marker.kind}/${marker.name}. The original ${progressOperationCopy(progress.operation)} result is still unknown.`
               : exactVerification?.phase === 'closed'
-                ? 'The server closed the unresolved receipt. Confirm its current version, release posture, and this connection’s activity before returning to credential replacement.'
+                ? 'The server finished the receipt that was left open. Check its version, whether it wants updating, and what this connection has been doing, before you go back to swapping the key.'
         : exactVerification?.phase === 'waiting'
           ? exactVerification.reason === 'restart_pending'
-            ? `The server is still finishing the ${progressOperationCopy(progress.operation)} restart. Recued will check the exact receipt again automatically; this credential retry stays saved.`
-            : `The receipt check was temporarily unavailable. Recued will retry automatically; this credential retry stays saved.`
+            ? `The server is still finishing the ${progressOperationCopy(progress.operation)} restart. Recued will check that exact receipt again by itself, and your try stays saved.`
+            : `Recued could not get the answer just now. It will try again by itself, and your try stays saved.`
           : exactVerification?.phase === 'retryable'
-            ? `Several safe checks could not confirm the server ${progressOperationCopy(progress.operation)}. Use the receipt recovery below; this credential retry and all server controls remain paused.`
+            ? `Several safe checks could not confirm the server ${progressOperationCopy(progress.operation)}. Use the result below; this credential retry and all server controls remain paused.`
             : exactVerification?.phase === 'unknown'
-              ? `The paired server could not safely resolve the ${progressOperationCopy(progress.operation)} receipt. Confirm the selected profile and use the recovery handoff below.`
+              ? `The paired server could not safely resolve the ${progressOperationCopy(progress.operation)} receipt. Check you picked the right server, then use the hand-over below.`
               : connected
                 ? progress.operationId === undefined
                   ? `The server ${progressOperationCopy(progress.operation)} was accepted. Waiting to observe the restart before checking this connection again.`
@@ -1474,33 +1474,33 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
         : 'Waiting for server…';
     } else if (checkingReturn) {
       credentialRetryStatusEl.textContent = exactReturnActive
-        ? `Connections is checking current credential activity for ${marker.kind}/${marker.name}, then re-reading the latest saved connection. This page will not start a duplicate check.`
-        : `The exact return for ${marker.kind}/${marker.name} was interrupted before both authoritative reads finished. Resume to rebuild the baseline and rerun the read-only preflight.`;
+        ? `Connections is checking what this key has been doing for ${marker.kind}/${marker.name}, then re-reading the latest saved connection. This page will not start a duplicate check.`
+        : `The return to ${marker.kind}/${marker.name} stopped before Recued finished its checks. Carry on to run those look-only checks again.`;
       credentialRetryReturn.textContent = exactReturnActive
-        ? 'Check underway…'
+        ? 'Checking…'
         : connected
-          ? 'Resume exact check'
+          ? 'Carry on checking'
           : 'Resume when connected';
     } else if (cleanEditorReady) {
       credentialRetryStatusEl.textContent = connected
         ? `The safe checks opened a clean editor for ${marker.kind}/${marker.name}, but it closed before any field changed. Resume to repeat the read-only safety check and reopen it.`
-        : `The untouched clean editor for ${marker.kind}/${marker.name} is saved as a target-only handoff. Reconnect to repeat the safety check; no field value will be restored.`;
+        : `The untouched clean editor for ${marker.kind}/${marker.name} is saved only as where to go back to. Reconnect to run the safety check again. Nothing you typed comes back.`;
       credentialRetryReturn.textContent = connected
-        ? 'Resume clean editor'
+        ? 'Reopen the fresh editor'
         : 'Resume when connected';
     } else if (resolvedElsewhere) {
       credentialRetryStatusEl.textContent = connected
-        ? 'A fresh, read-only check confirmed this server can safely check the credential replacement. This tab stayed on Server Updates and did not open a credential form. Continue here when ready to re-read the exact server and saved connection.'
+        ? 'A look-only check says this server can safely check your new key. This tab stayed on Server Updates and did not open a form for keys. Carry on here when you are ready to read that exact server and saved connection again.'
         : 'A fresh check confirmed support, but this tab cannot reach the selected server now. Keep this tab open to continue after reconnecting.';
       credentialRetryReturn.textContent = connected
         ? 'Continue in this tab'
         : 'Waiting for server…';
     } else if (marker.phase === 'triage') {
       credentialRetryStatusEl.textContent = connected
-        ? 'The returned server still lacks the safe preflight. After correcting this exact server, run the capability check again; the earlier diagnosis remains available in Account.'
+        ? 'The server you came back to still cannot do the safety check. Once you have sorted out that exact server, run the check again. What Recued worked out before is still in Account.'
         : `The diagnosis is saved, but this tab cannot reach the selected server now. ${retainedCopy}`;
       credentialRetryReturn.textContent = connected
-        ? 'Check server again'
+        ? 'Check the server again'
         : 'Waiting for server…';
     } else if (marker.phase === 'awaiting_reconnect') {
       credentialRetryStatusEl.textContent = connected
@@ -1511,19 +1511,19 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
         : 'Waiting for server…';
     } else if (marker.phase === 'ready') {
       credentialRetryStatusEl.textContent = connected
-        ? 'Server reconnected. Return to run a fresh, authoritative credential check.'
+        ? 'The server is back. Go back to run the key check.'
         : `The server reconnected once, but this tab cannot reach it now. ${retainedCopy}`;
       credentialRetryReturn.textContent = connected
-        ? 'Return and check'
+        ? 'Go back and check'
         : 'Waiting for server…';
     } else {
       credentialRetryStatusEl.textContent = connected
-        ? 'Update or restart this server, then return here to run the authoritative check.'
+        ? 'Update or restart this server, then come back and let it check for itself.'
         : connection === null
           ? `This tab cannot confirm the server connection yet. ${retainedCopy}`
           : `Waiting for this server to reconnect. ${retainedCopy}`;
       credentialRetryReturn.textContent = connected
-        ? 'Return and check now'
+        ? 'Go back and check now'
         : 'Waiting for server…';
     }
 
@@ -1536,23 +1536,23 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
     credentialRetryReturn.setAttribute(
       'aria-label',
       exactReturnActive
-        ? `The exact credential check for ${marker.kind}/${marker.name} is already underway in Connections`
+        ? `The key check for ${marker.kind}/${marker.name} is already running under Connections`
       : canReturn
         ? checkingReturn
-          ? `Resume the interrupted exact credential check for ${marker.kind}/${marker.name}`
+          ? `Carry on the key check for ${marker.kind}/${marker.name}`
           : cleanEditorReady
-          ? `Resume the clean credential editor for ${marker.kind}/${marker.name} after repeating its safety check`
+          ? `Reopen the fresh key editor for ${marker.kind}/${marker.name} after running its safety check again`
           : resolvedElsewhere
-          ? `Continue the credential replacement check for ${marker.kind}/${marker.name} in this tab`
+          ? `Carry on checking the new key for ${marker.kind}/${marker.name} in this tab`
           : marker.phase === 'triage'
-          ? `Check the server capability again for ${marker.kind}/${marker.name}`
+          ? `Check the server features again for ${marker.kind}/${marker.name}`
           : `Return to ${marker.kind}/${marker.name} and check the updated server`
         : `Waiting for the server used by ${marker.kind}/${marker.name} before checking again`,
     );
     credentialRetryDismiss.textContent = progress !== null
       ? 'Update in progress'
       : exactReturnActive
-        ? 'Check underway'
+        ? 'Checking'
         : resolvedElsewhere
         ? 'Dismiss'
         : 'Not now';
@@ -1642,28 +1642,28 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
       receiptRecoveryTitleEl.textContent = `Confirming ${operation} result`;
       receiptRecoveryStatusEl.textContent =
         verification.reason === 'restart_pending'
-          ? `The paired server says this ${operation} is still finishing its restart. Recued will check the exact receipt again automatically.`
-          : `The receipt check was temporarily unavailable. Recued will retry automatically; the ${operation} will not be sent again.`;
+          ? `The paired server says this ${operation} is still finishing its restart. Recued will check that exact receipt again by itself.`
+          : `Recued could not get the answer just now. It will try again by itself, and the ${operation} will not be sent twice.`;
     } else if (verification.phase === 'retryable') {
       receiptRecoveryTitleEl.textContent = `Couldn’t confirm ${operation}`;
       receiptRecoveryStatusEl.textContent =
         `Several safe checks could not confirm the exact ${operation} receipt. Automatic retries stopped; server controls remain paused until the paired server resolves it.`;
     } else if (verification.phase === 'reviewing_closure') {
-      receiptRecoveryTitleEl.textContent = 'Review unresolved receipt closure';
+      receiptRecoveryTitleEl.textContent = 'Look at closing this unanswered result';
       receiptRecoveryStatusEl.textContent =
         `Review what the selected server will prove and record before retiring this unresolved ${operation} receipt. Controls remain paused.`;
     } else if (verification.phase === 'closing') {
-      receiptRecoveryTitleEl.textContent = 'Server is checking safe closure';
+      receiptRecoveryTitleEl.textContent = 'The server is checking it is safe to close';
       receiptRecoveryStatusEl.textContent =
-        'The selected server is re-checking the exact receipt, verifying no '
-        + 'release transition is active, and preparing a durable unresolved closure.';
+        'The server you picked is checking that exact receipt again, checking '
+        + 'that no update is under way, and getting ready to remember that this was left open.';
     } else if (verification.phase === 'closed') {
       receiptRecoveryTitleEl.textContent =
-        'Closure recorded — confirm current state';
+        'Closed. Now check how things are';
       receiptRecoveryStatusEl.textContent =
         `The selected server durably closed this recovery as unresolved. It did not claim the ${operation} succeeded or failed. Confirm what the server reports now before another update or rollback can start.`;
     } else if (verification.phase === 'checking_baseline') {
-      receiptRecoveryTitleEl.textContent = 'Confirming current server state';
+      receiptRecoveryTitleEl.textContent = 'Checking how the server is';
       receiptRecoveryStatusEl.textContent =
         'Recued is freshly reading the running version, release posture, and '
         + 'affected connection activity where applicable. It is not inferring '
@@ -1672,47 +1672,47 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
       receiptRecoveryTitleEl.textContent =
         'Current server state is not confirmed';
       receiptRecoveryStatusEl.textContent =
-        'The fresh current-state read was unavailable. No update or rollback '
+        'Recued could not read what is true now. No update, and no going back, '
         + 'can start until you reconnect if needed and retry this baseline.';
     } else if (verification.phase === 'baseline_confirmed') {
       if (verification.reason === 'finish_unavailable') {
         receiptRecoveryTitleEl.textContent =
-          'Current state confirmed — finish needs retry';
+          'Checked. Finishing needs another go';
         receiptRecoveryStatusEl.textContent = reviewedTarget === null
           ? 'The baseline below remains confirmed, but this browser could not '
-            + 'retire the exact recovery latch. Retry Finish recovery; this does '
+            + 'finish tidying up. Choose Finish again; this does '
             + 'not contact the server or repeat the update or rollback.'
           : 'The baseline below remains confirmed, but this browser could not '
-            + `retire the exact recovery latch. Retry finish and return to ${reviewedTarget.kind}/${reviewedTarget.name}; this does not contact the server or repeat the update or rollback.`;
+            + `finish tidying up. Try finishing again and go back to ${reviewedTarget.kind}/${reviewedTarget.name}; this does not contact the server or repeat the update or rollback.`;
       } else {
-        receiptRecoveryTitleEl.textContent = 'Current server state confirmed';
+        receiptRecoveryTitleEl.textContent = 'Checked how the server is';
         receiptRecoveryStatusEl.textContent = reviewedTarget === null
           ? 'The selected server freshly reported the state below. Review it, '
             + 'then finish recovery to make server-change controls available again.'
           : 'The selected server freshly reported the state below. Review it, '
-            + `then finish recovery and continue to ${reviewedTarget.kind}/${reviewedTarget.name} for its fresh exact preflight.`;
+            + `then finish recovery and continue to ${reviewedTarget.kind}/${reviewedTarget.name} for its new safety check.`;
       }
     } else if (verification.phase === 'finishing') {
-      receiptRecoveryTitleEl.textContent = 'Finishing receipt recovery';
+      receiptRecoveryTitleEl.textContent = 'Finishing up';
       receiptRecoveryStatusEl.textContent =
-        'The reviewed baseline is confirmed. Recued is retiring only the '
-        + 'browser recovery latch; the server-side unresolved closure remains durable.';
+        'Recued has checked how the server is. It is only tidying up in this '
+        + 'browser. What the server wrote down stays written down.';
     } else if (verification.phase === 'completed') {
-      receiptRecoveryTitleEl.textContent = 'Recovery finished';
+      receiptRecoveryTitleEl.textContent = 'All sorted';
       receiptRecoveryStatusEl.textContent = completionTarget === null
-        ? 'The reviewed current-state baseline is confirmed and server-change '
-          + 'controls are available again.'
-        : `The reviewed baseline is confirmed and server-change controls are available again. Return to ${completionTarget.kind}/${completionTarget.name} for its fresh, exact preflight.`;
+        ? 'Recued has checked how the server is, and its controls work '
+          + 'again.'
+        : `Recued has checked how the server is, and its controls work again. Go back to ${completionTarget.kind}/${completionTarget.name} for its new safety check.`;
     } else {
       receiptRecoveryTitleEl.textContent =
-        `${verification.operation === 'update' ? 'Update' : 'Rollback'} receipt needs attention`;
+        `${verification.operation === 'update' ? 'Update' : 'Rollback'} result needs a look`;
       receiptRecoveryStatusEl.textContent =
         verification.reason === 'operation_mismatch'
           ? `The paired server resolved this receipt as a different action than the expected ${operation}. Confirm the selected server profile before retrying.`
           : verification.reason === 'closure_in_flight'
-            ? `The server refused to close this receipt because another release transition is active. Wait for that server change to settle, then retry the receipt check.`
+            ? `The server refused to close this receipt because another release transition is active. Wait for that server change to settle, then retry the result again.`
             : verification.reason === 'closure_unavailable'
-              ? `The selected server could not record an authoritative closure. The receipt remains open; retry the check or share the safe diagnostic with the server administrator.`
+              ? `The server you picked could not write down that this is finished. The receipt is still open. Try the check again, or send the safe summary to whoever looks after the server.`
               : `The paired server did not recognize this ${operation} receipt. Confirm the selected server profile before retrying.`;
     }
     const closureRecorded =
@@ -1724,15 +1724,15 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
       || verification.phase === 'completed';
     receiptRecoveryPrivacyEl.textContent = closureRecorded
       ? verification.phase === 'completed'
-        ? 'This one-shot confirmation exists only in this tab and will not '
-          + 'replay after reload or in sibling tabs. The baseline describes '
-          + `current state—not whether the original ${operation} succeeded.`
-        : 'The baseline is memory-only and describes current state—not history. '
-          + `It does not repeat, undo, or infer the ${operation}; the opaque receipt, `
-          + 'credentials, endpoints, and raw errors remain excluded.'
-      : 'Retry checks only the existing opaque receipt; it never repeats the '
-        + `${operation}. The receipt and raw server or transport errors are not `
-        + 'shown, copied, or stored in this recovery view.';
+        ? 'This one-off note lives only in this tab. It is gone after a reload, '
+          + 'and other tabs never see it. It says how things are now, '
+          + `not whether the original ${operation} worked.`
+        : 'This lives only in this tab’s memory and says how things are now, not what happened. '
+          + `It does not repeat, undo, or guess at the ${operation}. The result code, `
+          + 'keys, addresses, and error details are all left out.'
+      : 'Trying again only checks the code Recued already has. It never repeats the '
+        + `${operation}. That code, and any error details, are not `
+        + 'shown, copied, or saved here.';
     const baseline =
       verification.phase === 'baseline_confirmed'
       || verification.phase === 'completed'
@@ -1756,9 +1756,9 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
           ? `${affected.kind}/${affected.name}: no credential verification is pending now.`
           : affected.activity === 'pending'
             ? `${affected.kind}/${affected.name}: credential verification is pending now.`
-            : `${affected.kind}/${affected.name}: current credential activity could not be read; the exact return flow will check again.`;
+            : `${affected.kind}/${affected.name}: Recued could not read what this key has been doing. It will check again when you come back.`;
       receiptBaselineBoundaryEl.textContent =
-        `Confirmed current state only. The original ${operation} outcome remains unknown.`;
+        `Confirmed current state only. The original ${operation} result is still unknown.`;
     }
     // ⛔⛔ A CONTROL THAT CANNOT ACT IS NOT INFORMATION, IT IS FURNITURE. This
     // used to SHOW the retry while disabled, relabelled "Retry when connected",
@@ -1780,18 +1780,18 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
     setHidden(receiptRecoveryRetry, !showRetry);
     receiptRecoveryRetry.textContent = connected
       ? verification.phase === 'checking'
-        ? 'Checking receipt…'
+        ? 'Checking the result…'
         : verification.phase === 'waiting'
           ? 'Retry now'
-          : 'Retry receipt check'
+          : 'Check the result again'
       : 'Retry when connected';
     receiptRecoveryRetry.setAttribute(
       'aria-label',
       connected
         ? verification.phase === 'checking'
-          ? `Checking the exact server ${operation} receipt`
-          : `Retry the exact server ${operation} receipt check`
-        : `Waiting to reconnect before retrying the exact server ${operation} receipt check`,
+          ? `Checking the server ${operation} receipt`
+          : `Check the server ${operation} result again`
+        : `Waiting to reconnect before checking the server ${operation} result again`,
     );
     setDisabled(
       receiptRecoveryRetry,
@@ -1812,8 +1812,8 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
     receiptClosureReviewButton.setAttribute(
       'aria-label',
       connected
-        ? `Review server-authoritative closure for the unresolved ${operation} receipt`
-        : `Waiting to reconnect before reviewing closure for the unresolved ${operation} receipt`,
+        ? `See how the server finished the open ${operation} receipt`
+        : `Waiting to reconnect before looking at the open ${operation} receipt`,
     );
     const reviewingClosure = verification.phase === 'reviewing_closure';
     setHidden(receiptClosureReview, !reviewingClosure);
@@ -1844,47 +1844,47 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
     );
     receiptClosureFinish.textContent =
       verification.phase === 'checking_baseline'
-        ? 'Confirming current state…'
+        ? 'Checking how the server is…'
         : verification.phase === 'baseline_retryable'
-          ? 'Retry current-state check'
+          ? 'Check how the server is again'
         : verification.phase === 'baseline_confirmed'
             ? verification.reason === 'finish_unavailable'
               ? reviewedTarget === null
                 ? 'Retry finish recovery'
-                : `Retry finish and return to ${reviewedTarget.kind}/${reviewedTarget.name}`
+                : `Try finishing again and go back to ${reviewedTarget.kind}/${reviewedTarget.name}`
               : reviewedTarget === null
                 ? 'Finish recovery'
-                : `Finish and return to ${reviewedTarget.kind}/${reviewedTarget.name}`
+                : `Finish and go back to ${reviewedTarget.kind}/${reviewedTarget.name}`
             : verification.phase === 'completed'
               ? completionTarget === null
                 ? 'Dismiss confirmation'
                 : `Return to ${completionTarget.kind}/${completionTarget.name}`
             : verification.phase === 'finishing'
-              ? 'Finishing recovery…'
+              ? 'Finishing up…'
               : connected
-                ? 'Confirm current server state'
+                ? 'Check how the server is'
                 : 'Confirm when connected';
     receiptClosureFinish.setAttribute(
       'aria-label',
       verification.phase === 'checking_baseline'
-        ? `Reading the authoritative current server state after the unresolved ${operation} closure`
+        ? `Asking the server how it is, after the unanswered ${operation} closure`
         : verification.phase === 'baseline_retryable'
-          ? `Retry the authoritative current-state check after the unresolved ${operation} closure`
+          ? `Check how the server is again, after the unanswered ${operation} closure`
         : verification.phase === 'baseline_confirmed'
             ? verification.reason === 'finish_unavailable'
               ? reviewedTarget === null
                 ? `Retry retiring the exact browser recovery latch using the reviewed current-state baseline; no server action will repeat`
-                : `Retry retiring the exact browser recovery latch, then return to the exact affected connection; no server action will repeat`
+                : `Try tidying up in this browser again, then go back to the exact affected connection; no server action will repeat`
               : reviewedTarget === null
-                ? `Finish recovery using the reviewed current-state baseline; the original ${operation} outcome remains unknown`
-                : `Finish recovery and return to the exact affected connection; the original ${operation} outcome remains unknown`
+                ? `Finish recovery using what the server just told us. The original ${operation} result is still unknown`
+                : `Finish and go back to the exact affected connection; the original ${operation} result is still unknown`
             : verification.phase === 'completed'
               ? completionTarget === null
                 ? 'Dismiss the one-shot current-state recovery confirmation'
                 : `Return to the exact affected connection after the reviewed current-state recovery`
             : verification.phase === 'finishing'
-        ? `Finishing the server-closed unresolved ${operation} receipt recovery`
-              : `Confirm current server state before retiring the server-closed unresolved ${operation} receipt`,
+        ? `Finishing with the unanswered ${operation} result`
+              : `Check how the server is before retiring the server-closed unresolved ${operation} receipt`,
     );
 
     if (
@@ -1906,7 +1906,7 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
     receiptDiagnosticPrivacyEl.textContent =
       'Review this privacy-safe summary before sharing it with the person who '
       + 'manages this server. Nothing is sent automatically; the opaque '
-      + 'receipt, URL path, credentials, versions, and raw errors are excluded.';
+      + 'receipt, web address, keys, version numbers and raw errors are left out.';
     const nextDiagnosticKey = [
       verification.operation,
       verification.startedAt,
@@ -2555,7 +2555,7 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
     ?? (() => undefined);
   /** D-257 — the apply's OUTCOME. The rpc answers `applying`; the terminal emit
    *  carries the status the rpc used to return, plus the `operation_id` the
-   *  receipt check needs after the restart-forced reconnect.
+   *  result again needs after the restart-forced reconnect.
    *
    *  ⛔ THIS SUBSCRIPTION IS THE POINT. The option was declared here and built in
    *  the bootstrap, but the settings route never forwarded it — so nothing ever

@@ -94,7 +94,7 @@ test('Refreshing updates alert health without changing filters or their revision
   }, KEY);
   await tools(page).locator('summary').click();
   await tools(page).getByRole('button', { name: 'Refresh saved views', exact: true }).click();
-  await expect(opened(page)).toContainText('Alerts waiting for task data');
+  await expect(opened(page)).toContainText('Alerts waiting for your tasks');
   await expect(search).toHaveValue('Unsaved');
   expect((await stored(page))[0]?.revision).toBe(2);
 });

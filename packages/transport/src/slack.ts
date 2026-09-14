@@ -17,6 +17,7 @@ import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { decodeChoice, encodeChoice } from './callback.js';
+import { attachmentFilename, sendSlackAttachment } from './attachments.js';
 import { fitText } from './fit-text.js';
 import {
   DEFAULT_TIMEOUT_MS,
@@ -176,7 +177,9 @@ const handleSlackOutcome = (outcome: HttpPostOutcome): TransportSendResult => {
       outcome.kind === 'http_error'
         ? classifyHttpError(outcome.status)
         : outcome.kind;
-    return { ok: false, error: { kind, detail: `Slack: ${outcome.detail}` } };
+    return { ok: false, error: { kind, detail: `Slack: ${outcome.detail}`,
+      ...(outcome.kind === 'http_error' && outcome.retry_after_ms !== undefined ? { retry_after_ms: outcome.retry_after_ms } : {}),
+    } };
   }
   // Slack always returns an `ok` boolean on a 200. Require an explicit
   // `ok === true` — a missing / non-true flag is a malformed envelope,
@@ -185,7 +188,7 @@ const handleSlackOutcome = (outcome: HttpPostOutcome): TransportSendResult => {
   if (env.ok !== true) {
     return {
       ok: false,
-      error: { kind: 'vendor_error', detail: `Slack: ${env.error ?? 'unknown_error'}` },
+      error: { kind: env.error === 'ratelimited' ? 'rate_limited' : 'vendor_error', detail: `Slack: ${env.error ?? 'unknown_error'}` },
     };
   }
   return env.ts !== undefined ? { ok: true, vendor_message_id: env.ts } : { ok: true };
@@ -295,9 +298,18 @@ export const createSlackTransport = (
     });
 
   const send = async (message: OutboundMessage): Promise<TransportSendResult> => {
+    const plain = `${message.title ? `${message.title}\n\n` : ''}${message.text}${message.link_url ? `\n${message.link_url}` : ''}`;
+    if (message.lossless && plain.length > 2800) return { ok: false,
+      error: { kind: 'invalid_request', detail: 'Slack message exceeds the lossless text budget.' } };
     const outcome = await post(
       SLACK_POST_MESSAGE_URL,
-      { channel: message.recipient, text: composeSlackText(message) },
+      { channel: message.recipient, text: message.lossless ? plain : composeSlackText(message),
+        ...(message.thread_id ? { thread_ts: message.thread_id } : {}),
+        ...(message.lossless ? { mrkdwn: false, parse: 'none', link_names: false,
+          unfurl_links: false, unfurl_media: false,
+          blocks: [{ type: 'section', text: { type: 'plain_text', text: plain, emoji: false } }],
+        } : {}),
+      },
       message.token,
     );
     return handleSlackOutcome(outcome);
@@ -395,7 +407,7 @@ export const createSlackTransport = (
       temp_path: destPath,
       size: dl.size,
       head_bytes: dl.headBytes,
-      filename: sanitizeFilename(filename ?? filenameFromUrl(remoteUrl), fallbackName),
+      filename: filename ? attachmentFilename(filename, fallbackName) : sanitizeFilename(filenameFromUrl(remoteUrl), fallbackName),
       mime_type: unpackMimeType(dl.contentType, mime),
     };
   };
@@ -419,6 +431,10 @@ export const createSlackTransport = (
     const media = extractSlackMedia(ev);
     if (text.length === 0 && media.length === 0) return null;
     const result: ParsedInbound = { from: ev.user, text };
+    if (typeof ev.thread_ts === 'string') {
+      result.thread_id = ev.thread_ts;
+      result.reply_to_message_id = ev.thread_ts;
+    }
     if (typeof ev.ts === 'string') result.vendor_message_id = ev.ts;
     if (media.length > 0) result.media = media;
     return result;
@@ -499,6 +515,7 @@ export const createSlackTransport = (
   return {
     vendor: 'slack',
     send,
+    sendAttachment: file => sendSlackAttachment(file, { fetchImpl, timeoutMs: options.timeoutMs ?? 120_000 }),
     parseInbound,
     parseConversationId,
     fetchMedia,

@@ -80,7 +80,7 @@ const MINUTE_MS = 60 * 1000;
 // ════════════════════════════════════════════════════════════════
 
 /** Human label for the preview hash's freshness. A still-valid hash ⇒
- *  "Preview valid for N more minutes"; a lapsed one ⇒ a re-run prompt.
+ *  "Preview good for N more minutes"; a lapsed one ⇒ a re-run prompt.
  *  Minute-scale (the hash TTL is 10 min) — distinct from the day-scale
  *  `computeExpiryLabel`. Pure — no I/O. */
 export const computePreviewFreshnessLabel = (
@@ -89,10 +89,10 @@ export const computePreviewFreshnessLabel = (
 ): string => {
   const remaining = preview_hash_expires_at - now;
   if (remaining <= 0) {
-    return 'Preview expired — re-run View as visitor before creating this endpoint';
+    return 'The preview has run out. Look as a visitor again before you make this.';
   }
   const minutes = Math.ceil(remaining / MINUTE_MS);
-  return `Preview valid for ${minutes} more ${minutes === 1 ? 'minute' : 'minutes'}`;
+  return `Preview good for ${minutes} more ${minutes === 1 ? 'minute' : 'minutes'}`;
 };
 
 // ════════════════════════════════════════════════════════════════
@@ -119,14 +119,14 @@ export const RECEPTION_TOKEN_MODE_COPY: Readonly<
   Record<ReceptionTokenMode, { label: string; description: string }>
 > = {
   tokenless_singleton: {
-    label: 'No token',
+    label: 'No secret in the link',
     description:
-      'The Reception page is your public front door at /reception/ — it carries no bearer token. Anyone who knows your server’s host can view it. There is no secret to leak, rotate, or revoke; you control it purely through enable / disable + the page config.',
+      'Your Reception page is your front door at /reception/, and its link holds no secret. Anyone who knows your server’s address can look at it. There is no secret to leak, swap, or take back — you decide by switching it on or off, and by what you put on the page.',
   },
   bearer_query_param: {
-    label: 'Bearer token in the link',
+    label: 'The link holds the secret',
     description:
-      'The share link carries an HMAC-keyed bearer secret as a ?t= query parameter — the URL itself is the credential, so treat it like a password. The secret is HMAC-hashed server-side and never re-readable; if a link leaks, rotate the token to invalidate it.',
+      'The link you share holds a secret in its ?t= part, so the link itself is the password — treat it like one. Your server keeps only a scrambled copy and can never show it again. If a link gets out, swap the secret and the old link stops working.',
   },
 };
 
@@ -140,7 +140,7 @@ export const resolveTokenModeCopy = (
 ): { label: string; description: string } =>
   RECEPTION_TOKEN_MODE_COPY[mode as ReceptionTokenMode] ?? {
     label: mode,
-    description: 'Token-presentation mode for this endpoint kind.',
+    description: 'How the secret is carried, for this kind of link.',
   };
 
 /** § A.16.5 — per-`ReceptionEndpointKind` audit-mode copy. Every kind
@@ -153,34 +153,34 @@ export const RECEPTION_AUDIT_MODE_COPY: Readonly<
   Record<ReceptionEndpointKind, { label: string; description: string }>
 > = {
   reception_page: {
-    label: 'Operational log, plus a signed event when you change the page config',
+    label: 'A note of every visit, plus a signed record when you change the page',
     description:
-      'Every visitor view writes an operational access-log row. Editing the Reception page configuration additionally emits a tamper-evident signed memory entry.',
+      'Every visit adds a line to the log. Changing the Reception page also writes a signed record that nobody can quietly alter.',
   },
   scheduling_link: {
-    label: 'Operational log, plus a signed event on every booking',
+    label: 'A note of every visit, plus a signed record for every booking',
     description:
-      'Every visitor view writes an operational access-log row. Each booking request additionally emits a tamper-evident signed memory entry.',
+      'Every visit adds a line to the log. Every booking also writes a signed record that nobody can quietly alter.',
   },
   intake_form: {
-    label: 'Operational log, plus a signed event on every submission',
+    label: 'A note of every visit, plus a signed record for every answer',
     description:
-      'Every visitor view writes an operational access-log row. Each form submission additionally emits a tamper-evident signed memory entry.',
+      'Every visit adds a line to the log. Every answer also writes a signed record that nobody can quietly alter.',
   },
   drop_link: {
-    label: 'Operational log, plus a signed event on every file drop',
+    label: 'A note of every visit, plus a signed record for every file left here',
     description:
-      'Every visitor view writes an operational access-log row. Each file-upload receipt additionally emits a tamper-evident signed memory entry.',
+      'Every visit adds a line to the log. Every file that arrives also writes a signed record that nobody can quietly alter.',
   },
   approval_link: {
-    label: 'Operational log, plus a signed event when the link is consumed',
+    label: 'A note of every visit, plus a signed record when the link is used up',
     description:
-      'Every visitor view writes an operational access-log row. Consuming the single-use token additionally emits a tamper-evident signed memory entry.',
+      'Every visit adds a line to the log. Using up the one-time link also writes a signed record that nobody can quietly alter.',
   },
   status_link: {
-    label: 'Operational log only',
+    label: 'Just a note of every visit',
     description:
-      'Status pages are read-only projections — every visitor view writes an operational access-log row, but there is no state-changing action to sign, so no high-assurance event is emitted.',
+      'Status pages only show things. Every visit adds a line to the log, but nothing can be changed, so there is nothing to sign.',
   },
 };
 
@@ -192,17 +192,17 @@ export const RECEPTION_AUDIT_MODE_COPY: Readonly<
  *  from the substrate, a longer "why" from the renderer. */
 export const RECEPTION_PRIVACY_INVARIANT_DETAIL: Readonly<Record<string, string>> = {
   'Endpoint is default-off until explicitly enabled':
-    'A freshly created endpoint serves nothing until you enable it — there is no window where a half-configured endpoint is reachable by a visitor.',
+    'A new one shows nothing until you switch it on, so there is never a moment when a half-finished page is open to visitors.',
   'Only the closed fields_visible list crosses the boundary':
-    'The redacted-packet boundary strips every field except the closed allowlist shown above — there is no path for an un-listed field to reach the visitor renderer.',
+    'Recued takes out every field except the ones listed above. Nothing else has any way to reach a visitor.',
   'Expiry is within the per-kind ceiling':
-    'This endpoint’s expiry is bounded by its kind’s hard ceiling (drop / approval 30 days, status 90 days; the page / scheduling / intake kinds permit long-lived with an explicit acknowledgement).',
+    'Each kind has a limit on how long it may last: drop-off and approval 30 days, status 90 days. Page, booking and form links may last longer, but only if you say so.',
   'Bearer token is HMAC-keyed and never re-readable':
-    'The bearer secret is stored only as an HMAC — the plaintext is shown once at create / rotate and never again. A leaked database never yields a working token.',
+    'Your server keeps only a scrambled copy. You see the real one once, when you make it or swap it, and never again. Even someone who stole the whole database could not get a working link.',
   'Source IP is endpoint-scoped HKDF-hashed (no cross-endpoint tracking)':
-    'Each visitor’s IP is hashed per-endpoint with a server-secret pepper — the same visitor at two endpoints produces two unlinkable hashes, so there is no cross-endpoint tracking without your explicit opt-in.',
+    'Each visitor’s address is scrambled with a secret only your server knows, and differently for every link. The same person at two links looks like two different people, so nobody can follow them about unless you ask for that.',
   'No recipe content or visitor data is relayed through the cloud':
-    'Reception serves directly from your server — the cloud relays only the DNS record. No recipe content, no visitor submission, and no uploaded file ever passes through Recued’s cloud.',
+    'Reception comes straight from your server. The cloud only passes on your name. No Recipe, nothing a visitor sends, and no file they leave ever goes through Recued’s cloud.',
 };
 
 /** Resolve a privacy-invariant's detail copy. An invariant label outside
@@ -280,7 +280,7 @@ export interface ViewAsVisitorPanelModel {
     all_satisfied: boolean;
     satisfied_count: number;
     total_count: number;
-    /** "All N privacy invariants satisfied" when clean, else a
+    /** "All N privacy promises kept" when clean, else a
      *  "M of N … — review the flagged K" prompt. */
     compliance_label: string;
   };
@@ -311,8 +311,8 @@ export const buildViewAsVisitorPanelModel = (
   const total_count = invariant_rows.length;
   const all_satisfied = satisfied_count === total_count;
   const compliance_label = all_satisfied
-    ? `All ${total_count} privacy invariants satisfied`
-    : `${satisfied_count} of ${total_count} privacy invariants satisfied — review the flagged ${total_count - satisfied_count} before enabling`;
+    ? `All ${total_count} privacy promises kept`
+    : `${satisfied_count} of ${total_count} privacy promises kept — look at the ${total_count - satisfied_count} marked before you switch it on`;
 
   return {
     synthetic: true,

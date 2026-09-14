@@ -475,10 +475,10 @@ describe('D-170 N.7.1/N.7.2 webclient ingredient builder tables', () => {
     expect(textOf(root)).toContain('Draft overview');
     expect(textOf(root)).toContain('Connection setup');
     expect(textOf(root)).toContain(
-      'Operations Define the calls this pack can make and the approval policy each family carries.',
+      'Operations Say what this Pack may do, and when each group of things should ask you first.',
     );
     expect(textOf(root)).toContain(
-      'Data fields Describe the records these operations read or write',
+      'Data fields Say which records these read or write',
     );
     expect(textOf(root)).toContain('Publish details');
     expect(textOf(root)).toContain('Operation families 0 operations');
@@ -1712,7 +1712,7 @@ describe('D-170 N.7.1/N.7.2 webclient ingredient builder tables', () => {
     expect(findByAttr(root, INGREDIENT_BUILDER_SLUG_ATTR)?.value).toBe('hubspot-saved');
     expect(findByAttr(root, INGREDIENT_BUILDER_CONNECTION_ATTR)?.value).toBe('hubspot-main');
     expect(findByAttr(root, INGREDIENT_BUILDER_STATUS_ATTR)?.textContent)
-      .toBe('Draft loaded and validated');
+      .toBe('Draft opened and checked');
     expect(findByAttr(root, INGREDIENT_BUILDER_INSTALL_ATTR)?.disabled).toBe(false);
     expect(route.buildDraftBody().ingredients[0]!.entities!.Contact!.fields[0]).toMatchObject({
       field_path: 'properties.email',
@@ -2412,7 +2412,7 @@ describe('D-170 N.7.1/N.7.2 webclient ingredient builder tables', () => {
     findByAttr(root, INGREDIENT_BUILDER_SAVE_ATTR)?.click();
     await tick();
     expect(findByAttr(root, INGREDIENT_BUILDER_INSTALL_STATUS_ATTR)?.textContent)
-      .toBe('Ready to install from reviewed draft');
+      .toBe('Checked, and ready to install');
     expect(findByAttr(root, INGREDIENT_BUILDER_INSTALL_ATTR)?.disabled).toBe(false);
 
     const install = findByAttr(root, INGREDIENT_BUILDER_INSTALL_ATTR);
@@ -2820,9 +2820,9 @@ describe('D-170 N.7.1/N.7.2 webclient ingredient builder tables', () => {
     ]);
     const banner = findByAttr(root, INGREDIENT_BUILDER_REVIEW_STATUS_ATTR);
     expect(banner?.getAttribute('data-state')).toBe('invalid');
-    expect(banner?.textContent).toBe('Validation failed: 1 issue');
+    expect(banner?.textContent).toBe('Check failed: 1 issue');
     expect(findByAttr(root, INGREDIENT_BUILDER_STATUS_ATTR)?.textContent)
-      .toBe('Validation failed');
+      .toBe('Check failed');
     expect(findByAttr(root, INGREDIENT_BUILDER_FIELD_PRIVACY_ATTR)?.textContent)
       .toBe('properties.email: email');
     expect(findByAttr(root, INGREDIENT_BUILDER_REVIEW_ISSUE_ATTR)?.textContent)
@@ -3244,7 +3244,7 @@ describe('pack editor polish — feedback correctness', () => {
     await tick();
     expect(findByAttr(root, INGREDIENT_BUILDER_SAVE_ATTR)?.textContent).toBe('Saved');
     expect(findByAttr(root, INGREDIENT_BUILDER_STATUS_ATTR)?.textContent).toBe(
-      'Draft saved and validated',
+      'Draft saved and checked',
     );
 
     // Clean state: the (always-rendered) dirty cue is empty.
@@ -3385,7 +3385,7 @@ describe('pack editor polish — feedback correctness', () => {
     await tick();
     expect(findByAttr(root, INGREDIENT_BUILDER_TITLE_ATTR)?.value).toBe('Draft B');
     expect(findByAttr(root, INGREDIENT_BUILDER_STATUS_ATTR)?.textContent)
-      .toBe('Draft loaded and validated');
+      .toBe('Draft opened and checked');
     expect(findByAttr(root, INGREDIENT_BUILDER_DRAFT_PICKER_ATTR)?.value).toBe('draft-b');
     expect(doc.activeElement).toBe(findByAttr(root, INGREDIENT_BUILDER_DRAFT_PICKER_ATTR));
   });
@@ -3452,7 +3452,7 @@ describe('pack editor polish — feedback correctness', () => {
     await tick();
 
     const status = findByAttr(root, INGREDIENT_BUILDER_STATUS_ATTR);
-    expect(status?.textContent).toBe('Validation failed');
+    expect(status?.textContent).toBe('Check failed');
     expect(status?.getAttribute('data-state')).toBe('error');
   });
 
@@ -3481,7 +3481,7 @@ describe('pack editor polish — feedback correctness', () => {
     // The completion saw the epoch move: the draft is NOT clean.
     expect(findByAttr(root, INGREDIENT_BUILDER_SAVE_ATTR)?.textContent).toBe('Save');
     expect(findByAttr(root, INGREDIENT_BUILDER_STATUS_ATTR)?.textContent).toBe(
-      'Saved — newer edits pending',
+      'Saved — you have changed things since',
     );
     expect(findAllByClass(root, 'ingredient-builder-dirty-dot')[0]?.textContent).toBe(
       'Unsaved',

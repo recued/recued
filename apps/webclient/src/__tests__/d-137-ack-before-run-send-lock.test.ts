@@ -764,7 +764,7 @@ describe('D-259 ack-before-run — dispatch-only send lock', () => {
     await tick();
     const discard = collectByAttr(h.root, CHAT_ROUTE_HISTORY_DRAFT_GUARD_ATTR)[0]!
       .children.flatMap((child) => child.children)
-      .find((button) => button.textContent === 'Discard and open')!;
+      .find((button) => button.textContent === 'Throw it away and open')!;
     discard.click();
     await tick(8);
 

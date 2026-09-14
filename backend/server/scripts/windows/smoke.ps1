@@ -136,6 +136,31 @@ foreach ($triple in ($Triples -split ',' | ForEach-Object { $_.Trim() } | Where-
     Get-Content $err | Select-String -Pattern 'Error|FATAL|MISSING' | Select-Object -First 3 | ForEach-Object { Write-Output ('  ! ' + $_.Line.Trim()) }
   }
 
+  # !! ON FAILURE, PRINT WHAT THE SERVER ACTUALLY SAID. Both reads above are
+  # FILTERED -- stdout by three banner labels, stderr by three words, first 3
+  # lines -- so a boot that dies saying anything else prints NOTHING and the
+  # smoke reports "the binaries do not start" with an empty cause. That is what
+  # happened on 26.9.10: three full build cycles, exit-code blank, and the
+  # explanation sitting unread in boot.err the whole time because it did not
+  # contain the word "Error". A filtered probe that finds nothing looks exactly
+  # like a probe that ran against nothing.
+  #
+  # !! EMPTY and ABSENT are reported as DIFFERENT things on purpose: a missing
+  # file means the redirect never happened, an empty one means the process died
+  # before writing a byte. Collapsing them into "no output" discards the half
+  # that says where to look next.
+  $bootOk = $dbSeen -and $portSeen -and (-not $exited)
+  if (-not $bootOk) {
+    foreach ($probe in @(,@('stdout', $out)) + @(,@('stderr', $err))) {
+      $label = $probe[0]; $file = $probe[1]
+      if (-not (Test-Path $file)) { Write-Output ("  --- $label ABSENT (redirect never created it) ---"); continue }
+      $lines = @(Get-Content $file -ErrorAction SilentlyContinue)
+      if ($lines.Count -eq 0) { Write-Output ("  --- $label EMPTY (process wrote nothing) ---"); continue }
+      Write-Output ("  --- $label, last 25 of $($lines.Count) ---")
+      $lines | Select-Object -Last 25 | ForEach-Object { Write-Output ('  > ' + $_) }
+    }
+  }
+
   # !! AND `recued start` -- THE SAME DEFECT CLASS AS THE ws PROBE ABOVE.
   # daemon.ts built its child command one way only: `npx tsx <dir>/bin.ts`.
   # That is right from a source checkout and impossible in a packaged binary --

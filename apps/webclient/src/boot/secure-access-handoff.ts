@@ -102,7 +102,7 @@ export const resolveSecureAccessUrl = (
   if (trimmed.length === 0) {
     return {
       ok: false,
-      message: 'Enter your trusted Recued HTTPS address first.',
+      message: 'First type your safe Recued address. It starts with https.',
     };
   }
   let target: URL;
@@ -111,19 +111,19 @@ export const resolveSecureAccessUrl = (
   } catch {
     return {
       ok: false,
-      message: 'Enter a complete address, such as https://recued.example.com.',
+      message: 'Type the whole address, like https://recued.example.com.',
     };
   }
   if (target.protocol !== 'https:') {
     return {
       ok: false,
-      message: 'Use a trusted address that starts with https://.',
+      message: 'Use a safe address. It has to start with https://.',
     };
   }
   if (target.username.length > 0 || target.password.length > 0) {
     return {
       ok: false,
-      message: 'Use a Recued HTTPS address without a username or password.',
+      message: 'Use a Recued https address on its own. Do not put a name or password in it.',
     };
   }
   target.pathname = location.pathname || '/';
@@ -451,7 +451,7 @@ export const mountSecureAccessHandoff = (
     `[${SECURE_ACCESS_STATUS_ATTR}]`,
   );
   if (localInput !== null) {
-    localInput.value = localUrl ?? 'Open Recued from its trusted HTTPS address.';
+    localInput.value = localUrl ?? 'Open Recued from its safe https address.';
   }
 
   let disposed = false;
@@ -473,12 +473,12 @@ export const mountSecureAccessHandoff = (
     if (disposed) return;
     if (localUrl === null) {
       setStatus(
-        'A localhost link could not be built for this address. Use your trusted HTTPS address instead.',
+        'Recued could not make a localhost link for this address. Use your safe https address instead.',
         true,
       );
       return;
     }
-    setStatus('Opening this exact page through localhost…');
+    setStatus('Opening this same page through localhost…');
     try {
       navigate(localUrl);
     } catch {

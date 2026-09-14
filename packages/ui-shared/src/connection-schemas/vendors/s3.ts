@@ -32,7 +32,7 @@ const S3_FIELDS: readonly ConnectionField[] = [
     key: 'name',
     label: 'Name',
     type: 'identifier',
-    help: 'Lowercase identifier used in recipes (e.g. `s3`, `s3-archive`).',
+    help: 'A short lower-case name you use in Recipes, such as `s3`, `s3-archive`).',
     placeholder: 's3',
   },
   {
@@ -46,7 +46,7 @@ const S3_FIELDS: readonly ConnectionField[] = [
     key: 'config.vendor',
     label: 'Vendor',
     type: 'text',
-    help: 'S3 vendor identifier — locked at enrollment.',
+    help: 'S3 sets this when you connect. You cannot change it.',
     placeholder: 's3',
     hidden: true,
   },

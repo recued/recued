@@ -187,12 +187,12 @@ interface DialogTool {
 // ════════════════════════════════════════════════════════════════
 
 const COPY = {
-  heading: 'Grant access to local tools',
+  heading: 'Let it use tools on your server',
   intro:
-    "This pack added local tools that run on your server. Choose which operations each may run when a recipe you run uses it. Nothing is granted until you confirm — you can change this anytime on the pack's Access tab.",
-  read_hint: 'Reading is safe and idempotent — pre-selected.',
-  write_hint: 'Each run still asks for approval before the binary runs.',
-  confirm_label: 'Grant access',
+    "This Pack brought tools that run on your own server. Choose what each one may do when a Recipe you run uses it. Nothing happens until you say yes, and you can change it later on the Pack's Access tab.",
+  read_hint: 'Just looking is safe, and doing it twice changes nothing. Already picked for you.',
+  write_hint: 'Recued still asks you every time, before the tool runs.',
+  confirm_label: 'Say yes',
   confirming_label: 'Granting…',
   skip_label: 'Skip for now',
 } as const;
@@ -328,7 +328,7 @@ export const mountCliGrantDialog = (
       const err = doc.createElement('div');
       err.setAttribute(CLI_GRANT_DIALOG_ERROR_ATTR, '');
       err.className = 'cg-error';
-      err.textContent = `Could not grant access: ${error}`;
+      err.textContent = `Recued could not say yes: ${error}`;
       panel.appendChild(err);
     }
 

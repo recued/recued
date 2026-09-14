@@ -16,10 +16,14 @@ import {
   composeRewriteRecipeConfig,
   composePayloadToSendRecipeConfig,
   type ComposeMailSendPayload,
+  type MailSenderSourceOption,
 } from '@recued/contracts';
 
 import {
+  mailComposeOpenSender,
+  mailComposeReadinessFromInstances,
   mailComposeSubmitOutcomeFromExecuteResponse,
+  mailDraftContentFromCompose,
   mailSendReadinessFromInstances,
   rewrittenMailBodyFromExecuteResponse,
   senderOptionFromInstance,
@@ -119,6 +123,7 @@ describe('mail compose send readiness', () => {
       slug: 'archive',
       adapter_type: 'imap',
       send_capable: false,
+      draft_capable: false,
       account_email: 'archive@example.com',
     }]);
     expect(readiness.status).toBe('read_only');
@@ -132,11 +137,11 @@ describe('mail compose send readiness', () => {
     const readiness = mailSendReadinessFromInstances([
       {
         slug: 'archive', adapter_type: 'imap', send_capable: false,
-        account_email: 'archive@example.com',
+        draft_capable: false, account_email: 'archive@example.com',
       },
       {
         slug: 'work', adapter_type: 'gmail', send_capable: true,
-        account_email: 'work@example.com',
+        draft_capable: false, account_email: 'work@example.com',
       },
     ]);
     expect(readiness.status).toBe('ready');
@@ -254,5 +259,155 @@ describe('D-177 N.12 — send payload → execute config', () => {
 
   it('names the recipe the route dispatches', () => {
     expect(SEND_COMPOSED_MAIL_RECIPE_ID).toBe('send-composed-mail');
+  });
+});
+
+
+describe('D-264 — saving a draft uses the DRAFT gate', () => {
+  /** The one line that makes draft-only compose work, and the one whose
+   *  removal is silent: without `'draft'` the save path runs the SEND rule and
+   *  a draft-only mailbox fails `sender_source` instead of saving. */
+  const option = (over: Partial<MailSenderSourceOption>): MailSenderSourceOption => ({
+    id: 'work',
+    label: 'me@example.com (IMAP)',
+    account_email: 'me@example.com',
+    send_capable: false,
+    draft_capable: false,
+    mail_instance_slug: 'work',
+    ...over,
+  });
+  const values = {
+    ...EMPTY_MAIL_COMPOSE_VALUES,
+    sender_source: 'work',
+    to: ['them@example.com'],
+    subject: 'Subject',
+    body: 'Body',
+  };
+  const hooks = (source: MailSenderSourceOption) => ({
+    resolveContactEmail: (ref: string) => ref,
+    findSenderSource: (id: string) => (id === source.id ? source : null),
+  });
+
+  it('saves against a mailbox that can draft but cannot send', () => {
+    const result = mailDraftContentFromCompose(values, hooks(option({ draft_capable: true })));
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.content.sender_mail_instance).toBe('work');
+      expect(result.content.subject).toBe('Subject');
+    }
+  });
+
+  it('still refuses a mailbox that can do neither', () => {
+    const result = mailDraftContentFromCompose(values, hooks(option({})));
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.errors.sender_source).toBeDefined();
+  });
+
+  it('carries reply-thread fields the compose form does not own', () => {
+    const prior = {
+      sender_mail_instance: 'work', to: ['them@example.com'],
+      subject: 'Earlier', body: 'Earlier', body_format: 'text' as const,
+      references: ['<a@example.com>'], reply_to: 'other@example.com',
+    };
+    const result = mailDraftContentFromCompose(
+      values, hooks(option({ draft_capable: true })), prior,
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.content.references).toEqual(['<a@example.com>']);
+      expect(result.content.reply_to).toBe('other@example.com');
+    }
+  });
+});
+
+
+describe('D-264 — readiness has a third tier, and the axis is not mirrored', () => {
+  const row = (over: Partial<{
+    slug: string; adapter_type: string; send_capable: boolean;
+    draft_capable: boolean; account_email: string;
+  }> = {}) => ({
+    slug: 'archive', adapter_type: 'imap', send_capable: false,
+    draft_capable: false, account_email: 'archive@example.com', ...over,
+  });
+
+  it('is draft_only — NOT read_only — when a mailbox can draft but none can send', () => {
+    const readiness = mailComposeReadinessFromInstances([row({ draft_capable: true })]);
+    expect(readiness.status).toBe('draft_only');
+  });
+
+  it('stays read_only when no mailbox can do either', () => {
+    expect(mailComposeReadinessFromInstances([row()]).status).toBe('read_only');
+  });
+
+  it('prefers ready over draft_only — one sending mailbox makes the surface whole', () => {
+    const readiness = mailComposeReadinessFromInstances([
+      row({ slug: 'imap', draft_capable: true }),
+      row({ slug: 'work', adapter_type: 'gmail', send_capable: true }),
+    ]);
+    expect(readiness.status).toBe('ready');
+  });
+
+  it('never derives draft capability from send capability', () => {
+    // Independent grants: `gmail.send` without `gmail.modify` sends and cannot
+    // draft. Mirroring one into the other would offer draft-only compose
+    // against a mailbox that cannot hold a draft.
+    const readiness = mailComposeReadinessFromInstances([
+      row({ send_capable: true, draft_capable: false }),
+    ]);
+    expect(readiness.status).toBe('ready');
+    if (readiness.status === 'ready') {
+      expect(readiness.mailboxes[0]?.send_capable).toBe(true);
+      expect(readiness.mailboxes[0]?.draft_capable).toBe(false);
+    }
+  });
+
+  it('reads an ABSENT axis as false — an older server answers without the field', () => {
+    const legacy = { slug: 'archive', adapter_type: 'imap', send_capable: true,
+      account_email: 'a@example.com' } as never;
+    const readiness = mailComposeReadinessFromInstances([legacy]);
+    expect(readiness.status).toBe('ready');
+    if (readiness.status === 'ready') {
+      expect(readiness.mailboxes[0]?.draft_capable).toBe(false);
+    }
+  });
+});
+
+
+describe('D-264 — compose OPENS for a draft-only mailbox', () => {
+  /** The join Codex found dead: readiness said `draft_only`, both entry points
+   *  passed it through, and the open gate still demanded `ready` plus a
+   *  SEND-capable sender. It returned false, both callers ignore that, and New
+   *  mail silently did nothing for exactly the users D-264 exists for. */
+  const option = (over: Partial<MailSenderSourceOption>): MailSenderSourceOption => ({
+    id: 'imap', label: 'me@example.com (IMAP)', account_email: 'me@example.com',
+    send_capable: false, draft_capable: false, mail_instance_slug: 'imap', ...over,
+  });
+
+  it('opens on draft_only, defaulting to the draft-capable sender', () => {
+    const draftOnly = option({ draft_capable: true });
+    const sender = mailComposeOpenSender({ status: 'draft_only', mailboxes: [draftOnly] }, [draftOnly]);
+    expect(sender?.id).toBe('imap');
+  });
+
+  it('prefers a send-capable sender on a mixed install', () => {
+    // Opening in the most restricted state when a fully usable mailbox exists
+    // would disable Send for no reason.
+    const sources = [option({ draft_capable: true }), option({ id: 'gmail', send_capable: true })];
+    expect(mailComposeOpenSender({ status: 'ready', mailboxes: sources }, sources)?.id).toBe('gmail');
+  });
+
+  it('stays shut on every status that is not openable', () => {
+    const draftOnly = option({ draft_capable: true });
+    for (const status of ['loading', 'none', 'unavailable'] as const) {
+      expect(mailComposeOpenSender({ status }, [draftOnly])).toBeNull();
+    }
+    expect(mailComposeOpenSender({ status: 'read_only', mailboxes: [] }, [])).toBeNull();
+  });
+
+  it('stays shut when readiness says openable but no source can do anything', () => {
+    // Defence in depth against the two halves disagreeing — which is how this
+    // was broken in the first place, from the other direction.
+    const inert = option({});
+    expect(mailComposeOpenSender({ status: 'draft_only', mailboxes: [inert] }, [inert])).toBeNull();
   });
 });

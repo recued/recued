@@ -642,7 +642,7 @@ export const mountPackAppView = (
         ...active.state,
         busy: false,
         busy_action: null,
-        error: 'Running is not available on this server yet.',
+        error: 'This server cannot run things yet.',
       });
       paint();
       return;
@@ -752,7 +752,7 @@ export const mountPackAppView = (
     if (previewWindow === null) {
       fileErrors = new Map(fileErrors).set(
         registered.stableKey,
-        'The browser blocked the PDF preview window. Allow popups for this site or download the file instead.',
+        'Your browser blocked the PDF window. Allow pop-ups for this address, or download the file instead.',
       );
       paint();
       return;
@@ -796,7 +796,7 @@ export const mountPackAppView = (
     if (!anyTableEditDirty(gridStates)) return true;
     const confirm = doc.defaultView?.confirm;
     return typeof confirm === 'function'
-      && confirm.call(doc.defaultView, 'Discard the unsaved table changes?');
+      && confirm.call(doc.defaultView, 'Throw away your unsaved changes to the table?');
   };
 
   const selectView = (recipeId: string, focusActivatedTab = false): void => {
@@ -859,7 +859,7 @@ export const mountPackAppView = (
       : '';
     return `<header class="pack-app-context" ${PACK_APP_CONTEXT_ATTR}="${taskResult ? 'task' : 'view'}">
       <div class="pack-app-context-copy">
-        <p class="pack-app-context-kind">${taskResult ? 'Task result' : 'Current view'}</p>
+        <p class="pack-app-context-kind">${taskResult ? 'What happened' : 'Current view'}</p>
         <h2 class="pack-app-context-title">${escapeHtml(recipe.name)}</h2>
         ${recipe.description === '' ? '' : `<p class="pack-app-context-description">${escapeHtml(recipe.description)}</p>`}
         ${stale}
@@ -931,12 +931,12 @@ export const mountPackAppView = (
       // first task in this workspace, then render its result above.
       return `<p class="pack-app-note" ${PACK_APP_EMPTY_ATTR}="">`
         + (surface.lookups.length > 0
-          ? 'Choose what you want to review below. Its result will stay here.'
+          ? 'Pick what you want to look at below. What comes back stays here.'
           : surface.operations.length > 0
-            ? 'Choose an action below to get started. Its result will stay here.'
+            ? 'Pick something below to start. What comes back stays here.'
             : surface.automations.length > 0
-              ? 'Manage this pack’s trigger-driven recipes below.'
-              : 'This pack has no available workspace actions.')
+              ? 'Look after the Recipes this Pack starts on its own, below.'
+              : 'This Pack has nothing you can do here.')
         + '</p>';
     }
     return '';
@@ -977,7 +977,7 @@ export const mountPackAppView = (
           referenceId: automation.recipe_id,
           href: serializeShellRoute('automation', automation.recipe_id),
           className: 'pack-app-automation-manage',
-          ariaLabel: `Manage automation for ${automation.name} (${automation.recipe_id})`,
+          ariaLabel: `Look after what runs on its own for ${automation.name} (${automation.recipe_id})`,
           attributes: { [PACK_APP_AUTOMATION_ATTR]: automation.recipe_id },
         })}
       </article>
@@ -998,13 +998,13 @@ export const mountPackAppView = (
     const automations = renderAutomations();
     if (opts.openRunModal === undefined) return automations;
     return renderRunnableRow(
-      'Find and review',
-      'Choose a record or period, then keep the returned detail in this workspace.',
+      'Find and look at things',
+      'Pick a record or a time, and what comes back stays here.',
       surface.lookups,
       'lookup',
     ) + renderRunnableRow(
-      'Get work done',
-      'Complete a business task, review its receipt, and return to an updated view.',
+      'Get things done',
+      'Finish a job, look at what it did, and come back to an updated page.',
       surface.operations,
       'action',
     ) + automations;
@@ -1016,7 +1016,7 @@ export const mountPackAppView = (
   const renderMissing = (): string => {
     if (surface.missing.length === 0) return '';
     return `<p class="pack-app-missing" ${PACK_APP_MISSING_ATTR}="" role="alert">`
-      + `${surface.missing.length === 1 ? 'One recipe this pack ships is' : `${surface.missing.length} recipes this pack ships are`}`
+      + `${surface.missing.length === 1 ? 'One Recipe this Pack brings is' : `${surface.missing.length} Recipes this Pack brings are`}`
       + ` not installed on this server: ${escapeHtml(surface.missing.join(', '))}.`
       + ' Reinstall the pack from Manage to restore them.</p>';
   };
@@ -1127,7 +1127,7 @@ export const mountPackAppView = (
       // The operations row is gated on this same caller, so a rendered button
       // whose open path is unwired means the two disagree — say so rather than
       // absorbing the press.
-      error = 'This view cannot open a run on this server.';
+      error = 'This page cannot open a run on this server.';
       paint();
       return;
     }
@@ -1384,7 +1384,7 @@ export const mountPackAppView = (
       // a named refusal is both.
       if (entry === undefined) {
         error = id === null
-          ? 'That control is missing its target — reopen this pack.'
+          ? 'That button does not know what it points at. Open this Pack again.'
           : `“${id}” is no longer in this pack’s installed roster. Reopen this pack, or reinstall it from Manage.`;
         paint();
         return;

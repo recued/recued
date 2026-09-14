@@ -25,6 +25,7 @@
 import {
   TRANSPARENCY_REDACTION_TIERS,
 } from './transparency-stream/redaction.js';
+import { CHAT_HISTORY_SOURCES, CHAT_HISTORY_VENDORS } from './chat-history-filters.js';
 
 /** D-262 slice 4 — how a reply gets spoken.
  *
@@ -208,6 +209,22 @@ export const INSTANCE_PREFS = {
       'off to get the desktop chat behaviour instead, where the note waits ' +
       'as an attachment so you can add text or change your mind. Typing ' +
       'anything in the box already suspends auto-send for that turn.',
+  },
+  'ui.chat.history.source': {
+    type: 'string', default: 'all', allowed: CHAT_HISTORY_SOURCES,
+    description: 'Remember the Chats source filter for this paired client.',
+  },
+  'ui.chat.history.vendor': {
+    type: 'string', default: 'all', allowed: CHAT_HISTORY_VENDORS,
+    description: 'Remember the Chats Messenger vendor filter for this paired client.',
+  },
+  'ui.chat.history.needs_attention': {
+    type: 'boolean', default: false,
+    description: 'Show only Messenger chats with connection or delivery problems.',
+  },
+  'ui.chat.history.scope': {
+    type: 'string', default: 'all', allowed: ['all', 'current'],
+    description: 'Search all matching chats or only the currently open conversation.',
   },
   'ui.voice.speak_replies': {
     type: 'string',

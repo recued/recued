@@ -60,13 +60,13 @@ const TIER_LABEL: Record<OperationRiskTier, string> = {
 const approvalPhrase = (tier: OperationRiskTier): string => {
   switch (RISK_APPROVAL_FLOOR[tier]) {
     case 'never':
-      return 'runs without asking';
+      return 'runs without asking you';
     case 'ask':
-      return 'asks before each action';
+      return 'asks you before it does anything';
     case 'always':
-      return 'always asks, every time';
+      return 'asks you every single time';
     default:
-      return 'asks before each action';
+      return 'asks you before it does anything';
   }
 };
 
@@ -157,8 +157,8 @@ export const renderPackPermissionPreview = (
   const note = doc.createElement('p');
   note.className = 'pack-permission-preview-note';
   note.textContent =
-    'Not installed — nothing is granted yet. This is what installing would allow, '
-    + 'and you choose the access level during install.';
+    'Not installed, so nothing is allowed yet. This is what installing it would let it do, '
+    + 'and you choose how much it may do while you install it.';
   root.appendChild(note);
 
   if (model.tiers.length > 0) {
@@ -185,7 +185,7 @@ export const renderPackPermissionPreview = (
   if (model.connections.length > 0) {
     const heading = doc.createElement('h4');
     heading.className = 'pack-permission-preview-heading';
-    heading.textContent = 'Accounts it connects to';
+    heading.textContent = 'Accounts it uses';
     root.appendChild(heading);
 
     const list = doc.createElement('ul');

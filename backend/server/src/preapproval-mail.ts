@@ -113,6 +113,33 @@ export const createPreapprovalMail = (deps: {
         children, child_inventory: { complete: true }, nested_recipe: null,
         label: `Send: ${payload.subject}`, detail: `From ${mail.accountEmail} · To ${payload.to.join(', ')}` };
     },
+    /** D-264 — refuse to SCHEDULE a send from a mailbox that cannot send.
+     *
+     *  Reachable since D-264: compose now opens for a draft-only mailbox, so a
+     *  draft can exist against an instance with no outbound path. The dialog
+     *  disables Schedule for such a sender, but the dialog is display — this
+     *  rpc is the enforcement point, and a caller reaching `preapproval.prepare`
+     *  directly would otherwise get a reviewed execution that cannot run.
+     *
+     *  ⛔ Reads `collection.sendCapable` — the SAME field `MailCollection.send`
+     *  gates on at dispatch, not a second opinion about it. Two capability
+     *  predicates over one fact is how a bind-time refusal and a runtime gate
+     *  come to disagree; there is one fact here and both ends read it.
+     *
+     *  ⚠ This is a PREPARE-time check and cannot be the only one. A grant can
+     *  be revoked between approval and `run_at`, which is why the dispatch-time
+     *  gate in `MailCollection.send` stays load-bearing rather than being
+     *  treated as already satisfied by this. */
+    assertCanSend(slug: string): void {
+      const collection = deps.registry.get('mail', slug) as MailCollection | undefined;
+      if (!collection) {
+        fail(`This draft is saved in mail instance '${slug}', which is no longer connected.`);
+      }
+      if (!collection!.sendCapable) {
+        fail('This mailbox can save drafts but cannot send. '
+          + 'Connect outbound sending for it in Settings → Connections, then schedule again.');
+      }
+    },
     async checkReady(plan: PreparedFutureExecution): Promise<void> {
       for (const member of plan.members) {
         const snapshot = readReviewedFileSnapshot(member.dispatch_snapshot);

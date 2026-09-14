@@ -129,12 +129,44 @@ export const replace: TransformFn = (p) => {
 
 export const template: TransformFn = (p) => str(p.template);
 
+/** ⛔⛔ THE BUDGET IS THE CONTRACT: the result must never be longer than
+ *  `max_length`. The previous implementation could return FIVE TIMES it.
+ *
+ *  `input.slice(0, max - suffix.length)` goes NEGATIVE whenever `max` is smaller
+ *  than the suffix, and `String.prototype.slice` reads a negative end as an
+ *  offset from the END of the string — so it kept nearly everything and then
+ *  appended the suffix on top. Measured on the old code with the DEFAULT suffix:
+ *  `truncate({ input: 'abcdefgh', max_length: 2 })` returned `'abcdefg...'`,
+ *  ten code units for a budget of two; `max_length: 0` returned eight.
+ *  ⚠ The two corpus callers at `max_length: 2` pass `suffix: ''` and so never
+ *  tripped it, which is exactly why it survived — the defect is invisible until
+ *  someone omits the suffix and takes the default.
+ *
+ *  ⛔ AND THE CUT MUST FALL ON A CODE POINT. Slicing by UTF-16 unit can land
+ *  between the halves of a surrogate pair and emit a lone surrogate — a string
+ *  that is not merely wrong but ill-formed (`.isWellFormed() === false`), which
+ *  then propagates into whatever consumes the preview.
+ *
+ *  When the budget cannot fit the suffix we drop the SUFFIX, not the content:
+ *  at that size there is no room for a truncation marker, and returning some of
+ *  the value beats returning a marker and none of it. */
+const sliceCodePoints = (s: string, end: number): string => {
+  if (end <= 0) return '';
+  if (end >= s.length) return s;
+  const cut = s.slice(0, end);
+  const last = cut.charCodeAt(cut.length - 1);
+  // A high surrogate at the cut has lost its partner — drop it.
+  return last >= 0xd800 && last <= 0xdbff ? cut.slice(0, -1) : cut;
+};
+
 export const truncate: TransformFn = (p) => {
   const input = str(p.input);
   const max = Number(p.max_length);
   if (isNaN(max) || input.length <= max) return input;
+  if (max <= 0) return '';
   const suffix = str(p.suffix ?? '...');
-  return input.slice(0, max - suffix.length) + suffix;
+  if (suffix.length >= max) return sliceCodePoints(input, max);
+  return sliceCodePoints(input, max - suffix.length) + suffix;
 };
 
 /** Common named HTML entities — the set that actually appears in vendor

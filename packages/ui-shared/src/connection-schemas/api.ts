@@ -40,13 +40,13 @@ const ifAuth = (...types: readonly string[]): (v: Record<string, string>) => boo
 export const apiSchema: ConnectionSchema = {
   kind: 'api',
   label: 'HTTP API',
-  description: 'Connect to an online app or service through its web API, signed in with an API key, a username and password, or OAuth.',
+  description: 'Connect to an online service, signing in with a key, a username and password, or by clicking Authorize.',
   fields: [
     {
       key: 'name',
       label: 'Name',
       type: 'identifier',
-      help: 'Lowercase identifier used in recipes (e.g. `hubspot`, `hubspot-sandbox`).',
+      help: 'A short name you use in Recipes, in lower case. For example `hubspot` or `hubspot-sandbox`.',
       placeholder: 'hubspot',
     },
     {
@@ -60,7 +60,7 @@ export const apiSchema: ConnectionSchema = {
       label: 'Base URL',
       type: 'url',
       placeholder: 'https://api.hubapi.com',
-      help: 'Root URL for every request; recipe ingredients append paths.',
+      help: 'The address every request starts from. Recipes add the rest.',
     },
     // Vendor identity tag for API-key vendors without a registered vendor
     // schema (Stripe, Exa, …). Hidden + optional: the plain bare-api path
@@ -128,7 +128,7 @@ export const apiSchema: ConnectionSchema = {
       label: 'Headers',
       type: 'header-list',
       showWhen: ifAuth('header'),
-      help: 'Sent on every call. Add one per credential header — most APIs need just one (e.g. X-API-Key).',
+      help: 'Sent every time. Add one line per header. Most services need only one, such as X-API-Key.',
     },
     // Body-field — credentials the vendor reads from the JSON request BODY
     // rather than a header. The only auth type here that CANNOT be verified at
@@ -138,7 +138,7 @@ export const apiSchema: ConnectionSchema = {
       label: 'Request-body credentials',
       type: 'body-field-list',
       showWhen: ifAuth('body_field'),
-      help: 'Sent inside the JSON body of the operations that ask for them by name '
+      help: 'Sent inside the request itself, for the operations that ask for it by name '
         + '(e.g. Plaid\u2019s access_token). \u26a0 Recued cannot check these when you '
         + 'save \u2014 the health probe carries no body, so this connection stays '
         + '\u201cunknown\u201d until an operation uses it.',
@@ -173,7 +173,7 @@ export const apiSchema: ConnectionSchema = {
       showWhen: ifAuth('request_signature'),
       help: 'Keys the signature and is never transmitted. \u26a0 If calls fail auth, check '
         + 'this value and your machine\u2019s clock \u2014 requests carry a timestamp the '
-        + 'provider rejects when it drifts more than a few seconds.',
+        + 'refused if it is more than a few seconds out.',
     },
     // Query
     {
@@ -211,9 +211,9 @@ export const apiSchema: ConnectionSchema = {
       // an unknown vendor lands on, where nobody can look the answer up — did
       // not.
       help:
-        'Filled automatically when you click Authorize below. Paste one only if '
-        + 'you already hold a refresh token for this app; the adapter then mints '
-        + 'fresh access tokens from it.',
+        'Recued fills this in when you click Authorize below. Only paste one yourself if '
+        + 'you already have one for this app. Recued then uses it to get '
+        + 'fresh keys as it needs them.',
     },
     {
       key: 'auth.client_id',
@@ -227,7 +227,7 @@ export const apiSchema: ConnectionSchema = {
       type: 'secret',
       optional: true,
       showWhen: ifAuth('oauth2_refresh'),
-      help: 'Some providers (PKCE / public clients) omit this. Leave blank if your provider does not require it.',
+      help: 'Some services do not use this. Leave it empty if yours does not ask for one.',
     },
     {
       key: 'auth.token_endpoint',
@@ -250,14 +250,14 @@ export const apiSchema: ConnectionSchema = {
       type: 'text',
       showWhen: ifAuth('atproto_session'),
       placeholder: 'alice.bsky.social',
-      help: 'Your account handle or DID. Set Base URL to your PDS (https://bsky.social for Bluesky).',
+      help: 'Your account name. Set the address to your own server, or https://bsky.social for Bluesky.',
     },
     {
       key: 'auth.app_password',
       label: 'App Password',
       type: 'secret',
       showWhen: ifAuth('atproto_session'),
-      help: 'An APP password, not your account password — create one in your account settings and revoke it there to cut access. Recued exchanges it for a short-lived session and keeps it so an expired session can renew itself without you.',
+      help: 'An APP password, not the one you sign in with. Make one in your account settings, and turn it off there to cut Recued off. Recued swaps it for a short session, and keeps it so the session can renew itself.',
     },
     // OAuth2 client credentials. This secret is mandatory for the
     // machine-to-machine grant, unlike public-client refresh-token flows.
@@ -266,7 +266,7 @@ export const apiSchema: ConnectionSchema = {
       label: 'Client Secret',
       type: 'secret',
       showWhen: ifAuth('oauth2_client_credentials'),
-      help: 'The application secret used only by the trusted connection adapter to mint short-lived access tokens.',
+      help: 'The app secret. Only Recued uses it, to get short-lived keys.',
     },
     {
       key: 'auth.scope',
@@ -274,7 +274,7 @@ export const apiSchema: ConnectionSchema = {
       type: 'text',
       optional: true,
       showWhen: ifAuth('oauth2_client_credentials'),
-      help: 'Optional OAuth scope string requested during token exchange.',
+      help: 'What to ask permission for. You can leave this empty.',
     },
     // R14 — the two fields that let the in-app "Authorize" consent dance run
     // for ANY vendor (not just the registered ones). Optional: leave blank and
@@ -286,7 +286,7 @@ export const apiSchema: ConnectionSchema = {
       optional: true,
       showWhen: ifAuth('oauth2_refresh'),
       placeholder: 'https://oauth.example.com/authorize',
-      help: 'Optional. The provider consent URL. Fill it (+ Scopes) to authorize in-app instead of pasting a refresh token.',
+      help: 'The address where you say yes. Fill this in, and the scopes, to sign in here instead of pasting a key.',
     },
     {
       key: 'auth.scopes',
@@ -295,7 +295,7 @@ export const apiSchema: ConnectionSchema = {
       optional: true,
       showWhen: ifAuth('oauth2_refresh'),
       placeholder: 'read write',
-      help: 'Optional. Space-separated OAuth scopes requested during in-app authorization.',
+      help: 'What to ask permission for, separated by spaces. You can leave this empty.',
     },
   ],
   probe: { method: 'OPTIONS', path: '/' },

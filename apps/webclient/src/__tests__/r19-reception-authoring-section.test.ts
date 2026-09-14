@@ -291,7 +291,7 @@ describe('R19 Slice 2 — mountReceptionAuthoringSection', () => {
     });
     await flush();
     const html = collectHtml(host);
-    expect(html).toContain('Could not load the page');
+    expect(html).toContain('Recued could not load the page');
     // No submittable form → no blank-overwrite path; the back-link remains.
     expect(html).not.toContain('data-action="reception-form-submit"');
     expect(html).not.toContain('data-kind="reception_page"');

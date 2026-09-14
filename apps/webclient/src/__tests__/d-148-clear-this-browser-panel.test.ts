@@ -521,7 +521,7 @@ describe('D-148 § A.4.1 — mountClearThisBrowserPanel: state machine', () => {
     let foundOldCopy = false;
     walk(host, (n) => {
       if (n.className.includes('clear-this-browser-help')) {
-        if (n.textContent.includes('may have been wiped before the error')) {
+        if (n.textContent.includes('Some of it may already be gone')) {
           foundSubtitle = true;
         }
         if (n.textContent.includes('No state was changed')) {

@@ -277,7 +277,7 @@ export const createFoundationalOAuthContinuity = (
     reloadStore.retire();
     updateWork({
       label: `${flow.providerLabel} sign-in needs attention`,
-      returnLabel: 'Review sign-in',
+      returnLabel: 'Look at this sign-in',
       phase: 'result_ready',
     });
     publish({ ...flow, status: 'failed', error });
@@ -363,7 +363,7 @@ export const createFoundationalOAuthContinuity = (
       ) {
         reloadStore.retire();
         throw new Error(
-          'Couldn’t preserve this sign-in safely through a reload. Nothing was sent to the server; start sign-in again.',
+          'Recued could not hold on to this sign-in through a reload. Nothing was sent to your server. Start signing in again.',
         );
       }
       updateWork({ label: `Finishing ${flow.providerLabel} connection` });
@@ -376,8 +376,8 @@ export const createFoundationalOAuthContinuity = (
       active = null;
       reloadStore.retire();
       updateWork({
-        label: `${flow.providerLabel} connected — view next steps`,
-        returnLabel: 'View connection',
+        label: `${flow.providerLabel} is connected — see what to do next`,
+        returnLabel: 'See the Connection',
         phase: 'result_ready',
       });
       publish({
@@ -430,7 +430,7 @@ export const createFoundationalOAuthContinuity = (
       status: 'failed',
       error: duringExchange
         ? `This tab reloaded while Recued may have been saving ${flow.slug}. Check the server before signing in again.`
-        : 'This tab reloaded before sign-in finished. Close the old sign-in window if it is still open, then start again.',
+        : 'This tab reloaded before you finished signing in. Close the old sign-in window if it is still open, then start again.',
       reloadInterruption: {
         phase: interrupted.phase,
         phaseStartedAt: interrupted.phaseStartedAt,
@@ -440,10 +440,10 @@ export const createFoundationalOAuthContinuity = (
       workLease = options.beginWork?.({
         id: `connections:oauth:${flow.id}`,
         label: duringExchange
-          ? `Check interrupted ${flow.providerLabel} sign-in`
+          ? `Recued was stopped while checking your ${flow.providerLabel} sign-in`
           : `${flow.providerLabel} sign-in was interrupted`,
         returnHref: flow.returnHref,
-        returnLabel: duringExchange ? 'Verify connection' : 'Restart sign-in',
+        returnLabel: duringExchange ? 'Check the Connection' : 'Start signing in again',
       }) ?? null;
       updateWork({ phase: 'result_ready' });
     } catch {
@@ -525,7 +525,7 @@ export const createFoundationalOAuthContinuity = (
       };
       active?.abort.abort();
       if (active !== null) closePopupQuietly(active.popup);
-      finishFailed(flow, 'Sign-in cancelled. No account was connected.');
+      finishFailed(flow, 'You stopped signing in. No account was connected.');
       return true;
     },
     takeTerminal(flowId) {

@@ -1,30 +1,33 @@
-/** D-192 remote byte-fetch (follow-on B) — the Google Drive vendor resolver.
- *
- *  A Drive mirror row's `remote_id` is the stable file id (the declaration maps
- *  `remote_id: 'id'`), so a byte read is one authenticated
- *  `GET drive/v3/files/{id}?alt=media`. `supportsAllDrives=true` matches the list
- *  walk (which mirrors shared-drive files too), so a shared-drive file downloads.
- *
- *  ONE per-vendor gap the resolver owns: a Google-NATIVE doc (Docs / Sheets /
- *  Slides, `mimeType` = `application/vnd.google-apps.*`) has no binary content —
- *  `alt=media` 403s `fileNotDownloadable`; the bytes only exist via `files/{id}/
- *  export` into a chosen format. That format choice + the export call are out of
- *  v1 scope, so a native doc is `remote_unresolvable` (honest + permanent — a
- *  per-row gap, exactly like Notion's prong-2 property files), detected off the
- *  mirror's `meta.mime_type` BEFORE the fetch. Binary files (PDF / image / …)
- *  download normally.
- *
- *  Design: D-192. */
-
-import { RpcError } from '@recued/contracts';
-
-import type { RemoteFileByteResolver } from '../remote-file-byte-resolver.js';
+/** Google Drive implements the unified file download contract. Binary files
+ * use alt=media; native documents advertise and return a portable export.
+ * Both transient reads and explicit retained imports use this same adapter.
+ * https://developers.google.com/workspace/drive/api/guides/ref-export-formats */
+import { RpcError, type FileMetaProjection } from '@recued/contracts';
+import type { RemoteFileByteResolver, RemoteFileByteRequest, RemoteFileDownload } from '../remote-file-byte-resolver.js';
 import type { FileFetch } from '../../../file-source-adapters/index.js';
 import { bearerTokenOrThrow, fetchRemoteBytes } from './http-bytes.js';
 
 const DRIVE_API = 'https://www.googleapis.com/drive/v3';
-/** The `mimeType` prefix of every Google-native (export-only) doc. */
-const GOOGLE_NATIVE_MIME_PREFIX = 'application/vnd.google-apps.';
+const GOOGLE_EXPORT_MAX_BYTES = 10 * 1024 * 1024;
+const EXPORTS: Readonly<Record<string, { extension: string; mime_type: string }>> = {
+  'application/vnd.google-apps.document': {
+    extension: '.docx', mime_type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  },
+  'application/vnd.google-apps.spreadsheet': {
+    extension: '.xlsx', mime_type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  },
+  'application/vnd.google-apps.presentation': {
+    extension: '.pptx', mime_type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  },
+};
+
+const describe = (meta: FileMetaProjection): RemoteFileDownload => {
+  if (!meta.mime_type?.startsWith('application/vnd.google-apps.')) return {};
+  const format = EXPORTS[meta.mime_type];
+  if (!format) return { unavailable_reason: 'This Google file cannot be exported here. Download it from Google Drive, then upload it.' };
+  const filename = meta.filename.toLowerCase().endsWith(format.extension) ? meta.filename : meta.filename + format.extension;
+  return { export_as: { filename, mime_type: format.mime_type } };
+};
 
 export interface GoogleRemoteByteResolverDeps {
   fetchImpl: FileFetch;
@@ -33,24 +36,24 @@ export interface GoogleRemoteByteResolverDeps {
 /** Build the `google` `RemoteFileByteResolver`. */
 export const buildGoogleRemoteByteResolver = (
   deps: GoogleRemoteByteResolverDeps,
-): RemoteFileByteResolver => async (req) => {
-  // A native Google doc has no `alt=media` bytes — permanently unresolvable in v1
-  // (export-into-format is out of scope). Guard off the mirror mime BEFORE the
-  // fetch so the failure is the accurate `remote_unresolvable`, not a bare 403.
-  if (req.meta.mime_type?.startsWith(GOOGLE_NATIVE_MIME_PREFIX)) {
-    throw new RpcError(
-      'remote_unresolvable',
-      `google native doc '${req.remote_id}' (${req.meta.mime_type}) has no direct byte download (export-only)`,
-      422,
-    );
-  }
+): RemoteFileByteResolver => Object.assign(async (req: RemoteFileByteRequest) => {
+  const download = describe(req.meta);
+  if (download.unavailable_reason) throw new RpcError('remote_unresolvable', download.unavailable_reason, 422);
+  const exported = download.export_as;
   const token = bearerTokenOrThrow(req.cred, 'google');
-  return fetchRemoteBytes({
+  const result = await fetchRemoteBytes({
     fetchImpl: deps.fetchImpl,
-    url: `${DRIVE_API}/files/${encodeURIComponent(req.remote_id)}?alt=media&supportsAllDrives=true`,
+    url: `${DRIVE_API}/files/${encodeURIComponent(req.remote_id)}` + (exported
+      ? `/export?mimeType=${encodeURIComponent(exported.mime_type)}`
+      : '?alt=media&supportsAllDrives=true'),
     headers: { authorization: `Bearer ${token}` },
-    maxBytes: req.maxBytes,
+    maxBytes: exported ? Math.min(req.maxBytes, GOOGLE_EXPORT_MAX_BYTES) : req.maxBytes,
     vendorLabel: 'google',
     ref: req.remote_id,
   });
-};
+  if (!exported) return result;
+  if (result.mime_type && result.mime_type.toLowerCase() !== exported.mime_type) {
+    throw new RpcError('remote_fetch_failed', 'Google returned a different file format than requested.', 502);
+  }
+  return { bytes: result.bytes, ...exported };
+}, { describe });

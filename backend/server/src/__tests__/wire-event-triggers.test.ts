@@ -191,10 +191,15 @@ describe('composeEventTriggers', () => {
   });
 
   it('stores the first execution error message on failure', async () => {
+    // ⛔ D-268 — THE CODE DECIDES WHETHER THE TRIGGER SURVIVES THIS FAILURE. An
+    // error with no code is UNCLASSIFIED and disarms at the first occurrence
+    // (fail closed: nobody has decided whether waiting would help), so a
+    // code-less fixture would stop testing `last_error` and start testing the
+    // breaker. The subject here is the stored message; the code keeps it that.
     vi.mocked(handleExecute).mockResolvedValueOnce({
       ...okResult,
       success: false,
-      errors: [{ message: 'boom' }],
+      errors: [{ message: 'boom', code: 'NETWORK_ERROR' }],
       steps: [],
       duration_ms: 0,
     } as never);
@@ -222,7 +227,10 @@ describe('composeEventTriggers', () => {
       .mockResolvedValueOnce({
         ...okResult,
         success: false,
-        errors: [{ message: 'boom' }],
+        // D-268 — as above: an uncoded failure disarms, and the disarm emits its
+        // own `automation_rule_changed`, which would make this a 4-emit test
+        // about the breaker rather than a 3-emit test about `reactive_fire`.
+        errors: [{ message: 'boom', code: 'NETWORK_ERROR' }],
       } as never);
     seedTrigger(store);
     const bundle = compose()!;
@@ -245,6 +253,26 @@ describe('composeEventTriggers', () => {
       kind: 'reactive_fire',
       recipe_id: 'r1',
     });
+  });
+
+  it('D-268 — an UNCODED failure disarms the trigger and announces it', async () => {
+    // The behaviour the two fixtures above were re-coded to stop exercising,
+    // pinned here at the composition that actually attaches the code. A raw
+    // failure carrying none is unclassified, so it stops at once rather than
+    // running to the 24h cap.
+    vi.mocked(handleExecute).mockResolvedValueOnce({
+      ...okResult, success: false, errors: [{ message: 'boom' }],
+    } as never);
+    seedTrigger(store);
+    const bundle = compose()!;
+
+    handlers[0]!.handler(makeEvent());
+    await bundle.dispatcher.drained();
+
+    expect(store.get('t-1')).toMatchObject({ enabled: false, last_error: 'boom' });
+    expect(eventBus.emit).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'automation_rule_changed' }),
+    );
   });
 
   it('returns trigger deps carrying the live store, dispatcher, and event bus', () => {

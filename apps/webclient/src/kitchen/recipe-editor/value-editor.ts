@@ -19,19 +19,19 @@ export const parseEditorValue = (
   try {
     const parsed: unknown = JSON.parse(raw);
     if (type === 'number' && (typeof parsed !== 'number' || !Number.isFinite(parsed))) {
-      return { error: 'Enter a number or a reference.' };
+      return { error: 'Type a number, or point at something else.' };
     }
-    if (type === 'array' && !Array.isArray(parsed)) return { error: 'Enter a JSON array or a reference.' };
+    if (type === 'array' && !Array.isArray(parsed)) return { error: 'Type a JSON list, or point at something else.' };
     if (type === 'object' && (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed))) {
-      return { error: 'Enter a JSON object or a reference.' };
+      return { error: 'Type a JSON object, or point at something else.' };
     }
-    if (type === 'boolean' && typeof parsed !== 'boolean') return { error: 'Enter true or false.' };
+    if (type === 'boolean' && typeof parsed !== 'boolean') return { error: 'Type true or false.' };
     return { value: parsed };
   } catch {
     // Operation arguments retain their existing plain-text shorthand, but an
     // unfinished JSON container or quoted string must never become plain text.
     if (allowBareText && !/^[\[{"]/.test(raw)) return { value: text };
-    return { error: 'Enter valid JSON (put text in double quotes) or a reference.' };
+    return { error: 'Type JSON Recued can read, with text in double quotes, or point at something else.' };
   }
 };
 
@@ -123,7 +123,7 @@ export const createValueEditor = (options: {
     picker.setAttribute('data-recued-recipe-reference', options.fieldKey);
     const placeholder = doc.createElement('option');
     placeholder.value = '';
-    placeholder.textContent = 'Insert reference…';
+    placeholder.textContent = 'Point at something else…';
     picker.appendChild(placeholder);
     // Populate only when used: hundreds of fields must not each mount hundreds of options.
     const populate = (): void => {

@@ -38,6 +38,7 @@ import type {
   ServerRecentExecution,
   ServerRecentNotification,
   ServerRpcRegistry,
+  ServerPendingAskDetail,
 } from '@recued/contracts';
 // D-161 P3 — actor-lane default + wire-input sanitizer for the aggregate
 // "Recent activity" feed (`execution.recent`).
@@ -77,6 +78,14 @@ export interface HistoryDeps {
    *  `notification.recent` (`listActivitiesByAction('notification_fired')`).
    *  Absent → both return `[]`. */
   auditLog?: AuditLogStore;
+  /** D-270 — resolve one ask's "what will happen" rows. Absent ⇒ no ask carries
+   *  `details` and every card renders exactly as it did before, which is the
+   *  pre-D-270 behaviour and the deliberate fallback.
+   *
+   *  ⚠ Returns null per ask for everything it cannot honestly resolve; the
+   *  handler never distinguishes those nulls, because the owner ruling is that
+   *  an unresolvable case is just an ordinary card. */
+  resolveAskDetails?: (ask: PendingAsk) => Promise<readonly ServerPendingAskDetail[] | null>;
   /** D-158 ask-store read — backs `notification.pending_asks`. Injected
    *  as a thunk over `NotificationBlock.listOpenAsks` so the handler
    *  never holds the ask store directly. Absent → returns `[]`. */
@@ -196,6 +205,18 @@ export const handleNotificationRecent = async (
   };
 };
 
+/** D-270 — above this many open asks, the list omits detail rows entirely.
+ *
+ *  🔑 A CEILING ON A LIST THE LANDING PAGE NEVER HAD. `/ask` resolves one hold
+ *  per page load; this endpoint returns every open ask and the card re-fetches,
+ *  so resolution is a store round-trip per preflight ask per fetch. At an
+ *  owner's real ask volume the cap is never reached; it exists so a pathological
+ *  backlog degrades to the pre-D-270 card instead of to a slow one.
+ *
+ *  ⚠ Omission is SILENT and that is the ruling, not an oversight: an
+ *  unresolvable case is just an ordinary card. */
+export const PENDING_ASK_DETAIL_RESOLVE_MAX = 50;
+
 /** D-169 P2 — currently-open asks (N.5 #4). The ask store returns
  *  oldest-first; this re-sorts newest-first to match the bridge bus
  *  buffer's prepend ordering so the seeded base + live `notification.ask`
@@ -206,8 +227,30 @@ export const handlePendingAsks = async (
   if (!deps.listOpenAsks) return { asks: [] };
   const open = await deps.listOpenAsks();
   const sorted = [...open].sort((a, b) => b.created_at - a.created_at);
+  // D-270 — resolve the detail rows alongside the list.
+  //
+  // ⛔ BOUNDED, BECAUSE THIS IS A LIST AND THE LANDING PAGE WAS NOT. `/ask`
+  // resolves ONE ask on one page load; this returns EVERY open ask and the card
+  // re-fetches, so an unbounded resolve is one store round-trip per open ask per
+  // fetch. Above the cap the rows are simply omitted — the cards stay correct
+  // and fall back to prose, which is the same graceful shape as any other
+  // unresolvable case.
+  //
+  // ⚠ The resolver itself returns null for a non-preflight ask BEFORE any read,
+  // so the common case costs nothing even under the cap.
+  const details = deps.resolveAskDetails !== undefined
+    && sorted.length <= PENDING_ASK_DETAIL_RESOLVE_MAX
+    ? await Promise.all(sorted.map(async (p) => {
+      try {
+        return await deps.resolveAskDetails!(p);
+      } catch {
+        // One unresolvable ask must never cost the owner the whole list.
+        return null;
+      }
+    }))
+    : undefined;
   return {
-    asks: sorted.map((p) => ({
+    asks: sorted.map((p, i) => ({
       ask_id: p.ask_id,
       ...(p.message.title !== undefined ? { title: p.message.title } : {}),
       text: p.message.text,
@@ -226,6 +269,15 @@ export const handlePendingAsks = async (
       // a `'required'` ask would no-op every answer it sent.
       ...(p.note_prompt !== undefined ? { note_prompt: p.note_prompt } : {}),
       ...(p.body !== undefined ? { body: p.body } : {}),
+      // D-270 — and the detail rows, named here for the same reason as the two
+      // fields above: THIS LITERAL IS THE FILTER, so a field it does not name is
+      // dropped however well the server resolved it.
+      // ⛔ `length > 0`, NOT TRUTHINESS. An empty array is truthy in JS, so a
+      // resolver returning `[]` would ship `details: []` — an empty block where
+      // the contract says ABSENT means "render the ordinary card". The current
+      // resolver returns null for that case; this guard is at the boundary that
+      // states the rule, so a future resolver cannot break it quietly.
+      ...(details?.[i]?.length ? { details: details[i] } : {}),
     })),
   };
 };

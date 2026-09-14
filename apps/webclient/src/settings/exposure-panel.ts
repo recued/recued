@@ -287,61 +287,61 @@ const APEX_COPY: Record<
 > = {
   redirect: {
     label: 'Redirect to app.recued.com',
-    subtitle: 'Default — safe for public, always the newest webclient.',
+    subtitle: 'The normal choice. Safe to share, and always the newest Recued.',
   },
   serve_reception: {
     label: 'Serve Reception',
-    subtitle: 'Anonymous visitor intake at the root. Needs /reception public.',
+    subtitle: 'Visitors land on your Reception page. /reception has to be open.',
   },
   serve_webclient: {
     label: 'Serve the webclient',
-    subtitle: "This server's own embedded webclient at the root. Needs /webclient public.",
+    subtitle: "This server serves its own copy of Recued. /webclient has to be open.",
   },
   not_found: {
     label: 'Closed (404)',
-    subtitle: 'Return a generic 404 at the root.',
+    subtitle: 'Show a plain “not found” page.',
   },
 };
 
 const PANEL_COPY = {
   heading: 'Exposure & serving',
   intro:
-    'Choose who reaches this server. Presets snap the whole grid; the per-path grid below is the fine control — the /mcp row enables AI-agent ingress, the /reception row opens anonymous visitor intake.',
+    'Choose who can reach this server. The presets set everything at once. The list below lets you set each part on its own. The /mcp row lets AI apps in. The /reception row lets visitors in.',
   loading: 'Loading exposure state…',
   load_error:
-    "Couldn't load the exposure state. Check your server's connection and retry.",
+    "Recued could not load these settings. Check your server is connected, then try again.",
   preset_legend: 'Preset',
-  grid_legend: 'Per-path access',
+  grid_legend: 'What each part allows',
   grid_col_path: 'Path',
   grid_col_lan: 'LAN',
   grid_col_public: 'Public',
   custom_badge: 'Custom',
-  ddns_hint: 'Configure DDNS first (Settings → Server → Hostnames).',
-  public_mcp_on: 'Public MCP is acknowledged — AI agents can reach /mcp from outside the LAN once the /mcp public bit is on.',
-  public_mcp_off: 'Public MCP is not acknowledged. Enabling /mcp public requires typing the confirmation phrase.',
+  ddns_hint: 'Set up a web address first, under Settings, Server, Hostnames.',
+  public_mcp_on: 'You have agreed to this. AI apps can reach /mcp from outside your network once you switch it on.',
+  public_mcp_off: 'You have not agreed to this yet. To open /mcp you have to type the phrase to confirm.',
   connect_example: 'Connection example…',
-  connect_modal_title: 'Connect an AI agent to this server',
+  connect_modal_title: 'Connect an AI app to this server',
   connect_modal_subtitle:
-    'Paste one of these into your agent, replacing the token placeholder with a '
-    + 'token issued under a contract.',
+    'Paste one of these into your AI app. Put a real key where the placeholder is. Keys come '
+    + 'from an agreement.',
   connect_modal_note:
-    'Reaching the endpoint is not access: what the agent may then do is decided '
-    + 'by its contract, not by this page.',
+    'Being able to reach it is not the same as being allowed in. What the app may do is set '
+    + 'by its agreement, not by this page.',
   connect_modal_close: 'Close',
-  public_mcp_enable: 'Enable public MCP…',
-  public_mcp_revoke: 'Revoke public MCP',
+  public_mcp_enable: 'Let AI apps in from outside…',
+  public_mcp_revoke: 'Shut AI apps out again',
   any_public_note:
-    'At least one path is public — your server is reachable from the Internet. Review the Reachability Doctor.',
+    'Something is open, so your server can be reached from the internet. Have a look at the reachability check.',
   apex_legend: 'Root URL ( / )',
   apex_help:
-    'What a visitor sees at the bare root of your public address. Takes effect immediately.',
-  apex_reception_hint: 'Enable the /reception public bit in the grid above first.',
+    'What someone sees if they just type your address. This takes effect at once.',
+  apex_reception_hint: 'Open /reception in the list above first.',
   apex_webclient_hint:
-    'Enable the /webclient public bit in the grid above first (and deploy a webclient bundle).',
+    'Open /webclient in the list above first, and make sure this server has a copy of Recued to serve.',
   apex_reception_warning:
-    'Reception is set to serve at the root but /reception is not public — the root returns 404 until you enable it above.',
+    'You have chosen Reception, but /reception is not open. People will see “not found” until you open it above.',
   apex_webclient_warning:
-    'The webclient is set to serve at the root but /webclient is not public — the root returns 404 until you enable it above.',
+    'You have chosen Recued, but /webclient is not open. People will see “not found” until you open it above.',
 } as const;
 
 // ════════════════════════════════════════════════════════════════
@@ -1327,7 +1327,7 @@ export const mountExposurePanel = (
         : '';
     const requiredPhrase = m.kind === 'open' ? m.required_phrase : '';
     const promptText =
-      requiredPhrase.length > 0 ? `Type "${requiredPhrase}" to confirm` : 'Type the confirmation phrase to continue';
+      requiredPhrase.length > 0 ? `Type "${requiredPhrase}" to confirm` : 'Type the phrase to confirm';
     const phraseInput = renderPhraseInput(body, promptText, typed, submitting);
     if (m.kind === 'error') renderModalError(body, m.error);
 

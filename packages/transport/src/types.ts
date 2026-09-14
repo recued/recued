@@ -39,6 +39,11 @@ export type TransportVendor = string;
 
 /** One message to send to a vendor surface. */
 export interface OutboundMessage {
+  /** D-265: reject over-budget text instead of trimming, and preserve plain text. */
+  lossless?: boolean;
+  delivery_id?: string;
+  reply_to_message_id?: string;
+  thread_id?: string;
   /** Vendor-surface recipient — a Slack channel id (`C…`) / `@channel`,
    *  or a Telegram numeric `chat_id` / `@channelname`. */
   recipient: string;
@@ -53,11 +58,23 @@ export interface OutboundMessage {
   link_url?: string;
 }
 
+/** A verified, private local file. The caller owns its lifetime until send
+ * resolves. Transports stream the bytes and never interpret the path as a URL. */
+export interface OutboundAttachment extends Omit<OutboundMessage, 'text' | 'title' | 'link_url'> {
+  path: string;
+  filename: string;
+  mime_type: string;
+  size: number;
+  /** Recheck authority immediately before every network phase, including the
+   * publication step of a staged upload. May throw to prevent the request. */
+  beforeSend?: () => Promise<void>;
+}
+
 /** Closed taxonomy of a send failure. `vendor_error` is a well-formed
  *  HTTP 200 carrying the vendor's own `ok: false` envelope;
- *  `invalid_request` is a request the transport refuses to send before
- *  any network call — e.g. an interactive-prompt callback payload over
- *  the vendor's size limit (D-158 P2). */
+ *  `invalid_request` is a request refused before sending or definitively
+ *  rejected by the vendor (for example an oversized file). It never means an
+ *  ambiguous failure after the vendor may have published the message. */
 export type TransportErrorKind =
   | 'timeout'
   | 'network'
@@ -70,16 +87,19 @@ export type TransportErrorKind =
 export interface TransportError {
   kind: TransportErrorKind;
   detail: string;
+  /** Vendor-directed minimum wait before a safe retry. */
+  retry_after_ms?: number;
 }
 
 /** Discriminated send outcome — a failure is `{ ok: false }`, never a
  *  thrown exception. */
 export type TransportSendResult =
-  | { ok: true; vendor_message_id?: string }
+  | { ok: true; vendor_message_id?: string; vendor_file_id?: string }
   | { ok: false; error: TransportError };
 
 /** One media object referenced by an inbound vendor payload. */
 export interface MediaRef {
+  filename?: string;
   /** Vendor media kind (`photo`, `voice`, `file`, ...). */
   type: string;
   /** Vendor-declared MIME type, or a conservative fallback. */
@@ -112,6 +132,8 @@ export interface FetchedMedia {
 
 /** A user message extracted from an inbound vendor payload. */
 export interface ParsedInbound {
+  reply_to_message_id?: string;
+  thread_id?: string;
   /** Sender identifier on the vendor surface. */
   from: string;
   /** The message text. */
@@ -191,6 +213,7 @@ export interface Transport {
   /** Send one message. Resolves with a discriminated result — a vendor
    *  / network / auth failure is `{ ok: false }`, never a throw. */
   send(message: OutboundMessage): Promise<TransportSendResult>;
+  sendAttachment?(attachment: OutboundAttachment): Promise<TransportSendResult>;
   /** Parse an already-verified inbound payload into a user message.
    *  Returns `null` for any payload that is not a user message —
    *  control events, bot echoes, non-message updates. */

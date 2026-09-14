@@ -646,7 +646,7 @@ describe('validateStepIdRename', () => {
   it('rejects empty strings (after trim)', () => {
     const r = validateStepIdRename(['a'], 'a', '   ');
     expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.error).toContain('cannot be empty');
+    if (!r.ok) expect(r.error).toContain('cannot be blank');
   });
 
   it('rejects uppercase / non-identifier-start ids', () => {

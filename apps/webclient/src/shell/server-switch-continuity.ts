@@ -177,7 +177,7 @@ const SAFE_SUBVIEW_LABELS: Readonly<Record<string, string>> = {
   seller: 'Seller',
   updates: 'Updates',
   housekeeping: 'Housekeeping',
-  'work-entities': 'Work entities',
+  'work-entities': 'Your things',
   privacy: 'Privacy',
   devices: 'Devices',
   notifications: 'Notifications',
@@ -244,13 +244,13 @@ export const requestServerSwitchReload = (
   options: RequestServerSwitchReloadOptions,
 ): void => {
   if (!validProfileId(options.targetProfileId)) {
-    throw new Error('The selected server profile is no longer valid.');
+    throw new Error('That server is no longer one you can use.');
   }
   if (
     options.recoveryReturnLandingHash !== undefined
     && !validSafeLandingHash(options.recoveryReturnLandingHash)
   ) {
-    throw new Error('The recovery return area is no longer safe.');
+    throw new Error('It is no longer safe to go back there.');
   }
   if (
     options.recoveryReturnContext !== undefined
@@ -259,7 +259,7 @@ export const requestServerSwitchReload = (
       || !isRecoveryReturnContext(options.recoveryReturnContext)
     )
   ) {
-    throw new Error('The recovery return context is no longer valid.');
+    throw new Error('Recued can no longer take you back there.');
   }
   const storage = resolveStorage(options.storage);
   let markerArmed = false;
@@ -302,7 +302,7 @@ export const requestServerSwitchReload = (
       : () => browserLocation.reload());
   if (reload === undefined) {
     if (markerArmed) retireMarker(storage);
-    throw new Error('This tab cannot reload automatically.');
+    throw new Error('This tab cannot reload by itself.');
   }
   try {
     reload();

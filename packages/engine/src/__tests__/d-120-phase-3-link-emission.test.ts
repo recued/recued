@@ -389,6 +389,57 @@ describe('runStep — D-210 write links', () => {
     });
   });
 
+  it('⛔ reaches a NESTED id, which is where every work-entity op keeps it', async () => {
+    // `id_output_field` took a bare key because the two families that declared
+    // `writes` first — mail and calendar — happen to return the written id as a
+    // TOP-LEVEL scalar. Every work-entity op returns `{ <kind>: { id, … } }`,
+    // so the format could not express the shape of the ops that most need it:
+    // a recipe creating a task emitted NO link, and `data.timeline('task:<id>')`
+    // was empty for every owner, forever.
+    const step: RecipeStep = {
+      id: 'create',
+      ingredient: 'task-create',
+      input: { title: 'Ship it' },
+    };
+    const { ctx, emitted } = setup(step, {
+      manifestForSlug: () => writesManifest({
+        slug: 'task-create',
+        output: { task: 'task' },
+        writes: { collection: 'task', id_output_field: 'task.id' },
+      }),
+      executorResult: { task: { id: 'task-7', title: 'Ship it' } },
+    });
+    await runStep(step, ctx);
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0]).toMatchObject({
+      collection: 'task', entity_id: 'task-7', access: 'write',
+    });
+  });
+
+  it('a path that resolves to a non-scalar keys no link, rather than a malformed one', async () => {
+    // ⚠ The guard the flat version already had, now that a path can end
+    // anywhere: a missing segment, a null, or an object is not an id.
+    for (const result of [
+      { task: {} },                    // no id
+      { task: { id: '' } },            // empty
+      { task: { id: { nested: 1 } } }, // not a scalar
+      { task: null },                  // null mid-path
+      {},                              // missing entirely
+    ]) {
+      const step: RecipeStep = { id: 'create', ingredient: 'task-create', input: {} };
+      const { ctx, emitted } = setup(step, {
+        manifestForSlug: () => writesManifest({
+          slug: 'task-create',
+          output: { task: 'task' },
+          writes: { collection: 'task', id_output_field: 'task.id' },
+        }),
+        executorResult: result,
+      });
+      await runStep(step, ctx);
+      expect(emitted).toHaveLength(0);
+    }
+  });
+
   it('emits the write link even though the step reads no data.* ref', async () => {
     // The whole point of removing the `touches.length === 0` early-out:
     // a calendar mutation's input is a bare slug + source_id, no

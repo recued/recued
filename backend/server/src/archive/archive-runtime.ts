@@ -107,6 +107,9 @@ const ARCHIVE_PASSPORT_EXPORTED_BY = 'archive-embed';
  *    3. Pairing / upload-session tables — the pre-pair restore flow writes these
  *       BEFORE this check runs, so they must not count. */
 export const RESTORE_GUARD_NON_USER_TABLES: ReadonlySet<string> = new Set<string>([
+  'file_attachment_sources',
+  'file_attachment_delete_permits',
+  'collection_file_attachment_leases',
   // 1. BOOT-SEEDED set — the EXACT tables a freshly-composed server populates at
   //    install (verified empirically by the `composeStorageContext` fresh-baseline
   //    test, which turns red + names any new seed table that slips in). These ship

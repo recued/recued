@@ -110,7 +110,17 @@ const mkExecutor = (outcomes: Array<Outcome>) => {
       // a pause into a failure with a reason that never mentioned approval.
       errors: envelope.success || envelope.awaiting_approval || envelope.awaiting_peer
         ? []
-        : [{ code: 'test_err', message: 'fail' } as unknown as never],
+        // ⛔ D-268 — THE CODE STOPPED BEING A PLACEHOLDER. It used to be arbitrary
+        // because nothing read it; now it decides whether the failure earns the
+        // breaker's wait or disarms at once. `'test_err'` is in no attribution
+        // table, so it classifies as UNCLASSIFIED and fails closed — which is
+        // correct behaviour and the wrong subject for the counter tests below.
+        // A real transient code keeps each of them testing the counter.
+        // ⚠ AN ENVELOPE-SUPPLIED `errors` WINS. The stub used to hardcode its
+        // error, so a test passing its own was silently handed a different one
+        // — the assertion then described the stub, not the code under test.
+        : ((envelope as { errors?: unknown[] }).errors
+          ?? [{ code: 'NETWORK_ERROR', message: 'fail' }]) as unknown as never[],
       ...(envelope.awaiting_approval ? { awaiting_approval: true as const } : {}),
       ...(envelope.awaiting_peer ? { awaiting_peer: true as const } : {}),
       duration_ms: 1,
@@ -386,6 +396,79 @@ describe('ServerAutoRunHandle.tick', () => {
       auto_disabled: false,
       last_failure_at: 1_000,
     });
+  });
+
+  it('D-268 — an UNCLASSIFIED failure disarms at the first occurrence', async () => {
+    // The counterpart to the coded stub above, pinned rather than merely
+    // accommodated: a code no attribution table knows fails closed, because
+    // nobody has decided whether waiting would help and an unnecessary stop
+    // costs one tap where an unnecessary wait costs five broken cycles.
+    const { execute } = mkExecutor([
+      { success: false, errors: [{ code: 'SOME_CODE_FROM_A_NEWER_BUILD', message: 'x' }] } as never,
+    ]);
+    const handle = createServerAutoRunScheduler({
+      recipeStore: mkRecipeStore([makeReactiveRecipe('r')]),
+      execute, circuitStore: circuit, now: () => 1_000,
+      setTimer: () => 1, clearTimer: () => {},
+    });
+    await handle.refreshRoster();
+    await handle.tick();
+    expect(circuit.get('r')).toMatchObject({
+      consecutive_failures: 1,
+      auto_disabled: true,
+    });
+  });
+
+  it('D-268 — a tripped guard writes NO failure reason over a real one', async () => {
+    // ⛔ `persistCircuitState` writes `last_failure_reason` whenever a reason is
+    // truthy and re-stamps `last_failure_at` whenever the counter is non-zero.
+    // A `conditional` arriving AFTER a real failure would therefore overwrite
+    // that failure's reason and time with a non-failure's, on the row every
+    // kill-switch surface reads — while the counter correctly stayed put, which
+    // is what makes it invisible.
+    const { execute, calls } = mkExecutor([
+      { success: false, errors: [{ code: 'NETWORK_ERROR', message: 'the real one' }] } as never,
+      { success: false, errors: [{ code: 'RECIPE_GUARD_TRIGGERED', message: 'guard tripped' }] } as never,
+    ]);
+    // ⛔ THE CLOCK MUST ADVANCE OR THE SECOND TICK FIRES NOTHING. `tick`
+    // preemptively pushes `next_run_at` past `now`, so a FIXED clock makes every
+    // tick after the first a silent no-op — and this test passed with the fix
+    // removed until the mutation battery caught it.
+    let nowMs = 1_000;
+    const handle = createServerAutoRunScheduler({
+      recipeStore: mkRecipeStore([makeReactiveRecipe('r')]),
+      execute, circuitStore: circuit, now: () => nowMs,
+      setTimer: () => 1, clearTimer: () => {},
+    });
+    await handle.refreshRoster();
+    await handle.tick();
+    expect(circuit.get('r')).toMatchObject({ consecutive_failures: 1 });
+    nowMs += 60 * 60 * 1_000;
+    await handle.tick();
+
+    // POSITIVE CONTROL: both fires actually happened. Without this the two
+    // assertions below are satisfied by a second tick that never ran.
+    expect(calls).toHaveLength(2);
+
+    const after = circuit.get('r')!;
+    // The counter is untouched by the guard...
+    expect(after.consecutive_failures).toBe(1);
+    // ...and so is the record of what actually went wrong.
+    expect(after.last_failure_reason).toBe('the real one');
+  });
+
+  it('D-268 — a credential failure disarms at the first occurrence', async () => {
+    const { execute } = mkExecutor([
+      { success: false, errors: [{ code: 'OAUTH_REVOKED', message: 'x' }] } as never,
+    ]);
+    const handle = createServerAutoRunScheduler({
+      recipeStore: mkRecipeStore([makeReactiveRecipe('r')]),
+      execute, circuitStore: circuit, now: () => 1_000,
+      setTimer: () => 1, clearTimer: () => {},
+    });
+    await handle.refreshRoster();
+    await handle.tick();
+    expect(circuit.get('r')).toMatchObject({ auto_disabled: true });
   });
 
   it('resets the counter on success (persisted)', async () => {

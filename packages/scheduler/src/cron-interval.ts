@@ -1,3 +1,4 @@
+import { zoneOffsetMsAt } from '@recued/contracts';
 /** Cron interval computation and validation.
  *
  *  `MIN_CRON_INTERVAL_MS` is the floor for scheduled recipe execution
@@ -32,9 +33,45 @@ const cronFieldMatches = (field: string, value: number): boolean => {
   return false;
 };
 
-/** Check if a 5-field cron expression matches a given timestamp. */
-export const cronMatchesAt = (parts: string[], d: Date): boolean => {
-  const fields = [d.getMinutes(), d.getHours(), d.getDate(), d.getMonth() + 1, d.getDay()];
+/** D-269 — the zone a cron expression is READ IN.
+ *
+ *  ⛔⛔ WITHOUT THIS, `0 9 * * *` MEANT "9am WHEREVER THE PROCESS HAPPENS TO
+ *  BE". `Date#getHours()` and friends read the host `TZ`, so the same schedule
+ *  resolved to three different instants on three machines — probed:
+ *
+ *    TZ=UTC                  '0 9 * * *' → 2026-06-15T09:00:00Z
+ *    TZ=Asia/Hong_Kong       '0 9 * * *' → 2026-06-15T01:00:00Z
+ *    TZ=America/Los_Angeles  '0 9 * * *' → 2026-06-15T16:00:00Z
+ *
+ *  🔑 AND UNLIKE THE CHAT CLOCK, NO CLIENT CAN SUPPLY IT PER CALL — a cron
+ *  fires with nobody connected, by definition. It can only come from the zone
+ *  the OWNER declared for the server (D-269 step 1).
+ *
+ *  ⚠ Absent ⇒ host-local, exactly as before. That keeps every existing caller
+ *  and test meaning what it meant; the production callers pass a zone. */
+const zoneLocalFields = (instant: number, timeZone: string | undefined): number[] => {
+  if (timeZone === undefined) {
+    const d = new Date(instant);
+    return [d.getMinutes(), d.getHours(), d.getDate(), d.getMonth() + 1, d.getDay()];
+  }
+  // Shift the instant by the zone's offset and read it back with UTC getters:
+  // the shifted clock IS the zone's wall clock. Exact, and far cheaper than
+  // formatting six fields.
+  const shifted = new Date(instant + zoneOffsetMsAt(instant, timeZone));
+  return [
+    shifted.getUTCMinutes(), shifted.getUTCHours(), shifted.getUTCDate(),
+    shifted.getUTCMonth() + 1, shifted.getUTCDay(),
+  ];
+};
+
+/** Check if a 5-field cron expression matches a given timestamp.
+ *  ⚠ `timeZone` absent ⇒ host-local (the pre-D-269 reading). */
+export const cronMatchesAt = (
+  parts: string[],
+  d: Date,
+  timeZone?: string,
+): boolean => {
+  const fields = zoneLocalFields(d.getTime(), timeZone);
   return parts.every((part, i) => cronFieldMatches(part, fields[i]));
 };
 
@@ -46,14 +83,64 @@ export const nextCronMatch = (
   parts: string[],
   startMs: number,
   maxMinutes = 527_040,
+  /** D-269 — the zone the expression is read in. Absent ⇒ host-local. */
+  timeZone?: string,
 ): number | null => {
   // Align to the start of the current minute
   const d = new Date(startMs);
   d.setSeconds(0, 0);
   let ms = d.getTime();
 
+  // ⛔⛔ THE OFFSET MUST BE CACHED, AND A NAIVE PER-DAY CACHE IS WRONG. Measured:
+  // one `zoneOffsetMsAt` per scanned minute is **63 SECONDS** over the 527,040
+  // iterations this scan allows (patterns like `0 0 29 2 *` reach it), because
+  // the offset comes from `Intl` formatting. But caching one offset per UTC day
+  // is STALE ACROSS THE TRANSITION DAY ITSELF — the shift lands mid-day, and a
+  // 02:30 cron then matched an instant that reads 03:30 locally. My first
+  // version did exactly that and a DST test caught it.
+  //
+  // ⇒ Cache per day, but first ASK WHETHER THE DAY IS UNIFORM: sample the
+  // offset at the day's start, middle and end. Agreement means one offset for
+  // the whole day (every day but two a year); disagreement drops to per-minute
+  // for that day alone — 1,440 calls, exact, and rare enough to cost nothing.
+  // A full-year scan is then ~3,600 Intl calls instead of 527,040.
+  //
+  // ⚠ Three samples cannot PROVE uniformity — a zone shifting twice within one
+  // UTC day would fool them. No zone in the tz database does that, and the
+  // failure mode if one ever did is bounded: a wrong offset for part of one
+  // day, not a wrong rule.
+  const DAY_MS = 86_400_000;
+  let cachedDay = Number.NaN;
+  let dayOffset = 0;
+  let dayUniform = false;
+
+  const offsetAt = (at: number, zone: string): number => {
+    const day = Math.floor(at / DAY_MS);
+    if (day !== cachedDay) {
+      const base = day * DAY_MS;
+      const a = zoneOffsetMsAt(base, zone);
+      const b = zoneOffsetMsAt(base + DAY_MS / 2, zone);
+      const c = zoneOffsetMsAt(base + DAY_MS - 60_000, zone);
+      cachedDay = day;
+      dayUniform = a === b && b === c;
+      dayOffset = a;
+    }
+    return dayUniform ? dayOffset : zoneOffsetMsAt(at, zone);
+  };
+
   for (let i = 0; i < maxMinutes; i++) {
-    if (cronMatchesAt(parts, new Date(ms))) return ms;
+    let fields: number[];
+    if (timeZone === undefined) {
+      const at = new Date(ms);
+      fields = [at.getMinutes(), at.getHours(), at.getDate(), at.getMonth() + 1, at.getDay()];
+    } else {
+      const shifted = new Date(ms + offsetAt(ms, timeZone));
+      fields = [
+        shifted.getUTCMinutes(), shifted.getUTCHours(), shifted.getUTCDate(),
+        shifted.getUTCMonth() + 1, shifted.getUTCDay(),
+      ];
+    }
+    if (parts.every((part, f) => cronFieldMatches(part, fields[f]))) return ms;
     ms += 60_000; // advance one minute
   }
   return null;

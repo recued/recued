@@ -648,7 +648,7 @@ describe('owner operation defaults controller', () => {
     const panel = ctrl.renderForPack(packEntry('stripe-pack')) as unknown as FakeElement;
     expect(findByAttr(panel, OWNER_OPERATION_ATTR)).toBe(panel);
     expect(findAllByAttr(panel, OWNER_OPERATION_ROW_ATTR)).toHaveLength(2);
-    expect(collectTextContent(panel)).toContain('Pack values are the default for every contract');
+    expect(collectTextContent(panel)).toContain('What the Pack says is the starting point everywhere');
     expect(collectTextContent(panel)).toContain('Pack · Automatic');
     const writeRow = findAllByAttr(panel, OWNER_OPERATION_ROW_ATTR).find(
       (row) => row.getAttribute('data-operation-id') === 'acme/invoice.create',
@@ -849,7 +849,7 @@ describe('packs detail ACCESS section integration', () => {
     expect(collectTextContent(access)).toContain('Open Contracts');
   });
 
-  it('renders global Operation defaults outside the per-contract Access section', async () => {
+  it('renders global What it may do, to start with outside the per-contract Access section', async () => {
     const { host, mount } = mountPanel(false, true);
     await mount.whenLoaded();
     mount.clickSelectPack('stripe-pack');
@@ -861,7 +861,7 @@ describe('packs detail ACCESS section integration', () => {
       'operation-defaults',
     )!;
     expect(findByAttr(defaults, OWNER_OPERATION_ATTR)).not.toBeNull();
-    expect(collectTextContent(defaults)).toContain('Owner values replace them globally');
+    expect(collectTextContent(defaults)).toContain('What you say replaces it everywhere');
     expect(findByAttrValue(host, PACKS_DETAIL_SECTION_ATTR, 'access')).toBeNull();
 
     findByAttrValue(host, PACKS_DETAIL_TAB_ATTR, 'access')!.click();
@@ -1015,7 +1015,7 @@ describe('owner operation defaults — a composition that renames its ingredient
     const panel = ctrl.renderForPack(renamingPack()) as unknown as FakeElement | null;
     expect(panel).not.toBeNull();
     expect(findAllByAttr(panel!, OWNER_OPERATION_ROW_ATTR)).toHaveLength(0);
-    expect(collectTextContent(panel!)).toContain('not in the server’s inventory');
+    expect(collectTextContent(panel!)).toContain('does not know this Pack’s operations yet');
   });
 
   /** ⛔ The case the slug fix did NOT reach. A Records pack registers its catalog
@@ -1055,7 +1055,7 @@ describe('owner operation defaults — a composition that renames its ingredient
     await ctrl.refresh();
     const panel = ctrl.renderForPack(renamingPack()) as unknown as FakeElement | null;
     expect(findAllByAttr(panel!, OWNER_OPERATION_ROW_ATTR)).toHaveLength(0);
-    expect(collectTextContent(panel!)).toContain('not in the server’s inventory');
+    expect(collectTextContent(panel!)).toContain('does not know this Pack’s operations yet');
   });
 
   it('a pack that genuinely declares no operations still renders nothing', async () => {

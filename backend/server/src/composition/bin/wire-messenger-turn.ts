@@ -1,69 +1,11 @@
-/** D-160 A.8 step 6 downstream consumer — messenger transport wiring.
- *
- *  `runMessengerTurn` landed on the chat orchestrator with the channel
- *  + transport deliberately UN-wired ("the BYO Slack/Telegram transport
- *  + verified webhook-inbound wiring is the deferred downstream
- *  consumer" — chat-orchestrator.ts `MessengerTurnInput` doc). This
- *  composer is that consumer: it turns a verified inbound Slack /
- *  Telegram USER MESSAGE (already HMAC- / secret-token-checked by the
- *  D-148 P9 webhook port, already determined not to be an ask callback
- *  by the D-163 inbound-answer dispatcher) into one `messenger` turn —
- *  `@recued/messenger` channel build → `channel.ingest(payload)` →
- *  `orchestrator.runMessengerTurn` → the framework delivers the final
- *  answer back over the SAME vendor transport.
- *
- *  Surface binding (the authorization gate). A messenger surface is
- *  bound to ONE configured conversation per vendor — the
- *  `connection.notification.<vendor>` row's recipient field
- *  (`channel_id` / `chat_id`), the same destination notification sends
- *  go to. An inbound message is accepted for a turn ONLY when (a) the
- *  delivery was verified against that CANONICAL vendor row
- *  (`connection_name === vendor`, D-163 I-4 — verification row and
- *  credential row must be the same row) and (b) it arrived in that
- *  configured conversation (Slack `event.channel` / Telegram
- *  `message.chat.id` equals the recipient); anything else — another
- *  channel the bot is in, a stranger DM-ing a public Telegram bot, a
- *  delivery signed by an alternate-named row — is logged + dropped. The turn then runs as the owner
- *  (`actor: 'user_self'`, the D-153 single-user-server invariant), so
- *  the binding gate is what keeps "can message the bot" from becoming
- *  "can drive the server": the owner picks the conversation (their DM
- *  with their BYO bot, a private channel) and membership of that
- *  conversation IS the access boundary. Risk-tier operations stay
- *  gated behind the MESSENGER policy cell + session grants regardless
- *  (D-177).
- *
- *  Decoupling from the webhook response (TR — vendor retry windows).
- *  Slack retries any delivery not answered within ~3 s; Telegram
- *  delivers updates one-at-a-time per webhook and re-sends on failure.
- *  A turn (LLM call + tool loop) runs for seconds-to-minutes, so
- *  `ingest` only parses + gates + ENQUEUES — the turn itself runs on a
- *  per-vendor FIFO queue (one conversation per vendor ⇒ serializing
- *  per vendor keeps turn order = message order without cross-vendor
- *  head-of-line blocking) and the webhook 200s immediately. A vendor
- *  redelivery of the same event is absorbed upstream by the port's
- *  idempotency ledger. Turn failures are logged, never propagated — a
- *  502 would make the vendor re-deliver and re-run a full AI turn.
- *
- *  One conversation, two windows (N.5): the channel is built over the
- *  orchestrator's OWN session-state store (`orchestrator.sessionStore`)
- *  and a deterministic `(vendor, recipient)` session id, so consecutive
- *  messages land in one durable chat session (`runMessengerTurn`
- *  auto-creates it + persists the user rows; assistant-row persistence
- *  is the orchestrator's documented deferral). Keying the session on
- *  the BOUND CONVERSATION — not the vendor alone — means rebinding
- *  `channel_id` / `chat_id` starts a fresh session: a tail built in a
- *  private DM never carries into a later-bound shared channel (codex
- *  HIGH fold).
- *
- *  Media rides the D-172 `received` inbound-file collection when it is
- *  composed (`origin: 'messenger_media'` — the slot D-172 reserved for
- *  exactly this consumer); absent, the channel degrades to its visible
- *  "file ingest is not configured" note.
- *
- *  Spec: D-160 § N.5 / A.5 / A.8 step 6; D-148
- *  § P9 / A.13; D-163 § N.5 / A.1. */
+/** D-265: verified Messenger ingress acknowledges encrypted durable admission.
+ * All surfaces share one session FIFO; delivery and execution have separate
+ * progress. The bound conversation remains the Messenger authority boundary. */
 
+import { createMessengerAccountResolver } from './messenger-account-identity.js';
+import { createMessengerAttachmentSource } from '../../chat-messenger-attachments.js';
 import { messengerConnectionRefusesTurn } from '../../messenger-connection-roles.js';
+import { createHash } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { unlink } from 'node:fs/promises';
 import {
@@ -85,9 +27,9 @@ import {
 /** Accept one verified inbound vendor payload for a messenger turn.
  *  Resolves `true` when the payload is a user message in the bound
  *  conversation and a turn was QUEUED (not run — the turn completes on
- *  the per-vendor queue after this resolves); `false` when the payload
+ *  the shared session queue after this resolves); `false` when the payload
  *  is not a user message, the vendor credential is unresolved, or the
- *  message arrived outside the bound conversation. Never rejects. */
+ *  message arrived outside the bound conversation. Rejects transient admission failures so the source retries before acknowledging. */
 export type MessengerTurnIngest = (
   vendor: TransportVendor,
   connection_name: string,
@@ -135,6 +77,8 @@ export interface ComposeMessengerTurnIngestDeps {
   timeoutMs?: number;
 }
 
+export const credentialKey = (token: string): string => createHash('sha256').update(token).digest('hex');
+
 // D-192 CORE #6 — the per-vendor conversation-shape extraction moved onto the
 // `Transport.parseConversationId` method (Slack `event.channel`, Telegram
 // `message.chat.id`). The turn's binding gate + the D-181 live-control composer
@@ -148,7 +92,11 @@ export const composeMessengerTurnIngest = (
   deps: ComposeMessengerTurnIngestDeps,
 ): MessengerTurnIngest | undefined => {
   const { orchestrator, connectionStore, fileCollection, log } = deps;
-  if (!orchestrator || !connectionStore) return undefined;
+  if (!orchestrator || !connectionStore || !orchestrator.turnQueue) return undefined;
+  const queue = orchestrator.turnQueue;
+  const bridge = orchestrator.messengerBridge;
+  const accountFor = createMessengerAccountResolver(deps.fetchImpl, deps.timeoutMs);
+  const mirrored = (vendor: string): boolean => bridge !== undefined && ['slack', 'telegram', 'discord'].includes(vendor);
 
   // Claim the media scratch dir owner-only before any transport writes into it.
   // A download lands the vendor's photo / voice note / PDF there in PLAINTEXT
@@ -179,6 +127,27 @@ export const composeMessengerTurnIngest = (
     connectionStore,
     ...(deps.keys ? { keys: deps.keys } : {}),
   });
+
+  if (bridge) for (const vendor of ['slack', 'telegram', 'discord']) {
+    bridge.register(vendor, {
+      revision: () => {
+        const row = connectionStore.get('notification', vendor);
+        return createHash('sha256').update(JSON.stringify([
+          row?.auth_ciphertext, row?.config_json, row?.subtype, deps.keys?.state(),
+        ])).digest('hex');
+      },
+      resolve: async () => {
+        if (messengerConnectionRefusesTurn(connectionStore, vendor, vendor)) return null;
+        const credential = await resolveCredential[vendor]();
+        return credential ? { ...credential, account: await accountFor(vendor, credential.token) } : null;
+      },
+      send: (message) => transports[vendor].send(message),
+      ...(fileCollection && transports[vendor].sendAttachment ? {
+        attachments: createMessengerAttachmentSource(fileCollection, deps.downloadDir),
+        sendAttachment: transports[vendor].sendAttachment,
+      } : {}),
+    });
+  }
 
   const fileSink: MessengerMediaFileSink | undefined = fileCollection
     ? {
@@ -221,28 +190,14 @@ export const composeMessengerTurnIngest = (
       }
     : undefined;
 
-  // Per-vendor FIFO — turn order = message order within a conversation;
-  // a failed turn logs and the queue continues.
-  const queueTails = new Map<TransportVendor, Promise<void>>();
-  const enqueue = (vendor: TransportVendor, task: () => Promise<void>): void => {
-    const tail = queueTails.get(vendor) ?? Promise.resolve();
-    const next = tail.then(task).catch((e) => {
-      log?.('warn', `messenger turn failed (${vendor})`, {
-        error: e instanceof Error ? e.message : String(e),
-      });
-    });
-    queueTails.set(vendor, next);
-  };
-
   /** Resolve the vendor credential + run the binding gate against one
    *  payload. Shared by the pre-enqueue acceptance check AND the
    *  queued task's re-check (codex MED fold: a long prior turn must
    *  not leave later queued work running on a token / recipient that
    *  was revoked or rebound while it waited — the task re-resolves
    *  immediately before building the channel and drops on any
-   *  change). A decode throw (locked keys, AEAD failure) is a drop,
-   *  not a 502: the vendor would re-deliver a payload that can't
-   *  resolve any differently right now. Conversation ids are routing
+   *  change). A decode throw (locked keys, AEAD failure) propagates
+   *  before acknowledgement so the source can retry. Conversation ids are routing
    *  identifiers, not secrets — plain equality. */
   const resolveAndGate = async (
     vendor: TransportVendor,
@@ -258,7 +213,7 @@ export const composeMessengerTurnIngest = (
         connection_name,
         error: e instanceof Error ? e.message : String(e),
       });
-      return null;
+      throw new Error('Messenger credentials are temporarily unavailable.');
     }
     if (credential === null) {
       log?.('info', `messenger turn ${stage === 'accept' ? 'skipped' : 'dropped at run'} (${vendor}) — no credential / recipient enrolled`, {
@@ -276,6 +231,59 @@ export const composeMessengerTurnIngest = (
     }
     return credential;
   };
+
+  queue.register('messenger', async (command, turn, assertActive, complete) => {
+    const { vendor, connection_name, payload, binding_key } = command.input as {
+      vendor: string; connection_name: string; payload: unknown; binding_key: string;
+    };
+    if (messengerConnectionRefusesTurn(connectionStore, vendor, connection_name)) throw new Error('Messenger role was revoked.');
+    const credential = await resolveAndGate(vendor, connection_name, payload, 'run');
+    if (!credential) throw new Error('Messenger binding changed before execution.');
+    const account = mirrored(vendor) ? await accountFor(vendor, credential.token) : credentialKey(credential.token);
+    if (mirrored(vendor)) {
+      const sender = await accountFor.senderId(vendor, credential.token);
+      const incoming = transports[vendor].parseInbound(payload);
+      if (sender === incoming?.from) throw new Error('Messenger bot echoes cannot start owner turns.');
+      if (vendor === 'slack' && incoming?.media?.length && !sender) throw new Error('Messenger bot author identity unavailable.');
+    }
+    // Stage-2 accepted jobs pinned the exact credential digest. That evidence
+    // can adopt the old session when the same credential is still configured.
+    const legacyProof = binding_key === credentialKey(credential.token);
+    if (account !== binding_key && !legacyProof) throw new Error('Messenger binding changed before execution.');
+    if (mirrored(vendor) && legacyProof) bridge!.bind(vendor, credential.recipient, account, command.session_id);
+    assertActive();
+    const channel = createMessengerChannel({ transport: transports[vendor],
+      sessionStore: orchestrator.sessionStore, token: credential.token,
+      recipient: credential.recipient, sessionId: command.session_id,
+      ...(fileSink ? { fileSink: { ingest: (input) => fileSink.ingest({ ...input,
+        // Vendor message IDs (especially Telegram's counters) are not global.
+        // Pin the file identity to the same audience/account as its chat.
+        source_id: JSON.stringify([vendor, credential.recipient, account, input.source_id]),
+      }) } } : {}), ...(deps.now ? { now: deps.now } : {}),
+    });
+    const executionChannel = mirrored(vendor) ? { surface: channel.surface,
+      onInbound: channel.onInbound, deliver: async () => { bridge!.kick(); },
+    } : channel;
+    channel.onInbound(async (inbound) => {
+      assertActive();
+      const parsed = transports[vendor].parseInbound(payload);
+      // Slack can include its own thread timestamp on a root message. That
+      // identifies the destination thread, not a reply to itself.
+      const replyTo = parsed?.reply_to_message_id !== parsed?.vendor_message_id ? parsed?.reply_to_message_id : undefined;
+      await orchestrator.runMessengerTurn({ channel: executionChannel, sessionStore: orchestrator.sessionStore,
+        inbound, queue_turn_id: turn, assert_active: assertActive, complete_turn: complete,
+        model_routing_snapshot: command.input.model_routing_snapshot as ReturnType<typeof queue.routing>,
+        ...(replyTo ? { native_reply_to: replyTo, native_reply_vendor: vendor } : {}),
+        native_reply_context: replyTo
+          ? (await bridge?.nativeReply(command.session_id, vendor, replyTo))
+            ?? await queue.nativeReply(command.session_id, vendor, replyTo) : undefined,
+        ...(parsed?.thread_id ? { native_thread_id: parsed.thread_id } : {}),
+      });
+    });
+    try { await channel.ingest(payload); }
+    catch (error) { log?.('warn', `messenger turn failed (${vendor})`, { turn_id: turn }); throw error; }
+    return { turn_id: turn };
+  });
 
   return async (vendor, connection_name, payload) => {
     const transport = transports[vendor];
@@ -307,39 +315,32 @@ export const composeMessengerTurnIngest = (
       return false;
     }
 
-    // Not a user message (control event, bot echo, button press shapes
-    // the answer dispatcher already consumed) — not ours.
-    if (transport.parseInbound(payload) === null) return false;
-
-    // Early acceptance check — cheap refusal before anything queues.
-    if ((await resolveAndGate(vendor, connection_name, payload, 'accept')) === null) {
-      return false;
+    const parsed = transport.parseInbound(payload);
+    if (!parsed) return false;
+    const credential = await resolveAndGate(vendor, connection_name, payload, 'accept');
+    if (!credential) return false;
+    if (!parsed.vendor_message_id) throw new Error('Messenger message has no stable delivery identity.');
+    const binding_key = mirrored(vendor) ? await accountFor(vendor, credential.token) : credentialKey(credential.token);
+    if (mirrored(vendor)) {
+      const sender = await accountFor.senderId(vendor, credential.token);
+      if (sender === parsed.from) return false;
+      if (vendor === 'slack' && parsed.media?.length && !sender) throw new Error('Messenger bot author identity unavailable.');
     }
-
-    enqueue(vendor, async () => {
-      // Re-resolve + re-gate at run time (see resolveAndGate doc) so
-      // the channel is built per message over the FRESH credential —
-      // no token or recipient is held in a long-lived closure.
-      const credential = await resolveAndGate(vendor, connection_name, payload, 'run');
-      if (credential === null) return;
-      const channel = createMessengerChannel({
-        transport,
-        sessionStore: orchestrator.sessionStore,
-        token: credential.token,
-        recipient: credential.recipient,
-        sessionId: messengerSessionId(vendor, credential.recipient),
-        ...(fileSink ? { fileSink } : {}),
-        ...(deps.now ? { now: deps.now } : {}),
-      });
-      channel.onInbound(async (inbound) => {
-        await orchestrator.runMessengerTurn({
-          channel,
-          sessionStore: orchestrator.sessionStore,
-          inbound,
-        });
-      });
-      await channel.ingest(payload);
-    });
+    const native_receipt = { vendor, recipient: credential.recipient, message_id: parsed.vendor_message_id,
+      account: binding_key, ...(parsed.thread_id ? { thread_id: parsed.thread_id } : {}),
+    };
+    if (queue.nativeSession(native_receipt) === null) return false;
+    const session_id = mirrored(vendor)
+      ? bridge!.bind(vendor, credential.recipient, binding_key).session_id
+      : messengerSessionId(vendor, credential.recipient);
+    queue.ensureSession(session_id, `${vendor} · ${credential.recipient}`);
+    const model_routing_snapshot = queue.routing(session_id);
+    await queue.submit({ family: 'messenger', session_id, message: parsed.text,
+      input: { vendor, connection_name, payload, binding_key, model_routing_snapshot },
+      comparison: { vendor, binding_key, from: parsed.from, text: parsed.text, media: parsed.media ?? [],
+        reply_to: parsed.reply_to_message_id ?? null, thread: parsed.thread_id ?? null, model_routing_snapshot },
+      native_receipt,
+    }, `native:${vendor}:${parsed.vendor_message_id}`);
     return true;
   };
 };

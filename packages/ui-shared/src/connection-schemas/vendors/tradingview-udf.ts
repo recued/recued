@@ -32,7 +32,7 @@ const TRADINGVIEW_UDF_FIELDS: readonly ConnectionField[] = apiSchema.fields
         return {
           ...field,
           help:
-            'Lowercase identifier used in recipes (for example `tradingview` '
+            'A short lower-case name you use in Recipes, such as `tradingview` '
             + 'or `market-data`).',
           placeholder: 'tradingview',
         };
@@ -54,7 +54,7 @@ const TRADINGVIEW_UDF_FIELDS: readonly ConnectionField[] = apiSchema.fields
         return {
           ...field,
           optional: false,
-          help: 'TradingView UDF vendor identifier — locked at enrollment.',
+          help: 'TradingView UDF sets this when you connect. You cannot change it.',
         };
       case 'auth.type':
         return {

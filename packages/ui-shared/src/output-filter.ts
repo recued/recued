@@ -236,7 +236,7 @@ export const outputFilterPageConfig = (
   cursor: string,
 ): Record<string, unknown> => {
   if (state.dirty) {
-    throw new Error('Run Search before paging with edited filter values.');
+    throw new Error('Search first, then you can move between pages.');
   }
   const config: Record<string, unknown> = {};
   for (const key of [...descriptor.fields, ...descriptor.hidden]) {

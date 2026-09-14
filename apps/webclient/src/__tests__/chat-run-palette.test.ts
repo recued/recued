@@ -518,7 +518,7 @@ describe('run-palette wire', () => {
 
     const result = collectByAttr(overlay, RUN_PALETTE_RESULT_ATTR)[0]!;
     expect(result.getAttribute('role')).toBe('status');
-    expect(result.textContent).toContain('Couldn’t update auto-run');
+    expect(result.textContent).toContain('Recued could not change that');
     expect(doc.activeElement).toBe(
       collectByAttr(overlay, RUN_PALETTE_ACTION_ATTR)[0],
     );
@@ -598,7 +598,7 @@ describe('run-palette wire', () => {
     const { doc, handle } = mount();
     await tick();
     const overlay = collectByAttr(doc.body, RUN_PALETTE_OVERLAY_ATTR)[0]!;
-    expect(allText(overlay)).toContain('Find a recipe');
+    expect(allText(overlay)).toContain('Find a Recipe');
     handle.destroy();
   });
 
@@ -610,12 +610,12 @@ describe('run-palette wire', () => {
     await tick();
 
     const overlay = collectByAttr(doc.body, RUN_PALETTE_OVERLAY_ATTR)[0]!;
-    expect(allText(overlay)).toContain('No recipes are installed yet.');
+    expect(allText(overlay)).toContain('You have no Recipes yet.');
     expect(collectByAttr(overlay, RUN_PALETTE_SEARCH_ATTR)[0]!.innerHTML).toBe('');
     const browse = collectByAttr(overlay, RUN_PALETTE_ACTION_ATTR).find(
       (action) => action.getAttribute('href') === '#packs',
     );
-    expect(browse?.textContent).toContain('Browse starter packs');
+    expect(browse?.textContent).toContain('Look through starter Packs');
     handle.destroy();
   });
 
@@ -627,7 +627,7 @@ describe('run-palette wire', () => {
     await tick();
 
     const overlay = collectByAttr(doc.body, RUN_PALETTE_OVERLAY_ATTR)[0]!;
-    expect(allText(overlay)).toContain('Couldn’t load recipes.');
+    expect(allText(overlay)).toContain('Recued could not load your Recipes.');
     const retry = collectByAttr(overlay, RUN_PALETTE_ACTION_ATTR).find(
       (action) => action.textContent === 'Try again',
     )!;
@@ -635,7 +635,7 @@ describe('run-palette wire', () => {
     await tick();
 
     expect(recipeList).toHaveBeenCalledTimes(2);
-    expect(allText(overlay)).toContain('Find a recipe');
+    expect(allText(overlay)).toContain('Find a Recipe');
     expect(collectByAttr(overlay, RUN_PALETTE_SEARCH_ATTR)[0]!.innerHTML)
       .toContain('data-ref-picker');
     handle.destroy();

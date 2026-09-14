@@ -780,7 +780,7 @@ describe('D-174 - approval attention top-bar adapter', () => {
     topbar.fireAction({ 'data-action': 'open-attention' });
     expect(topbar.innerHTML).toContain('Finish recovery for Billing CRM');
     expect(topbar.innerHTML).toContain(
-      'Research bridge still needs sign-in attention',
+      'Research bridge still needs signing in',
     );
     expect(topbar.innerHTML).toContain(
       '#connections/others/finish-recovery/profile/profile-home/api/billing-crm',
@@ -790,7 +790,7 @@ describe('D-174 - approval attention top-bar adapter', () => {
     );
     expect(topbar.innerHTML).toContain('Server profile: Home server');
     expect(topbar.innerHTML.indexOf(
-      'Research bridge still needs sign-in attention',
+      'Research bridge still needs signing in',
     )).toBeLessThan(topbar.innerHTML.indexOf(
       'Finish recovery for Billing CRM',
     ));
@@ -839,7 +839,7 @@ describe('D-174 - approval attention top-bar adapter', () => {
     await tick();
     expect(handle.getConnectionRecoveries()).toEqual([]);
     expect(topbar.innerHTML).not.toContain(
-      'Research bridge still needs sign-in attention',
+      'Research bridge still needs signing in',
     );
     topbar.fireAction({ 'data-action': 'open-attention' });
     expect(topbar.innerHTML).toContain(
@@ -902,8 +902,8 @@ describe('D-174 - approval attention top-bar adapter', () => {
     expect(topbar.innerHTML).toContain('>1<');
     topbar.fireAction({ 'data-action': 'open-attention' });
     expect(topbar.innerHTML).toContain(ATTENTION_INACTIVE_PROFILE_RECOVERY_ATTR);
-    expect(topbar.innerHTML).toContain('Office &lt;shared&gt; may still need');
-    expect(topbar.innerHTML).toContain('Last confirmed while active 2 hours ago');
+    expect(topbar.innerHTML).toContain('Office &lt;shared&gt; may still have a connection to fix');
+    expect(topbar.innerHTML).toContain('Last checked while in use, 2 hours ago');
     expect(topbar.innerHTML).toContain('not a live result');
     expect(topbar.innerHTML).toContain('Open Account to review the profile switch');
     expect(topbar.innerHTML).toContain('Review switch');
@@ -915,7 +915,7 @@ describe('D-174 - approval attention top-bar adapter', () => {
       serverProfileLabel: 'Renamed office',
       observedAt: 2 * 60 * 60_000,
     }]);
-    expect(topbar.innerHTML).toContain('Renamed office may still need');
+    expect(topbar.innerHTML).toContain('Renamed office may still have a connection to fix');
 
     topbar.fireAction({
       'data-action': 'review-inactive-connection-recovery',
@@ -992,9 +992,9 @@ describe('D-174 - approval attention top-bar adapter', () => {
     expect(handle.isOpen()).toBe(true);
     await handle.whenLoaded();
     expect(topbar.innerHTML).toContain(ATTENTION_CONNECTION_RECOVERY_REVIEW_ATTR);
-    expect(topbar.innerHTML).toContain('A fresh check found 1 connection recovery');
+    expect(topbar.innerHTML).toContain('A new check found 1 connection to fix');
     expect(topbar.innerHTML).toContain('Finish recovery for fresh-check');
-    expect(topbar.innerHTML).toContain('fresh authoritative list');
+    expect(topbar.innerHTML).toContain('server’s own up-to-date list');
     expect(snapshot).toHaveBeenCalledWith({
       serverProfileId: 'profile-office',
       hasRecoveries: true,
@@ -1036,7 +1036,7 @@ describe('D-174 - approval attention top-bar adapter', () => {
     await handle.whenLoaded();
 
     expect(topbar.innerHTML).toContain('Couldn’t confirm Office server yet');
-    expect(topbar.innerHTML).toContain('no stale connection details were shown');
+    expect(topbar.innerHTML).toContain('Recued showed you nothing out of date');
     expect(topbar.innerHTML).toContain('Office server still needs a fresh recovery check');
     expect(topbar.innerHTML).toContain('Retry check');
     expect(topbar.innerHTML).not.toContain('You&rsquo;re all caught up');
@@ -1050,7 +1050,7 @@ describe('D-174 - approval attention top-bar adapter', () => {
     });
     await handle.whenLoaded();
     expect(topbar.innerHTML).toContain('Office server is clear');
-    expect(topbar.innerHTML).toContain('fresh authoritative check found no');
+    expect(topbar.innerHTML).toContain('A new check found nothing left to fix');
     expect(topbar.innerHTML).toContain('fresh Office server recovery check is complete');
     expect(topbar.innerHTML).not.toContain('You&rsquo;re all caught up');
     expect(settled).toHaveBeenCalledWith('profile-office');
@@ -1208,7 +1208,7 @@ describe('D-174 - approval attention top-bar adapter', () => {
     expect(topbar.innerHTML).not.toContain('Contracts is ready');
     expect(topbar.innerHTML).not.toContain('Back on');
     expect(announcer?.textContent).toBe(
-      'A paused return to Contracts is saved for when you’re ready.',
+      'A paused return to Contracts is saved for when you are ready.',
     );
 
     topbar.fireAction({
@@ -1350,7 +1350,7 @@ describe('D-174 - approval attention top-bar adapter', () => {
 
     topbar.fireAction({ 'data-action': 'open-attention' });
     expect(topbar.innerHTML).toContain('data-phase="failed"');
-    expect(topbar.innerHTML).toContain('Contracts couldn’t be refreshed');
+    expect(topbar.innerHTML).toContain('Contracts could not be brought up to date');
     expect(topbar.innerHTML).toContain('Review Contracts');
     expect(topbar.innerHTML).toContain('Try again');
     expect(ATTENTION_TOPBAR_STYLES).toContain(
@@ -1364,7 +1364,7 @@ describe('D-174 - approval attention top-bar adapter', () => {
       root,
       ATTENTION_RECOVERY_EXCURSION_RETURN_ANNOUNCER_ATTR,
     )?.textContent).toBe(
-      'Contracts couldn’t be refreshed. Review the area or try again.',
+      'Contracts could not be brought up to date. Review the area or try again.',
     );
 
     topbar.fireAction({
@@ -1408,7 +1408,7 @@ describe('D-174 - approval attention top-bar adapter', () => {
     expect(topbar.innerHTML).toContain(
       'return you to the exact place to choose again',
     );
-    expect(topbar.innerHTML).toContain('Review connection');
+    expect(topbar.innerHTML).toContain('Look at the connection');
     expect(topbar.innerHTML).toContain('Review Contracts');
     expect(topbar.innerHTML).not.toContain('Try again');
     expect(ATTENTION_TOPBAR_STYLES).toContain(
@@ -1464,7 +1464,7 @@ describe('D-174 - approval attention top-bar adapter', () => {
     topbar.fireAction({ 'data-action': 'open-attention' });
     expect(topbar.innerHTML).toContain('data-phase="waiting_for_connection"');
     expect(topbar.innerHTML).toContain('data-remediation="connection"');
-    expect(topbar.innerHTML).toContain('Waiting to recheck Mail');
+    expect(topbar.innerHTML).toContain('Waiting to check Mail');
     expect(topbar.innerHTML).toContain('Waiting for connection&hellip;');
     expect(topbar.innerHTML).toContain('aria-busy="true"');
     expect(topbar.innerHTML).toContain('Stop waiting');
@@ -1525,16 +1525,16 @@ describe('D-174 - approval attention top-bar adapter', () => {
 
     topbar.fireAction({ 'data-action': 'open-attention' });
     expect(topbar.innerHTML).toContain('data-remediation="escalated"');
-    expect(topbar.innerHTML).toContain('Still can’t verify Contracts');
+    expect(topbar.innerHTML).toContain('Recued still cannot check Contracts');
     expect(topbar.innerHTML).toContain(
-      'Two recovery attempts couldn’t finish safely in this tab',
+      'Two attempts did not finish safely in this tab',
     );
-    expect(topbar.innerHTML).toContain('stopped the retry loop');
+    expect(topbar.innerHTML).toContain('stopped trying');
     expect(topbar.innerHTML).toContain('Review Contracts');
     expect(topbar.innerHTML).toContain('Review server');
     expect(topbar.innerHTML).toContain('Stop recovery');
     expect(topbar.innerHTML).not.toContain('Try again');
-    expect(topbar.innerHTML).not.toContain('Review connection');
+    expect(topbar.innerHTML).not.toContain('Look at the connection');
     expect(topbar.innerHTML).toContain(
       'aria-label="Review Home &lt;private&gt; before returning to Contracts"',
     );
@@ -1579,10 +1579,10 @@ describe('D-174 - approval attention top-bar adapter', () => {
     );
     expect(topbar.innerHTML).toContain('data-review-target="server"');
     expect(topbar.innerHTML).toContain(
-      'What happened after reviewing Home &lt;private&gt;?',
+      'What happened after you looked at Home &lt;private&gt;?',
     );
     expect(topbar.innerHTML).toContain(
-      'Recued won’t assume the direct review fixed the issue',
+      'Recued will not assume your look at it fixed anything',
     );
     expect(topbar.innerHTML).toContain(
       'Looks resolved &mdash; verify &amp; choose again',
@@ -1664,15 +1664,15 @@ describe('D-174 - approval attention top-bar adapter', () => {
     expect(topbar.innerHTML).toContain(
       'data-server-control-state="running"',
     );
-    expect(topbar.innerHTML).toContain('Server state changed after Pause');
+    expect(topbar.innerHTML).toContain('The server changed after Pause');
     expect(topbar.innerHTML).toContain(
-      'Pause completed, but a newer status from Home &lt;private&gt; reports a different execution state.',
+      'Pause finished, but a newer answer from Home &lt;private&gt; says something different is happening.',
     );
     expect(topbar.innerHTML).toContain(
-      'Latest known state: execution is running.',
+      'Last known state: work is running.',
     );
     expect(topbar.innerHTML).toContain(
-      'This server result does not verify Contracts.',
+      'This answer from the server does not prove Contracts.',
     );
     expect(topbar.innerHTML).toContain('Pause will not replay.');
     expect(topbar.innerHTML).toContain(
@@ -1689,7 +1689,7 @@ describe('D-174 - approval attention top-bar adapter', () => {
       root,
       ATTENTION_RECOVERY_EXCURSION_RETURN_ANNOUNCER_ATTR,
     )?.textContent).toBe(
-      'Server state changed after Pause on Home <private>. This server result does not verify Contracts. Run one fresh Contracts check before choosing again; Pause will not replay.',
+      'The server changed after Pause on Home <private>. This answer from the server does not prove Contracts. Run one fresh Contracts check before choosing again; Pause will not replay.',
     );
     topbar.fireAction({
       'data-action': 'keep-recovery-intent-review-blocked',
@@ -1717,7 +1717,7 @@ describe('D-174 - approval attention top-bar adapter', () => {
     topbar.fireAction({ 'data-action': 'open-attention' });
     expect(topbar.innerHTML).toContain('Restart was still pending');
     expect(topbar.innerHTML).toContain(
-      'The last receipt from Home &lt;private&gt; had not confirmed the Restart request.',
+      'The last answer from Home &lt;private&gt; had not confirmed the Restart request.',
     );
     expect(topbar.innerHTML).toContain(
       'Review Home &lt;private&gt; again to compare its current live state with this receipt',
@@ -1749,12 +1749,12 @@ describe('D-174 - approval attention top-bar adapter', () => {
     expect(topbar.innerHTML).toContain(
       `${ATTENTION_RECOVERY_INTENT_SERVER_STATE_ATTR}="running"`,
     );
-    expect(topbar.innerHTML).toContain('Current server state: running');
+    expect(topbar.innerHTML).toContain('Your server right now: running');
     expect(topbar.innerHTML).toContain(
-      'The exact review received a fresh status from Home &lt;private&gt; reporting that execution was running.',
+      'Recued got a new answer from Home &lt;private&gt; saying that work was running.',
     );
     expect(topbar.innerHTML).toContain(
-      'does not prove the earlier Restart request started a fresh process',
+      'does not prove the earlier Restart actually started the server again',
     );
     expect(topbar.innerHTML).toContain(
       'Verify Contracts &amp; choose again',
@@ -1785,7 +1785,7 @@ describe('D-174 - approval attention top-bar adapter', () => {
     handle.setRecoveryIntentContinuation(areaOutcome);
     topbar.fireAction({ 'data-action': 'open-attention' });
     expect(topbar.innerHTML).toContain(
-      'What happened after reviewing Contracts?',
+      'What happened after you looked at Contracts?',
     );
     topbar.fireAction({
       'data-action': 'resolve-recovery-intent-review',
@@ -1811,7 +1811,7 @@ describe('D-174 - approval attention top-bar adapter', () => {
     await routeOnly.handle.whenLoaded();
     routeOnly.topbar.fireAction({ 'data-action': 'open-attention' });
     expect(routeOnly.topbar.innerHTML).toContain(
-      'Review Contracts directly before choosing again',
+      'Look at Contracts directly before choosing again',
     );
     expect(routeOnly.topbar.innerHTML).not.toContain('Review server');
     expect(routeOnly.topbar.innerHTML).not.toContain(
@@ -1846,7 +1846,7 @@ describe('D-174 - approval attention top-bar adapter', () => {
     expect(topbar.innerHTML).toContain('Review Settings before continuing');
     expect(topbar.innerHTML).toContain('Review Settings');
     expect(topbar.innerHTML).not.toContain('Try again');
-    expect(topbar.innerHTML).not.toContain('Review connection');
+    expect(topbar.innerHTML).not.toContain('Look at the connection');
     expect(ATTENTION_TOPBAR_STYLES).toContain(
       '[data-phase="failed"][data-remediation="review"]',
     );
@@ -1922,10 +1922,10 @@ describe('D-174 - approval attention top-bar adapter', () => {
     expect(topbar.innerHTML).toContain('data-review-target="server"');
     expect(topbar.innerHTML).toContain('Finish checking Contracts');
     expect(topbar.innerHTML).toContain(
-      'The server re-review finished, but the final Contracts check did not',
+      'The server finished looking, but the last Contracts check did not',
     );
     expect(topbar.innerHTML).toContain(
-      'restored only where to return and that you wanted to choose again',
+      'only remembered where to go back to, and that you wanted to choose again',
     );
     expect(topbar.innerHTML).toContain(
       'not the server action, receipt, current state, or credentials',
@@ -1942,7 +1942,7 @@ describe('D-174 - approval attention top-bar adapter', () => {
       ATTENTION_RECOVERY_INTENT_SERVER_STATE_ATTR,
     );
     expect(topbar.innerHTML).not.toContain('Restart was still pending');
-    expect(topbar.innerHTML).not.toContain('Current server state: running');
+    expect(topbar.innerHTML).not.toContain('Your server right now: running');
     expect(firstByAttr(
       root,
       ATTENTION_RECOVERY_EXCURSION_RETURN_ANNOUNCER_ATTR,
@@ -2075,9 +2075,9 @@ describe('D-174 - approval attention top-bar adapter', () => {
     );
     topbar.fireAction({ 'data-action': 'open-attention' });
     expect(topbar.innerHTML).toContain('data-deferred="true"');
-    expect(topbar.innerHTML).toContain('Contracts check kept for later');
+    expect(topbar.innerHTML).toContain('Contracts check saved for later');
     expect(topbar.innerHTML).toContain(
-      'This exact check is saved quietly in this tab',
+      'This check is saved quietly in this tab',
     );
     expect(topbar.innerHTML).toContain(
       'Kept for later 5 min ago · expires in 10 min',
@@ -2185,7 +2185,7 @@ describe('D-174 - approval attention top-bar adapter', () => {
     topbar.fireAction({ 'data-action': 'open-attention' });
     expect(topbar.innerHTML).toContain('data-phase="retry"');
     expect(topbar.innerHTML).toContain('data-retry-reason="offline"');
-    expect(topbar.innerHTML).toContain('Contracts couldn’t be refreshed');
+    expect(topbar.innerHTML).toContain('Contracts could not be brought up to date');
     expect(topbar.innerHTML).toContain('Home &lt;private&gt; is offline');
     expect(topbar.innerHTML).toContain('Retry current Contracts');
     expect(topbar.innerHTML).not.toContain('Home <private>');
@@ -2423,7 +2423,7 @@ describe('D-174 - approval attention top-bar adapter', () => {
     expect(topbar.innerHTML).toContain(
       'data-phase="verification_interrupted"',
     );
-    expect(topbar.innerHTML).toContain('Verification was interrupted');
+    expect(topbar.innerHTML).toContain('The check was cut short');
     expect(topbar.innerHTML).toContain(
       'Your “Looks resolved” outcome and exact return are still saved',
     );
@@ -2518,13 +2518,13 @@ describe('D-174 - approval attention top-bar adapter', () => {
     topbar.fireAction({ 'data-action': 'open-attention' });
     expect(topbar.innerHTML).toContain('data-phase="verification_handoff"');
     expect(topbar.innerHTML).toContain(
-      'Review the connection before another check',
+      'Look at the connection before checking again',
     );
     expect(topbar.innerHTML).toContain(
-      'Two verification attempts did not finish safely',
+      'Two checks did not finish safely',
     );
-    expect(topbar.innerHTML).toContain('stopped the retry loop');
-    expect(topbar.innerHTML).toContain('Review connection');
+    expect(topbar.innerHTML).toContain('stopped trying');
+    expect(topbar.innerHTML).toContain('Look at the connection');
     expect(topbar.innerHTML).toContain('Review Contracts');
     expect(topbar.innerHTML).toContain('Stop recovery');
     expect(topbar.innerHTML).not.toContain('Retry verification');
@@ -2534,7 +2534,7 @@ describe('D-174 - approval attention top-bar adapter', () => {
       root,
       ATTENTION_RECOVERY_EXCURSION_RETURN_ANNOUNCER_ATTR,
     )?.textContent).toBe(
-      'Verification of Contracts was interrupted twice. Recued stopped the retry loop. Review the Home <private> connection or Contracts, or stop recovery.',
+      'Verification of Contracts was cut short twice. Recued stopped trying. Look at the Home <private> connection or Contracts, or stop recovery.',
     );
 
     // The closed-list reason participates in presentation identity. A later
@@ -2545,13 +2545,13 @@ describe('D-174 - approval attention top-bar adapter', () => {
       interruptionReason: 'navigation',
     };
     handle.setRecoveryIntentContinuation(navigationHandoff);
-    expect(topbar.innerHTML).toContain('Verification keeps getting interrupted');
+    expect(topbar.innerHTML).toContain('The check keeps getting cut short');
     expect(topbar.innerHTML).not.toContain(
-      'Review the connection before another check',
+      'Look at the connection before checking again',
     );
     handle.setRecoveryIntentContinuation(handoff);
     expect(topbar.innerHTML).toContain(
-      'Review the connection before another check',
+      'Look at the connection before checking again',
     );
 
     // A synthetic stale outcome/retry cannot bypass the connection-aware cap.
@@ -2599,13 +2599,13 @@ describe('D-174 - approval attention top-bar adapter', () => {
       'Review Contracts before another check',
     );
     expect(areaOnly.topbar.innerHTML).toContain(
-      'Review Contracts, then explicitly confirm the outcome',
+      'Look at Contracts, then say what happened',
     );
     expect(areaOnly.topbar.innerHTML).toContain(
       'review that area before another check',
     );
     expect(areaOnly.topbar.innerHTML).not.toContain(
-      'Review the connection before another check',
+      'Look at the connection before checking again',
     );
     expect(areaOnly.topbar.innerHTML).not.toContain(
       'data-action="review-recovery-intent-server"',
@@ -2614,7 +2614,7 @@ describe('D-174 - approval attention top-bar adapter', () => {
       areaOnly.root,
       ATTENTION_RECOVERY_EXCURSION_RETURN_ANNOUNCER_ATTR,
     )?.textContent).toBe(
-      'Verification of Contracts was interrupted twice. Recued stopped the retry loop. Review Contracts, or stop recovery.',
+      'Verification of Contracts was cut short twice. Recued stopped trying. Look at Contracts, or stop recovery.',
     );
     areaOnly.handle.dispose();
 
@@ -2627,7 +2627,7 @@ describe('D-174 - approval attention top-bar adapter', () => {
     await stopOnly.handle.whenLoaded();
     stopOnly.topbar.fireAction({ 'data-action': 'open-attention' });
     expect(stopOnly.topbar.innerHTML).toContain(
-      'This view cannot open a safe review target',
+      'There is nothing safe to open from here',
     );
     expect(stopOnly.topbar.innerHTML).toContain(
       'keep the saved return for later or stop recovery',
@@ -2642,7 +2642,7 @@ describe('D-174 - approval attention top-bar adapter', () => {
       stopOnly.root,
       ATTENTION_RECOVERY_EXCURSION_RETURN_ANNOUNCER_ATTR,
     )?.textContent).toBe(
-      'Verification of Contracts was interrupted twice. Recued stopped the retry loop. Keep the saved return for later, or stop recovery.',
+      'Verification of Contracts was cut short twice. Recued stopped trying. Keep it for later, or stop altogether.',
     );
     stopOnly.handle.dispose();
 
@@ -3223,9 +3223,9 @@ describe('D-174 / R20 - bell popover: chat plans + destructive confirm', () => {
     );
     expect(topbar.innerHTML).toContain('Approved mail-send');
     expect(topbar.innerHTML).toContain(
-      'Approved once for these exact details. The action has not run.',
+      'You said yes to exactly these details. Nothing has run yet.',
     );
-    expect(topbar.innerHTML).toContain('Continue in Chat');
+    expect(topbar.innerHTML).toContain('Carry on in Chat');
     expect(topbar.innerHTML).toContain(
       'href="#chat/session/s1/plan/pl-1/answer/message-review"',
     );
@@ -3237,7 +3237,7 @@ describe('D-174 / R20 - bell popover: chat plans + destructive confirm', () => {
     expect(announcer.getAttribute('role')).toBe('status');
     expect(announcer.getAttribute('aria-live')).toBe('polite');
     expect(announcer.textContent).toContain(
-      'Approved once for these exact details. The action has not run.',
+      'You said yes to exactly these details. Nothing has run yet.',
     );
     topbar.fireAction({ 'data-action': 'open-chat-plan' });
     await tick();
@@ -3269,7 +3269,7 @@ describe('D-174 / R20 - bell popover: chat plans + destructive confirm', () => {
     topbar.fireAction({ 'data-action': 'open-attention' });
     expect(topbar.innerHTML).toContain(ATTENTION_CHAT_PLAN_RESOLUTION_ATTR);
     expect(announcer.textContent).toContain(
-      'Approved once for these exact details. The action has not run.',
+      'You said yes to exactly these details. Nothing has run yet.',
     );
     handle.dispose();
   });
@@ -3320,9 +3320,9 @@ describe('D-174 / R20 - bell popover: chat plans + destructive confirm', () => {
     topbar.fireAction({ 'data-action': 'open-attention' });
 
     expect(topbar.innerHTML).toContain('Review again: Mail send');
-    expect(topbar.innerHTML).toContain('Fresh approval &middot; Recipe');
+    expect(topbar.innerHTML).toContain('A new yes &middot; Recipe');
     expect(topbar.innerHTML).toContain(
-      'Earlier permission was used; review this action again before approving.',
+      'Your earlier yes was used up. Look at this again before you say yes.',
     );
     expect(topbar.innerHTML).toContain(
       'data-retry-of-plan-id="pl-uncertain"',
@@ -3354,7 +3354,7 @@ describe('D-174 / R20 - bell popover: chat plans + destructive confirm', () => {
       'href="#chat/session/s1/plan/pl-unavailable/answer/message-review"',
     );
     expect(topbar.innerHTML).toContain(
-      'Exact reviewed details are unavailable after recovery.',
+      'Recued cannot get the details back.',
     );
     expect(topbar.innerHTML).toMatch(
       /data-decision="approve"\s+data-plan-id="pl-unavailable" disabled/,
@@ -3421,7 +3421,7 @@ describe('D-174 / R20 - bell popover: chat plans + destructive confirm', () => {
     expect(errorAnnouncer.textContent).toBe('');
     expect(topbar.innerHTML).toContain('Rejected mail-send');
     expect(topbar.innerHTML).toContain(
-      'The action will not run. Return to Chat if you want to adjust the request.',
+      'This will not run. Go back to Chat if you want to change it.',
     );
     expect(topbar.innerHTML).toContain(
       'href="#chat/session/s1/plan/pl-remote-resolve/answer/message-remote"',

@@ -213,7 +213,7 @@ describe('renderInstallConnectPicker — no candidates (enroll-only)', () => {
     expect(findAllByAttr(el, INSTALL_CONNECT_CANDIDATE_ATTR)).toHaveLength(0);
     expect(findByAttr(el, INSTALL_CONNECT_NONE_ATTR)).toBeNull();
     // The optional-connect hint is present.
-    expect(collectText(el)).toContain('connect it later');
+    expect(collectText(el)).toContain('connect the account later');
   });
 });
 
@@ -231,7 +231,7 @@ describe('renderInstallConnectPicker — candidates, collapsed', () => {
 
   it('reads "install only" when chosen is undefined (owner declined)', () => {
     const { el } = render({ candidates: [candidate('work-od')], chosen: undefined, expanded: false });
-    expect(collectText(el)).toContain('install only');
+    expect(collectText(el)).toContain('Just install it');
   });
 
   it('Customize click fires onToggleExpanded', () => {

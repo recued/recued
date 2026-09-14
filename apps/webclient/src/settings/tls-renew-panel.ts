@@ -188,18 +188,18 @@ export interface TlsRenewPanelMount {
 const COPY = {
   idle_heading: 'TLS certificate',
   idle_body:
-    'Renew the TLS certificate now. The rotation is staged with a 7-day overlap so pinned clients accept the new fingerprint without re-pair. Use this when the auto-renewal scheduler is behind, or when responding to a suspected exposure.',
-  confirm_heading: 'Renew the TLS cert?',
+    'Get a new certificate now. The old one keeps working for 7 more days, so your devices accept the new one without pairing again. Use this if the automatic renewal is late, or if you think the old one has leaked.',
+  confirm_heading: 'Get a new certificate?',
   // Match `ROTATION_COPY.tls_renew.confirm_body` from `rotation-center.ts`
   // so the operator sees the same explanation whether they reach the
   // flow through Key Health or through this dedicated panel.
   confirm_body:
-    'Pro tier triggers ACME via the cloud helper. Free tier drives certbot/caddy locally. The substrate broadcasts a signed rotation notice so pinned clients accept the new fingerprint without re-pair.',
-  busy: 'Renewing TLS cert…',
-  done_heading: 'TLS cert renewed.',
+    'With Pro, Recued gets one for you. Without it, Recued uses your own certificate tool on this machine. Either way it tells your devices, so they accept the new one without pairing again.',
+  busy: 'Getting a new certificate…',
+  done_heading: 'You have a new certificate.',
   done_body:
-    'The new fingerprint is staged. Pinned clients will accept it at the scheduled flip time.',
-  error_heading: 'TLS cert renewal failed.',
+    'The new one is ready. Your devices will switch over at the set time.',
+  error_heading: 'Recued could not get a new certificate.',
 } as const;
 
 // ════════════════════════════════════════════════════════════════
@@ -447,7 +447,7 @@ export const mountTlsRenewPanel = (
       }
       const flipAt = doc.createElement('dt');
       flipAt.className = 'tls-renew-result-label';
-      flipAt.textContent = 'Flips on';
+      flipAt.textContent = 'Switches over on';
       const flipAtValue = doc.createElement('dd');
       flipAtValue.setAttribute(TLS_RENEW_ROTATED_AT_ATTR, '');
       flipAtValue.className = 'tls-renew-result-value';
@@ -479,7 +479,7 @@ export const mountTlsRenewPanel = (
     hint.className = 'tls-renew-help';
     hint.textContent = remediationFor(
       lastErrorCode,
-      lastErrorMessage || 'Unknown error — check server logs + retry.',
+      lastErrorMessage || 'Something went wrong. Check your server’s logs, then try again.',
     );
 
     const errBox = doc.createElement('p');

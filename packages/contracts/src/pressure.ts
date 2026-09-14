@@ -86,18 +86,25 @@ export const worstStorageState = (
   return worst;
 };
 
-/** Human-facing byte size — `1.4 GB`, `812 MB`, `40 KB`.
+/** Human-facing byte size — `2.00 TB`, `1.4 GB`, `812 MB`, `40 KB`.
  *
  *  ⚠ Base-1024 with SI-style labels, matching how the rest of the product
  *  writes sizes (`collection-explorer`'s `formatBytes`). Consistency with the
  *  surrounding UI beats pedantic KiB/MiB here; the quota constants are declared
- *  in the same units. */
+ *  in the same units.
+ *
+ *  ⚠ The top tier is TB, not GB: a disk-backed surface really can exceed 1024
+ *  GB, and `3072.00 GB` is the shape this used to print there. Every tier below
+ *  TB is byte-for-byte unchanged. */
 export const formatPressureBytes = (bytes: number): string => {
   if (!Number.isFinite(bytes) || bytes < 0) return '—';
   if (bytes < 1024) return `${Math.round(bytes)} B`;
   if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
   if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+  if (bytes < 1024 * 1024 * 1024 * 1024) {
+    return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+  }
+  return `${(bytes / (1024 * 1024 * 1024 * 1024)).toFixed(2)} TB`;
 };
 
 /** One row of the storage read-out, ready to render.

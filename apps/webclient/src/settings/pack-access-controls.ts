@@ -154,7 +154,7 @@ const COPY = {
   all_ops_revoke: 'Revoke all',
   add_label: '+ grant this pack to a contract',
   add_placeholder: 'Choose a contract…',
-  add_empty_no_doors: 'No other contracts yet — doors are created in',
+  add_empty_no_doors: 'No other agreements yet. Doors are made in',
   add_empty_no_doors_link: 'Contracts',
   add_empty_all_granted: 'Every contract already has full access to this pack.',
 } as const;

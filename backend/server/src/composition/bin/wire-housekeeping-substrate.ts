@@ -38,6 +38,7 @@
 import type Database from 'better-sqlite3';
 import type { ActivityAction, AuditLogStore } from '@recued/storage';
 import type { WarehouseEventBus } from '@recued/warehouse-events';
+import type { ReminderLedger } from '../../work-entity-reminder-sweep.js';
 import type { EventBus } from '../../events/bus.js';
 import type { ContactStore } from '../../storage/contact-store.js';
 import type { ContractStore } from '../../storage/contract-store.js';
@@ -52,6 +53,7 @@ import type {
 } from '../../housekeeping/tasks/mcp-pack-first-mint.js';
 import type { EnrichmentStore } from '../../storage/enrichment-store.js';
 import type { CrmRecordMirrorStore } from '../../storage/crm-record-mirror-store.js';
+import { resolveServerTimeZone, shouldSuppressForQuietHours } from '@recued/contracts';
 import type { WorkEntityStore } from '../../storage/work-entity-store.js';
 import type { UserMemoryStore } from '../../user-memory-store.js';
 import type { WebclientUploadService } from '../../upload/webclient-upload-service.js';
@@ -405,6 +407,26 @@ export interface ComposeHousekeepingSchedulerDeps {
   /** Optional collaborators — each gates a per-task registration. */
   contactStore?: ContactStore;
   workEntityStore?: WorkEntityStore;
+  /** D-269 step 2 — the per-kind notification policy the due-status sweep
+   *  reads. Absent ⇒ the sweep falls back to the shared 24h constant with every
+   *  kind enabled, which is the pre-D-269 behaviour. */
+  notificationKindPolicyStore?: import('../../storage/notification-kind-policy-store.js').NotificationKindPolicyStore;
+  /** D-269 step 3 — the one quiet-hours window, and the zone it is read in.
+   *  Either absent ⇒ the sweep is never quiet, which is today's behaviour. */
+  quietHoursStore?: import('../../storage/quiet-hours-store.js').QuietHoursStore;
+  /** D-269 — the sink a booking/calendar reminder is DELIVERED through.
+   *
+   *  ⛔ A NOTIFY, NOT AN EVENT, AND THAT IS THE POINT. The due-status sweep
+   *  gates a warehouse event, which drives recipes — so quiet hours there can in
+   *  principle delay WORK. Here the policy gates a DELIVERY, which is what quiet
+   *  hours is defined to suppress. These two kinds are the shape the other two
+   *  should migrate to, not the exception. */
+  notifyReminder?: (message: { title: string; text: string }) => void;
+  /** D-269 step 4 — called once when the quiet-hours window ENDS, with a digest
+   *  recomputed from the anchor rows. ⚠ Absent ⇒ the edge is still tracked (so
+   *  it is not mis-detected later) but no card is sent. */
+  onQuietHoursReleased?: (digest: import('@recued/contracts').QuietHoursDigest) => void;
+  serverTimeZoneStore?: import('../../storage/server-timezone-store.js').ServerTimeZoneStore;
   /** RUNG 4 — the owner's memory pool, for the `memory-embed-backlog` task.
    *  Absent on dbless boots ⇒ the task no-ops. */
   userMemoryStore?: UserMemoryStore;
@@ -678,6 +700,31 @@ export const composeHousekeepingScheduler = async (
     );
   }
 
+  // D-269 follow-on — ONE reminder ledger, shared by the release card and the
+  // per-item reminders. ⛔ Hoisted rather than built inside each block BECAUSE
+  // THE SHARING IS THE POINT: the card skips what the reminders already marked
+  // and vice versa. Two stores over the same table would happen to work, but
+  // only because sqlite is the real shared state — a fact about the storage
+  // engine standing in for a design decision, and the next person to swap it for
+  // anything in-process would break the exclusion silently.
+  // ⛔⛔ LAZY, AND THAT IS NOT A MICRO-OPTIMISATION — IT IS THE GUARD. Built
+  // eagerly on `deps.db` alone this ran a `CREATE TABLE` for every caller that
+  // merely HAS a db, including harnesses whose `db` is a stub with no `.exec`,
+  // and 42 composition tests crashed before a single task registered. The
+  // original code created the store inside the one block that needed it; the
+  // hoist is for SHARING the instance, so it must not also widen WHEN it is
+  // built. Created at first use, under the same guards as before.
+  let reminderLedgerMemo: ReminderLedger | undefined;
+  const reminderLedgerFor = async (handle: Database.Database): Promise<ReminderLedger> => {
+    if (reminderLedgerMemo === undefined) {
+      const { createReminderLedgerStore } = await import(
+        '../../storage/reminder-ledger-store.js'
+      );
+      reminderLedgerMemo = createReminderLedgerStore(handle);
+    }
+    return reminderLedgerMemo;
+  };
+
   // D-145 PA4 — `work-entity-due-status-sweep` registers conditional
   // on the work-entity store being enrolled. Tests + dbless harnesses
   // without a work-entity store skip it cleanly (the housekeeping
@@ -692,6 +739,141 @@ export const composeHousekeepingScheduler = async (
           store: deps.workEntityStore,
           bus: deps.warehouseBus,
           ...(deps.enrichmentCascade ? { cascade: deps.enrichmentCascade } : {}),
+          // D-269 step 2 — the owner's per-kind horizon, read PER SWEEP so a
+          // policy change lands on the next cycle rather than at the next
+          // restart. Absent (db-less harness) ⇒ the shared 24h constant with
+          // every kind enabled, exactly as before.
+          // D-269 step 3 — is the window active for this kind right now? Needs
+          // BOTH stores plus the zone: the window is wall clock, and the kind
+          // decides whether it may interrupt at all. Any of the three absent ⇒
+          // never quiet, which is today's behaviour.
+          ...(deps.quietHoursStore && deps.serverTimeZoneStore
+            ? {
+                isQuiet: (at: number): boolean =>
+                  shouldSuppressForQuietHours({
+                    policy: deps.quietHoursStore!.read(),
+                    instant: at,
+                    timeZone: resolveServerTimeZone(
+                      deps.serverTimeZoneStore!.read(),
+                      Intl.DateTimeFormat().resolvedOptions().timeZone,
+                    ),
+                  }),
+              }
+            : {}),
+          // D-269 step 4 — the release edge and the card. The marker is ONE
+          // integer in the quiet-hours row; the card is recomputed from anchor
+          // rows at release, so nothing is held during the window.
+          ...(deps.quietHoursStore
+            ? {
+                wasQuiet: (): number | null => deps.quietHoursStore!.readLastActiveAt(),
+                markQuiet: (at: number | null): void => deps.quietHoursStore!.writeLastActiveAt(at),
+              }
+            : {}),
+          ...(deps.onQuietHoursReleased
+            ? { onReleased: deps.onQuietHoursReleased }
+            : {}),
+          // ⚠ Gated on the RELEASE CALLBACK, not merely on a db: the exclusion
+          // exists so the card and the per-item reminders do not both speak, and
+          // with no callback there is no card to keep quiet.
+          ...(deps.onQuietHoursReleased && deps.db
+            ? { reminderLedger: await reminderLedgerFor(deps.db) }
+            : {}),
+          ...(deps.notificationKindPolicyStore
+            ? {
+                policy: (kind: 'task' | 'commitment') => {
+                  const row = deps.notificationKindPolicyStore!.get(kind);
+                  return { enabled: row.enabled, offset_ms: row.offset_ms };
+                },
+              }
+            : {}),
+        },
+      }),
+    );
+  }
+
+  // D-269 — booking / calendar reminders. Registered only when BOTH the work
+  // store and a notify sink exist: this sweep's entire output is a `notify`, so
+  // without one it is not a degraded feature but a no-op burning a cycle slot.
+  if (deps.workEntityStore && deps.notifyReminder && deps.db) {
+    const workEntityStore = deps.workEntityStore;
+    const notifyReminder = deps.notifyReminder;
+    const db = deps.db;
+    const { buildWorkEntityReminderSweepTask } = await import(
+      '../../housekeeping/tasks/work-entity-reminder-sweep.js'
+    );
+    const { createCalendarTable } = await import(
+      '../../collections/calendar/calendar-table.js'
+    );
+    const { createInstanceStore } = await import('../../collections/instance-store.js');
+    const instances = createInstanceStore({ db });
+    // ⚠ Tables are memoised per slug but the ENROLLED SET is resolved on every
+    // read, so a calendar enrolled later is swept without a restart — the same
+    // choice the MCP business-context reader makes, and for the same reason.
+    const tables = new Map<string, ReturnType<typeof createCalendarTable>>();
+    const tableFor = (slug: string): ReturnType<typeof createCalendarTable> => {
+      const hit = tables.get(slug);
+      if (hit) return hit;
+      const made = createCalendarTable({ db, slug });
+      tables.set(slug, made);
+      return made;
+    };
+
+    registerHousekeepingTask(
+      buildWorkEntityReminderSweepTask({
+        deps: {
+          listBookings: () => workEntityStore.listBookings({ sync_states: ['live'] }),
+          // D-269 follow-on — the two kinds that had an emitter onto the bus and
+          // nobody on the other end. Same `sync_states: ['live']` filter as the
+          // bookings above, and a row created in Recued defaults to `live`
+          // (`work-entity-store.ts:932`) — so a task you make HERE is swept the
+          // moment its deadline enters the horizon, which is the whole point.
+          listTasks: () => workEntityStore.listTasks({ sync_states: ['live'] }),
+          listCommitments: () => workEntityStore.listCommitments({ sync_states: ['live'] }),
+          listCalendar: (from, to) => {
+            const out: Array<{ record_id: string; summary: string; start_at: number; status?: string }> = [];
+            for (const instance of instances.list('calendar')) {
+              // ⚠ BOUNDED BY THE HORIZON the caller passed. An unbounded read
+              // over a synced account is fine on a fixture and ruinous in life.
+              for (const row of tableFor(instance.slug).list({
+                start_since: from, start_until: to, order_by: 'start_at', limit: 200,
+              })) {
+                out.push({
+                  record_id: `${instance.slug}:${row.ical_uid ?? row.summary}:${row.start_at}`,
+                  summary: row.summary,
+                  start_at: row.start_at,
+                  ...(row.status !== undefined ? { status: row.status } : {}),
+                });
+              }
+            }
+            return out;
+          },
+          policy: (kind) => {
+            const row = deps.notificationKindPolicyStore?.get(kind);
+            return row
+              ? { enabled: row.enabled, offset_ms: row.offset_ms }
+              // ⚠ No policy store ⇒ the kind is OFF rather than defaulted on.
+              // True for all four: booking and calendar had no emitter at all
+              // before D-269, and task and commitment had one onto a bus with
+              // no reader — so "absent" means the same thing for each of them,
+              // which is the behaviour that was actually there: silence.
+              : { enabled: false, offset_ms: 0 };
+          },
+          ...(deps.quietHoursStore && deps.serverTimeZoneStore
+            ? {
+                isQuiet: (at): boolean => shouldSuppressForQuietHours({
+                  policy: deps.quietHoursStore!.read(),
+                  instant: at,
+                  timeZone: resolveServerTimeZone(
+                    deps.serverTimeZoneStore!.read(),
+                    Intl.DateTimeFormat().resolvedOptions().timeZone,
+                  ),
+                }),
+              }
+            : {}),
+          // ⚠ The hoisted instance — `deps.db` is in this block's own guard, so
+          // it is present whenever this task registers.
+          ledger: await reminderLedgerFor(db),
+          notify: notifyReminder,
         },
       }),
     );
@@ -947,6 +1129,17 @@ export const composeHousekeepingScheduler = async (
   // directly since their field names match the `HousekeepingContext`
   // shape (`llm` / `llmWithMeta` / `resolveLLMModelId` / `embed`).
   const scheduler = createHousekeepingScheduler({
+    // D-269 — the owner's declared zone for the `custom` preset's window, so
+    // "between 22:00 and 05:00" means their hours rather than the host's. The
+    // same store the due-status sweep's quiet-hours check reads.
+    ...(deps.serverTimeZoneStore
+      ? {
+          serverTimeZone: (): string => resolveServerTimeZone(
+            deps.serverTimeZoneStore!.read(),
+            Intl.DateTimeFormat().resolvedOptions().timeZone,
+          ),
+        }
+      : {}),
     ctx: {
       db: deps.db,
       bus: deps.warehouseBus,

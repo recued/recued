@@ -22,6 +22,13 @@
  *      at boot. Runs AFTER `commitStore.sweepPendingToInDoubt()`.
  */
 
+import {
+  mayHoldAskForQuietHours,
+  resolveQuietHoursOccurrence,
+  resolveServerTimeZone,
+} from '@recued/contracts';
+import { createQuietHoursStore } from '../../storage/quiet-hours-store.js';
+import { createServerTimeZoneStore } from '../../storage/server-timezone-store.js';
 import type Database from 'better-sqlite3';
 import type {
   BatchAskRecord,
@@ -587,9 +594,39 @@ export const composeNotificationBlock = (
     });
   };
 
+  // ⛔⛔ D-269 step 5 — may quiet hours hold an approval's DELIVERY? Composed
+  // here from the two stores because the notification block is a LEAF and must
+  // not learn about timezones or policy rows; it is handed one boolean.
+  //
+  // ⚠ `'approval'` is opt-in and NOT the recommendation: D-261 pre-approval
+  // buys the same silence without the work waiting. This predicate answers
+  // `false` for every owner who has not deliberately added it.
+  const quietHoursStore = createQuietHoursStore(deps.db);
+  const serverTimeZoneStore = createServerTimeZoneStore(deps.db);
+  const shouldHoldAsk = (expires_at: number | undefined): boolean => {
+    const policy = quietHoursStore.read();
+    if (!policy.enabled) return false;
+    const zone = resolveServerTimeZone(
+      serverTimeZoneStore.read(),
+      Intl.DateTimeFormat().resolvedOptions().timeZone,
+    );
+    const at = Date.now();
+    const occurrence = resolveQuietHoursOccurrence(policy, zone, at);
+    return mayHoldAskForQuietHours({
+      policy,
+      instant: at,
+      timeZone: zone,
+      ...(expires_at !== undefined ? { expiresAt: expires_at } : {}),
+      // ⚠ The window's END is what an expiry is compared against: an ask whose
+      // work dies before the owner wakes is delivered anyway.
+      ...(occurrence !== null ? { windowEndsAt: occurrence.end } : {}),
+    });
+  };
+
   const block = createNotificationBlock({
     askStore,
     settingsStore,
+    shouldHoldAsk,
     channels: allChannels,
     readinessProbe,
     bridgeRosterProbe,

@@ -142,9 +142,9 @@ const ownerOperationErrorMessage = (err: unknown): string => {
     const risk = details?.effective_risk;
     const floor = details?.floor;
     return typeof floor === 'string'
-      ? `Approval cannot be lower than the ${typeof risk === 'string' ? `${risk} ` : ''}`
-        + `risk floor (${floor}).`
-      : 'Approval cannot be lower than this operation\'s risk floor.';
+      ? `Asking cannot be set lower than the ${typeof risk === 'string' ? `${risk} ` : ''}`
+        + `least this operation allows (${floor}).`
+      : 'Asking cannot be set lower than this operation allows.';
   }
   if (errorCode(err) === 'owner_operation_risk_downgrade_confirm') {
     const before = details?.previous_risk ?? details?.declared_risk;
@@ -161,7 +161,7 @@ const ownerOperationErrorMessage = (err: unknown): string => {
         + `session grants ${details?.session_grantable_after === true ? 'enabled' : 'disabled'}; `
         + `delegation learning ${details?.delegation_learnable_after === true ? 'enabled' : 'disabled'}.`;
     }
-    return 'Confirm this lower risk classification and its approval consequences.';
+    return 'Say you mean to call this less risky, and that it will ask you less often.';
   }
   return humanizeRpcError(err);
 };
@@ -287,12 +287,12 @@ export const createOwnerOperationController = (
     const note = opts.document.createElement('p');
     note.className = 'owner-operation-note';
     note.textContent =
-      'Pack values are the default for every contract. Owner values replace them globally; contract access stays separate.';
+      'What the Pack says is the starting point everywhere. What you say replaces it everywhere. Who may use it is a separate thing.';
     root.appendChild(note);
 
     if (loading) {
       const line = opts.document.createElement('p');
-      line.textContent = 'Loading operation defaults…';
+      line.textContent = 'Loading what these normally do…';
       root.appendChild(line);
       return root;
     }
@@ -314,8 +314,8 @@ export const createOwnerOperationController = (
       line.setAttribute(OWNER_OPERATION_UNMATCHED_ATTR, '');
       line.className = 'owner-operation-note';
       line.textContent = pack.installed
-        ? 'This pack’s operations are not in the server’s inventory yet. Reinstall the pack, or restart the server, to load them.'
-        : 'Install this pack to set owner defaults for its operations.';
+        ? 'Your server does not know this Pack’s operations yet. Install the Pack again, or restart the server.'
+        : 'Install this Pack to choose what its operations do by default.';
       root.appendChild(line);
       return root;
     }
@@ -351,7 +351,7 @@ export const createOwnerOperationController = (
 
         const risk = opts.document.createElement('select');
         risk.setAttribute(OWNER_OPERATION_RISK_ATTR, '');
-        risk.setAttribute('aria-label', `Owner risk for ${operation.operation_id}`);
+        risk.setAttribute('aria-label', `Your risk setting for ${operation.operation_id}`);
         const packRiskOption = opts.document.createElement('option');
         packRiskOption.setAttribute('value', '');
         packRiskOption.textContent = `Pack · ${riskLabel(operation.risk_tier)}`;
@@ -378,7 +378,7 @@ export const createOwnerOperationController = (
 
         const approval = opts.document.createElement('select');
         approval.setAttribute(OWNER_OPERATION_APPROVAL_ATTR, '');
-        approval.setAttribute('aria-label', `Owner approval for ${operation.operation_id}`);
+        approval.setAttribute('aria-label', `When you want to be asked about ${operation.operation_id}`);
         const packApprovalOption = opts.document.createElement('option');
         packApprovalOption.setAttribute('value', '');
         packApprovalOption.textContent = packApproval === undefined
@@ -414,7 +414,7 @@ export const createOwnerOperationController = (
           const stale = opts.document.createElement('span');
           stale.setAttribute(OWNER_OPERATION_STALE_ATTR, '');
           stale.className = 'owner-operation-warning';
-          stale.textContent = 'Pack operation changed since this owner value was reviewed.';
+          stale.textContent = 'The Pack changed this operation after you looked at it.';
           row.appendChild(stale);
         }
         const rowError = rowErrors.get(key);
@@ -432,7 +432,7 @@ export const createOwnerOperationController = (
           const confirm = opts.document.createElement('button');
           confirm.setAttribute('type', 'button');
           confirm.setAttribute(OWNER_OPERATION_CONFIRM_ATTR, '');
-          confirm.textContent = 'Confirm lower risk';
+          confirm.textContent = 'Yes, less risky';
           confirm.addEventListener('click', () => void persist(confirmation, true));
           actions.appendChild(confirm);
           const cancel = opts.document.createElement('button');

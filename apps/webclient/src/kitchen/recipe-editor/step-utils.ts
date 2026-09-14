@@ -451,11 +451,11 @@ export const validateStepIdRename = (
 ): { ok: true } | { ok: false; error: string } => {
   if (newId === oldId) return { ok: true };
   const trimmed = newId.trim();
-  if (!trimmed) return { ok: false, error: 'Step id cannot be empty' };
+  if (!trimmed) return { ok: false, error: 'A step id cannot be blank' };
   if (!/^[a-z][a-z0-9_]*$/.test(trimmed)) {
     return {
       ok: false,
-      error: 'Step id must start with a letter and use only lowercase, digits, underscore',
+      error: 'A step id has to start with a letter, and use only lower-case letters, numbers and underscores',
     };
   }
   if (RESERVED_STEP_IDS.has(trimmed)) {

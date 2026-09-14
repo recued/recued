@@ -17,12 +17,14 @@ import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { decodeChoice, encodeChoice } from './callback.js';
+import { attachmentFilename, sendTelegramAttachment } from './attachments.js';
 import { fitText } from './fit-text.js';
 import {
   DEFAULT_TIMEOUT_MS,
   classifyHttpError,
   downloadToFile,
   postJson,
+  retryAfterSeconds,
   type HttpPostOutcome,
 } from './http.js';
 import type {
@@ -98,6 +100,8 @@ export const telegramMessageFits = (msg: Parameters<typeof rawTelegramText>[0]):
 
 interface TelegramEnvelope {
   ok?: boolean;
+  error_code?: number;
+  parameters?: { retry_after?: number };
   description?: string;
   result?: { message_id?: number };
 }
@@ -119,7 +123,11 @@ const handleTelegramOutcome = (
       outcome.kind === 'http_error'
         ? classifyHttpError(outcome.status)
         : outcome.kind;
-    return { ok: false, error: { kind, detail: `Telegram: ${outcome.detail}` } };
+    const retryAfter = outcome.kind === 'http_error' ? Math.max(outcome.retry_after_ms ?? 0,
+      retryAfterSeconds((outcome.json as TelegramEnvelope | undefined)?.parameters?.retry_after) ?? 0) : 0;
+    return { ok: false, error: { kind, detail: `Telegram: ${outcome.detail}`,
+      ...(retryAfter > 0 ? { retry_after_ms: retryAfter } : {}),
+    } };
   }
   // Telegram always returns an `ok` boolean on a 200. Require an
   // explicit `ok === true` — a missing / non-true flag is a malformed
@@ -129,8 +137,9 @@ const handleTelegramOutcome = (
     return {
       ok: false,
       error: {
-        kind: 'vendor_error',
+        kind: env.error_code === 429 ? 'rate_limited' : 'vendor_error',
         detail: `Telegram: ${env.description ?? 'unknown_error'}`,
+        ...(retryAfterSeconds(env.parameters?.retry_after) !== undefined ? { retry_after_ms: retryAfterSeconds(env.parameters?.retry_after)! } : {}),
       },
     };
   }
@@ -193,6 +202,7 @@ const telegramMediaRef = (
         : fallbackMime,
     size: numericSize(media.file_size),
     remote_id,
+    ...(typeof media.file_name === 'string' ? { filename: media.file_name } : {}),
   };
 };
 
@@ -268,9 +278,17 @@ export const createTelegramTransport = (
     });
 
   const send = async (message: OutboundMessage): Promise<TransportSendResult> => {
+    if (message.lossless && !telegramMessageFits(message)) return { ok: false,
+      error: { kind: 'invalid_request', detail: 'Telegram message exceeds the lossless text budget.' } };
+    if ([message.reply_to_message_id, message.thread_id].some(id => id !== undefined
+      && (!/^\d+$/.test(id) || !Number.isSafeInteger(Number(id))))) return { ok: false,
+        error: { kind: 'invalid_request', detail: 'Invalid Telegram reply or thread identifier.' } };
     const outcome = await post(
       'sendMessage',
-      { chat_id: message.recipient, text: composeTelegramText(message) },
+      { chat_id: message.recipient, text: composeTelegramText(message),
+        ...(message.reply_to_message_id ? { reply_parameters: { message_id: Number(message.reply_to_message_id) } } : {}),
+        ...(message.thread_id ? { message_thread_id: Number(message.thread_id) } : {}),
+      },
       message.token,
     );
     return handleTelegramOutcome(outcome);
@@ -362,7 +380,7 @@ export const createTelegramTransport = (
       temp_path: destPath,
       size: dl.size,
       head_bytes: dl.headBytes,
-      filename: sanitizeFilename(filenameFromPath(filePath), ref.remote_id),
+      filename: ref.filename ? attachmentFilename(ref.filename, ref.remote_id) : sanitizeFilename(filenameFromPath(filePath), ref.remote_id),
       mime_type: unpackMimeType(dl.contentType, ref.mime),
     };
   };
@@ -390,6 +408,9 @@ export const createTelegramTransport = (
     const media = extractTelegramMedia(m);
     if (text.length === 0 && media.length === 0) return null;
     const result: ParsedInbound = { from: String(f.id), text };
+    const reply = m.reply_to_message as { message_id?: unknown } | undefined;
+    if (typeof reply?.message_id === 'number') result.reply_to_message_id = String(reply.message_id);
+    if (typeof m.message_thread_id === 'number') result.thread_id = String(m.message_thread_id);
     if (typeof m.message_id === 'number') {
       result.vendor_message_id = String(m.message_id);
     }
@@ -463,6 +484,7 @@ export const createTelegramTransport = (
   return {
     vendor: 'telegram',
     send,
+    sendAttachment: file => sendTelegramAttachment(file, { fetchImpl, timeoutMs: options.timeoutMs ?? 120_000 }),
     parseInbound,
     parseConversationId,
     fetchMedia,

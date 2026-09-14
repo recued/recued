@@ -1,3 +1,12 @@
+import { openFilePreview, type FilePreviewCallers } from '../files/file-preview.js';
+import { openExistingFilePicker, type ChatFileListCaller, type CloudFileCallers } from './existing-file-picker.js';
+import { createConversationFilesView, type ConversationFilesCaller } from './conversation-files.js';
+import { CHAT_DELIVERY_STYLES, createChatDeliveryView, type ChatDeliveryClient } from './delivery-view.js';
+import { createMessengerSessionList, CHAT_MESSENGER_LIST_STYLES } from './messenger-session-list.js';
+import { createHistoryFilters, HISTORY_FILTER_ATTR, CHAT_HISTORY_FILTER_STYLES } from './history-filters.js';
+import { chatSessionMatchesFilters, hasChatHistoryFilters } from '@recued/contracts';
+import { createChatQueueView, CHAT_QUEUE_STYLES, type ChatQueueClient } from './turn-queue-view.js';
+import { buildChatQuote, buildChatReplyDraft, replyDraftForMessage, CHAT_QUOTED_REPLY_STYLES, type ChatReplyDraft } from './quoted-replies.js';
 /** D-174 P2 — top-level Chat route.
  *
  *  This hosts the existing D-137 chat substrate at `#chat`: server-owned
@@ -13,6 +22,7 @@ import {
   type Upload,
 } from '@recued/ui-shared';
 import { createComposerAttachments } from './composer-attachments.js';
+import { createHistoryMessageSearch, HISTORY_MESSAGE_RESULT_ATTR } from './history-message-search.js';
 import {
   browserVoiceCaptureFactory,
   createVoiceComposer,
@@ -34,6 +44,9 @@ import {
   isTransparencyEventKind,
   type ChatDataDiagnosisContext,
   type ChatHistoryCursor,
+  type ChatMessageSearchRequest,
+  type ChatMessageSearchResult,
+  type ChatSessionGetRequest,
   type ChatDataDiagnosisRequest,
   type ChatDataDiagnosisResolution,
   type ChatDataDiagnosisResolutionStatus,
@@ -61,6 +74,7 @@ import {
   matchChatModelSource,
   hydrateThreadFromSnapshot,
   prependOlderMessages,
+  appendNewerMessages,
   initialChatThreadState,
   isChatThreadEvent,
   projectInFlightActivity,
@@ -97,6 +111,11 @@ import {
   type ClassifiedRpcError,
 } from '../shell/rpc-error-copy.js';
 import {
+  universalSearchShortcutLabel,
+  UNIVERSAL_SEARCH_SHORTCUT,
+} from '../shell/universal-search-shortcut.js';
+import {
+  COMPOSE_LOCAL_TARGETS,
   type ComposeContactUpsertCaller,
   type ComposeWorkEntityUpsertCaller,
 } from '../compose/compose-route.js';
@@ -152,6 +171,7 @@ export const CHAT_ROUTE_CARRY_CLEAR_ATTR = 'data-recued-chat-route-carry-clear';
 /** The control that pulls an older page in. Present only while the server says
  *  older messages exist. */
 export const CHAT_ROUTE_LOAD_OLDER_ATTR = 'data-recued-chat-route-load-older';
+export const CHAT_ROUTE_LOAD_NEWER_ATTR = 'data-recued-chat-route-load-newer';
 export const CHAT_ROUTE_SESSION_STATUS_ATTR =
   'data-recued-chat-route-session-status';
 export const CHAT_ROUTE_HISTORY_SEARCH_ATTR =
@@ -408,7 +428,7 @@ export const CHAT_ROUTE_CREATE_CLOSE_ATTR = CREATE_OVERLAY_CLOSE_ATTR;
 // shell-frame Step 2), so the owner controls everything in flight from any
 // screen. The chat route is back to a thin DOM host.
 
-export interface ChatRouteConn {
+export interface ChatRouteConn extends ChatQueueClient, ChatDeliveryClient {
   /** What the assistant is CARRYING about this conversation, and a way to drop
    *  it. ⛔ The brief sits in the packet of every later turn and only its fold
    *  TRAIL ever reached the owner — that folds happened, never what they kept. */
@@ -420,6 +440,8 @@ export interface ChatRouteConn {
   }>;
   (method: 'chat.sessions.list'): Promise<{
     sessions: ChatSessionSummary[];
+    messenger_status_available?: boolean;
+    history_filters_available?: boolean;
     /** Every session running a turn, from any surface. ⛔ PRESENT-BUT-EMPTY
      *  and ABSENT are different answers: `[]` is "nothing is running", the
      *  field missing is "this server cannot tell you" — which is what one
@@ -428,18 +450,13 @@ export interface ChatRouteConn {
   }>;
   (
     method: 'chat.session.get',
-    payload: {
-      session_id: string;
-      /** Opt IN to a window. Omitting it asks for the whole conversation,
-       *  which is what a server older than this slice does regardless. */
-      limit?: number;
-      before?: ChatHistoryCursor;
-    },
+    payload: ChatSessionGetRequest,
   ): Promise<ChatThreadSnapshot>;
+  (method: 'chat.messages.search', payload: ChatMessageSearchRequest): Promise<ChatMessageSearchResult>;
   (method: 'chat.session.create'): Promise<{ session_id: string }>;
   (
     method: 'chat.session.create',
-    payload: { title?: string },
+    payload: { title?: string; creation_id?: string },
   ): Promise<{ session_id: string }>;
   (
     method: 'chat.session.delete',
@@ -464,9 +481,12 @@ export interface ChatRouteConn {
     payload: {
       session_id: string;
       message: string;
+      submission_id?: string;
+      queue_generation?: string;
+      reply_to_message_id?: string;
       picker_state: ChatSession['picker_state'];
       /** D-172 P2 — finalized `data.file` ids attached to this turn. */
-      attachments?: Array<{ file_id: string; media_class: string }>;
+      attachments?: Array<{ file_id: string; media_class: string; selection_revision?: string }>;
       model_pref: {
         current: ChatModelRoutingLayer;
         model_hint?: ChatModelHint;
@@ -477,6 +497,8 @@ export interface ChatRouteConn {
     },
   ): Promise<{
     turn_id: string;
+    status?: import('@recued/contracts').ChatQueuedTurnStatus;
+    disposition?: 'accepted' | 'duplicate' | 'replayed';
     data_diagnosis?: ChatDataDiagnosisContext;
   }>;
   (
@@ -521,6 +543,7 @@ export interface ChatRouteConn {
    *  disclosure's visibility policy. Soft signal like the LLM config
    *  read: a failure leaves the substrate defaults in place. */
   (method: 'prefs.get'): Promise<{ prefs: InstancePrefs }>;
+  (method: 'prefs.set', payload: { patch: Partial<InstancePrefs> }): Promise<{ prefs: InstancePrefs }>;
   /** D-137 P3 § A.11 — resolve a pending write plan. Both return the
    *  post-resolution authoritative `ChatPlanProposal`, which the route
    *  applies optimistically (the `chat.plan_resolved` broadcast also
@@ -709,6 +732,9 @@ export const CHAT_ROUTE_CHROME_STYLES = `
   font-size: 13px;
 }
 [${CHAT_ROUTE_HOST_ATTR}] .chat-history-results {
+  overflow: visible;
+}
+[${CHAT_ROUTE_HOST_ATTR}] .chat-history-browse {
   flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
@@ -944,10 +970,34 @@ export const CHAT_ROUTE_CHROME_STYLES = `
 [${CHAT_ROUTE_HOST_ATTR}] .chat-history-landing-action:focus-visible,
 [${CHAT_ROUTE_HOST_ATTR}] .chat-history-guard-action:focus-visible,
 [${CHAT_ROUTE_SESSION_ROW_ATTR}]:focus-visible,
+[${CHAT_ROUTE_HOST_ATTR}] .chat-history-message-result:focus-visible,
 [${CHAT_ROUTE_SESSION_ACTIONS_ATTR}] > summary:focus-visible,
 [${CHAT_ROUTE_HOST_ATTR}] .chat-session-action:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
+}
+[${CHAT_ROUTE_HOST_ATTR}] .chat-history-message-result {
+  display: grid;
+  gap: 5px;
+  width: 100%;
+  margin: 0 0 8px;
+  padding: 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--chat-radius-panel);
+  background: var(--surface-subtle);
+  color: var(--fg);
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+[${CHAT_ROUTE_HOST_ATTR}] .chat-history-message-result:hover {
+  border-color: var(--accent);
+}
+[${CHAT_ROUTE_HOST_ATTR}] .chat-history-message-snippet {
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
 [${CHAT_ROUTE_THREAD_ATTR}] {
   min-height: 420px;
@@ -1166,6 +1216,7 @@ export const CHAT_ROUTE_CHROME_STYLES = `
    present. "flex-end" keeps the buttons on the textarea's last line when it is
    dragged taller. */
 [${CHAT_ROUTE_HOST_ATTR}] .chat-composer-input-row {
+  position: relative;
   display: flex;
   align-items: flex-end;
   gap: 8px;
@@ -1487,7 +1538,15 @@ export const CHAT_ROUTE_CHROME_STYLES = `
 }
 [${CHAT_ROUTE_ACTIVATION_ATTR}] .chat-activation-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  /* ⛔ THE COLUMN COUNT FOLLOWS THE CARD COUNT — it was pinned at 3 and the
+     card count was never fixed. The connect and automate cards each hide once
+     satisfied, so a 2-card grid already rendered into a 3-track row with a dead
+     column on the right; D-267's 4th card made it visible by orphaning one card
+     onto a second row. The custom property is set from the cards actually
+     built (see buildFirstRunActivation); the fallback keeps a host that somehow
+     renders this markup without the property on the old behaviour.
+     NOTE: no backticks in this comment — it lives inside a template literal. */
+  grid-template-columns: repeat(var(--activation-cols, 3), minmax(0, 1fr));
   gap: 10px;
 }
 /* Quiet by construction — it sits under a greeting, not in place of one. */
@@ -1611,6 +1670,15 @@ export const CHAT_ROUTE_CHROME_STYLES = `
   white-space: nowrap;
   max-width: 220px;
 }
+button.chat-composer-attachment-name, .chat-message-file-preview {
+  font: inherit;
+  color: var(--accent);
+  background: transparent;
+  border: 0;
+  padding: 2px 4px;
+  cursor: pointer;
+  text-decoration: underline;
+}
 .chat-composer-attachment-note { color: var(--fg-muted); }
 /* Colour REINFORCES the note, never replaces it — each chip already says
    "attached" / a percentage / the error in words. */
@@ -1660,6 +1728,17 @@ export const CHAT_ROUTE_CHROME_STYLES = `
   font-size: 15px;
   line-height: 1;
 }
+[data-chat-attach-menu]:not([hidden]) {
+  position: absolute; bottom: calc(100% + 6px); left: 0; z-index: 10;
+  display: flex; flex-direction: column; gap: 4px; padding: 6px;
+  border: 1px solid var(--border); border-radius: var(--chat-radius-control);
+  background: var(--surface); box-shadow: 0 4px 18px #0002;
+}
+[data-chat-attach-menu] button {
+  background: var(--surface); color: var(--fg); border: 0; border-radius: 4px;
+  font: inherit; padding: 9px 12px; cursor: pointer; text-align: left;
+}
+[data-chat-attach-menu] button:hover { background: var(--surface-subtle); }
 [${CHAT_ROUTE_SEND_ATTR}] {
   border: 1px solid var(--border);
   border-radius: var(--chat-radius-control);
@@ -2402,7 +2481,11 @@ export const CHAT_ROUTE_CHROME_STYLES = `
     padding: 28px 20px;
   }
   [${CHAT_ROUTE_ACTIVATION_ATTR}] .chat-activation-grid {
-    grid-template-columns: 1fr;
+    /* ⛔ ONE COLUMN UNTIL IT DOES NOT FIT. Four cards stacked on a 390x844
+       phone made the hero 964px tall and pushed the composer 8px past the
+       fold — a first-run screen whose message box you cannot see. Three or
+       fewer keep the shipped single column; four wrap to 2x2 here too. */
+    grid-template-columns: repeat(var(--activation-cols-narrow, 1), minmax(0, 1fr));
   }
   [${CHAT_ROUTE_HOST_ATTR}] .chat-thread-hero {
     align-content: start;
@@ -2446,6 +2529,11 @@ export const CHAT_ROUTE_STYLES = [
   MAIL_COMPOSE_STYLES,
   FILE_PICK_STYLES,
   CHAT_ROUTE_CHROME_STYLES,
+  CHAT_MESSENGER_LIST_STYLES,
+  CHAT_HISTORY_FILTER_STYLES,
+  CHAT_DELIVERY_STYLES,
+  CHAT_QUEUE_STYLES,
+  CHAT_QUOTED_REPLY_STYLES,
 ].join('\n');
 
 export interface ChatConnectedSourcePollScheduler {
@@ -2484,6 +2572,12 @@ export interface BootstrapChatRouteOptions {
    *  its contextual composer/activation entry, but no longer owns recipe
    *  inventory, action callers, portal lifetime, or leave guards. */
   openRunPalette?: () => void;
+  /** D-267 — the shell's universal-search entry (`#data/search`, focused).
+   *  ⛔ A CALLBACK, NOT A SEARCH. Chat does not own the query, the sequence
+   *  guard, the recipe/pack rank, or the owner-initiated-only marketplace
+   *  posture — a second surface computing its own answer is a second answer.
+   *  Omitted by embedded/test mounts, which then render no Find chip. */
+  openUniversalSearch?: () => void;
   /** Owner-facing New mail action. Kept as the compose host's narrow callers
    * so embedded/test Chat mounts do not grow mail RPC authority implicitly. */
   mailCompose?: MailComposeDeps;
@@ -2516,6 +2610,13 @@ export interface BootstrapChatRouteOptions {
    * only after the exact durable session has rehydrated, then focused without
    * sending. Nothing is persisted to browser storage. */
   initialRecoveryDraft?: ChatRouteRecoveryDraft;
+  filePreviewCallers?: FilePreviewCallers;
+  fileListCaller?: ChatFileListCaller;
+  cloudFileCallers?: CloudFileCallers;
+  conversationFilesCaller?: ConversationFilesCaller;
+  fileSelectionCaller?: (args: { record_id: string }) => Promise<import('@recued/contracts').FileAttachmentSelection>;
+  /** Transient Data → Chat handoff, appended after the intended thread loads. */
+  initialFileAttachments?: import('@recued/contracts').FileAttachmentSelection[];
   /** Open this durable session after the session list loads. The focused Chat
    * setup journey uses it to return someone to the exact thread they repaired. */
   initialSessionId?: string;
@@ -2548,6 +2649,8 @@ export interface ChatRouteRecoveryDraft {
   readonly text: string;
   readonly protected: boolean;
   readonly modelSourceId: ChatModelSourceId | null;
+  readonly replyTo?: ChatReplyDraft;
+  readonly attachments?: import('@recued/contracts').ChatMessageAttachment[];
 }
 
 export interface ChatRoute {
@@ -2884,14 +2987,14 @@ const planDetailEntries = (
 
 const planStatusLabel = (card: PlanApprovalCard): string => {
   if (card.status === 'proposed' && card.payload_available === false) {
-    return 'Review unavailable';
+    return 'Recued cannot show this';
   }
-  if (card.status === 'proposed') return 'Review required';
+  if (card.status === 'proposed') return 'Needs a look';
   if (card.status === 'cancelled') return 'Cancelled';
   if (card.execution?.status === 'running') return 'Running';
   if (card.execution?.status === 'completed') return 'Completed';
   if (card.execution?.status === 'held') return 'Paused';
-  if (card.execution?.status === 'unknown') return 'Verify outcome';
+  if (card.execution?.status === 'unknown') return 'Check what happened';
   if (card.execution?.status === 'failed') {
     return card.execution.reason === 'run_cancelled'
       ? 'Stopped'
@@ -2902,39 +3005,39 @@ const planStatusLabel = (card: PlanApprovalCard): string => {
 };
 
 const planExecutionTitle = (receipt: PlanExecutionReceipt): string => {
-  if (receipt.status === 'running') return 'Running approved action';
-  if (receipt.status === 'completed') return 'Action completed';
-  if (receipt.status === 'unknown') return 'Outcome needs verification';
+  if (receipt.status === 'running') return 'Doing what you said yes to';
+  if (receipt.status === 'completed') return 'Done';
+  if (receipt.status === 'unknown') return 'Somebody needs to check what happened';
   if (receipt.status === 'failed') {
     return receipt.reason === 'run_cancelled'
       ? 'Run cancelled'
-      : 'Completion not confirmed';
+      : 'Recued is not sure it finished';
   }
-  if (receipt.hold_kind === 'approval') return 'Another approval is required';
-  if (receipt.hold_kind === 'container_pick') return 'A destination must be selected';
-  return 'Another plan review is required';
+  if (receipt.hold_kind === 'approval') return 'This needs another yes from you';
+  if (receipt.hold_kind === 'container_pick') return 'You have to pick where it goes';
+  return 'You need to look at this again';
 };
 
 const planExecutionDetail = (receipt: PlanExecutionReceipt): string => {
   if (receipt.status === 'running') {
-    return 'Server confirmed that Chat matched and used this one-time approval.';
+    return 'Your server says Chat used the one-off yes you gave, for exactly these details.';
   }
   if (receipt.status === 'completed') {
-    return 'Server confirmed that the tool completed for the exact reviewed details.';
+    return 'Your server says it finished, using exactly the details you saw.';
   }
   if (receipt.status === 'held') {
-    return 'The tool paused at an additional confirmation step. This is not a completed action.';
+    return 'It stopped and asked for one more confirmation. It has not finished.';
   }
   if (receipt.status === 'unknown') {
-    return 'A final outcome could not be recovered for this approved action. Check the destination before retrying.';
+    return 'Recued could not find out how this ended. Check the other side before you try again.';
   }
   if (receipt.reason === 'run_cancelled') {
-    return 'You cancelled this run. Nothing will retry automatically.';
+    return 'You stopped this. Recued will not try again by itself.';
   }
   if (receipt.reason === 'execution_error') {
-    return 'The tool did not report a confirmed completion. Check the destination before retrying.';
+    return 'It never said it finished. Check the other side before you try again.';
   }
-  return 'The tool did not complete the approved action. No automatic retry will run.';
+  return 'It did not do what you said yes to. Recued will not try again by itself.';
 };
 
 type DataVerificationRunMatch = 'matched' | 'unverified' | 'mismatched';
@@ -2948,23 +3051,23 @@ const dataVerificationReturnDetail = (
   runMatch: DataVerificationRunMatch,
 ): string => {
   if (runMatch === 'mismatched') {
-    return 'This Data return points to a different run than this action’s execution receipt. Use the linked run and this receipt to re-check the context. Nothing retried.';
+    return 'What came back from Data belongs to a different run. Use both the run and this result to check again. Nothing was tried again.';
   }
   if (context.result === 'needs_help') {
     if (runMatch === 'unverified') {
-      return 'Chat can help interpret this Data return, but the action receipt does not identify a run. The linked run will be treated as unconfirmed evidence. Nothing retried.';
+      return 'Chat can help you read this, but the result does not say which run it came from. Treat the linked run as a hint, not proof. Nothing was tried again.';
     }
-    return 'Chat can explain what the linked Data evidence does and does not show before you decide what to do next. Nothing retried.';
+    return 'Chat can tell you what this does and does not show, before you decide. Nothing was tried again.';
   }
   switch (context.relationship) {
     case 'derived':
-      return 'The record this run wrote was marked reviewed in Data. This is a navigation note, not a saved execution verdict. Nothing retried.';
+      return 'You marked the record this run wrote as looked at. That is just a note to yourself, not a verdict on the run. Nothing was tried again.';
     case 'involved':
-      return 'An item involved in the side-effecting step was marked reviewed in Data. Its link alone does not prove this exact item changed. Nothing retried.';
+      return 'You marked an item from the step that changes things as looked at. The link alone does not prove that item changed. Nothing was tried again.';
     case 'action':
-      return 'A record used by the external action was marked reviewed in Data. It cannot confirm that the destination changed. Nothing retried.';
+      return 'You marked a record the outside action used as looked at. It cannot prove the other side changed. Nothing was tried again.';
     default:
-      return 'The item was marked reviewed in Data. This is a navigation note, not a saved execution verdict. Nothing retried.';
+      return 'You marked this as looked at. That is just a note to yourself, not a verdict on the run. Nothing was tried again.';
   }
 };
 
@@ -2989,20 +3092,20 @@ const planCardHint = (
   },
 ): string => {
   if (card.status === 'proposed' && card.payload_available === false) {
-    return 'The reviewed details could not be recovered. You can still mark '
+    return 'Recued could not get the details back. You can still mark '
       + 'this proposal cancelled so it can never run.';
   }
   if (card.status === 'proposed') {
     if (card.retry_of_plan_id !== undefined) {
-      return 'Chat proposed a fresh attempt after verification. Nothing ran '
-        + 'from this proposal; review it as a new one-time approval.';
+      return 'Chat has suggested trying again after checking. Nothing ran '
+        + 'from this. Look at it as a brand new one-off yes.';
     }
-    return 'Review the action below. Approving gives Chat one-time permission '
-      + 'for these exact details; it does not run the action.';
+    return 'Look at what is below. Saying yes lets Chat do it once, '
+      + 'with exactly these details. It does not run it yet.';
   }
   if (card.status === 'cancelled') {
-    return 'Nothing ran from this proposal. Ask Chat again if you want to '
-      + 'review a different action.';
+    return 'Nothing ran. Ask Chat again if you want to '
+      + 'look at something different.';
   }
   if (
     card.status === 'approved'
@@ -3015,61 +3118,61 @@ const planCardHint = (
     )
   ) {
     if (state.retryStage === 'checking') {
-      return 'Chat is checking the prior outcome. Nothing will retry without '
-        + 'a fresh approval from you.';
+      return 'Chat is checking what happened last time. Nothing runs again without '
+        + 'a new yes from you.';
     }
     if (state.retryStage === 'response_ready') {
-      return 'Chat’s verification response is ready below. Review it before '
-        + 'deciding what to do next.';
+      return 'Chat’s answer is below. Read it before '
+        + 'you decide what to do.';
     }
     if (state.retryStage === 'fresh_approval') {
-      return 'A fresh approval is linked below. It has not run and cannot '
-        + 'reuse the earlier permission.';
+      return 'There is a new yes to give below. Nothing has run, and it cannot '
+        + 'reuse the last one.';
     }
   }
   if (card.execution?.status === 'running') {
-    return 'Chat is carrying out the exact action you approved.';
+    return 'Chat is doing exactly what you said yes to.';
   }
   if (card.execution?.status === 'completed') {
-    return 'The approved action completed. No further confirmation is needed.';
+    return 'It is done. You do not need to do anything else.';
   }
   if (card.execution?.status === 'held') {
-    return 'The approved action paused at another required confirmation. '
-      + 'It has not completed.';
+    return 'It stopped and asked for one more confirmation. '
+      + 'It has not finished.';
   }
   if (card.execution?.status === 'unknown') {
     if (state.retryPrepared) {
-      return 'A cautious verification request is ready in the composer. '
-        + 'Nothing retries until you send it.';
+      return 'A careful question is ready in the message box. '
+        + 'Nothing runs again until you send it.';
     }
-    return 'The one-time approval was used, but a final outcome could not be '
-      + 'recovered. Verify the destination before trying again.';
+    return 'Your one-off yes was used, but Recued could not find out how it '
+      + 'ended. Check the other side before you try again.';
   }
   if (card.execution?.status === 'failed') {
     if (card.execution.reason === 'run_cancelled') {
-      return 'You stopped this run. This one-time approval was used; '
-        + 'nothing will retry automatically.';
+      return 'You stopped this. Your one-off yes was used. '
+        + 'Nothing will run again by itself.';
     }
     if (state.retryPrepared) {
-      return 'A cautious verification and retry request is ready in the composer.';
+      return 'A careful question, and a request to try again, are ready in the message box.';
     }
-    return 'Completion was not confirmed. This one-time approval was used; '
-      + 'verify the destination before trying again.';
+    return 'Recued is not sure it finished. Your one-off yes was used. '
+      + 'Check the other side before you try again.';
   }
   if (card.payload_available === false) {
-    return 'The reviewed details could not be recovered. No action can be '
+    return 'Recued could not get the details back. Nothing can be '
       + 'started from this card.';
   }
   if (state.continuationSent) {
-    return 'Continuation sent to Chat. If the action changes, Chat will '
-      + 'ask for a new approval.';
+    return 'Sent to Chat. If what it wants to do changes, Chat will '
+      + 'ask you again.';
   }
   if (state.continuationPrepared) {
-    return 'A continuation is ready in the composer. Review it, then send '
-      + 'when you’re ready.';
+    return 'A message is ready in the box. Read it, then send it '
+      + 'when you are ready.';
   }
-  return 'Approved once for these exact details. Continue in Chat when '
-    + 'you’re ready to ask Chat to carry it out.';
+  return 'You said yes to exactly these details. Carry on in Chat when '
+    + 'you are ready to ask Chat to do it.';
 };
 
 /** Approved plans resume through a user-reviewed prompt, not an automatic
@@ -3142,11 +3245,11 @@ const dataVerificationRelationshipDescription = (
 ): string => {
   switch (relationship) {
     case 'derived':
-      return 'record written by the run';
+      return 'record the run wrote';
     case 'involved':
-      return 'item involved in the side-effecting step';
+      return 'item touched by the step that changes things';
     case 'action':
-      return 'record used by the external action';
+      return 'record the outside action used';
     default:
       return 'record linked to the run';
   }
@@ -3200,8 +3303,8 @@ const buildChatDataReviewContext = (
     run_id: context.runId,
     run_correlation:
       runMatch === 'matched'
-        ? 'confirmed by the action execution receipt'
-        : 'not confirmed by the action execution receipt',
+        ? 'the result says so'
+        : 'not the result says so',
     data_relationship:
       dataVerificationRelationshipDescription(context.relationship),
   })}\n`
@@ -3333,6 +3436,8 @@ export const bootstrapChatRoute = (
   }
 
   let disposed = false;
+  let filePickerAbort: AbortController | null = null;
+  let pendingInitialFiles = opts.initialFileAttachments ?? [];
   let state: ChatRouteState = {
     phase: 'loading',
     sessions: [],
@@ -3367,17 +3472,54 @@ export const bootstrapChatRoute = (
   // unsaved user work. Typing, choosing a follow-up, or preparing an action
   // draft promotes the composer to protected work for the shell leave guard.
   let composerDraftProtected = false;
+  let composerReply: ChatReplyDraft | null = null;
   // Bare #chat is a deliberate returning-user history view. It retires as
   // soon as the owner opens a conversation or explicitly starts a draft;
   // ordinary re-renders must not bounce an in-progress draft back into it.
   let historyLandingActive = opts.initialLanding === 'history';
   let pendingRecoveryDraft =
     opts.initialRecoveryDraft !== undefined
-    && opts.initialRecoveryDraft.text.trim().length > 0
+    && (opts.initialRecoveryDraft.text.trim().length > 0 || opts.initialRecoveryDraft.replyTo !== undefined || (opts.initialRecoveryDraft.attachments?.length ?? 0) > 0)
       ? opts.initialRecoveryDraft
       : null;
+  const initialDraftSessionId = opts.initialSessionId?.trim() || null;
+  const hasPendingInitialDraft = (): boolean => pendingInitialFiles.length > 0 || pendingRecoveryDraft !== null;
+  const conversationFiles = opts.conversationFilesCaller && opts.fileSelectionCaller
+    ? createConversationFilesView({
+      document: doc, list: opts.conversationFilesCaller, select: opts.fileSelectionCaller, preview: opts.filePreviewCallers,
+      canAttach: sessionId => !disposed && !state.sending && !hasPendingInitialDraft()
+        && openingSessionId === null
+        && state.activeSessionId === sessionId && state.thread.session?.id === sessionId,
+      attach: (_sessionId, file) => {
+        // Re-selecting an attached version must keep the same lost-ack retry.
+        if (composerAttachments.payload().some(existing => existing.file_id === file.file_id
+          && existing.selection_revision === file.selection_revision)) {
+          focusComposer(false, 'end'); return;
+        }
+        pendingSubmission = null; composerDraftProtected = true;
+        composerAttachments.restore([file]); focusComposer(false, 'end');
+      },
+      showMessage: (sessionId, messageId) => { void openHistorySession(sessionId, false, 'row', messageId); },
+      returnFocus: () => {
+        if (!disposed) routeRoot.querySelector<HTMLElement>('[data-chat-conversation-files-open]')?.focus({ preventScroll: true });
+      },
+    }) : null;
   let historyQuery = '';
+  let refreshHistoryFilters = (): void => {};
+  const historyFilters = createHistoryFilters({ document: doc,
+    save: patch => opts.conn('prefs.set', { patch }),
+    changed: () => refreshHistoryFilters(),
+  });
+  const historyMessageSearch = createHistoryMessageSearch({
+    document: doc,
+    search: (request) => opts.conn('chat.messages.search', request),
+    isOpening: (messageId) => openingSessionId !== null && openingHistoryMessageId === messageId,
+    open: (sessionId, messageId) => {
+      void openHistorySession(sessionId, false, 'row', messageId);
+    },
+  });
   let openingSessionId: string | null = null;
+  let openingHistoryMessageId: string | null = null;
   /** What the assistant is carrying for the OPEN session.
    *  ⛔ THREE STATES, KEPT APART: `undefined` = not asked yet (the panel stays
    *  hidden rather than claiming nothing is carried), `null` = the server has no
@@ -3437,6 +3579,118 @@ export const bootstrapChatRoute = (
   // not just the open one) and on reconnect, where hydration is the only
   // truth about what settled while the socket was down.
   const turnsInFlightBySession = new Map<string, Set<string>>();
+  let coordinationHost: HTMLElement | null = null;
+  const restoreDeliveryFocus = (id: string, messageId: string | null | undefined): void => {
+    // ⚠ OPTIONAL CALL. The webclient's fake-document doubles have no
+    // `querySelectorAll` on a created element, and an unguarded call throws for
+    // every mount that reaches this path — 36 tests red with 83 unhandled
+    // rejections. Same defect the Data route carried and fixed the same day.
+    const controls = Array.from(
+      routeRoot.querySelectorAll?.<HTMLElement>('[data-delivery-control]') ?? [],
+    );
+    (controls.find(control => control.getAttribute('data-delivery-control') === id)
+      ?? controls.find(control => control.getAttribute('data-delivery-control') === (messageId ? `message:${messageId}:details` : 'history:toggle')))
+      ?.focus({ preventScroll: true });
+  };
+  const renderCoordination = (): void => {
+    if (disposed || !coordinationHost || !state.thread.session) return;
+    const session = state.thread.session.id;
+    deliveryView.setMessages(session, state.thread.messages.filter(message => message.role === 'user' || message.role === 'assistant').map(message => message.id));
+    const focused = doc.activeElement?.getAttribute('data-delivery-control');
+    const focusedWithdrawal = doc.activeElement?.getAttribute('data-chat-withdraw');
+    const focusedMessage = focused
+      ? doc.activeElement?.closest?.('[data-chat-message-delivery]')?.getAttribute('data-chat-message-delivery') : null;
+    // Snapshot invalidation must not repaint the composer or retire unrelated
+    // one-shot accessibility announcements elsewhere in the conversation.
+    clearChildren(coordinationHost);
+    for (const panel of [queueView.render(doc, state.thread.session.id), deliveryView.render(doc, state.thread.session.id)]) {
+      if (panel) coordinationHost.appendChild(panel);
+    }
+    for (const host of Array.from(
+      routeRoot.querySelectorAll?.<HTMLElement>('[data-chat-message-delivery]') ?? [],
+    )) {
+      const id = host.getAttribute('data-chat-message-delivery');
+      clearChildren(host);
+      const detail = id ? deliveryView.renderMessage(doc, session, id) : null;
+      if (detail) host.appendChild(detail);
+    }
+    if (focused) restoreDeliveryFocus(focused, focusedMessage);
+    if (focusedWithdrawal) Array.from(coordinationHost.querySelectorAll?.<HTMLElement>('[data-chat-withdraw]') ?? [])
+      .find(control => control.getAttribute('data-chat-withdraw') === focusedWithdrawal)?.focus({ preventScroll: true });
+  };
+  const queueView = createChatQueueView(opts.conn, renderCoordination, async draft => {
+    let reply: ChatReplyDraft | null = null;
+    if (draft.reply_to_message_id) {
+      // Resolve the quote from current retained history, including older pages.
+      // Failure leaves a removable unavailable quote, never a different target.
+      const targetId = draft.reply_to_message_id;
+      const snapshot = await opts.conn('chat.session.get', { session_id: draft.session_id,
+        around_message_id: targetId }).catch(() => null);
+      const target = snapshot?.messages.find(message => message.id === targetId
+        && message.session_id === draft.session_id && (message.role === 'user' || message.role === 'assistant'));
+      reply = target ? replyDraftForMessage(target) : { sessionId: draft.session_id, messageId: targetId };
+    }
+    // Check AFTER every await. Typing, uploading, recording, navigation and a
+    // concurrent send all keep ownership of the current composer.
+    if (disposed || state.thread.session?.id !== draft.session_id || openingSessionId !== null
+      || state.sending || composerDraft.length > 0 || composerReply !== null
+      || composerAttachments.rows().length > 0 || pendingVoiceSend
+      || (voiceComposer !== null && voiceComposer.phase() !== 'idle')
+      || approvedPlanContinuationDraft !== null || dataVerificationDiagnosisDraft !== null) return false;
+    composerDraft = draft.message;
+    composerDraftProtected = true;
+    composerReply = reply;
+    pendingSubmission = null;
+    settleTrackedTurn(draft.session_id, draft.turn_id);
+    composerAttachments.restore(draft.attachments ?? []);
+    renderPreservingHandoffFocus();
+    focusComposer(true, 'end');
+    return true;
+  }, (session, snapshot) => {
+    let changed = false;
+    for (const turn of snapshot.turns) {
+      if (turn.status !== 'withdrawn' && turn.failure_reason !== 'attachment_deleted') continue;
+      rememberSettledTurn(session, turn.turn_id);
+      if (turnsInFlightBySession.get(session)?.has(turn.turn_id)) changed = true;
+      settleTrackedTurn(session, turn.turn_id);
+    }
+    if (changed) renderPreservingHandoffFocus();
+  });
+  const deliveryView = createChatDeliveryView(opts.conn, renderCoordination, (id, message) => {
+    if (message) void openHistorySession(id, false, 'row', message);
+    else void requestOpenSession(id);
+  });
+  const messengerList = createMessengerSessionList({ document: doc,
+    read: () => opts.conn('chat.sessions.list'),
+    openDelivery: id => { void openHistorySession(id, false, 'row', undefined, true); },
+    actionsLocked: () => historyActionInFlight(),
+    changed: () => refreshHistoryFilters(),
+  });
+  const historyFilterUnavailable = (): string | undefined => {
+    if (!hasChatHistoryFilters(historyFilters.filters())) return undefined;
+    if (!messengerList.filtersAvailable()) return 'This server cannot filter chats. Clear the filters to see them all.';
+    if (messengerList.statusUnavailable()) return 'Recued cannot tell whether Chat is connected. Reconnect, or clear the filters.';
+    return undefined;
+  };
+  const matchesHistoryFilters = (session: ChatSessionSummary): boolean => {
+    const projection = messengerList.project(session);
+    return chatSessionMatchesFilters(projection, historyFilters.filters(), projection.stale);
+  };
+  const updateHistorySearchScope = (): void => {
+    const filtered = hasChatHistoryFilters(historyFilters.filters());
+    const current = historyFilters.scope() === 'current';
+    const unavailable = historyFilterUnavailable()
+      ?? (current && !messengerList.filtersAvailable() ? 'This server cannot narrow the search. Choose All matching chats.' : undefined)
+      ?? (current && !state.activeSessionId ? 'Open a chat first, then you can search inside it.' : undefined);
+    historyMessageSearch.setScope({
+      ...(filtered ? { filters: historyFilters.filters(), membership: JSON.stringify(state.sessions.filter(matchesHistoryFilters).map(s => s.id).sort()) } : {}),
+      ...(current && state.activeSessionId ? { session_id: state.activeSessionId } : {}),
+      ...(unavailable ? { unavailable } : {}),
+    });
+  };
+  let sessionListRequest = 0;
+  let pendingSubmission: { key: string; id: string } | null = null;
+  let draftCreationId: string | null = null;
 
   const trackTurn = (sessionId: string, turnId: string): void => {
     const turns = turnsInFlightBySession.get(sessionId);
@@ -3485,7 +3739,7 @@ export const bootstrapChatRoute = (
     || sessionAction?.kind === 'delete-busy';
   let pendingDraftGuard:
     | { readonly kind: 'new' }
-    | { readonly kind: 'open'; readonly sessionId: string }
+    | { readonly kind: 'open'; readonly sessionId: string; readonly messageId?: string; readonly delivery?: boolean }
     | null = null;
   let historyAnnouncement = '';
   let seedStarterPromptOnLoad = opts.initialStarterPrompt === true;
@@ -3551,15 +3805,15 @@ export const bootstrapChatRoute = (
         : state.thread.messages.find(
             (candidate) =>
               candidate.id === requestedMessageId
-              && candidate.role === 'assistant',
+              && (candidate.role === 'assistant' || candidate.role === 'user'),
           );
     highlightedPlanId = plan?.plan_id ?? null;
     highlightedMessageId =
       plan === undefined ? message?.id ?? null : null;
     highlightedMessageLabel =
       requestedPlanId === null
-        ? 'Cited Chat answer'
-        : 'Chat answer for unavailable action card';
+        ? message?.role === 'user' ? 'Chat message' : 'Cited Chat answer'
+        : 'Chat’s answer, for a card Recued cannot show';
     returnTargetMissing =
       requestedPlanId === null
       && requestedMessageId !== null
@@ -3583,6 +3837,9 @@ export const bootstrapChatRoute = (
     kind: ThreadSnapshotLoad['kind'],
   ): number => {
     const generation = ++threadSnapshotGeneration;
+    historyPageRequest += 1;
+    loadingOlder = false;
+    loadingNewer = false;
     threadSnapshotLoad = { generation, sessionId, kind, events: [] };
     return generation;
   };
@@ -3971,7 +4228,7 @@ export const bootstrapChatRoute = (
       BlobCtor === undefined
       || typeof urlApi?.createObjectURL !== 'function'
     ) {
-      throw new Error('Chat export download is unavailable in this browser.');
+      throw new Error('This browser cannot download your chats.');
     }
     const blob = new BlobCtor(
       [JSON.stringify(bundle, null, 2)],
@@ -4325,6 +4582,7 @@ export const bootstrapChatRoute = (
     }
     composerDraft = followup.prompt;
     composerDraftProtected = true;
+    composerReply = null;
     approvedPlanContinuationDraft = null;
     dataVerificationDiagnosisDraft = null;
     connectedSourceFollowupDraft = {
@@ -4359,6 +4617,7 @@ export const bootstrapChatRoute = (
         : buildChatDataDiagnosisPrompt(card, context, runMatch);
     composerDraft = prompt;
     composerDraftProtected = true;
+    composerReply = null;
     connectedSourceFollowupDraft = null;
     approvedPlanContinuationDraft = null;
     dataVerificationDiagnosisDraft = {
@@ -4395,6 +4654,7 @@ export const bootstrapChatRoute = (
           : buildChatPlanContinuationPrompt(card);
     composerDraft = prompt;
     composerDraftProtected = true;
+    composerReply = null;
     connectedSourceFollowupDraft = null;
     dataVerificationDiagnosisDraft = null;
     approvedPlanContinuationDraft = {
@@ -4512,7 +4772,7 @@ export const bootstrapChatRoute = (
               const status = doc.createElement('span');
               status.setAttribute(CHAT_ROUTE_ACTIVITY_DISH_STATUS_ATTR, '');
               status.setAttribute('data-status', 'error');
-              status.textContent = `Couldn’t save dish: ${promotion.message}`;
+              status.textContent = `Recued could not save the dish: ${promotion.message}`;
               line.appendChild(status);
             }
           }
@@ -4525,7 +4785,7 @@ export const bootstrapChatRoute = (
 
   const renderMessage = (
     host: HTMLElement,
-    message: Pick<ChatMessage, 'role' | 'content' | 'id' | 'tool_call'>,
+    message: Pick<ChatMessage, 'role' | 'content' | 'id' | 'tool_call' | 'reply_to' | 'attachments'>,
     activity: ReadonlyArray<ChatActivityRow> = [],
     pendingText?: string,
   ): HTMLElement => {
@@ -4541,12 +4801,15 @@ export const bootstrapChatRoute = (
     role.textContent = messageRoleLabel(message.role);
     if (message.tool_call) {
       const labels = {
-        running: 'Running', held: 'Waiting for a result', succeeded: 'Completed',
-        failed: 'Failed', interrupted: 'Interrupted — outcome unconfirmed',
+        running: 'Running', held: 'Waiting to hear back', succeeded: 'Completed',
+        failed: 'Failed', interrupted: 'Stopped part-way. Recued does not know what happened',
       };
       role.textContent += ` · ${labels[message.tool_call.state]}`;
     }
     row.appendChild(role);
+    const quoteSession = state.thread.session?.id;
+    if (message.reply_to && quoteSession) row.appendChild(buildChatQuote(doc, message.reply_to,
+      id => { void openHistorySession(quoteSession, false, 'row', id); }));
     // Activity sits between the role label and the content on BOTH the
     // in-flight scaffold and the completed row (§ B.8.7 "between the
     // user message and the AI response") so the tool rows hold their
@@ -4568,6 +4831,37 @@ export const bootstrapChatRoute = (
       content.textContent = message.content;
     }
     row.appendChild(content);
+    if (message.attachments?.length) {
+      const attachments = doc.createElement('ul'); attachments.setAttribute('data-chat-attachments', '');
+      for (const file of message.attachments) {
+        const item = doc.createElement('li');
+        const unavailable = file.availability === 'deleted' || file.availability === 'missing';
+        item.setAttribute('data-attachment-availability', file.availability ?? 'legacy');
+        const name = file.filename ?? 'Attachment';
+        if (unavailable) item.textContent = `${name} · ${file.availability === 'deleted' ? 'File deleted' : 'Recued cannot get that file'}`;
+        else {
+          const link = doc.createElement('a'); link.textContent = name;
+          link.href = serializeSourceRecordAddress({ tab: 'files', collectionSlug: 'received', recordId: file.file_id,
+            ...(quoteSession ? { returnToChat: { sessionId: quoteSession, messageId: message.id } } : {}) });
+          item.appendChild(link);
+          if (opts.filePreviewCallers) {
+            const inspect = doc.createElement('button'); inspect.setAttribute('type', 'button');
+            inspect.textContent = 'Preview'; inspect.className = 'chat-message-file-preview';
+            inspect.setAttribute('aria-label', `Preview ${name}`);
+            inspect.addEventListener('click', () => {
+              filePickerAbort?.abort(); const abort = new AbortController(); filePickerAbort = abort;
+              void openFilePreview(doc, { record_id: file.file_id, filename: name }, opts.filePreviewCallers!, abort.signal);
+            });
+            item.appendChild(doc.createTextNode(' ')); item.appendChild(inspect);
+          }
+        }
+        if (file.legacy_capture) {
+          const note = doc.createElement('small'); note.textContent = ' · Retained from older history; original version unverified'; item.appendChild(note);
+        }
+        attachments.appendChild(item);
+      }
+      row.appendChild(attachments);
+    }
     host.appendChild(row);
     return row;
   };
@@ -4796,10 +5090,10 @@ export const bootstrapChatRoute = (
     title.className = 'chat-data-verification-title';
     title.textContent =
       runMatch === 'mismatched'
-        ? 'Data return does not match this action'
+        ? 'What came back from Data does not match this'
         : context.result === 'reviewed'
-          ? 'Data review marked complete'
-          : 'Help interpreting this result';
+          ? 'You marked this as looked at'
+          : 'Help me understand this';
     notice.appendChild(title);
     const detail = doc.createElement('p');
     detail.className = 'chat-data-verification-detail';
@@ -4818,7 +5112,7 @@ export const bootstrapChatRoute = (
             : {}),
         },
       }));
-      runLink.textContent = 'View run outcome →';
+      runLink.textContent = 'See how the run ended →';
       notice.appendChild(runLink);
     }
     if (
@@ -4840,10 +5134,10 @@ export const bootstrapChatRoute = (
       diagnose.setAttribute(CHAT_ROUTE_DATA_VERIFICATION_DIAGNOSE_ATTR, '');
       diagnose.textContent =
         diagnosisPrepared
-          ? 'Review help request in composer'
+          ? 'Read the question in the message box'
           : hasOtherDraft
-            ? 'Go to current draft'
-            : 'Help me interpret this';
+            ? 'Go to what you were writing'
+            : 'Help me understand this';
       diagnose.addEventListener('click', () => {
         if (diagnosisPrepared || hasOtherDraft) {
           focusComposer(false, diagnosisPrepared ? 'start' : 'end');
@@ -4865,24 +5159,24 @@ export const bootstrapChatRoute = (
   ): string => {
     if (answerState === 'interpreting') {
       return safeCheck
-        ? 'Checking the linked evidence…'
-        : 'Interpreting the linked evidence…';
+        ? 'Checking what is linked…'
+        : 'Working out what this means…';
     }
     if (answerState === 'failed') {
       return safeCheck
-        ? 'Read-only check could not be completed'
-        : 'Explanation could not be completed';
+        ? 'The look-only check did not finish'
+        : 'Chat could not finish explaining';
     }
-    if (!safeCheck) return 'Explanation ready — choose a safe next step';
+    if (!safeCheck) return 'Chat has explained it. Now pick a safe next step';
     switch (resolutionStatus) {
       case 'resolved':
-        return 'Closed — no further action requested';
+        return 'Closed. You asked for nothing more';
       case 'still_uncertain':
-        return 'Closed as still uncertain';
+        return 'Closed, and still not certain';
       case 'needs_new_action':
-        return 'Closed — fresh review needed';
+        return 'Closed. This needs a fresh look';
       default:
-        return 'Read-only check complete — close the loop';
+        return 'The look-only check is done. Now finish up';
     }
   };
 
@@ -4896,38 +5190,38 @@ export const bootstrapChatRoute = (
       context.intent === 'safe_check' ? 'safe_check' : 'explanation';
     const safeCheck = intent === 'safe_check';
     if (answerState === 'interpreting') {
-      return `Chat is grounding this ${safeCheck ? 'read-only check' : 'explanation'} `
-        + `in ${actionTitle} and the linked run. This request carries no `
-        + 'approval or retry authority.';
+      return `Chat is checking this against ${safeCheck ? 'read-only check' : 'explanation'} `
+        + `in ${actionTitle} and the run it is linked to. This asks for no `
+        + 'permission and cannot run anything again.';
     }
     if (answerState === 'failed') {
       return `Chat did not finish the ${safeCheck ? 'read-only check' : 'explanation'}. `
-        + 'The action was not retried; inspect the exact run or ask again '
+        + 'Nothing was run again. Look at the run itself, or ask again '
         + 'when you are ready.';
     }
     if (safeCheck) {
       switch (resolutionStatus) {
         case 'resolved':
-          return 'You marked your review resolved. This closes the diagnosis '
-            + 'without requesting or running another action.';
+          return 'You marked this as sorted. That closes it '
+            + 'without asking for or running anything else.';
         case 'still_uncertain':
-          return 'You marked the result still uncertain. That records your '
-            + 'review without claiming the prior effect was verified.';
+          return 'You said you are still not certain. That writes down what you '
+            + 'think, without claiming anything was proved.';
         case 'needs_new_action':
-          return 'You marked that a new action is needed. The prior approval '
-            + 'stays consumed; any new action needs a fresh review.';
+          return 'You said something new needs to happen. The earlier yes '
+            + 'is used up. Anything new needs a fresh look.';
         default:
-          return 'Review Chat’s read-only findings, then record your decision '
-            + 'below. Your choice closes the loop; model prose alone does not '
-            + 'decide the outcome.';
+          return 'Read what Chat found, then say what you decided '
+            + 'below. Your choice is what settles it. What the AI wrote does not '
+            + 'decide anything on its own.';
       }
     }
     return context.run_correlation === 'matched'
-      ? `Grounded in ${actionTitle} and its confirmed run. This answer `
-        + 'did not retry the action or grant a new approval.'
+      ? `Checked against ${actionTitle} and the run it belongs to. This answer `
+        + 'did not run anything again, and gave no new permission.'
       : `Linked to ${actionTitle}, but its receipt did not confirm this `
-        + 'run. Treat the answer as guidance and inspect the run before '
-        + 'acting. Nothing retried.';
+        + 'run. Treat the answer as a hint, and look at the run before '
+        + 'you act. Nothing was run again.';
   };
 
   const buildDataDiagnosisAnswer = (
@@ -4972,10 +5266,10 @@ export const bootstrapChatRoute = (
       'aria-label',
       answerState === 'ready'
         ? safeCheck
-          ? `Read-only check closure for ${actionTitle}`
+          ? `Finishing the look-only check for ${actionTitle}`
           : `Safe next steps for ${actionTitle}`
         : answerState === 'failed'
-          ? `${safeCheck ? 'Read-only check' : 'Explanation'} unavailable for ${actionTitle}`
+          ? `${safeCheck ? 'Look-only check' : 'Explanation'} unavailable for ${actionTitle}`
           : `${safeCheck ? 'Checking' : 'Interpreting'} evidence for ${actionTitle}`,
     );
     const announcementKey =
@@ -4995,7 +5289,7 @@ export const bootstrapChatRoute = (
 
     const eyebrow = doc.createElement('span');
     eyebrow.className = 'chat-data-diagnosis-eyebrow';
-    eyebrow.textContent = safeCheck ? 'Read-only check' : 'Guided diagnosis';
+    eyebrow.textContent = safeCheck ? 'Look-only check' : 'Step-by-step help';
     receipt.appendChild(eyebrow);
     const title = doc.createElement('strong');
     title.className = 'chat-data-diagnosis-title';
@@ -5027,8 +5321,8 @@ export const bootstrapChatRoute = (
       closureLabel.className = 'chat-data-diagnosis-closure-label';
       closureLabel.textContent =
         resolutionStatus === undefined
-          ? 'How do you want to close this?'
-          : 'Closure saved · update if your review changes';
+          ? 'How do you want to finish this?'
+          : 'Saved. Change it if you change your mind';
       closure.appendChild(closureLabel);
       const closureActions = doc.createElement('div');
       closureActions.className = 'chat-data-diagnosis-actions';
@@ -5041,18 +5335,18 @@ export const bootstrapChatRoute = (
       }> = [
         {
           status: 'resolved',
-          label: 'Resolved — no action',
+          label: 'Sorted. Nothing to do',
           selectedLabel: 'Resolved ✓',
         },
         {
           status: 'still_uncertain',
-          label: 'Still uncertain',
-          selectedLabel: 'Still uncertain ✓',
+          label: 'Still not certain',
+          selectedLabel: 'Still not certain ✓',
         },
         {
           status: 'needs_new_action',
-          label: 'Needs fresh action',
-          selectedLabel: 'Fresh action needed ✓',
+          label: 'Something new needs to happen',
+          selectedLabel: 'Something new needs to happen ✓',
         },
       ];
       for (const choice of choices) {
@@ -5148,14 +5442,14 @@ export const bootstrapChatRoute = (
           followup.setAttribute('data-action', 'safe-check');
           followup.textContent =
             diagnosisPrepared
-              ? 'Review safe check in composer'
+              ? 'Read the safe check in the message box'
               : hasOtherDraft
-                ? 'Go to current draft'
+                ? 'Go to what you were writing'
                 : !safeCheck && answerState === 'failed'
-                  ? 'Try explanation again'
+                  ? 'Ask Chat to explain again'
                   : safeCheck && resolutionStatus === 'still_uncertain'
-                    ? 'Draft another read-only check'
-                    : 'Draft a safe check';
+                    ? 'Write another look-only check'
+                    : 'Write a safe check';
           followup.addEventListener('click', () => {
             if (diagnosisPrepared || hasOtherDraft) {
               focusComposer(false, diagnosisPrepared ? 'start' : 'end');
@@ -5200,10 +5494,10 @@ export const bootstrapChatRoute = (
           fresh.setAttribute('data-action', 'fresh-action');
           fresh.textContent =
             freshPrepared
-              ? 'Review fresh action in composer'
+              ? 'Read the new action in the message box'
               : hasOtherDraft
-                ? 'Go to current draft'
-                : 'Draft fresh action';
+                ? 'Go to what you were writing'
+                : 'Write the new action';
           fresh.addEventListener('click', () => {
             if (freshPrepared || hasOtherDraft) {
               focusComposer(false, freshPrepared ? 'start' : 'end');
@@ -5295,12 +5589,12 @@ export const bootstrapChatRoute = (
     scope.className = 'chat-plan-card-scope';
     scope.textContent =
       card.status === 'cancelled'
-        ? 'No permission granted'
+        ? 'You gave no permission'
         : card.retry_of_plan_id !== undefined
-          ? 'Fresh one-time approval'
+          ? 'A new one-off yes'
           : card.execution !== undefined
-            ? 'One-time approval used'
-            : 'One-time approval';
+            ? 'Your one-off yes was used'
+            : 'A one-off yes';
     heading.appendChild(scope);
     header.appendChild(heading);
     el.appendChild(header);
@@ -5356,8 +5650,8 @@ export const bootstrapChatRoute = (
       receiptLabel.className = 'chat-plan-receipt-label';
       receiptLabel.textContent =
         card.recovered === true
-          ? 'Recovered execution receipt'
-          : 'Execution receipt';
+          ? 'Recovered result'
+          : 'Result';
       receipt.appendChild(receiptLabel);
       const receiptTitle = doc.createElement('strong');
       receiptTitle.className = 'chat-plan-receipt-title';
@@ -5387,8 +5681,8 @@ export const bootstrapChatRoute = (
                 },
               }),
         }));
-        runLink.setAttribute('aria-label', 'View exact run in Logs');
-        runLink.textContent = 'View exact run →';
+        runLink.setAttribute('aria-label', 'See this run under Runs');
+        runLink.textContent = 'See this run →';
         receipt.appendChild(runLink);
       }
       el.appendChild(receipt);
@@ -5420,23 +5714,23 @@ export const bootstrapChatRoute = (
       }
       const label = doc.createElement('span');
       label.className = 'chat-plan-verification-label';
-      label.textContent = 'Verify before retry';
+      label.textContent = 'Check before running it again';
       verification.appendChild(label);
       const title = doc.createElement('strong');
       title.className = 'chat-plan-verification-title';
       if (retryPlan !== undefined) {
         title.textContent =
           retryPlan.status === 'proposed'
-            ? 'Fresh approval ready'
+            ? 'A new yes is ready for you'
             : retryPlan.status === 'cancelled'
-              ? 'Fresh approval was declined'
-              : 'Fresh approval reviewed';
+              ? 'You said no'
+              : 'You looked at the new one';
       } else if (verificationAttempt?.status === 'checking') {
-        title.textContent = 'Checking the prior outcome';
+        title.textContent = 'Checking what happened last time';
       } else if (verificationAttempt?.status === 'failed') {
-        title.textContent = 'Verification was interrupted';
+        title.textContent = 'The check was cut short';
       } else {
-        title.textContent = 'Verification response ready';
+        title.textContent = 'Chat has answered';
       }
       verification.appendChild(title);
       const detail = doc.createElement('p');
@@ -5446,25 +5740,25 @@ export const bootstrapChatRoute = (
         verification.setAttribute('data-comparison', comparison);
         detail.textContent =
           comparison === 'exact'
-            ? 'Chat proposed the same tool and exact reviewed details again. '
-              + 'It has not run; this new card needs its own approval.'
+            ? 'Chat has suggested exactly the same thing again. '
+              + 'It has not run. This new card needs its own yes.'
             : comparison === 'changed'
-              ? 'This proposal differs from the uncertain action. Nothing '
-                + 'ran; review every changed detail before approving.'
-              : 'Chat proposed another attempt. Nothing ran; compare the new '
-                + 'card carefully before approving.';
+              ? 'This is different from the one you were unsure about. Nothing '
+                + 'ran. Check every change before you say yes.'
+              : 'Chat has suggested trying again. Nothing ran. Compare the new '
+                + 'card carefully before you say yes.';
       } else if (verificationAttempt?.status === 'checking') {
         detail.textContent =
-          'Chat is checking for an existing effect first. It cannot retry '
-          + 'this action without creating a new approval for you to review.';
+          'Chat is checking whether it already happened. It cannot run '
+          + 'this again without asking you first.';
       } else if (verificationAttempt?.status === 'failed') {
         detail.textContent =
-          'Chat could not finish the check. No retry was started. You can '
-          + 'prepare another verification request when you are ready.';
+          'Chat could not finish checking. Nothing was run again. You can '
+          + 'ask it to check again when you are ready.';
       } else {
         detail.textContent =
-          'Review Chat’s answer before deciding what to do next. No retry '
-          + 'ran, and any new attempt still needs a fresh approval.';
+          'Review Chat’s answer before you decide what to do. Nothing was '
+          + 'run again, and anything new still needs a fresh yes.';
       }
       verification.appendChild(detail);
       if (
@@ -5482,13 +5776,13 @@ export const bootstrapChatRoute = (
         if (retryPlan !== undefined) {
           related.textContent =
             retryPlan.status === 'proposed'
-              ? 'Review fresh approval'
-              : 'View fresh approval';
+              ? 'Look at the new one'
+              : 'See the new one';
           related.addEventListener('click', () => {
             focusPlanCard(retryPlan.plan_id);
           });
         } else {
-          related.textContent = 'Review Chat response';
+          related.textContent = 'Read Chat’s answer';
           related.addEventListener('click', () => {
             focusChatMessage(verificationAttempt!.messageId!);
           });
@@ -5505,7 +5799,7 @@ export const bootstrapChatRoute = (
       verification.setAttribute('data-status', 'fresh_approval');
       const label = doc.createElement('span');
       label.className = 'chat-plan-verification-label';
-      label.textContent = 'Fresh review after verification';
+      label.textContent = 'A fresh look, now it has been checked';
       verification.appendChild(label);
       const title = doc.createElement('strong');
       title.className = 'chat-plan-verification-title';
@@ -5516,22 +5810,22 @@ export const bootstrapChatRoute = (
       verification.setAttribute('data-comparison', comparison);
       title.textContent =
         comparison === 'exact'
-          ? 'Same exact action, new permission'
+          ? 'Exactly the same thing, asking again'
           : comparison === 'changed'
-            ? 'Action details changed'
-            : 'New permission required';
+            ? 'The details have changed'
+            : 'This needs a new yes';
       verification.appendChild(title);
       const detail = doc.createElement('p');
       detail.className = 'chat-plan-verification-detail';
       detail.textContent =
         comparison === 'exact'
-          ? 'The earlier outcome was uncertain, so the old approval cannot '
-            + 'be reused. Review this action again before anything runs.'
+          ? 'Recued was not sure how the last one ended, so your earlier yes cannot '
+            + 'be reused. Look at this again before anything runs.'
           : comparison === 'changed'
-            ? 'This does not match the earlier tool and reviewed payload. '
-              + 'Review every detail; approval applies only to this card.'
-            : 'This proposal follows an uncertain action and needs a new '
-              + 'review. Nothing runs until you approve this card.';
+            ? 'This is not the same as what you saw before. '
+              + 'Check every detail. Your yes covers only this card.'
+            : 'This comes after something Recued was unsure about, so it needs a fresh '
+              + 'look. Nothing runs until you say yes to this card.';
       verification.appendChild(detail);
       if (retryOrigin !== undefined) {
         const verificationActions = doc.createElement('div');
@@ -5539,7 +5833,7 @@ export const bootstrapChatRoute = (
         const related = doc.createElement('button');
         related.type = 'button';
         related.setAttribute(CHAT_ROUTE_PLAN_RELATED_ATTR, '');
-        related.textContent = 'View uncertain action';
+        related.textContent = 'See the one you were unsure about';
         related.addEventListener('click', () => {
           focusPlanCard(retryOrigin.plan_id);
         });
@@ -5551,15 +5845,15 @@ export const bootstrapChatRoute = (
 
     const argsLabel = doc.createElement('span');
     argsLabel.className = 'chat-plan-card-args-label';
-    argsLabel.textContent = 'Action details';
+    argsLabel.textContent = 'The details';
     el.appendChild(argsLabel);
     const details = doc.createElement('dl');
     details.className = 'chat-plan-card-details';
-    details.setAttribute('aria-label', 'Action details');
+    details.setAttribute('aria-label', 'The details');
     details.setAttribute('tabindex', '0');
     const detailEntries =
       card.payload_available === false
-        ? [['Details', 'Unavailable after recovery']] as const
+        ? [['Details', 'Gone after the recovery']] as const
         : planDetailEntries(card.args);
     for (const [label, value] of detailEntries) {
       const row = doc.createElement('div');
@@ -5579,7 +5873,7 @@ export const bootstrapChatRoute = (
     const technical = doc.createElement('details');
     technical.className = 'chat-plan-card-technical';
     const technicalSummary = doc.createElement('summary');
-    technicalSummary.textContent = 'Technical details';
+    technicalSummary.textContent = 'The technical bits';
     technical.appendChild(technicalSummary);
     const technicalMeta = doc.createElement('p');
     technicalMeta.className = 'chat-plan-card-technical-meta';
@@ -5589,7 +5883,7 @@ export const bootstrapChatRoute = (
     argsPre.className = 'chat-plan-card-args';
     argsPre.textContent =
       card.payload_available === false
-        ? 'Reviewed arguments unavailable.'
+        ? 'Recued cannot show the details you saw.'
         : formatPlanArgs(card.args);
     technical.appendChild(argsPre);
     el.appendChild(technical);
@@ -5603,7 +5897,7 @@ export const bootstrapChatRoute = (
       approve.type = 'button';
       approve.setAttribute(CHAT_ROUTE_PLAN_APPROVE_ATTR, '');
       approve.textContent =
-        pendingAction === 'approve' ? 'Approving…' : 'Approve once';
+        pendingAction === 'approve' ? 'Approving…' : 'Say yes, once';
       approve.disabled = card.payload_available === false;
       if (busy || card.payload_available === false) {
         approve.setAttribute('aria-disabled', 'true');
@@ -5641,12 +5935,12 @@ export const bootstrapChatRoute = (
       }
       note.textContent =
         card.payload_available === false
-          ? 'The exact reviewed details are unavailable. Mark it cancelled so it can never run.'
+          ? 'Recued cannot get the exact details back. Mark it cancelled so it can never run.'
           : pendingAction === 'approve'
-            ? 'Saving your one-time approval…'
+            ? 'Saving your yes…'
             : pendingAction === 'cancel'
-              ? 'Cancelling this proposal…'
-              : 'After approval, you choose when to continue in Chat.';
+              ? 'Cancelling…'
+              : 'Once you say yes, you choose when to carry on in Chat.';
       actions.appendChild(note);
       el.appendChild(actions);
     } else if (
@@ -5668,12 +5962,12 @@ export const bootstrapChatRoute = (
       retryButton.setAttribute(CHAT_ROUTE_PLAN_RETRY_ATTR, '');
       retryButton.textContent =
         retryPrepared
-          ? 'Review retry in composer'
+          ? 'Read the retry in the message box'
           : retryHasOtherDraft
-            ? 'Go to current draft'
+            ? 'Go to what you were writing'
             : verificationFailed
-              ? 'Try verification again'
-              : 'Review and retry';
+              ? 'Check again'
+              : 'Look at it, then try again';
       retryButton.disabled = state.sending;
       retryButton.addEventListener('click', () => {
         if (retryPrepared || retryHasOtherDraft) {
@@ -5687,13 +5981,13 @@ export const bootstrapChatRoute = (
       note.className = 'chat-plan-card-action-note';
       note.textContent =
         retryPrepared
-          ? 'Nothing retries until you send; Chat will verify the prior outcome first.'
+          ? 'Nothing runs again until you send it. Chat checks what happened last time first.'
           : retryHasOtherDraft
-            ? 'Your current draft is preserved. Clear or send it before reviewing a retry.'
+            ? 'What you were writing is safe. Send it or clear it before you look at a retry.'
             : verificationFailed
-              ? 'Fills the composer only. The previous check did not start a retry.'
-              : 'Fills the composer only. Chat checks for an existing effect before '
-                + 'requesting a fresh approval.';
+              ? 'This only fills the message box. The last check did not run anything again.'
+              : 'This only fills the message box. Chat checks whether it already happened before '
+                + 'asking you again.';
       actions.appendChild(note);
       el.appendChild(actions);
     } else if (
@@ -5709,9 +6003,9 @@ export const bootstrapChatRoute = (
       continueButton.setAttribute(CHAT_ROUTE_PLAN_CONTINUE_ATTR, '');
       continueButton.textContent =
         continuationPrepared
-          ? 'Review in composer'
+          ? 'Read it in the message box'
           : continuationHasOtherDraft
-            ? 'Go to current draft'
+            ? 'Go to what you were writing'
             : 'Continue in Chat';
       continueButton.addEventListener('click', () => {
         if (continuationPrepared || continuationHasOtherDraft) {
@@ -5725,10 +6019,10 @@ export const bootstrapChatRoute = (
       note.className = 'chat-plan-card-action-note';
       note.textContent =
         continuationPrepared
-          ? 'Nothing runs until you send the continuation.'
+          ? 'Nothing runs until you send it.'
           : continuationHasOtherDraft
-            ? 'Your current draft is preserved. Clear or send it before continuing.'
-            : 'Fills the composer only; nothing is sent automatically.';
+            ? 'What you were writing is safe. Send it or clear it before you carry on.'
+            : 'This only fills the message box. Nothing is sent by itself.';
       actions.appendChild(note);
       el.appendChild(actions);
     }
@@ -5880,7 +6174,7 @@ export const bootstrapChatRoute = (
     aiNotice.setAttribute('id', CHAT_ROUTE_AI_UNAVAILABLE_ID);
     const noticeText = doc.createElement('span');
     noticeText.textContent =
-      'Chat needs a model before you can send a message. ';
+      'Chat needs an AI picked before you can send anything. ';
     aiNotice.appendChild(noticeText);
     const settingsLink = doc.createElement('a');
     settingsLink.setAttribute(
@@ -5929,7 +6223,10 @@ export const bootstrapChatRoute = (
     if (compose === null) return;
     const readiness = await compose.refresh();
     if (disposed || generation !== mailComposeRequestGeneration) return;
-    if (readiness.status === 'ready') {
+    // D-264 — `draft_only` OPENS. The dialog is fully usable for drafting, says
+    // so in its own words, and disables Send; refusing to open here would be
+    // the pre-D-264 behaviour, which withheld the surface that still worked.
+    if (readiness.status === 'ready' || readiness.status === 'draft_only') {
       mailNoticeStatus = null;
       render();
       compose.openCreate();
@@ -5951,12 +6248,12 @@ export const bootstrapChatRoute = (
     notice.setAttribute('aria-atomic', 'true');
     const message = doc.createElement('span');
     message.textContent = status === 'checking'
-      ? 'Checking whether your mail can send…'
+      ? 'Checking whether Recued can send mail…'
       : status === 'none'
-        ? 'Connect a mailbox before sending mail with Recued.'
+        ? 'Connect a mailbox before Recued can send mail.'
         : status === 'read_only'
-          ? 'Your connected mailbox can read mail, but it cannot send yet.'
-          : 'Recued couldn’t check whether your mail can send right now.';
+          ? 'Your mailbox can read mail, but it cannot send yet.'
+          : 'Recued could not check whether it can send mail just now.';
     notice.appendChild(message);
 
     if (status === 'none' || status === 'read_only') {
@@ -5964,7 +6261,7 @@ export const bootstrapChatRoute = (
       handoff.setAttribute('href', serializeShellRoute('connections', 'mail'));
       handoff.textContent = status === 'none'
         ? 'Connect mail →'
-        : 'Fix mail connection →';
+        : 'Fix the mail connection →';
       notice.appendChild(handoff);
     } else if (status === 'unavailable') {
       const retry = doc.createElement('button');
@@ -5992,6 +6289,8 @@ export const bootstrapChatRoute = (
     label: string;
     accessibleLabel: string;
     title: string;
+    /** `aria-keyshortcuts` value when a global chord also reaches this action. */
+    keyshortcuts?: string;
     run: () => void;
   }
 
@@ -6007,6 +6306,15 @@ export const bootstrapChatRoute = (
     createOverlay = null;
     open.close();
   };
+
+  /** D-267 — ONE predicate, two consumers: the composer's [✎ Create] chip and
+   *  the first-run `capture` card. They are alternatives in the layout (the
+   *  grid suppresses the chip row), so a drift between two hand-written copies
+   *  of this condition would take the only no-setup affordance off the screen
+   *  in exactly the state where it is the only one that works. */
+  const canOpenCreateOverlay = (): boolean =>
+    opts.contactUpsertCaller !== undefined
+    || opts.workEntityUpsertCaller !== undefined;
 
   const openCreateOverlay = (): void => {
     if (createOverlay !== null) return;
@@ -6036,22 +6344,37 @@ export const bootstrapChatRoute = (
     if (opts.openRunPalette !== undefined) {
       actions.push({
         id: 'run',
-        label: '▶ Run a recipe',
-        accessibleLabel: 'Run a recipe',
-        title: 'Run, schedule, or arm a recipe',
+        label: '▶ Run a Recipe',
+        accessibleLabel: 'Run a Recipe',
+        title: 'Run a Recipe now, on a schedule, or when something happens',
         run: opts.openRunPalette,
       });
     }
-    if (
-      opts.contactUpsertCaller !== undefined
-      || opts.workEntityUpsertCaller !== undefined
-    ) {
+    if (canOpenCreateOverlay()) {
       actions.push({
         id: 'create',
         label: '✎ Create',
         accessibleLabel: 'Create',
-        title: 'Capture a contact, task, note, or commitment',
+        // ⛔ DERIVED, NOT SPELLED. This copy has now been a version behind
+        // TWICE — once when `project` shipped, once when `booking` did — and
+        // both times I "fixed" it by retyping the list, which is the move that
+        // guarantees a third time. The overlay's own target table is the only
+        // thing that knows what it offers.
+        title: `Capture a ${COMPOSE_LOCAL_TARGETS.map((t) => t.label.toLowerCase()).join(', ')}`,
         run: openCreateOverlay,
+      });
+    }
+    if (opts.openUniversalSearch !== undefined) {
+      actions.push({
+        id: 'find',
+        label: '🔍 Find',
+        accessibleLabel: 'Find',
+        // ⛔ NAMES THE CHORD. Search has no top-bar trigger to carry a visible
+        // kbd chip the way the Run palette does, so this chip is the only place
+        // Ctrl/Cmd+/ is ever said — without it the chord ships undiscoverable.
+        title: `Search everything on this server (${universalSearchShortcutLabel(doc)})`,
+        keyshortcuts: UNIVERSAL_SEARCH_SHORTCUT,
+        run: opts.openUniversalSearch,
       });
     }
     if (opts.mailCompose !== undefined) {
@@ -6073,6 +6396,9 @@ export const bootstrapChatRoute = (
     const button = doc.createElement('button');
     button.type = 'button';
     button.className = 'chat-composer-action';
+    if (action.keyshortcuts !== undefined) {
+      button.setAttribute('aria-keyshortcuts', action.keyshortcuts);
+    }
     button.setAttribute(CHAT_ROUTE_COMPOSER_ACTION_ATTR, action.id);
     button.setAttribute('aria-label', action.accessibleLabel);
     button.setAttribute('title', action.title);
@@ -6093,9 +6419,9 @@ export const bootstrapChatRoute = (
       const details = doc.createElement('details');
       details.className = 'chat-composer-more';
       details.setAttribute(CHAT_ROUTE_COMPOSER_MORE_ATTR, '');
-      details.setAttribute('aria-label', 'Chat composer actions');
+      details.setAttribute('aria-label', 'Things you can do here');
       const summary = doc.createElement('summary');
-      summary.setAttribute('aria-label', 'More Chat composer actions');
+      summary.setAttribute('aria-label', 'More Things you can do here');
       // ⛔ WAS ALSO '+', THE SAME GLYPH THE ATTACH BUTTON USES, and both are
       // on screen at once — two controls saying the same thing and meaning
       // different ones. Only visible by looking at it. This is the overflow
@@ -6199,35 +6525,35 @@ export const bootstrapChatRoute = (
     let title: string;
     let copy: string;
     if (viewState === 'checking') {
-      badge = 'Checking first sync';
+      badge = 'Checking the first look';
       title = `Getting ${provider} ready for Chat`;
-      copy = 'Confirming that the first sync has made this account searchable.';
+      copy = 'Checking that Recued has read enough to search this account.';
     } else if (viewState === 'pending') {
-      badge = 'First sync in progress';
+      badge = 'Reading it for the first time';
       title = `${provider} is connected`;
       copy = state.aiAvailable === false
-        ? 'Syncing can continue while you set up Chat. We will bring you back here when the model is ready.'
-        : 'Recued is finishing the first sync. We will prepare a useful first question here as soon as this account is searchable.';
+        ? 'Recued can keep reading while you set up Chat. We will bring you back when it is ready.'
+        : 'Recued is finishing its first read. As soon as it can search this account, we will suggest a first question.';
     } else if (viewState === 'ready') {
       badge = 'Ready to ask';
       title = `${provider} is ready for Chat`;
       copy = state.aiAvailable === false
-        ? 'The first sync is complete. Set up Chat, then we will bring you back with a useful first question ready.'
+        ? 'Recued has finished its first read. Set up Chat, and we will bring you back with a first question ready.'
         : connectedSourcePromptSeeded
-          ? 'A useful first question is ready below. Edit it, or send it when it looks right.'
-          : 'The first sync finished. You can now ask Chat about this account.';
+          ? 'Here is a first question you could ask. Change it, or send it as it is.'
+          : 'Recued has finished its first read. You can ask Chat about this account now.';
     } else if (viewState === 'attention') {
       badge = 'Needs attention';
       title = `${provider} needs attention`;
-      copy = 'The account is saved, but its connection needs attention before Chat can reliably use it.';
+      copy = 'The account is saved, but something is wrong with the connection. Chat cannot rely on it yet.';
     } else if (viewState === 'missing') {
       badge = 'Waiting for account';
       title = `Finding ${provider} in Connections`;
-      copy = 'The sign-in finished, but this account has not appeared in the live account list yet. You do not need to connect it again.';
+      copy = 'You signed in, but the account has not shown up in the list yet. You do not need to connect it again.';
     } else {
-      badge = 'Status unavailable';
+      badge = 'Recued cannot tell';
       title = 'Connection saved';
-      copy = 'Chat could not confirm the account status just now. You do not need to repeat sign-in.';
+      copy = 'Recued could not check this account just now. You do not need to sign in again.';
     }
 
     const section = doc.createElement('section');
@@ -6275,7 +6601,7 @@ export const bootstrapChatRoute = (
     if (viewState === 'attention') {
       actions.appendChild(sourceActionLink(
         'primary',
-        'Review connection',
+        'Look at the connection',
         connectedSourceConnectionHref(connectedSource),
       ));
     } else if (state.aiAvailable === false) {
@@ -6287,7 +6613,7 @@ export const bootstrapChatRoute = (
     } else if (viewState === 'ready') {
       actions.appendChild(sourceActionButton(
         'primary',
-        connectedSourcePromptSeeded ? 'Review first question' : 'Go to composer',
+        connectedSourcePromptSeeded ? 'Read the first question' : 'Go to composer',
         () => focusComposer(
           false,
           connectedSourcePromptSeeded ? 'start' : 'end',
@@ -6327,7 +6653,7 @@ export const bootstrapChatRoute = (
     }
     actions.appendChild(sourceActionButton(
       'dismiss',
-      'Use Chat without this account',
+      'Use Chat without it',
       () => {
         retireConnectedSourceHandoff(true);
         render();
@@ -6353,10 +6679,10 @@ export const bootstrapChatRoute = (
     ).length;
     const detail =
       referencesWithRecordIds === references.length
-        ? 'Source and exact record IDs'
+        ? 'Where it came from, and which records'
         : referencesWithRecordIds === 0
-          ? 'Recorded sources; record IDs unavailable'
-          : 'Sources and available record IDs';
+          ? 'Recued noted where it came from, but not which records'
+          : 'Where it came from, and the records Recued knows';
     const referenceTabs = new Set(
       references.flatMap(({ dataTab }) => dataTab === null ? [] : [dataTab]),
     );
@@ -6374,14 +6700,14 @@ export const bootstrapChatRoute = (
       detail,
       toggleAriaLabel: `${expanded ? 'Hide' : 'Review'} ${countLabel}`,
       containerAriaLabel: `${countLabel} for this answer`,
-      note: 'These references were recorded with the answer. '
-        + 'They are not yet linked to individual sentences.',
+      note: 'Recued noted these along with the answer. '
+        + 'They are not tied to any one sentence yet.',
       items: references.map((reference) => ({
         label: reference.label,
         sourceLabel: reference.sourceLabel,
         referenceId: reference.recordId,
         referenceIdLabel: 'Record ID',
-        missingReferenceLabel: 'Record ID not recorded',
+        missingReferenceLabel: 'Recued did not note which record',
         ...(reference.dataTab !== null
           && reference.collectionSlug !== null
           && reference.recordId !== null
@@ -6451,7 +6777,7 @@ export const bootstrapChatRoute = (
     section.setAttribute('data-tone', projection.tone);
     section.setAttribute(
       'aria-label',
-      `${answer.context === 'initial' ? 'Connected-source answer' : 'Source-aware follow-up'}: ${connectedSourceAnswerTitle(
+      `${answer.context === 'initial' ? 'An answer from your connected accounts' : 'A follow-up that knows where this came from'}: ${connectedSourceAnswerTitle(
         answer.source,
         answer.identity,
       )}`,
@@ -6462,10 +6788,10 @@ export const bootstrapChatRoute = (
     const eyebrow = doc.createElement('span');
     eyebrow.className = 'chat-source-answer-eyebrow';
     eyebrow.textContent = options.terminal
-      ? 'Source check'
+      ? 'Check where it came from'
       : answer.context === 'initial'
-        ? 'Connected-source answer'
-        : 'Source-aware follow-up';
+        ? 'An answer from your connected accounts'
+        : 'A follow-up that knows where this came from';
     const receipt = doc.createElement('span');
     receipt.setAttribute(CHAT_ROUTE_SOURCE_ANSWER_RECEIPT_ATTR, '');
     if (options.announceReceipt) {
@@ -6519,8 +6845,8 @@ export const bootstrapChatRoute = (
       const actionHint = doc.createElement('p');
       actionHint.className = 'chat-source-answer-action-hint';
       actionHint.textContent =
-        'Choose a next step to review it in the composer. '
-        + 'These shortcuts do not send email or change your data.';
+        'Pick what to do next and Recued will put it in the message box. '
+        + 'None of these send email or change your things.';
       section.appendChild(actionHint);
 
       const actions = doc.createElement('div');
@@ -6538,24 +6864,24 @@ export const bootstrapChatRoute = (
 
       if (projection.state === 'failed' || projection.state === 'search_failed') {
         addDraftAction({
-          label: 'Review and retry',
+          label: 'Look at it, then try again',
           prompt: answer.question,
           mode: answer.source.lane === 'file' ? 'context' : 'refresh',
-          outcome: 'Retry source check',
+          outcome: 'Check where it came from again',
           boundary:
-            'Chat will retry the source check. '
-            + 'Review the new result before relying on it.',
+            'Chat will check where it came from again. '
+            + 'Read the new answer before you trust it.',
         });
       } else if (projection.state === 'unverified') {
         if (answer.context === 'refresh') {
           addDraftAction({
-            label: 'Review and retry',
+            label: 'Look at it, then try again',
             prompt: answer.question,
             mode: 'refresh',
-            outcome: 'Retry source check',
+            outcome: 'Check where it came from again',
             boundary:
-              'Chat will retry the source check. '
-              + 'Review the new result before relying on it.',
+              'Chat will check where it came from again. '
+              + 'Read the new answer before you trust it.',
           });
         } else {
           addDraftAction({
@@ -6570,8 +6896,8 @@ export const bootstrapChatRoute = (
             mode: 'refresh',
             outcome: 'Search and retry',
             boundary:
-              'Chat will run a new source check. '
-              + 'Review the new result before relying on it.',
+              'Chat will check where it came from again. '
+              + 'Read the new answer before you trust it.',
           });
         }
       } else {
@@ -6594,7 +6920,10 @@ export const bootstrapChatRoute = (
     return section;
   };
 
-  type ActivationIntent = 'ask' | 'connect' | 'automate';
+  /** D-267 — `capture` is the fourth door, and the only one with no
+   *  precondition. Ask needs a model, connect needs an account, automate needs
+   *  a recipe; a first run that wants none of those had nothing to click. */
+  type ActivationIntent = 'ask' | 'connect' | 'automate' | 'capture';
 
   const buildActivationCard = (args: {
     intent: ActivationIntent;
@@ -6679,12 +7008,34 @@ export const bootstrapChatRoute = (
     const intro = doc.createElement('p');
     intro.className = 'chat-activation-intro';
     intro.textContent =
-      'Pick a starting point. You can come back to the others anytime.';
+      'Pick somewhere to start. You can come back to the others whenever you like.';
     heading.appendChild(intro);
     activation.appendChild(heading);
 
     const grid = doc.createElement('div');
     grid.className = 'chat-activation-grid';
+
+    // D-267 — FIRST, ahead of Ask. It is the only card that works on a machine
+    // with no model, no mailbox and no network, and the composer sits directly
+    // below the grid, so leading with capture costs the AI path nothing.
+    //
+    // ⛔ NO DONE-STATE, DELIBERATELY. The other three hide once satisfied; "has
+    // the owner captured anything" cannot be asked cheaply, because
+    // `WorkEntityListRpcRequest.kind` is REQUIRED — the probe is five list calls
+    // plus `contact.list`, six boot reads to hide one card on a grid that is
+    // already first-run-only and gone after the first chat message. The `ask`
+    // card has no independent done-state for the same reason. So it is gated on
+    // the Create callers exactly like the composer action it restores: while
+    // this grid is up, `buildComposerActions` is suppressed, which is what left
+    // [✎ Create] unreachable outside the drawer on the actual first screen.
+    if (canOpenCreateOverlay()) grid.appendChild(buildActivationCard({
+      intent: 'capture',
+      status: 'No setup needed',
+      statusState: 'ready',
+      title: 'Start with your own',
+      copy: 'Keep a task, a note, a contact, or something you promised. It stays on this server.',
+      action: activationButton('capture', 'Capture something', openCreateOverlay),
+    }));
 
     const askAction = state.aiAvailable === false
       ? activationLink(
@@ -6710,7 +7061,7 @@ export const bootstrapChatRoute = (
         ? { statusId: CHAT_ROUTE_AI_UNAVAILABLE_ID }
         : {}),
       title: 'Ask Recued',
-      copy: 'Think through a question, make a plan, or get an idea moving.',
+      copy: 'Think through a question, make a plan, or get an idea going.',
       action: askAction,
     }));
 
@@ -6719,7 +7070,7 @@ export const bootstrapChatRoute = (
       status: 'Bring in your context',
       statusState: 'needs-setup',
       title: 'Connect my work',
-      copy: 'Add mail, calendars, files, and the services you already use.',
+      copy: 'Add your mail, calendars, files, and the services you already use.',
       action: activationLink(
         'connect',
         'Connect an account',
@@ -6739,10 +7090,27 @@ export const bootstrapChatRoute = (
       status: 'Save repeat work',
       statusState: 'needs-setup',
       title: 'Automate a task',
-      copy: 'Use a ready-made recipe now, on a schedule, or when something happens.',
+      copy: 'Use a ready-made Recipe now, on a schedule, or when something happens.',
       action: automateAction,
     }));
 
+    // ⛔ SET AFTER THE CARDS EXIST, FROM THE CARDS THEMSELVES — not from a
+    // count re-derived by repeating the four `if`s above, which is the version
+    // that silently drifts the first time a card grows a condition. Four or
+    // more wraps to 2×2 rather than four ~178px columns: at the section's
+    // 760px a four-across card cannot hold its title on one line. Below 820px
+    // the media query takes over at one column and this is not consulted.
+    const cardCount = grid.children.length;
+    grid.style?.setProperty?.(
+      '--activation-cols',
+      String(cardCount >= 4 ? 2 : Math.max(cardCount, 1)),
+    );
+    // The narrow breakpoint stacks; four cards do not fit stacked, so they wrap
+    // there as well rather than pushing the composer off the screen.
+    grid.style?.setProperty?.(
+      '--activation-cols-narrow',
+      String(cardCount >= 4 ? 2 : 1),
+    );
     activation.appendChild(grid);
     return activation;
   };
@@ -6759,9 +7127,9 @@ export const bootstrapChatRoute = (
     const connectOutstanding = hasConnection === false;
     const automateOutstanding = hasInstalledRecipe === false;
     lead.textContent = connectOutstanding && automateOutstanding
-      ? 'Recued can also read your world and act on it. '
+      ? 'Recued can also read your things and act on them. '
       : connectOutstanding
-        ? 'Recued can also read your world. '
+        ? 'Recued can also read your things. '
         : 'Recued can also do this on a schedule. ';
     row.appendChild(lead);
     const link = doc.createElement('a');
@@ -6775,7 +7143,7 @@ export const bootstrapChatRoute = (
       ? 'See what to set up next'
       : connectOutstanding
         ? 'Connect your mail, calendar and files'
-        : 'Browse ready-made recipes';
+        : 'Look through ready-made Recipes';
     row.appendChild(link);
     return row;
   };
@@ -6799,6 +7167,14 @@ export const bootstrapChatRoute = (
       if (more !== null) toolbar.appendChild(more);
     }
     composer.appendChild(toolbar);
+    if (composerReply) {
+      const draft = composerReply;
+      const preview = buildChatReplyDraft(doc, draft,
+        id => { void openHistorySession(draft.sessionId, false, 'row', id); },
+        () => { composerReply = null; renderPreservingHandoffFocus(); focusComposer(true); });
+      preview.id = 'chat-reply-draft-context';
+      composer.appendChild(preview);
+    }
 
     let followupContextRow: HTMLElement | null = null;
     let followupEyebrow: HTMLElement | null = null;
@@ -6882,8 +7258,8 @@ export const bootstrapChatRoute = (
       diagnosisContextRow.setAttribute(
         'aria-label',
         diagnosis.mode === 'safe_check'
-          ? `Prepare read-only verification for ${diagnosis.actionTitle}`
-          : `Get help interpreting Data review for ${diagnosis.actionTitle}`,
+          ? `Write a look-only check for ${diagnosis.actionTitle}`
+          : `Get help understanding the Data you looked at for ${diagnosis.actionTitle}`,
       );
 
       const copy = doc.createElement('div');
@@ -6896,8 +7272,8 @@ export const bootstrapChatRoute = (
       diagnosisContextEyebrow.className = 'chat-followup-context-eyebrow';
       diagnosisContextEyebrow.textContent =
         diagnosis.mode === 'safe_check'
-          ? 'Read-only check'
-          : 'Explanation only';
+          ? 'Look-only check'
+          : 'Explain it only';
       copy.appendChild(diagnosisContextEyebrow);
       const title = doc.createElement('strong');
       title.className = 'chat-followup-context-title';
@@ -6911,16 +7287,16 @@ export const bootstrapChatRoute = (
       diagnosisContextDetail.textContent =
         diagnosis.mode === 'safe_check'
           ? diagnosis.runMatch === 'matched'
-            ? 'Chat will use safe reads to check what the prior explanation left uncertain'
-            : 'Chat will use safe reads without assuming this run belongs to the action'
+            ? 'Chat will look, without changing anything, at whatever is still unclear'
+            : 'Chat will look, without changing anything, and without assuming this run belongs here'
           : diagnosis.runMatch === 'matched'
-            ? 'Chat will explain what the linked evidence supports and what remains uncertain'
-            : 'Chat will explain the evidence without assuming this run belongs to the action';
+            ? 'Chat will say what this does show, and what is still unclear'
+            : 'Chat will explain it without assuming this run belongs here';
       copy.appendChild(diagnosisContextDetail);
       diagnosisContextBoundary = doc.createElement('span');
       diagnosisContextBoundary.className = 'chat-followup-context-boundary';
       diagnosisContextBoundary.textContent =
-        'Sending asks Chat to explain or check without changing anything. It does not retry the action or grant new approval.';
+        'Sending asks Chat to explain or look. It changes nothing, runs nothing again, and gives no new permission.';
       copy.appendChild(diagnosisContextBoundary);
       diagnosisContextRow.appendChild(copy);
 
@@ -6933,8 +7309,8 @@ export const bootstrapChatRoute = (
       clear.setAttribute(
         'aria-label',
         diagnosis.mode === 'safe_check'
-          ? 'Clear read-only check request'
-          : 'Clear Data explanation request',
+          ? 'Clear the look-only check'
+          : 'Clear the request to explain',
       );
       clear.textContent =
         diagnosis.mode === 'safe_check' ? 'Clear check' : 'Clear request';
@@ -6967,10 +7343,10 @@ export const bootstrapChatRoute = (
       planContextRow.setAttribute(
         'aria-label',
         retry
-          ? `Review failed action before retry: ${continuation.actionTitle}`
+          ? `Look at what failed before trying again: ${continuation.actionTitle}`
           : fresh
-            ? `Prepare fresh reviewed action: ${continuation.actionTitle}`
-            : `Continue approved action: ${continuation.actionTitle}`,
+            ? `Get a new one ready: ${continuation.actionTitle}`
+            : `Carry on with what you said yes to: ${continuation.actionTitle}`,
       );
 
       const copy = doc.createElement('div');
@@ -6979,7 +7355,7 @@ export const bootstrapChatRoute = (
       planContextEyebrow = doc.createElement('span');
       planContextEyebrow.className = 'chat-followup-context-eyebrow';
       planContextEyebrow.textContent =
-        retry || fresh ? 'Fresh approval required' : 'Approved action';
+        retry || fresh ? 'This needs a fresh yes' : 'What you said yes to';
       copy.appendChild(planContextEyebrow);
       const title = doc.createElement('strong');
       title.className = 'chat-followup-context-title';
@@ -6992,22 +7368,22 @@ export const bootstrapChatRoute = (
       planContextDetail = doc.createElement('span');
       planContextDetail.className = 'chat-followup-context-detail';
       planContextDetail.textContent = retry
-        ? 'Chat will check for an existing effect before proposing a fresh attempt'
+        ? 'Chat will check whether it already happened before suggesting another go'
         : fresh
-          ? 'Chat will prepare these exact details as a new proposal'
-          : 'The reviewed details are included below so Chat can match '
+          ? 'Chat will offer exactly these details again, as something new'
+          : 'The details you saw are below, so Chat can match '
             + 'them exactly';
       copy.appendChild(planContextDetail);
       planContextBoundary = doc.createElement('span');
       planContextBoundary.className = 'chat-followup-context-boundary';
       planContextBoundary.textContent = retry
-        ? 'Sending asks Chat to verify first. A retry cannot run until '
-          + 'you approve a fresh review.'
+        ? 'Sending asks Chat to check first. Nothing runs again until '
+          + 'you say yes to a fresh one.'
         : fresh
-          ? 'Sending requests a new proposal. Nothing can run until you '
-            + 'approve that fresh review.'
-          : 'Sending asks Chat to continue. If the action changes, '
-            + 'you’ll review it again.';
+          ? 'Sending asks for a new one. Nothing runs until you '
+            + 'say yes to it.'
+          : 'Sending asks Chat to carry on. If what it wants to do changes, '
+            + 'you will see it again.';
       copy.appendChild(planContextBoundary);
       planContextRow.appendChild(copy);
 
@@ -7017,10 +7393,10 @@ export const bootstrapChatRoute = (
       clear.setAttribute(
         'aria-label',
         retry
-          ? 'Clear action retry review'
+          ? 'Clear the retry'
           : fresh
-            ? 'Clear fresh action request'
-            : 'Clear approved action continuation',
+            ? 'Clear the new request'
+            : 'Clear the carry-on message',
       );
       clear.textContent =
         retry ? 'Clear retry' : fresh ? 'Clear request' : 'Clear continuation';
@@ -7047,18 +7423,20 @@ export const bootstrapChatRoute = (
     input.setAttribute(
       'placeholder',
       dataVerificationDiagnosisDraft !== null
-        ? 'Review or edit this help request...'
+        ? 'Read or change this question…'
         : approvedPlanContinuationDraft !== null
           ? approvedPlanContinuationDraft.mode === 'retry'
-            ? 'Review this verification and retry request...'
+            ? 'Read this check-and-try-again message…'
             : approvedPlanContinuationDraft.mode === 'fresh'
-              ? 'Review this fresh action request...'
-              : 'Review or edit this continuation...'
+              ? 'Read this new request…'
+              : 'Read or change this carry-on message…'
           : connectedSourceFollowupDraft === null
             ? 'Ask Recued...'
-            : 'Review or edit this request...',
+            : 'Read or change this…',
     );
-    if (followupContextRow !== null) {
+    if (composerReply !== null) {
+      input.setAttribute('aria-describedby', 'chat-reply-draft-context');
+    } else if (followupContextRow !== null) {
       input.setAttribute(
         'aria-describedby',
         CHAT_ROUTE_FOLLOWUP_CONTEXT_DESCRIPTION_ID,
@@ -7074,14 +7452,28 @@ export const bootstrapChatRoute = (
         CHAT_ROUTE_PLAN_CONTEXT_DESCRIPTION_ID,
       );
     }
-    (input as { value: string }).value = composerDraft;
+    if (hasPendingInitialDraft()) {
+      input.readOnly = true;
+      const pending = doc.createElement('p');
+      pending.id = 'chat-draft-restoring';
+      pending.setAttribute('role', 'status');
+      pending.textContent = state.error === null
+        ? 'Opening the conversation to restore your draft…'
+        : 'Open the original conversation to restore your draft, or start a new chat to discard it.';
+      composer.appendChild(pending);
+      input.setAttribute('aria-describedby', pending.id);
+    }
+    (input as { value: string }).value = pendingRecoveryDraft?.text ?? composerDraft;
     input.addEventListener('input', () => {
+      if (hasPendingInitialDraft()) return;
       composerDraft = (input as { value?: string }).value ?? '';
       composerDraftProtected = composerDraft.trim().length > 0;
       send.disabled =
         state.sending
         || state.aiAvailable === false
-        || composerDraft.trim().length === 0;
+        || composerAttachments.hasInFlight()
+        || hasPendingInitialDraft()
+        || (composerDraft.trim().length === 0 && composerAttachments.payload().length === 0);
       if (
         connectedSourcePromptSeeded
         && connectedSourcePrompt !== null
@@ -7116,11 +7508,11 @@ export const bootstrapChatRoute = (
         );
         if (followupEyebrow !== null) {
           followupEyebrow.textContent =
-            edited ? 'Edited request' : 'Review first';
+            edited ? 'You changed this' : 'Review first';
         }
         if (followupDetail !== null) {
           followupDetail.textContent = edited
-            ? 'Source use now depends on your edits'
+            ? 'What Chat reads now depends on your changes'
             : connectedSourceFollowupContextDetail(
                 connectedSourceFollowupDraft.source,
                 connectedSourceFollowupDraft.mode,
@@ -7128,8 +7520,8 @@ export const bootstrapChatRoute = (
         }
         if (followupBoundary !== null) {
           followupBoundary.textContent = edited
-            ? 'Review the edited request before asking Chat. '
-              + 'Chat handles data-changing actions through a separate approval step.'
+            ? 'Read your change before you ask Chat. '
+              + 'Anything that changes your things still asks you first.'
             : connectedSourceFollowupDraft.boundary;
         }
       }
@@ -7155,27 +7547,27 @@ export const bootstrapChatRoute = (
           diagnosisContextEyebrow.textContent =
             edited
               ? dataVerificationDiagnosisDraft.mode === 'safe_check'
-                ? 'Edited check request'
-                : 'Edited help request'
+                ? 'You changed the check'
+                : 'You changed the question'
               : dataVerificationDiagnosisDraft.mode === 'safe_check'
-                ? 'Read-only check'
-                : 'Explanation only';
+                ? 'Look-only check'
+                : 'Explain it only';
         }
         if (diagnosisContextDetail !== null) {
           diagnosisContextDetail.textContent = edited
-            ? 'Chat will interpret your edited request'
+            ? 'Chat will work from what you changed'
             : dataVerificationDiagnosisDraft.mode === 'safe_check'
               ? dataVerificationDiagnosisDraft.runMatch === 'matched'
-                ? 'Chat will use safe reads to check what the prior explanation left uncertain'
-                : 'Chat will use safe reads without assuming this run belongs to the action'
+                ? 'Chat will look, without changing anything, at whatever is still unclear'
+                : 'Chat will look, without changing anything, and without assuming this run belongs here'
               : dataVerificationDiagnosisDraft.runMatch === 'matched'
-                ? 'Chat will explain what the linked evidence supports and what remains uncertain'
-                : 'Chat will explain the evidence without assuming this run belongs to the action';
+                ? 'Chat will say what this does show, and what is still unclear'
+                : 'Chat will explain it without assuming this run belongs here';
         }
         if (diagnosisContextBoundary !== null) {
           diagnosisContextBoundary.textContent = edited
-            ? 'Review your edits before asking Chat. Any action that changes data still needs separate approval.'
-            : 'Sending asks Chat to explain or check without changing anything. It does not retry the action or grant new approval.';
+            ? 'Read your changes before you ask Chat. Anything that changes your things still asks you first.'
+            : 'Sending asks Chat to explain or look. It changes nothing, runs nothing again, and gives no new permission.';
         }
       }
       if (
@@ -7202,42 +7594,42 @@ export const bootstrapChatRoute = (
         if (planContextEyebrow !== null) {
           planContextEyebrow.textContent = edited
             ? retry
-              ? 'Edited retry request'
+              ? 'You changed the retry'
               : fresh
-                ? 'Edited fresh action'
-                : 'Edited continuation'
+                ? 'You changed the new one'
+                : 'You changed the carry-on message'
             : retry || fresh
-              ? 'Fresh approval required'
-              : 'Approved action';
+              ? 'This needs a fresh yes'
+              : 'What you said yes to';
         }
         if (planContextDetail !== null) {
           planContextDetail.textContent = edited
-            ? 'Chat will interpret your edited request'
+            ? 'Chat will work from what you changed'
             : retry
-              ? 'Chat will check for an existing effect before proposing a fresh attempt'
+              ? 'Chat will check whether it already happened before suggesting another go'
               : fresh
-                ? 'Chat will prepare these exact details as a new proposal'
-                : 'The reviewed details are included below so Chat can match '
+                ? 'Chat will offer exactly these details again, as something new'
+                : 'The details you saw are below, so Chat can match '
                   + 'them exactly';
         }
         if (planContextBoundary !== null) {
           planContextBoundary.textContent = edited
             ? retry
-              ? 'Any action Chat proposes from this edited request still needs '
-                + 'a fresh review.'
+              ? 'Anything Chat suggests from your change still needs '
+                + 'a fresh look.'
               : fresh
-                ? 'Any action Chat proposes from this edited request still '
-                  + 'needs a fresh review.'
-                : 'The existing approval only applies to the exact details above. '
-                  + 'Any changed action needs a new review.'
+                ? 'Anything Chat suggests from your change still '
+                  + 'needs a fresh look.'
+                : 'Your yes covers only the exact details above. '
+                  + 'Anything different needs a fresh look.'
             : retry
-              ? 'Sending asks Chat to verify first. A retry cannot run until '
-                + 'you approve a fresh review.'
+              ? 'Sending asks Chat to check first. Nothing runs again until '
+                + 'you say yes to a fresh one.'
               : fresh
-                ? 'Sending requests a new proposal. Nothing can run until '
-                  + 'you approve that fresh review.'
-                : 'Sending asks Chat to continue. If the action changes, '
-                  + 'you’ll review it again.';
+                ? 'Sending asks for a new one. Nothing runs until '
+                  + 'you say yes to it.'
+                : 'Sending asks Chat to carry on. If what it wants to do changes, '
+                  + 'you will see it again.';
         }
       }
     });
@@ -7282,19 +7674,20 @@ export const bootstrapChatRoute = (
       state.sending
       || aiUnavailable
       || uploadInFlight
+      || hasPendingInitialDraft()
       || (composerDraft.trim().length === 0 && !hasAttached)
     ) {
       send.disabled = true;
     }
     if (uploadInFlight && !state.sending && !aiUnavailable) {
-      send.setAttribute('title', 'Waiting for the attachment to finish uploading.');
+      send.setAttribute('title', 'Waiting for your file to finish uploading.');
     }
     if (aiUnavailable) {
       // Accessible disabled reason: tooltip for sighted users + an
       // aria-describedby pointing at the visible banner for AT.
       send.setAttribute(
         'title',
-        'No AI model is configured. Set up Chat to start chatting.',
+        'No AI is picked yet. Set up Chat to start.',
       );
       send.setAttribute('aria-describedby', CHAT_ROUTE_AI_UNAVAILABLE_ID);
     }
@@ -7317,7 +7710,7 @@ export const bootstrapChatRoute = (
     });
     // D-172 P2 — the attach control. A hidden native input does the picking;
     // the visible button is what the person clicks and what a test drives.
-    if (composerAttachments !== null) {
+    if ((opts.uploadCallers && opts.uploadConnect) || opts.fileListCaller) {
       const fileInput = doc.createElement('input');
       fileInput.type = 'file';
       fileInput.multiple = true;
@@ -7339,8 +7732,40 @@ export const bootstrapChatRoute = (
       attach.setAttribute(CHAT_ROUTE_ATTACH_ATTR, '');
       attach.setAttribute('aria-label', 'Attach a file');
       attach.textContent = '+';
-      if (state.sending) attach.disabled = true;
-      attach.addEventListener('click', () => { fileInput.click(); });
+      if (state.sending || hasPendingInitialDraft()) attach.disabled = true;
+      if (opts.fileListCaller) {
+        const menu = doc.createElement('div'); menu.setAttribute('hidden', '');
+        menu.setAttribute('data-chat-attach-menu', '');
+        attach.setAttribute('aria-expanded', 'false');
+        const choose = doc.createElement('button'); choose.type = 'button'; choose.textContent = 'Choose from Files';
+        choose.addEventListener('click', () => {
+          menu.setAttribute('hidden', ''); attach.setAttribute('aria-expanded', 'false');
+          filePickerAbort?.abort(); const abort = new AbortController(); filePickerAbort = abort;
+          attach.focus();
+          const sessionId = state.activeSessionId;
+          void openExistingFilePicker(doc, opts.fileListCaller!, composerAttachments.payload().map(file => file.file_id), abort.signal, opts.cloudFileCallers, opts.filePreviewCallers)
+            .then(files => {
+              if (!files?.length || disposed || abort.signal.aborted || state.sending
+                || sessionId !== state.activeSessionId) return;
+              composerAttachments.restore(files); focusComposer(false, 'end');
+            });
+        });
+        menu.appendChild(choose);
+        if (opts.uploadCallers && opts.uploadConnect) {
+          const upload = doc.createElement('button'); upload.type = 'button'; upload.textContent = 'Upload files';
+          upload.addEventListener('click', () => { menu.setAttribute('hidden', ''); attach.setAttribute('aria-expanded', 'false'); fileInput.click(); });
+          menu.appendChild(upload);
+        }
+        attach.addEventListener('click', () => {
+          const open = attach.getAttribute('aria-expanded') !== 'true';
+          attach.setAttribute('aria-expanded', String(open));
+          if (open) { menu.removeAttribute('hidden'); choose.focus(); } else menu.setAttribute('hidden', '');
+        });
+        menu.addEventListener('keydown', event => { if (event.key === 'Escape') {
+          event.preventDefault(); menu.setAttribute('hidden', ''); attach.setAttribute('aria-expanded', 'false'); attach.focus();
+        } });
+        inputRow.appendChild(menu);
+      } else attach.addEventListener('click', () => { fileInput.click(); });
       inputRow.appendChild(fileInput);
       inputRow.appendChild(attach);
       // D-262 § 5 + § B8 — press to talk. Renders ONLY when this context can
@@ -7370,14 +7795,14 @@ export const bootstrapChatRoute = (
               ? 'Stop recording and send'
               : 'Stop recording and attach')
             : phase === 'opening'
-              ? 'Waiting for microphone permission'
+              ? 'Waiting for you to allow the microphone'
               : 'Record a voice note',
         );
         mic.setAttribute('aria-pressed', phase === 'recording' ? 'true' : 'false');
         mic.textContent = phase === 'recording' ? '\u25a0' : '\u25cf';
         // An in-flight send owns the composer; `opening` is waiting on the
         // browser's own prompt and has nothing to toggle.
-        if (state.sending || phase === 'opening') mic.disabled = true;
+        if (state.sending || hasPendingInitialDraft() || phase === 'opening') mic.disabled = true;
         mic.addEventListener('click', () => { voiceComposer?.toggle(); });
         inputRow.appendChild(mic);
         // ⚠ A stopped recording SENDS ITSELF, so discard has to exist while the
@@ -7419,7 +7844,15 @@ export const bootstrapChatRoute = (
         const chip = doc.createElement('span');
         chip.className = 'chat-composer-attachment';
         chip.setAttribute(CHAT_ROUTE_ATTACHMENT_ATTR, row.phase);
-        const name = doc.createElement('span');
+        const name = doc.createElement(row.file_id && opts.filePreviewCallers ? 'button' : 'span');
+        if (row.file_id && opts.filePreviewCallers) {
+          name.setAttribute('type', 'button'); name.setAttribute('aria-label', `Preview ${row.filename}`);
+          name.addEventListener('click', () => {
+            filePickerAbort?.abort(); const abort = new AbortController(); filePickerAbort = abort;
+            void openFilePreview(doc, { record_id: row.file_id!, filename: row.filename,
+              ...(row.selection_revision ? { selection_revision: row.selection_revision } : {}) }, opts.filePreviewCallers!, abort.signal);
+          });
+        }
         name.className = 'chat-composer-attachment-name';
         name.textContent = row.filename;
         chip.appendChild(name);
@@ -7466,7 +7899,6 @@ export const bootstrapChatRoute = (
   let pendingVoiceRowId: number | null = null;
   /** D-262 slice 4 — set for the single `sendMessage` call an auto-send makes,
    *  so its ack can record the turn id as voice-originated. */
-  let voiceTurnPending = false;
 
   /** D-262 slice 4 — the browser's own speech, or `null` where the API is
    *  absent. Built once: `speechSynthesis` is a singleton, and a second
@@ -7481,6 +7913,8 @@ export const bootstrapChatRoute = (
    *  tab — so entries would accumulate for the life of the route without one.
    *  It stays small because it only holds turns still awaiting a reply. */
   const voiceOriginTurns = new Set<string>();
+  const completedReplyText = new Map<string, string>();
+  const spokenTurns = new Set<string>();
   const rememberVoiceTurn = (turnId: string): void => {
     voiceOriginTurns.add(turnId);
     if (voiceOriginTurns.size > 20) {
@@ -7496,11 +7930,15 @@ export const bootstrapChatRoute = (
    *  important asterisk asterisk" and forty lines of shell aloud is how this
    *  feature gets switched off on its first day. */
   const maybeSpeakReply = (turnId: string | undefined, content: unknown): void => {
-    if (voiceSpeaker === null) return;
+    if (disposed || voiceSpeaker === null || (turnId && spokenTurns.has(turnId))) return;
     const mode = state.voiceSpeakReplies;
     if (mode === 'never') return;
     if (mode === 'after_voice' && (turnId === undefined || !voiceOriginTurns.has(turnId))) return;
     if (typeof content !== 'string' || content.trim().length === 0) return;
+    if (turnId) {
+      spokenTurns.add(turnId);
+      if (spokenTurns.size > 128) spokenTurns.delete(spokenTurns.values().next().value!);
+    }
     voiceSpeaker.speak(speechTextFromReply(content));
   };
 
@@ -7537,26 +7975,22 @@ export const bootstrapChatRoute = (
     void sendMessage('');
   };
 
-  // D-172 P2 — files attached to the turn being composed. Created only when
-  // BOTH upload seams are wired; `null` means the attach control never renders.
-  const composerAttachments = opts.uploadCallers && opts.uploadConnect
-    ? createComposerAttachments({
-      callers: opts.uploadCallers,
-      connect: opts.uploadConnect,
-      // Every phase change repaints the composer: the chips, and Send's
-      // disabled state while a file is still climbing. Clearing even an empty
-      // set at send acknowledgement must preserve the current focus/caret.
-      onChange: () => { renderPreservingHandoffFocus(); settleVoiceSend(); },
-    })
-    : null;
+  // Finalized files can be restored without an upload transport. New uploads
+  // and voice capture still require both upload seams.
+  const composerAttachments = createComposerAttachments({
+    ...(opts.uploadCallers ? { callers: opts.uploadCallers } : {}),
+    ...(opts.uploadConnect ? { connect: opts.uploadConnect } : {}),
+    // Every phase change repaints the chips and Send's upload guard while
+    // preserving the current focus and caret.
+    onChange: () => { renderPreservingHandoffFocus(); settleVoiceSend(); },
+  });
 
   /** D-262 § 5 — press-to-talk, or `null` when this context cannot record.
    *
-   *  ⚠ Gated on `composerAttachments` too: a recording reaches the server
-   *  through the SAME resumable upload an attached file uses, so without the
-   *  upload seams there is nowhere for the bytes to go. */
+   *  A recording reaches the server through the same resumable upload an
+   *  attached file uses, so both upload seams must be available. */
   const voiceComposer: VoiceComposer | null = ((): VoiceComposer | null => {
-    if (composerAttachments === null) return null;
+    if (!opts.uploadCallers || !opts.uploadConnect) return null;
     const attachments = composerAttachments;
     const factory = opts.voiceCapture !== undefined
       ? opts.voiceCapture
@@ -7580,6 +8014,7 @@ export const bootstrapChatRoute = (
 
   const render = (): void => {
     if (disposed) return;
+    conversationFiles?.reconcile();
     reconcileLandingTarget();
     reconcileDataVerificationDiagnosis();
     reconcileFreshActionDraft();
@@ -7598,6 +8033,13 @@ export const bootstrapChatRoute = (
     heading.textContent = 'Chat';
     header.appendChild(heading);
     routeRoot.appendChild(header);
+    coordinationHost = null;
+    if (state.thread.session) {
+      coordinationHost = doc.createElement('div');
+      coordinationHost.setAttribute('data-chat-coordination', '');
+      routeRoot.appendChild(coordinationHost);
+      renderCoordination();
+    }
 
     // Chat errors are user-facing — a send / plan action or the initial load —
     // so they always show inline, humanized (Tier 1: no raw method / ms / code
@@ -7616,7 +8058,7 @@ export const bootstrapChatRoute = (
       notice.setAttribute(CHAT_ROUTE_RETURN_MISSING_ATTR, '');
       notice.setAttribute('role', 'status');
       notice.textContent =
-        'The cited answer is no longer available. This chat is still open.';
+        'That message is gone. The chat is still here.';
       routeRoot.appendChild(notice);
     }
     if (planTargetChecking || planTargetMissing) {
@@ -7625,14 +8067,14 @@ export const bootstrapChatRoute = (
       notice.setAttribute('role', 'status');
       notice.textContent =
         planTargetChecking
-          ? 'Finding the exact action in Chat…'
+          ? 'Finding it in Chat…'
           : planTargetUnverified
             ? planTargetHasMessageFallback
-              ? 'The exact action card could not be verified. Showing its last linked Chat answer instead.'
-              : 'The exact action card could not be verified. This chat is still open.'
+              ? 'Recued could not check that card. Here is the Chat answer it belongs to instead.'
+              : 'Recued could not check that card. The chat is still here.'
             : planTargetHasMessageFallback
-              ? 'The exact action card is no longer available. Showing its Chat answer instead.'
-              : 'The exact action card is no longer available. This chat is still open.';
+              ? 'That card is gone. Here is the Chat answer it belongs to instead.'
+              : 'That card is gone. The chat is still here.';
       routeRoot.appendChild(notice);
     }
     if (
@@ -7649,6 +8091,7 @@ export const bootstrapChatRoute = (
     shell.className = 'chat-route-shell';
 
     const sessions = doc.createElement('aside');
+    messengerList.beginRender();
     sessions.setAttribute(CHAT_ROUTE_SESSION_LIST_ATTR, '');
     sessions.setAttribute('aria-label', 'Chat history');
     const historyHead = doc.createElement('div');
@@ -7687,8 +8130,8 @@ export const bootstrapChatRoute = (
       guard.setAttribute('tabindex', '-1');
       const copy = doc.createElement('span');
       copy.textContent = pendingDraftGuard.kind === 'new'
-        ? 'Start a new chat? Your unsent draft will be discarded.'
-        : 'Open this chat? Your unsent draft will be discarded.';
+        ? 'Start a new chat? What you were writing will be lost.'
+        : 'Open this chat? What you were writing will be lost.';
       guard.appendChild(copy);
       const actions = doc.createElement('div');
       actions.className = 'chat-history-guard-actions';
@@ -7713,13 +8156,13 @@ export const bootstrapChatRoute = (
       discard.type = 'button';
       discard.className = 'chat-history-guard-action';
       discard.textContent = pendingDraftGuard.kind === 'new'
-        ? 'Discard and start new'
-        : 'Discard and open';
+        ? 'Throw it away and start a new one'
+        : 'Throw it away and open';
       discard.addEventListener('click', () => {
         const pending = pendingDraftGuard;
         pendingDraftGuard = null;
         if (pending?.kind === 'open') {
-          void openHistorySession(pending.sessionId, true);
+          void openHistorySession(pending.sessionId, true, 'row', pending.messageId, pending.delivery);
         } else if (pending?.kind === 'new') {
           startNewChat(true, 'push');
         }
@@ -7738,10 +8181,10 @@ export const bootstrapChatRoute = (
       const unavailable = doc.createElement('div');
       unavailable.setAttribute(CHAT_ROUTE_HISTORY_EMPTY_ATTR, '');
       const unavailableTitle = doc.createElement('strong');
-      unavailableTitle.textContent = 'Chats unavailable';
+      unavailableTitle.textContent = 'Recued cannot reach your chats';
       const unavailableDetail = doc.createElement('span');
       unavailableDetail.textContent =
-        'Reconnect to load your saved conversations. Your chats have not been removed.';
+        'Reconnect to load your saved chats. Nothing has been deleted.';
       unavailable.appendChild(unavailableTitle);
       unavailable.appendChild(unavailableDetail);
       sessions.appendChild(unavailable);
@@ -7752,7 +8195,7 @@ export const bootstrapChatRoute = (
       emptyTitle.textContent = 'No saved chats yet';
       const emptyDetail = doc.createElement('span');
       emptyDetail.textContent =
-        'Your conversations appear here after you send the first message.';
+        'Your chats show up here once you send your first message.';
       empty.appendChild(emptyTitle);
       empty.appendChild(emptyDetail);
       sessions.appendChild(empty);
@@ -7760,15 +8203,22 @@ export const bootstrapChatRoute = (
       const search = doc.createElement('input');
       search.type = 'search';
       search.setAttribute(CHAT_ROUTE_HISTORY_SEARCH_ATTR, '');
-      search.setAttribute('aria-label', 'Search chat titles');
-      search.setAttribute('placeholder', 'Search chat titles');
+      search.setAttribute('aria-label', 'Search chats and messages');
+      search.setAttribute('placeholder', 'Search chats and messages');
       search.setAttribute('autocomplete', 'off');
       search.value = historyQuery;
       sessions.appendChild(search);
+      const browse = doc.createElement('div');
+      browse.className = 'chat-history-browse';
+      sessions.appendChild(browse);
+      const filterControls = doc.createElement('div');
+      historyFilters.mount(filterControls);
+      browse.appendChild(filterControls);
 
       const results = doc.createElement('div');
       results.className = 'chat-history-results';
       const renderHistoryResults = (): void => {
+        messengerList.beginRender();
         clearChildren(results);
         const query = historyQuery.trim().toLocaleLowerCase();
         const matching = state.sessions.filter((session) => {
@@ -7779,22 +8229,11 @@ export const bootstrapChatRoute = (
         const count = doc.createElement('p');
         count.className = 'chat-history-result-count';
         count.setAttribute('role', 'status');
-        count.textContent = query.length === 0
-          ? `${matching.length} saved chat${matching.length === 1 ? '' : 's'}`
-          : `${matching.length} result${matching.length === 1 ? '' : 's'}`;
         results.appendChild(count);
-        if (matching.length === 0) {
-          const empty = doc.createElement('div');
-          empty.setAttribute(CHAT_ROUTE_HISTORY_EMPTY_ATTR, '');
-          const emptyTitle = doc.createElement('strong');
-          emptyTitle.textContent = 'No matching chats';
-          const emptyDetail = doc.createElement('span');
-          emptyDetail.textContent = 'Try another chat title.';
-          empty.appendChild(emptyTitle);
-          empty.appendChild(emptyDetail);
-          results.appendChild(empty);
-          return;
-        }
+        const empty = doc.createElement('div');
+        empty.setAttribute(CHAT_ROUTE_HISTORY_EMPTY_ATTR, '');
+        results.appendChild(empty);
+        const rowFilters: Array<{ session: ChatSessionSummary; item: HTMLElement; section: HTMLElement }> = [];
         for (const group of groupChatHistory(
           matching,
           (opts.now ?? Date.now)(),
@@ -7811,6 +8250,8 @@ export const bootstrapChatRoute = (
             const openingThisSession = openingSessionId === session.id;
             const item = doc.createElement('li');
             item.className = 'chat-session-item';
+            rowFilters.push({ session, item, section });
+            item.addEventListener('focusout', () => { queueMicrotask(() => { if (!disposed) refreshHistoryFilters(); }); });
             item.setAttribute(
               'data-active',
               session.id === state.activeSessionId ? 'true' : 'false',
@@ -7882,6 +8323,7 @@ export const bootstrapChatRoute = (
             actionDetails.appendChild(summary);
             const menu = doc.createElement('div');
             menu.className = 'chat-session-action-menu';
+            messengerList.mount(row, menu, session.id);
             actionDetails.addEventListener('toggle', () => {
               if (actionDetails.isConnected === false) return;
               if (!actionDetails.open) {
@@ -7939,7 +8381,7 @@ export const bootstrapChatRoute = (
               if (deletingBusySession) {
                 deleteButton.setAttribute(
                   'title',
-                  'Wait for the current response before deleting this chat.',
+                  'Wait for Chat to finish answering before you delete this.',
                 );
               }
             }
@@ -7963,8 +8405,8 @@ export const bootstrapChatRoute = (
               confirm.className = 'chat-session-confirm';
               const warning = doc.createElement('span');
               warning.textContent =
-                'Delete this chat, its messages, and saved action details '
-                + 'permanently? This cannot be undone.';
+                'Delete this chat, its messages, and everything saved with it, '
+                + 'for good? You cannot undo this.';
               confirm.appendChild(warning);
               const confirmActions = doc.createElement('div');
               confirmActions.className = 'chat-history-guard-actions';
@@ -8012,7 +8454,7 @@ export const bootstrapChatRoute = (
               error.className = 'chat-history-action-error';
               error.setAttribute('role', 'alert');
               error.textContent = sessionAction.message
-                ?? 'This chat could not be updated.';
+                ?? 'Recued could not update this chat.';
               item.appendChild(error);
             }
             list.appendChild(item);
@@ -8020,15 +8462,45 @@ export const bootstrapChatRoute = (
           section.appendChild(list);
           results.appendChild(section);
         }
+        refreshHistoryFilters = (): void => {
+          const unavailable = historyFilterUnavailable();
+          let total = 0;
+          let retainedFocus = false;
+          for (const entry of rowFilters) {
+            const matches = !unavailable && matchesHistoryFilters(entry.session);
+            if (matches) total++;
+            const focused = entry.item.contains?.(doc.activeElement) ?? false;
+            entry.item.hidden = !matches && !focused;
+            retainedFocus ||= !matches && focused;
+          }
+          for (const section of new Set(rowFilters.map(entry => entry.section))) {
+            section.hidden = !rowFilters.some(entry => entry.section === section && !entry.item.hidden);
+          }
+          let countText = unavailable ?? (query.length === 0
+            ? `${total} saved chat${total === 1 ? '' : 's'}`
+            : `${total} chat${total === 1 ? '' : 's'} by title or ID`);
+          if (retainedFocus) countText += ' This chat no longer matches. It will disappear when you leave it.';
+          // Unchanged polling results must not repeat live announcements.
+          if (count.textContent !== countText) count.textContent = countText;
+          empty.hidden = total > 0 || !!unavailable;
+          empty.textContent = query ? 'No chat names match. Matching messages are below.' : 'No chats match what you picked.';
+          updateHistorySearchScope();
+        };
+        refreshHistoryFilters();
       };
       search.addEventListener('input', () => {
         historyQuery = search.value;
+        historyMessageSearch.setQuery(historyQuery);
         renderHistoryResults();
       });
       renderHistoryResults();
-      sessions.appendChild(results);
+      browse.appendChild(results);
+      const messageResults = doc.createElement('section');
+      historyMessageSearch.mount(messageResults);
+      browse.appendChild(messageResults);
     }
     const historyAnnouncer = doc.createElement('div');
+    updateHistorySearchScope();
     historyAnnouncer.setAttribute(CHAT_ROUTE_HISTORY_ANNOUNCER_ATTR, '');
     historyAnnouncer.setAttribute('role', 'status');
     historyAnnouncer.setAttribute('aria-live', 'polite');
@@ -8046,6 +8518,21 @@ export const bootstrapChatRoute = (
     const isEmpty =
       state.thread.messages.length === 0 && state.thread.inflight === null;
     thread.setAttribute('data-empty', isEmpty ? 'true' : 'false');
+
+    const filesButton = (): HTMLButtonElement | null => {
+      const sessionId = state.thread.session?.id;
+      if (!conversationFiles || !sessionId) return null;
+      const button = doc.createElement('button'); button.type = 'button'; button.textContent = 'Files';
+      button.disabled = openingSessionId !== null;
+      button.setAttribute('data-chat-conversation-files-open', '');
+      button.setAttribute('aria-haspopup', 'dialog');
+      button.addEventListener('click', () => conversationFiles.open(sessionId));
+      return button;
+    };
+    if (isEmpty) {
+      const button = filesButton();
+      if (button) { const header = doc.createElement('header'); header.className = 'chat-thread-header'; header.appendChild(button); thread.appendChild(header); }
+    }
 
     const aiNotice = state.aiAvailable === false ? buildAiNotice() : null;
     const mailNotice = buildMailNotice();
@@ -8119,7 +8606,7 @@ export const bootstrapChatRoute = (
         const messages = `${recent.message_count} message${recent.message_count === 1 ? '' : 's'}`;
         detail.textContent =
           `${messages} · ${formatSessionRecency(recent.last_active_at, (opts.now ?? Date.now)())}. `
-          + 'Or choose another conversation from your history.';
+          + 'Or pick another chat from your history.';
         landing.appendChild(detail);
         const actions = doc.createElement('div');
         actions.className = 'chat-history-landing-actions';
@@ -8196,6 +8683,7 @@ export const bootstrapChatRoute = (
       threadTitle.setAttribute('tabindex', '-1');
       threadTitle.textContent = sessionTitle(state.thread.session);
       threadHeader.appendChild(threadTitle);
+      const button = filesButton(); if (button) threadHeader.appendChild(button);
       thread.appendChild(threadHeader);
 
       // ⛔⛔ WHAT THE ASSISTANT IS CARRYING, shown above the thread it steers.
@@ -8234,7 +8722,7 @@ export const bootstrapChatRoute = (
           const clear = doc.createElement('button');
           clear.className = 'rx-btn chat-thread-carry-clear';
           clear.setAttribute(CHAT_ROUTE_CARRY_CLEAR_ATTR, '');
-          clear.textContent = 'Clear what is carried';
+          clear.textContent = 'Clear what Chat is remembering';
           // ⚠ Coarse by design: drops the whole carry, not one bad entry. The
           //   facts remain in the transcript, which `recall.search` reads, so
           //   the next fold rebuilds from source.
@@ -8259,7 +8747,7 @@ export const bootstrapChatRoute = (
         older.textContent = loadingOlder
           ? 'Loading earlier messages…'
           : 'Load earlier messages';
-        if (loadingOlder) {
+        if (loadingOlder || loadingNewer) {
           older.disabled = true;
           older.setAttribute('aria-busy', 'true');
         }
@@ -8320,6 +8808,27 @@ export const bootstrapChatRoute = (
           message,
           projectMessageActivity(message),
         );
+        if (state.thread.session && (message.role === 'user' || message.role === 'assistant')) {
+          const deliveryHost = doc.createElement('div'); deliveryHost.setAttribute('data-chat-message-delivery', message.id);
+          const detail = deliveryView.renderMessage(doc, state.thread.session.id, message.id);
+          if (detail) deliveryHost.appendChild(detail);
+          messageRow.appendChild(deliveryHost);
+          if (state.thread.quoted_replies_available === true) {
+            const reply = doc.createElement('button'); reply.type = 'button'; reply.textContent = 'Reply';
+            reply.setAttribute('data-chat-reply-action', message.id);
+            reply.setAttribute('data-chat-reply-control', 'select');
+            reply.addEventListener('click', () => {
+              if (disposed || state.thread.session?.id !== message.session_id
+                || state.thread.quoted_replies_available !== true) return;
+              composerReply = replyDraftForMessage(message);
+              connectedSourceFollowupDraft = null;
+              approvedPlanContinuationDraft = null;
+              dataVerificationDiagnosisDraft = null;
+              renderPreservingHandoffFocus(); focusComposer(true);
+            });
+            messageRow.appendChild(reply);
+          }
+        }
         if (sourceTurn === null && message.role === 'assistant') {
           const references = connectedSourceRecordReferences(message);
           if (references.length > 0) {
@@ -8387,6 +8896,17 @@ export const bootstrapChatRoute = (
         }
         const failure = failuresByMessageId.get(message.id);
         if (failure !== undefined) renderTurnFailure(messages, failure);
+        if (state.thread.has_more_after && state.thread.newest_cursor?.message_id === message.id) {
+          const newer = doc.createElement('button');
+          newer.type = 'button';
+          newer.className = 'chat-load-older';
+          newer.setAttribute(CHAT_ROUTE_LOAD_NEWER_ATTR, '');
+          newer.textContent = loadingNewer ? 'Loading later messages…' : 'Load later messages';
+          newer.disabled = loadingOlder || loadingNewer;
+          if (loadingNewer) newer.setAttribute('aria-busy', 'true');
+          newer.addEventListener('click', () => { void loadHistoryPage('newer'); });
+          messages.appendChild(newer);
+        }
       }
       if (state.thread.inflight !== null) {
         const inflightTurns = [
@@ -8448,7 +8968,7 @@ export const bootstrapChatRoute = (
             ?? (
               dataDiagnosisForTurn === null
                 ? 'Preparing your answer…'
-                : 'Interpreting the linked evidence…'
+                : 'Working out what this means…'
             ),
         );
         if (dataDiagnosisForTurn !== null) {
@@ -8505,13 +9025,19 @@ export const bootstrapChatRoute = (
    *  `prependOlderMessages` would dedupe them, but the second request is still
    *  a whole conversation page of AEAD decrypt for nothing. */
   let loadingOlder = false;
-  const loadOlderMessages = async (): Promise<void> => {
+  let loadingNewer = false;
+  let historyPageRequest = 0;
+  const loadOlderMessages = (): Promise<void> => loadHistoryPage('older');
+  const loadHistoryPage = async (direction: 'older' | 'newer'): Promise<void> => {
     const sessionId = state.thread.session?.id ?? null;
-    const cursor = state.thread.oldest_cursor;
-    if (loadingOlder || sessionId === null || cursor === null) return;
-    if (!state.thread.has_more_before) return;
-    loadingOlder = true;
-    render();
+    const cursor = direction === 'older' ? state.thread.oldest_cursor : state.thread.newest_cursor;
+    if (loadingOlder || loadingNewer || threadSnapshotLoad !== null || sessionId === null || cursor === null) return;
+    if (!(direction === 'older' ? state.thread.has_more_before : state.thread.has_more_after)) return;
+    const generation = threadSnapshotGeneration;
+    const request = ++historyPageRequest;
+    loadingOlder = direction === 'older';
+    loadingNewer = direction === 'newer';
+    renderPreservingHandoffFocus();
     const scroller = () => routeRoot.querySelector?.(
       `[${CHAT_ROUTE_MESSAGES_ATTR}]`,
     ) as HTMLElement | null | undefined;
@@ -8525,42 +9051,40 @@ export const bootstrapChatRoute = (
       const page = await opts.conn('chat.session.get', {
         session_id: sessionId,
         limit: CHAT_HISTORY_WINDOW,
-        before: cursor,
+        ...(direction === 'older' ? { before: cursor } : { after: cursor }),
       });
       if (disposed) return;
       // ⛔ The thread can have MOVED while this was awaited — same window every
       // awaited read in this file has to check. Prepending another
       // conversation's history onto the open one would be silent and wrong.
-      if (state.thread.session?.id !== sessionId) return;
+      if (state.thread.session?.id !== sessionId || generation !== threadSnapshotGeneration) return;
       state = {
         ...state,
-        thread: prependOlderMessages(state.thread, page.messages, {
+        thread: direction === 'older' ? prependOlderMessages(state.thread, page.messages, {
           has_more: page.has_more === true,
           oldest_cursor: page.oldest_cursor ?? null,
+        }) : appendNewerMessages(state.thread, page.messages, {
+          has_more_after: page.has_more_after === true,
+          newest_cursor: page.newest_cursor ?? null,
         }),
         error: null,
       };
-      loadingOlder = false;
-      render();
-      const after = scroller();
-      if (
-        beforeMetrics !== null
-        && after !== null && after !== undefined
-        && typeof after.scrollHeight === 'number'
-      ) {
-        after.scrollTop = scrollTopAfterPrepend(
-          beforeMetrics.top,
-          beforeMetrics.height,
-          after.scrollHeight,
-        );
-      }
-      return;
     } catch (err) {
-      if (disposed) return;
+      if (disposed || generation !== threadSnapshotGeneration) return;
       state = { ...state, error: classifyRpcError(err) };
     } finally {
+      if (request !== historyPageRequest) return;
       loadingOlder = false;
-      if (!disposed) render();
+      loadingNewer = false;
+      if (!disposed && generation === threadSnapshotGeneration) {
+        renderPreservingHandoffFocus();
+        const after = scroller();
+        if (beforeMetrics !== null && after != null && typeof after.scrollHeight === 'number') {
+          after.scrollTop = direction === 'older' ? scrollTopAfterPrepend(
+            beforeMetrics.top, beforeMetrics.height, after.scrollHeight,
+          ) : beforeMetrics.top;
+        }
+      }
     }
   };
 
@@ -8667,6 +9191,8 @@ export const bootstrapChatRoute = (
 
   const renderPreservingHandoffFocus = (): void => {
     const active = doc.activeElement as HTMLElement | null | undefined;
+    const focusedReplyControl = active?.getAttribute?.('data-chat-reply-control');
+    const focusedReplyOwner = active?.closest?.(`[${CHAT_ROUTE_MESSAGE_ATTR}]`)?.getAttribute(CHAT_ROUTE_MESSAGE_ATTR);
     const input = routeRoot.querySelector?.(
       `[${CHAT_ROUTE_INPUT_ATTR}]`,
     ) as HTMLTextAreaElement | null | undefined;
@@ -8699,6 +9225,10 @@ export const bootstrapChatRoute = (
     const historySearchFocused = historySearch !== null
       && historySearch !== undefined
       && active === historySearch;
+    const focusedHistoryFilter = active?.getAttribute?.(HISTORY_FILTER_ATTR) ?? null;
+    const focusedDelivery = active?.getAttribute?.('data-delivery-control');
+    const focusedDeliveryMessage = focusedDelivery
+      ? active?.closest?.('[data-chat-message-delivery]')?.getAttribute('data-chat-message-delivery') : null;
     const historyContinueFocused = historyContinue !== null
       && historyContinue !== undefined
       && active === historyContinue;
@@ -8711,6 +9241,8 @@ export const bootstrapChatRoute = (
       : null;
     const focusedHistorySessionId =
       active?.getAttribute?.(CHAT_ROUTE_SESSION_ROW_ATTR) ?? null;
+    const focusedHistoryMessageId =
+      active?.getAttribute?.(HISTORY_MESSAGE_RESULT_ATTR) ?? null;
     const activeHistoryActions = active?.closest?.(
       `[${CHAT_ROUTE_SESSION_ACTIONS_ATTR}]`,
     ) as HTMLDetailsElement | null | undefined;
@@ -8818,6 +9350,16 @@ export const bootstrapChatRoute = (
         `[${CHAT_ROUTE_MODEL_PICKER_ATTR}]`,
       ) as HTMLElement | null | undefined;
       nextModelPicker?.focus?.({ preventScroll: true });
+    } else if (focusedReplyControl) {
+      const control = Array.from(routeRoot.querySelectorAll?.<HTMLElement>('[data-chat-reply-control]') ?? []).find(
+        candidate => candidate.getAttribute('data-chat-reply-control') === focusedReplyControl
+          && candidate.closest?.(`[${CHAT_ROUTE_MESSAGE_ATTR}]`)?.getAttribute(CHAT_ROUTE_MESSAGE_ATTR) === focusedReplyOwner,
+      );
+      if (control) control.focus?.({ preventScroll: true }); else focusComposer(true);
+    } else if (focusedDelivery) {
+      restoreDeliveryFocus(focusedDelivery, focusedDeliveryMessage);
+    } else if (focusedHistoryFilter !== null) {
+      routeRoot.querySelector<HTMLElement>(`[${HISTORY_FILTER_ATTR}="${focusedHistoryFilter}"]`)?.focus?.({ preventScroll: true });
     } else if (historySearchFocused) {
       const nextHistorySearch = routeRoot.querySelector?.(
         `[${CHAT_ROUTE_HISTORY_SEARCH_ATTR}]`,
@@ -8856,6 +9398,8 @@ export const bootstrapChatRoute = (
         `[${CHAT_ROUTE_ACTIVITY_TOGGLE_ATTR}]`,
       ) as HTMLElement | null | undefined;
       nextToggle?.focus?.({ preventScroll: true });
+    } else if (focusedHistoryMessageId !== null) {
+      historyMessageSearch.focusResult(focusedHistoryMessageId);
     } else if (focusedHistorySessionId !== null) {
       const queryable = routeRoot as unknown as {
         querySelectorAll?: (
@@ -9008,15 +9552,42 @@ export const bootstrapChatRoute = (
     }
   };
 
+  // Only the intended conversation owns the handoff. Unrelated preference and
+  // connection reads may stay pending; a failed session load keeps the draft
+  // recoverable and Send blocked until the owner retries or discards it.
+  const restoreInitialDraft = (): void => {
+    if (disposed || !hasPendingInitialDraft() || state.phase !== 'ready'
+      || (state.thread.session?.id ?? null) !== initialDraftSessionId || threadSnapshotLoad !== null) return;
+    const recovery = pendingRecoveryDraft;
+    const files = [...pendingInitialFiles, ...(recovery?.attachments ?? [])];
+    pendingInitialFiles = [];
+    pendingRecoveryDraft = null;
+    if (recovery !== null) {
+      composerDraft = recovery.text;
+      composerDraftProtected = recovery.protected;
+      composerReply = recovery.replyTo ?? null;
+      if (state.thread.session === null) state = { ...state, draftSourceId: recovery.modelSourceId };
+    }
+    historyLandingActive = false;
+    composerAttachments.restore(files);
+    render();
+    focusComposer(false, 'end');
+  };
+
   const loadSessions = async (background = false): Promise<void> => {
+    const request = ++sessionListRequest;
+    messengerList.beginRead();
     if (!background) {
       state = { ...state, phase: 'loading', error: null };
       render();
     }
     try {
-      const { sessions, busy_session_ids: serverBusy } =
+      const { sessions, busy_session_ids: serverBusy, messenger_status_available, history_filters_available } =
         await opts.conn('chat.sessions.list');
-      if (disposed) return;
+      if (disposed || request !== sessionListRequest) return;
+      messengerList.adopt({ sessions, ...(messenger_status_available !== undefined ? { messenger_status_available } : {}),
+        ...(history_filters_available !== undefined ? { history_filters_available } : {}),
+      });
       if (serverBusy !== undefined) {
         // 🔑 THE SERVER'S ANSWER IS COMPLETE, so adopt it wholesale rather
         // than merging. This tab's map was only ever a record of ITS OWN
@@ -9046,6 +9617,8 @@ export const bootstrapChatRoute = (
         await openSession(initialSessionId, initialMessageId, initialPlanId);
         return;
       }
+      if (hasPendingInitialDraft()) seedStarterPromptOnLoad = false;
+      restoreInitialDraft();
       if (seedStarterPromptOnLoad && !hasExistingChat) {
         seedStarterPromptOnLoad = false;
         seedStarterPrompt();
@@ -9058,7 +9631,8 @@ export const bootstrapChatRoute = (
         }
       }
     } catch (err) {
-      if (disposed) return;
+      if (disposed || request !== sessionListRequest) return;
+      messengerList.failed();
       state = {
         ...state,
         phase: background && state.sessions.length > 0 ? 'ready' : 'error',
@@ -9188,6 +9762,7 @@ export const bootstrapChatRoute = (
     try {
       const { prefs } = await opts.conn('prefs.get');
       if (disposed) return;
+      historyFilters.adopt(prefs);
       state = {
         ...state,
         transparency: transparencyStreamSettingsFromPrefs(prefs),
@@ -9206,11 +9781,16 @@ export const bootstrapChatRoute = (
     sessionId: string,
     returnMessageId: string | null = null,
     returnPlanId: string | null = null,
-  ): Promise<void> => {
+  ): Promise<boolean> => {
     if (historyActionInFlight()) {
       focusHistoryActionOwner();
-      return;
+      return false;
     }
+    if (hasPendingInitialDraft() && sessionId !== initialDraftSessionId) {
+      pendingInitialFiles = []; pendingRecoveryDraft = null;
+      initialSessionIdOnLoad = null;
+    }
+    const previousLanding = { requestedMessageId, requestedPlanId, landingTargetReady };
     if (
       dataVerificationLanding !== null
       && (
@@ -9229,7 +9809,10 @@ export const bootstrapChatRoute = (
     // What the composer held when the switch was ASKED for. Anything else in
     // there when hydration lands was typed DURING the load, and is the
     // person's unsent words — see the clear below.
+    filePickerAbort?.abort();
     const draftAtSwitch = composerDraft;
+    conversationFiles?.close();
+    const attachmentsAtSwitch = composerAttachments.rows().map(row => row.id);
     const snapshotGeneration = beginThreadSnapshotLoad(
       sessionId,
       'navigation',
@@ -9243,12 +9826,13 @@ export const bootstrapChatRoute = (
       const snapshot = await opts.conn('chat.session.get', {
         session_id: sessionId,
         limit: CHAT_HISTORY_WINDOW,
+        ...(returnMessageId !== null ? { around_message_id: returnMessageId } : {}),
       });
       const bufferedEvents = finishThreadSnapshotLoad(
         sessionId,
         snapshotGeneration,
       );
-      if (disposed || bufferedEvents === null) return;
+      if (disposed || bufferedEvents === null) return false;
       if (snapshot.messages.length > 0) hasCompletedChat = true;
       // Switching threads abandons any typed-but-unsent draft.
       historyLandingActive = false;
@@ -9272,9 +9856,13 @@ export const bootstrapChatRoute = (
       // everything else here: carrying a stray sentence into the next chat is
       // visible and one keystroke to undo; eating it is neither. It keeps its
       // protected flag, so the NEXT switch guards it properly.
-      if (composerDraft === draftAtSwitch) {
+      if (state.activeSessionId !== sessionId && composerDraft === draftAtSwitch) {
         composerDraft = '';
         composerDraftProtected = false;
+      }
+      if (state.activeSessionId !== sessionId) {
+        composerReply = null;
+        for (const id of attachmentsAtSwitch) composerAttachments.remove(id);
       }
       let thread = hydrateThreadFromSnapshot(initialChatThreadState(), snapshot);
       for (const event of bufferedEvents) {
@@ -9306,17 +9894,19 @@ export const bootstrapChatRoute = (
       landingTargetReady = true;
       planTargetChecking = false;
       planTargetUnverified = false;
+      restoreInitialDraft();
       render();
       if (highlightedPlanId !== null) {
         focusPlanLanding(highlightedPlanId);
       } else if (highlightedMessageId !== null) {
         focusChatMessage(highlightedMessageId);
       }
+      return true;
     } catch (err) {
       const currentLoad =
         threadSnapshotLoad?.generation === snapshotGeneration;
       abandonThreadSnapshotLoad(snapshotGeneration);
-      if (disposed || !currentLoad) return;
+      if (disposed || !currentLoad) return false;
       state = { ...state, error: classifyRpcError(err) };
       if (
         state.activeSessionId === sessionId
@@ -9326,8 +9916,13 @@ export const bootstrapChatRoute = (
         landingTargetReady = true;
         planTargetChecking = false;
         planTargetUnverified = true;
+      } else {
+        requestedMessageId = previousLanding.requestedMessageId;
+        requestedPlanId = previousLanding.requestedPlanId;
+        landingTargetReady = previousLanding.landingTargetReady;
       }
       render();
+      return false;
     }
   };
 
@@ -9451,6 +10046,8 @@ export const bootstrapChatRoute = (
     sessionId: string,
     discardProtectedDraft = false,
     focusOrigin: 'row' | 'continue' = 'row',
+    messageId?: string,
+    delivery = false,
   ): Promise<void> => {
     if (historyActionInFlight()) {
       focusHistoryActionOwner();
@@ -9458,11 +10055,10 @@ export const bootstrapChatRoute = (
     }
     if (
       !discardProtectedDraft
-      && composerDraftProtected
-      && composerDraft.trim().length > 0
-      && state.activeSessionId !== sessionId
+      && (hasPendingInitialDraft() || composerReply !== null || composerAttachments.rows().length > 0 || (composerDraftProtected && composerDraft.trim().length > 0))
+      && (hasPendingInitialDraft() ? initialDraftSessionId : state.activeSessionId) !== sessionId
     ) {
-      pendingDraftGuard = { kind: 'open', sessionId };
+      pendingDraftGuard = { kind: 'open', sessionId, ...(messageId ? { messageId } : {}), ...(delivery ? { delivery: true } : {}) };
       render();
       focusDraftGuard();
       return;
@@ -9470,9 +10066,31 @@ export const bootstrapChatRoute = (
     if (
       state.activeSessionId === sessionId
       && state.thread.session?.id === sessionId
+      && (messageId === undefined || state.thread.messages.some((message) => message.id === messageId))
     ) {
+      // Selecting a loaded message is still a newer navigation intent. A
+      // pending open must not replace it when its response eventually arrives.
+      navigationRequest += 1;
+      openingSessionId = null;
+      openingHistoryMessageId = null;
+      threadSnapshotLoad = null;
+      threadSnapshotGeneration += 1;
+      historyPageRequest += 1;
+      loadingOlder = false;
+      loadingNewer = false;
       historyLandingActive = false;
-      focusOpenThread();
+      if (messageId === undefined) {
+        render();
+        if (delivery) void focusMessengerDelivery(sessionId); else focusOpenThread();
+      }
+      else {
+        requestedMessageId = messageId;
+        requestedPlanId = null;
+        landingTargetReady = true;
+        render();
+        focusChatMessage(messageId);
+        opts.onAddressChange?.(serializeChatAnswerAddress({ sessionId, messageId }), 'push');
+      }
       return;
     }
     // ⛔ SINGLE-FLIGHT PER TARGET SURVIVES SUPERSESSION. A newer click wins
@@ -9480,22 +10098,26 @@ export const bootstrapChatRoute = (
     // is not a new intent, and restarting it would spend a second
     // `chat.session.get` to arrive exactly where it was already going. The
     // row says `aria-busy` for precisely this.
-    if (openingSessionId === sessionId) return;
+    if (openingSessionId === sessionId && requestedMessageId === (messageId ?? null)) return;
     const request = (navigationRequest += 1);
     openingSessionId = sessionId;
+    openingHistoryMessageId = messageId ?? null;
     pendingDraftGuard = null;
     state = { ...state, error: null };
     renderPreservingHandoffFocus();
+    let opened = false;
     try {
-      await openSession(sessionId);
+      opened = await openSession(sessionId, messageId ?? null);
       if (navigationRequest !== request) return;
       if (
         !disposed
+        && opened
         && state.activeSessionId === sessionId
         && state.thread.session?.id === sessionId
       ) {
         opts.onAddressChange?.(
-          serializeChatSessionAddress({ sessionId }),
+          messageId === undefined ? serializeChatSessionAddress({ sessionId })
+            : serializeChatAnswerAddress({ sessionId, messageId }),
           'push',
         );
       }
@@ -9506,12 +10128,17 @@ export const bootstrapChatRoute = (
       // that finishes last would otherwise drag focus back to its own row.
       if (navigationRequest === request) {
         openingSessionId = null;
+        openingHistoryMessageId = null;
         if (!disposed) {
           render();
-          if (state.activeSessionId === sessionId) {
-            focusOpenThread();
+          if (opened) {
+            if (messageId !== undefined && highlightedMessageId !== null) focusChatMessage(messageId);
+            else if (delivery) void focusMessengerDelivery(sessionId);
+            else focusOpenThread();
           } else if (focusOrigin === 'continue') {
             focusHistoryContinue(sessionId);
+          } else if (messageId !== undefined) {
+            historyMessageSearch.focusResult(messageId);
           } else {
             focusHistorySessionRow(sessionId);
           }
@@ -9525,6 +10152,17 @@ export const bootstrapChatRoute = (
     focusOrigin: 'row' | 'continue' = 'row',
   ): void => {
     void openHistorySession(sessionId, false, focusOrigin);
+  };
+
+  const focusMessengerDelivery = async (sessionId: string): Promise<void> => {
+    const request = navigationRequest;
+    const focusOwner = doc.activeElement;
+    await deliveryView.ready(sessionId);
+    if (disposed || request !== navigationRequest || state.thread.session?.id !== sessionId || composerHasFocus()) return;
+    if (doc.activeElement !== focusOwner && doc.activeElement !== doc.body && doc.activeElement?.isConnected) return;
+    const panel = coordinationHost?.querySelector<HTMLElement>('[data-chat-delivery]');
+    if (panel) { panel.setAttribute('tabindex', '-1'); panel.focus({ preventScroll: true }); panel.scrollIntoView?.({ block: 'nearest' }); }
+    else focusOpenThread();
   };
 
   const openPlanLanding = (address: ChatPlanAddress): boolean => {
@@ -9616,11 +10254,17 @@ export const bootstrapChatRoute = (
       void loadCarriedBrief(sessionId);
       const snapshot = await opts.conn('chat.session.get', {
         session_id: sessionId,
-        // Recovery pays the same read as an open, and used to pay it in FULL
-        // on every reconnect — the cost that made a flaky link re-decrypt an
-        // entire conversation each time it came back.
+        // Keep the old target available without re-decrypting the full chat.
         limit: CHAT_HISTORY_WINDOW,
+        ...(requestedMessageId !== null ? { around_message_id: requestedMessageId } : {}),
       });
+      if (disposed || threadSnapshotLoad?.generation !== snapshotGeneration
+        || state.activeSessionId !== sessionId) return;
+      // An anchored window can omit a turn that completed while disconnected.
+      // Recover the bounded recent tail as well, retaining a pager for the gap.
+      const latestSnapshot = snapshot.has_more_after === true
+        ? await opts.conn('chat.session.get', { session_id: sessionId, limit: CHAT_HISTORY_WINDOW })
+        : undefined;
       const bufferedEvents = finishThreadSnapshotLoad(
         sessionId,
         snapshotGeneration,
@@ -9632,7 +10276,7 @@ export const bootstrapChatRoute = (
       ) return;
 
       const tabFailures = state.thread.turn_failures;
-      let thread = hydrateThreadFromSnapshot(initialChatThreadState(), snapshot);
+      let thread = hydrateThreadFromSnapshot(initialChatThreadState(), snapshot, latestSnapshot);
       thread = { ...thread, turn_failures: tabFailures };
       for (const event of bufferedEvents) {
         thread = reduceChatThreadEvent(thread, event);
@@ -9795,8 +10439,7 @@ export const bootstrapChatRoute = (
     }
     if (
       !discardProtectedDraft
-      && composerDraftProtected
-      && composerDraft.trim().length > 0
+      && (hasPendingInitialDraft() || composerReply !== null || composerAttachments.rows().length > 0 || (composerDraftProtected && composerDraft.trim().length > 0))
     ) {
       pendingDraftGuard = { kind: 'new' };
       render();
@@ -9809,6 +10452,9 @@ export const bootstrapChatRoute = (
       && composerDraft.trim().length === 0
       && !connectedSourceHandoffActive
       && !historyLandingActive
+      && !hasPendingInitialDraft()
+      && composerAttachments.rows().length === 0
+      && composerReply === null
     ) {
       focusComposer(true, 'start');
       return;
@@ -9819,7 +10465,12 @@ export const bootstrapChatRoute = (
     // the chat the person had already navigated away from.
     navigationRequest += 1;
     openingSessionId = null;
+    openingHistoryMessageId = null;
     threadSnapshotLoad = null;
+    threadSnapshotGeneration += 1;
+    historyPageRequest += 1;
+    loadingOlder = false;
+    loadingNewer = false;
     historyLandingActive = false;
     pendingDraftGuard = null;
     sessionAction = null;
@@ -9845,6 +10496,13 @@ export const bootstrapChatRoute = (
     completedMessageIdsByTurn.clear();
     composerDraft = '';
     composerDraftProtected = false;
+    pendingSubmission = null;
+    composerReply = null;
+    filePickerAbort?.abort(); pendingInitialFiles = []; pendingRecoveryDraft = null;
+    conversationFiles?.close();
+    initialSessionIdOnLoad = null;
+    composerAttachments.clear();
+    draftCreationId = null;
     state = {
       ...state,
       activeSessionId: null,
@@ -9890,7 +10548,7 @@ export const bootstrapChatRoute = (
       sessionAction = {
         sessionId: session.id,
         kind: 'error',
-        message: `Couldn't export this chat. ${classifyRpcError(err).copy}`,
+        message: `Recued could not save this chat to a file. ${classifyRpcError(err).copy}`,
       };
       render();
       // Keep the rejected operation visible and keyboard-owned so retrying
@@ -9916,6 +10574,7 @@ export const bootstrapChatRoute = (
         (candidate) => candidate.id !== session.id,
       );
       state = { ...state, sessions: remaining, error: null };
+      historyMessageSearch.removeSession(session.id);
       turnsInFlightBySession.delete(session.id);
       sessionAction = null;
       historyAnnouncement = `Deleted ${sessionTitle(session)}.`;
@@ -9931,7 +10590,7 @@ export const bootstrapChatRoute = (
       sessionAction = {
         sessionId: session.id,
         kind: 'error',
-        message: `Couldn't delete this chat. ${classifyRpcError(err).copy}`,
+        message: `Recued could not delete this chat. ${classifyRpcError(err).copy}`,
       };
       render();
       // Return to the safe delete initiator (not the permanent confirmation),
@@ -10065,7 +10724,9 @@ export const bootstrapChatRoute = (
     // chain (explicit pick → global default → first configured source).
     const draftSource = pickerSelectedSource();
     try {
+      draftCreationId ??= crypto.randomUUID();
       const { session_id } = await opts.conn('chat.session.create', {
+        creation_id: draftCreationId,
         title: deriveSessionTitle(firstMessage),
       });
       if (disposed) return null;
@@ -10167,12 +10828,17 @@ export const bootstrapChatRoute = (
 
   const sendMessage = async (message: string): Promise<void> => {
     const trimmed = message.trim();
+    const replyAtSend = composerReply;
+    const attachmentsAtSend = composerAttachments.rows().flatMap(row => row.phase === 'attached' && row.file_id !== undefined
+      ? [{ id: row.id, file_id: row.file_id, media_class: row.media_class,
+        ...(row.selection_revision !== undefined ? { selection_revision: row.selection_revision } : {}) }] : []);
     // D-172 P2 — a wordless drop IS a send (see the composer guard). Without
     // this the button would enable and clicking it would do nothing.
     if (
       (trimmed.length === 0
         && (composerAttachments?.payload().length ?? 0) === 0)
       || state.sending
+      || hasPendingInitialDraft()
     ) return;
     // ⛔⛔ D-262 — VOICE ORIGIN IS ATTRIBUTED HERE, where BOTH send paths meet.
     // It used to be set only on the auto-send branch, which silently coupled
@@ -10181,14 +10847,12 @@ export const bootstrapChatRoute = (
     // pressing Send was never marked as voice-origin and `maybeSpeakReply`
     // then declined to speak. Marked BEFORE the first `await` so the ack can
     // attribute the turn — the reply can arrive before the send resolves.
-    if (
+    const sentFromVoice = (
       composerAttachments !== null
       && composerAttachments.rows().some(
         (r) => voiceRowIds.has(r.id) && r.file_id !== undefined,
       )
-    ) {
-      voiceTurnPending = true;
-    }
+    );
     const activeBeforeSend = doc.activeElement as HTMLElement | null | undefined;
     const composerInputBeforeSend = routeRoot.querySelector?.(
       `[${CHAT_ROUTE_INPUT_ATTR}]`,
@@ -10283,14 +10947,20 @@ export const bootstrapChatRoute = (
       // "remind me at 3pm" in the USER's zone, not the server's (matters
       // when the server is a VPS in another region). Absent ⇒ server-local.
       const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-      const sendAck = await opts.conn('chat.send', {
+      if (replyAtSend && (replyAtSend.sessionId !== session.id || state.thread.quoted_replies_available !== true)) {
+        throw new Error('You cannot send this reply in this chat. Remove the reply, or open the chat it belongs to on a server that handles replies.');
+      }
+      const queueGeneration = await queueView.generation(session.id);
+      const sendPayload = {
+        ...(queueGeneration ? { queue_generation: queueGeneration } : {}),
         session_id: session.id,
-        message: trimmed,
+        message,
+        ...(replyAtSend ? { reply_to_message_id: replyAtSend.messageId } : {}),
         picker_state: session.picker_state,
         // D-172 P2 — finalized ids only; a climbing file cannot reach here
         // because Send is disabled while one is in flight.
-        ...(composerAttachments && composerAttachments.payload().length > 0
-          ? { attachments: composerAttachments.payload() }
+        ...(attachmentsAtSend.length > 0
+          ? { attachments: attachmentsAtSend.map(({ id: _rowId, ...file }) => file) }
           : {}),
         model_pref: {
           current: session.model_routing.current,
@@ -10318,20 +10988,45 @@ export const bootstrapChatRoute = (
               },
             }
           : {}),
-      });
+      };
+      const submissionKey = JSON.stringify(sendPayload);
+      // Preserve acknowledgement recovery: an identical retry must reach the
+      // queue's replay check even if its accepted file was subsequently deleted.
+      if (pendingSubmission?.key !== submissionKey) {
+        // A recovered selection must not silently downgrade to an unguarded file
+        // ID when the server was replaced or downgraded during re-pair.
+        for (const file of attachmentsAtSend) if (file.selection_revision !== undefined) {
+          if (!opts.fileSelectionCaller) throw new Error('This server cannot choose from Files. Take the file off before you send.');
+          const current = await opts.fileSelectionCaller({ record_id: file.file_id });
+          if (current.selection_revision !== file.selection_revision) {
+            throw new Error('The selected file changed. Remove it and choose it again before sending.');
+          }
+        }
+      }
+      if (disposed || state.activeSessionId !== session.id) return;
+      if (pendingSubmission?.key !== submissionKey) pendingSubmission = { key: submissionKey, id: crypto.randomUUID() };
+      const sendAck = await opts.conn('chat.send', { ...sendPayload, submission_id: pendingSubmission.id });
+      pendingSubmission = null;
+      draftCreationId = null;
+      void queueView.refresh(session.id);
+
       const { turn_id } = sendAck;
       // D-262 slice 4 — attribute the turn now that it has an id, so
       // `after_voice` can tell a spoken turn from a typed one when the reply
       // lands. Cleared unconditionally: a later typed turn must not inherit it.
-      if (voiceTurnPending && typeof turn_id === 'string') rememberVoiceTurn(turn_id);
-      voiceTurnPending = false;
+      if (sentFromVoice && typeof turn_id === 'string') {
+        rememberVoiceTurn(turn_id);
+        // A fast completion can beat the durable admission reply. Correlate
+        // through that reply, so another client's turn is never treated as this
+        // voice note. Replayed completion events are spoken only once.
+        maybeSpeakReply(turn_id, completedReplyText.get(turn_id));
+      }
       // D-172 P2 — the turn owns them now. Cleared only AFTER the ack, so a
       // send that threw leaves the chips in place and the person can retry
       // without re-uploading.
-      composerAttachments?.clear();
-      // The rows are gone, so their ids name nothing. Clearing here keeps the
-      // set from growing across a session and from matching a recycled id.
-      voiceRowIds.clear();
+      for (const row of attachmentsAtSend) composerAttachments.remove(row.id);
+      // Retire voice attribution for the submitted rows only.
+      for (const row of attachmentsAtSend) voiceRowIds.delete(row.id);
       pendingVoiceRowId = null;
       if (disposed) return;
       // ⛔ THE THREAD CAN HAVE MOVED WHILE `chat.send` WAS AWAITED. Every
@@ -10351,7 +11046,8 @@ export const bootstrapChatRoute = (
       // The turn is the server's now, and it outlives whatever this tab is
       // looking at — record it against ITS session before the identity fork
       // below, so a turn left behind by a switch is still tracked as running.
-      trackTurn(session.id, turn_id);
+      const queueTerminal = sendAck.status !== undefined && !['queued', 'running', 'cancelling'].includes(sendAck.status);
+      if (!queueTerminal) trackTurn(session.id, turn_id);
       // The production server may finish + broadcast the turn before returning
       // this ack. In that ordering `message_complete` could not remove the map
       // entry (the turn id was not known yet), so reconcile immediately against
@@ -10460,18 +11156,20 @@ export const bootstrapChatRoute = (
       // Accepted (the user message is durable) — clear the unsent draft, but
       // ONLY if it is still the text we sent. The textarea stays enabled while
       // sending, so text typed during the pending send must survive the ack.
-      if (composerDraft === message) {
+      if (composerDraft === message && composerReply === replyAtSend) {
         composerDraft = '';
         composerDraftProtected = false;
+        composerReply = null;
       }
       // The ack is the transport commit point: the user row is durable and the
       // server owns the turn. Release the composer immediately so the next
-      // instruction can steer the running work through a concurrent turn.
+      // distinct instruction can wait in the server queue.
       state = {
         ...state,
         sending: false,
         pending_turn_id: null,
-        thread: beginInFlightTurn(state.thread, turn_id),
+        thread: sendAck.status === undefined || sendAck.status === 'running'
+          ? beginInFlightTurn(state.thread, turn_id) : state.thread,
       };
       renderPreservingHandoffFocus();
     } catch (err) {
@@ -10525,6 +11223,15 @@ export const bootstrapChatRoute = (
             session_id?: unknown;
             message_id?: unknown;
           };
+          if (typeof evt.session_id === 'string' && (evt.kind === 'chat.message_complete'
+            || (evt.kind === 'chat.session_changed' && ['message', 'attachments'].includes(String((event as { field?: unknown }).field))))) {
+            conversationFiles?.refresh(evt.session_id);
+          }
+          if (evt.kind === 'chat.session_changed' && ['delivery', 'message', 'queue'].includes(String((event as { field?: unknown }).field))
+            && typeof evt.session_id === 'string' && evt.session_id === state.thread.session?.id) void deliveryView.refresh(evt.session_id);
+          if (evt.kind === 'chat.session_changed' && (event as { field?: unknown }).field === 'delivery') messengerList.invalidate();
+          if (evt.kind === 'chat.session_changed' && (event as { field?: unknown }).field === 'queue'
+            && typeof evt.session_id === 'string') void queueView.refresh(evt.session_id);
           if (
             evt.kind === 'chat.session_changed'
             && (event as { field?: unknown }).field === 'busy'
@@ -10565,6 +11272,7 @@ export const bootstrapChatRoute = (
             && evt.kind === 'chat.session_changed'
             && (event as { field?: unknown }).field !== 'busy'
             && (event as { field?: unknown }).field !== 'tool_call'
+            && (event as { field?: unknown }).field !== 'queue' && (event as { field?: unknown }).field !== 'message' && (event as { field?: unknown }).field !== 'delivery'
           ) {
             // Titles, archive state, and their updated recency are list
             // projections. Re-read them quietly so returning-user history
@@ -10573,6 +11281,11 @@ export const bootstrapChatRoute = (
           }
           if (evt.kind === 'chat.message_complete') {
             hasCompletedChat = true;
+            const replyText = (evt.final as { content?: unknown } | null)?.content;
+            if (typeof evt.turn_id === 'string' && typeof replyText === 'string') {
+              completedReplyText.set(evt.turn_id, replyText);
+              if (completedReplyText.size > 20) completedReplyText.delete(completedReplyText.keys().next().value!);
+            }
             // D-262 slice 4 — speak the reply if the owner asked. Placed on the
             // completion event rather than the streaming deltas: synthesising
             // partial text would read half-sentences aloud and then talk over
@@ -10834,6 +11547,8 @@ export const bootstrapChatRoute = (
           }
         }
         void recoverOpenSession();
+        if (visibleSessionId) conversationFiles?.refresh(visibleSessionId);
+        if (visibleSessionId) { void queueView.refresh(visibleSessionId); void deliveryView.refresh(visibleSessionId); }
         void loadSessions(true);
       }),
     );
@@ -10846,6 +11561,7 @@ export const bootstrapChatRoute = (
   );
   opts.root.appendChild(routeRoot);
   render();
+  const focusRecoveryAfterInitialLoad = pendingRecoveryDraft !== null;
   const focusStarterAfterInitialLoad = opts.initialStarterPrompt === true;
   const focusConnectedSourceAfterInitialLoad = connectedSource !== null;
   const focusReturnedMessageAfterInitialLoad = initialMessageIdOnLoad;
@@ -10869,22 +11585,8 @@ export const bootstrapChatRoute = (
     // Session and composer reads can rebuild the textarea on different ticks.
     // Restore focus after they settle; the optional activation read preserves
     // focus if it later repaints its suggestions.
-    if (!disposed && pendingRecoveryDraft !== null) {
-      const recovery = pendingRecoveryDraft;
-      pendingRecoveryDraft = null;
-      composerDraft = recovery.text;
-      composerDraftProtected = recovery.protected;
-      if (
-        state.thread.session === null
-        && recovery.modelSourceId !== null
-        && state.modelSources?.some(
-          (source) => source.id === recovery.modelSourceId,
-        ) === true
-      ) {
-        state = { ...state, draftSourceId: recovery.modelSourceId };
-      }
-      historyLandingActive = false;
-      render();
+    if (!disposed && focusRecoveryAfterInitialLoad && !hasPendingInitialDraft()
+      && (state.thread.session?.id ?? null) === initialDraftSessionId) {
       focusComposer(false, 'end');
       return;
     }
@@ -10946,19 +11648,22 @@ export const bootstrapChatRoute = (
     getRecoveryContextFreshness: () =>
       state.phase === 'ready' ? 'current' : 'unavailable',
     refresh: () => loadSessions(true),
-    openSession: (sessionId) => openSession(sessionId),
+    openSession: async (sessionId) => { await openSession(sessionId); },
     openPlanLanding,
     getRecoveryDraft: () => {
-      if (composerDraft.trim().length === 0) {
+      if (composerDraft.trim().length === 0 && composerReply === null && composerAttachments.rows().length === 0) {
         // During post-pair hydration the rescued draft waits for the initial
         // async reads before it is painted into the composer. Keep that
         // pending value observable so an immediate second disconnect can
         // capture it again rather than collapsing the recovery chain.
-        return pendingRecoveryDraft;
+        return pendingInitialFiles.length ? { ...(pendingRecoveryDraft ?? { text: '', protected: true, modelSourceId: null }),
+          attachments: [...(pendingRecoveryDraft?.attachments ?? []), ...pendingInitialFiles] } : pendingRecoveryDraft;
       }
       return {
         text: composerDraft,
         protected: composerDraftProtected,
+        ...(composerReply ? { replyTo: composerReply } : {}),
+        ...((composerAttachments.payload().length || pendingInitialFiles.length) ? { attachments: [...composerAttachments.payload(), ...pendingInitialFiles] } : {}),
         modelSourceId:
           state.thread.session === null
             ? pickerSelectedSource()?.id ?? null
@@ -10968,16 +11673,20 @@ export const bootstrapChatRoute = (
     hasUnsavedChanges: () =>
       mailComposeMount?.hasUnsavedChanges() === true
       || createOverlay?.hasUnsavedChanges() === true
+      || composerReply !== null
+      || pendingInitialFiles.length > 0
+      || composerAttachments.rows().length > 0
       || (composerDraftProtected && composerDraft.trim().length > 0)
       || (
-        pendingRecoveryDraft?.protected === true
-        && pendingRecoveryDraft.text.trim().length > 0
+        pendingRecoveryDraft?.replyTo !== undefined
+        || (pendingRecoveryDraft?.attachments?.length ?? 0) > 0
+        || (pendingRecoveryDraft?.protected === true && pendingRecoveryDraft.text.trim().length > 0)
       ),
     unsavedChangesPrompt: () =>
       mailComposeMount?.hasUnsavedChanges() === true
-        ? 'Discard this unfinished email?'
+        ? 'Throw away this unfinished email?'
         : createOverlay?.hasUnsavedChanges() === true
-          ? 'Discard this unfinished Create item?'
+          ? 'Throw away this unfinished item?'
           : null,
     hasInFlightWork: () => state.sending
       // A turn left running in another chat is still this tab's work.
@@ -10991,13 +11700,13 @@ export const bootstrapChatRoute = (
       || mailComposeMount?.hasInFlightWork() === true,
     inFlightWorkPrompt: () =>
       mailComposeMount?.hasInFlightWork() === true
-        ? 'A mail action is still in progress. Leave Chat anyway?'
+        ? 'Recued is still sending mail. Leave anyway?'
         : createOverlay?.hasInFlightWork() === true
-          ? 'A Create save is still in progress. Leave Chat anyway?'
+          ? 'Recued is still saving. Leave anyway?'
           : modelSourceWriteSessions.size > 0
-            ? 'A Chat model change is still in progress. Leave Chat anyway?'
+            ? 'Recued is still changing which AI you use. Leave anyway?'
             : historyActionInFlight()
-              ? 'A chat history action is still in progress. Leave Chat anyway?'
+              ? 'Something is still happening in your chat history. Leave anyway?'
               : null,
     startNewChat: () => requestStartNewChat(),
     createSession: (title) => createSession(title),
@@ -11005,6 +11714,10 @@ export const bootstrapChatRoute = (
     dispose: () => {
       if (disposed) return;
       disposed = true;
+      filePickerAbort?.abort();
+      conversationFiles?.dispose();
+      historyMessageSearch.dispose();
+      queueView.dispose(); deliveryView.dispose(); messengerList.dispose(); historyFilters.dispose();
       // D-172 P2 — cancel any climbing upload with the route. Leaving an engine
       // running would keep a socket open against a surface nobody is watching.
       composerAttachments?.destroy();

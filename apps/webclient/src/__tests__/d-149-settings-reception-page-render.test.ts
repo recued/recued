@@ -167,15 +167,15 @@ const viewAsVisitorModel = (
       is_long_lived: true,
     },
     token_mode: 'bearer_query_param',
-    token_mode_label: 'Bearer token in the link',
+    token_mode_label: 'A key you paste in in the link',
     token_mode_description: 'The share link carries an HMAC-keyed bearer secret.',
     audit_mode: 'signed_on_booking',
-    audit_mode_label: 'Operational log, plus a signed event on every booking',
+    audit_mode_label: 'A note of every visit, plus a signed record for every booking',
     audit_mode_description: 'Every visitor view writes an operational access-log row.',
     invariant_summary: {
       rows: [
         { invariant: 'Endpoint is default-off until explicitly enabled', detail: 'why-1', satisfied: true },
-        { invariant: 'Bearer token is HMAC-keyed and never re-readable', detail: 'why-2', satisfied: false },
+        { invariant: 'A key you paste in is HMAC-keyed and never re-readable', detail: 'why-2', satisfied: false },
       ],
       all_satisfied: false,
       satisfied_count: 1,
@@ -186,7 +186,7 @@ const viewAsVisitorModel = (
   preview_hash: 'hash-abc',
   preview_hash_expires_at: NOW + 600_000,
   preview_is_fresh: true,
-  preview_freshness_label: 'Preview valid for 10 more minutes',
+  preview_freshness_label: 'Preview good for 10 more minutes',
   ...overrides,
 });
 
@@ -309,7 +309,7 @@ describe('D-149 follow-on — renderReceptionPage: top-level views', () => {
       emptyState({ status: status({ reception_public: false }) }),
       NOW,
     );
-    expect(html).toContain('Not publicly exposed');
+    expect(html).toContain('Not open to the internet');
   });
 });
 
@@ -616,7 +616,7 @@ describe('D-149 follow-on — renderReceptionPage: detail view', () => {
       now: NOW,
     });
     const html = renderReceptionPage(loadedState([buildEndpointSummary()], { detail }), NOW);
-    expect(html).toContain('its token cannot be rotated');
+    expect(html).toContain('its secret cannot be swapped');
     expect(html).not.toContain('data-action="reception-rotate-token"');
   });
 
@@ -675,7 +675,7 @@ describe('D-149 follow-on — renderReceptionPage: view-as-visitor view', () => 
     expect(html).toContain('free_windows');
     expect(html).toContain('event_title');
     expect(html).toContain('1 of 2 privacy invariants satisfied');
-    expect(html).toContain('Preview valid for 10 more minutes');
+    expect(html).toContain('Preview good for 10 more minutes');
   });
 
   it('sandboxes the server-rendered visitor HTML in a locked iframe', () => {
@@ -747,7 +747,7 @@ describe('D-149 follow-on — renderReceptionPage: routing + errors + escaping',
     );
     expect(html).toContain('Reception action failed');
     // Resolved through the spine's RECEPTION_ERROR_COPY, not the raw message.
-    expect(html).toContain('already enabled');
+    expect(html).toContain('already on');
     expect(html).toContain('endpoint_already_enabled');
   });
 

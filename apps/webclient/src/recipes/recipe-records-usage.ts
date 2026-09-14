@@ -145,13 +145,34 @@ export const recipeOpIds = (recipe: RecordsUsageRecipe): string[] => [
   ...opIdsIn(recipe.trigger_steps),
 ];
 
-interface ResolvedOp {
+export interface ResolvedOp {
   pack: RecordsUsagePack;
   row: PackOperationRow;
 }
 
-/** Index every installed pack's composition ops by their FULL Tier-P id, which
- *  is what a recipe names. Built once per render, not per op. */
+/** Every installed pack's composition ops, keyed by the FULL Tier-P id a
+ *  recipe names.
+ *
+ *  ⛔ THIS IS A PARAMETER BECAUSE THE COMMENT BELOW WAS ASPIRATIONAL.
+ *  `indexPackOperations` said "built once per render, not per op" and was
+ *  true about ops and wrong about RECIPES: both public functions rebuilt it
+ *  on every call, so a caller classifying a whole corpus paid a full roster
+ *  walk PER RECIPE. Measured on the shipped corpus — 1,048 packs, 2,342
+ *  recipes, ~26k declared operations — that sweep took ~58 s of work on top
+ *  of ~2 s of actually reading the files.
+ *
+ *  Taking the built index makes the hoist STRUCTURAL rather than advisory:
+ *  you cannot call these without having built one, so the only question left
+ *  is where you build it, and that is visible at the call site. */
+export interface PackOperationIndex {
+  readonly byOpId: ReadonlyMap<string, ResolvedOp>;
+}
+
+/** Build the index. Once per roster — reuse it across every recipe. */
+export const buildPackOperationIndex = (
+  packs: readonly RecordsUsagePack[],
+): PackOperationIndex => ({ byOpId: indexPackOperations(packs) });
+
 const indexPackOperations = (
   packs: readonly RecordsUsagePack[],
 ): Map<string, ResolvedOp> => {
@@ -212,9 +233,9 @@ const RECORDS_ACTION_RANK: ReadonlyMap<RecordsAction, number> = new Map(
  *  entities by kind, so the disclosure is stable across renders. */
 export const recipeRecordsUsage = (
   recipe: RecordsUsageRecipe,
-  packs: readonly RecordsUsagePack[],
+  packs: PackOperationIndex,
 ): RecipeRecordsUsage[] => {
-  const index = indexPackOperations(packs);
+  const index = packs.byOpId;
   const byPack = new Map<
     string,
     { pack_name: string; entities: Map<string, Set<RecordsAction>> }
@@ -276,9 +297,9 @@ export const recipeRecordsUsage = (
  *  recipes, so 19 of the 26 Records recipes had no risk at all to show). */
 export const recipeDeclaredOps = (
   recipe: RecordsUsageRecipe,
-  packs: readonly RecordsUsagePack[],
+  packs: PackOperationIndex,
 ): RecipeDeclaredOps => {
-  const index = indexPackOperations(packs);
+  const index = packs.byOpId;
   const unresolved = new Set<string>();
   let risk: RiskTier | null = null;
   let asks = false;

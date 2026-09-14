@@ -105,9 +105,9 @@ vi.mock('../auth/restore-onboarding-flow.js', () => ({
 
 const SPLASH_MESSAGE_ID = 'webclient-boot-splash-message';
 const SPLASH_WRAPPER_ID = 'webclient-boot-splash';
-const STARTING_COPY = 'Pairing complete — starting Recued…';
+const STARTING_COPY = 'This browser is paired. Starting Recued…';
 const REAUTH_RECOVERY_FAILED_COPY =
-  'Recued could not restart pairing after a server identity change. Reload to re-pair.';
+  'Your server is not the one this browser knew, and Recued could not start pairing again. Reload the page to pair this browser.';
 
 interface FakeElement extends HTMLElement {
   childList: FakeElement[];
@@ -1295,7 +1295,7 @@ describe('D-169 P1.5 NEXT-#1 pair-fallback outcome contract', () => {
         network: {},
       },
       recoveryKey: `${Array(23).fill('abandon').join(' ')} art`,
-    })).rejects.toThrow('credentials to local storage');
+    })).rejects.toThrow('could not save your sign-in in this browser');
 
     expect(pairTabs.notifyPairTransitionStarted).toHaveBeenCalledOnce();
     expect(pairTabs.notifyCredentialStateChanged).not.toHaveBeenCalled();
@@ -1501,7 +1501,7 @@ describe('D-169 P1.5 NEXT-#1 pair-fallback outcome contract', () => {
 
     expect(pairHandles()[0]?.dispose).toHaveBeenCalledOnce();
     expect(dom.getMessageText()).toBe(
-      'Another tab finished reconnecting — returning to your unsent Chat draft…',
+      'Another tab reconnected. Going back to the Chat message you had not sent…',
     );
     expect(dom.message?.getAttribute('role')).toBe('status');
     expect(dom.message?.getAttribute('aria-live')).toBe('polite');
@@ -1565,7 +1565,7 @@ describe('D-169 P1.5 NEXT-#1 pair-fallback outcome contract', () => {
       suppressInitialConnectedReceipt: true,
     });
     expect(dom.getMessageText()).toBe(
-      'Another tab finished reconnecting — returning to your page…',
+      'Another tab reconnected. Going back to your page…',
     );
   });
 
@@ -1925,9 +1925,9 @@ describe('D-169 P1.5 NEXT-#1 pair-fallback outcome contract', () => {
     expect(outcome).toEqual({ kind: 'failed', error: failure });
     expect(mockState.mountPairCodeInputHost).not.toHaveBeenCalled();
     expect(dom.getMessageHtml()).toContain(STARTUP_FAILURE_TRIAGE_ATTR);
-    expect(dom.getMessageHtml()).toContain('Startup needs attention');
+    expect(dom.getMessageHtml()).toContain('Recued needs your help to start');
     expect(dom.getMessageHtml()).toContain(
-      'Your saved access is still here.',
+      'Your saved sign-in is still here.',
     );
     expect(dom.getMessageHtml()).not.toContain('boom');
   });
@@ -2339,7 +2339,7 @@ describe('D-169 P1.5 NEXT-#1 onAfterPair teardown timing', () => {
     expect(pairHandles()[0]?.dispose).toHaveBeenCalledTimes(1);
     expect(dom.removeWrapperChild).not.toHaveBeenCalled();
     expect(dom.getMessageHtml()).toContain(POST_PAIR_STARTUP_RECOVERY_ATTR);
-    expect(dom.getMessageHtml()).toContain('Secure access saved');
+    expect(dom.getMessageHtml()).toContain('Sign-in saved');
     expect(dom.getMessageHtml()).toContain(
       'You do not need to pair this browser again.',
     );
@@ -3319,7 +3319,11 @@ describe('guided reauthorization return-to-work journey', () => {
     });
   });
 
-  it('wipes rejected credentials but guides re-pair and returns the exact page and Chat draft', async () => {
+  it.each([
+    { text: 'Draft the customer follow-up before sending.', protected: true, modelSourceId: null },
+    { text: '', protected: true, modelSourceId: null, attachments: [{ file_id: 'file:restored', media_class: 'image' }] },
+    { text: '', protected: false, modelSourceId: null, replyTo: { sessionId: 'chat_1', messageId: 'target' } },
+  ])('wipes rejected credentials but guards and restores the exact page and Chat draft (%#)', async chatDraft => {
     const dom = makeFakeDocument();
     let beforeUnloadListener: ((event: BeforeUnloadEvent) => void) | null = null;
     const recoveryView = {
@@ -3347,11 +3351,7 @@ describe('guided reauthorization return-to-work journey', () => {
     });
     const recovery = {
       returnHash: '#chat/session/chat_1',
-      chatDraft: {
-        text: 'Draft the customer follow-up before sending.',
-        protected: true,
-        modelSourceId: null,
-      },
+      chatDraft,
     } as const;
     const original = makeWebclientHandle(recovery);
     const replacement = makeWebclientHandle();
@@ -3434,7 +3434,7 @@ describe('guided reauthorization return-to-work journey', () => {
     ).toBeUndefined();
     expect(deps.handleRef.current).toBe(replacement);
     expect(dom.getMessageText()).toBe(
-      'Reconnected — returning to your unsent Chat draft…',
+      'Reconnected. Going back to the Chat message you had not sent…',
     );
     expect(recoveryView.removeEventListener).toHaveBeenCalledWith(
       'beforeunload',

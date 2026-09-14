@@ -254,13 +254,13 @@ describe('Settings → Learning — the ask that feeds precedent', () => {
     await h.panel.whenLoaded();
     const hint = findByAttr(h.host, LEARNING_PANEL_OFF_HINT_ATTR);
     expect(hint).not.toBeNull();
-    expect(textOf(hint!)).toContain('will not learn these turns from you');
-    expect(textOf(hint!)).toContain('already given are kept');
+    expect(textOf(hint!)).toContain('will not learn from these');
+    expect(textOf(hint!)).toContain('already told it is kept');
     // ⛔ AND IT MUST NOT OVERCLAIM. This asserted "will not become precedent",
     // which the switch cannot promise: an independently verified outcome is
     // strong evidence and never runs through the ask. The hint now names that
     // exception, and this pins it so the honest half cannot be edited away.
-    expect(textOf(hint!)).toContain('verify independently may still count');
+    expect(textOf(hint!)).toContain('check for itself may still count');
   });
 
   it('tells the owner the switch is server-wide, not per-device', async () => {
@@ -268,7 +268,7 @@ describe('Settings → Learning — the ask that feeds precedent', () => {
     // per-device would be a lie on the second device.
     const h = mount();
     await h.panel.whenLoaded();
-    expect(textOf(h.host)).toContain('Applies to every device');
+    expect(textOf(h.host)).toContain('This is the same on every device');
   });
 
   it('surfaces a load failure instead of rendering a toggle it cannot back', async () => {
@@ -412,7 +412,7 @@ describe('Settings → Learning — what Recued has learned', () => {
     await h.panel.whenLoaded();
     const inert = findByAttr(h.host, LEARNING_PANEL_CASE_INERT_ATTR);
     expect(inert).not.toBeNull();
-    expect(textOf(inert!)).toContain('not currently used');
+    expect(textOf(inert!)).toContain('Kept, but not used');
     // …and the marker is absent on a live one, so it cannot become boilerplate.
     const live = mountWithCases();
     await live.panel.whenLoaded();
@@ -426,7 +426,7 @@ describe('Settings → Learning — what Recued has learned', () => {
     expect(empty).not.toBeNull();
     // Names the ONE way anything gets here, so empty reads as a stage rather
     // than a failure — and points back at the toggle above it.
-    expect(textOf(empty!)).toContain('only from turns you answer');
+    expect(textOf(empty!)).toContain('only learns from the ones you answer');
   });
 
   it('⛔ forgets only on the SECOND tap', async () => {
@@ -649,13 +649,13 @@ describe('Settings → Learning — make a recipe from a case', () => {
     const forgetButtons = findAllByAttr(h.host, LEARNING_PANEL_FORGET_ATTR);
     expect(draftButtons.map((button) => button.getAttribute('aria-label')))
       .toEqual([
-        'Make a recipe from learned case: send the quarterly report (case_one)',
-        'Make a recipe from learned case: send the quarterly report (case_two)',
+        'Make a Recipe from what it learned: send the quarterly report (case_one)',
+        'Make a Recipe from what it learned: send the quarterly report (case_two)',
       ]);
     expect(forgetButtons.map((button) => button.getAttribute('aria-label')))
       .toEqual([
-        'Forget learned case: send the quarterly report (case_one)',
-        'Forget learned case: send the quarterly report (case_two)',
+        'Forget what it learned: send the quarterly report (case_one)',
+        'Forget what it learned: send the quarterly report (case_two)',
       ]);
     expect(draftButtons.every((button) =>
       button.className.includes('rx-btn-secondary'))).toBe(true);
@@ -683,11 +683,11 @@ describe('Settings → Learning — make a recipe from a case', () => {
     expect(textOf(button)).toContain('Yes, write the draft');
     expect(button.className).toContain('rx-btn-primary');
     expect(button.getAttribute('aria-label')).toBe(
-      'Confirm recipe draft from learned case: send the quarterly report (case_one)',
+      'Say yes to the Recipe from what it learned: send the quarterly report (case_one)',
     );
     expect(findByAttr(h.host, LEARNING_PANEL_DRAFT_PROMPT_ATTR)?.getAttribute('aria-label'))
       .toBe(
-        'Recipe instructions for learned case: send the quarterly report (case_one)',
+        'What the Recipe should do, for what it learned: send the quarterly report (case_one)',
       );
     expect(h.doc.activeElement).toBe(button);
   });
@@ -713,9 +713,9 @@ describe('Settings → Learning — make a recipe from a case', () => {
 
     button = findByAttr(h.host, LEARNING_PANEL_DRAFT_ATTR)!;
     expect(h.panel.hasInFlightWork()).toBe(true);
-    expect(textOf(button)).toContain('Asking your AI...');
+    expect(textOf(button)).toContain('Asking your AI…');
     expect(button.getAttribute('aria-label')).toBe(
-      'Asking your AI to draft a recipe from learned case: send the quarterly report (case_one)',
+      'Asking your AI to write a Recipe from what it learned: send the quarterly report (case_one)',
     );
     expect(button.disabled).toBe(false);
     expect(button.getAttribute('aria-disabled')).toBe('true');
@@ -846,10 +846,10 @@ describe('Settings → Learning — make a recipe from a case', () => {
     expect(h.panel.hasUnsavedChanges()).toBe(true);
     expect(textOf(button)).toContain('Open finished draft');
     expect(button.getAttribute('aria-label')).toBe(
-      'Open finished draft from learned case: send the quarterly report (case_one)',
+      'Open finished draft from what it learned: send the quarterly report (case_one)',
     );
     expect(textOf(findByAttr(h.host, LEARNING_PANEL_DRAFT_ERROR_ATTR)!))
-      .toContain('does not ask your AI or spend model quota again');
+      .toContain('does not ask your AI, and it does not cost you anything again');
     expect(h.runDraftRecipe).toHaveBeenCalledTimes(1);
     expect(h.onDraftReady).toHaveBeenCalledTimes(1);
     expect(h.doc.activeElement).toBe(button);
@@ -860,7 +860,7 @@ describe('Settings → Learning — make a recipe from a case', () => {
     expect(h.runDraftRecipe).toHaveBeenCalledTimes(1);
     expect(findByAttr(h.host, LEARNING_PANEL_DRAFT_ERROR_ATTR)).toBeNull();
     button = findByAttr(h.host, LEARNING_PANEL_DRAFT_ATTR)!;
-    expect(textOf(button)).toContain('Make a recipe...');
+    expect(textOf(button)).toContain('Make a Recipe…');
     expect(h.doc.activeElement).toBe(button);
   });
 

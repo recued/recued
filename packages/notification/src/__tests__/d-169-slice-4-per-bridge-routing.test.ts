@@ -140,7 +140,11 @@ describe('D-169 Slice 4 — per-bridge ask fan-out', () => {
     const store = emptySettings();
     await store.setBridgeMode('bridge-A', { approval: true });
     await store.setBridgeMode('bridge-B', { notification: true });
-    // bridge-C: in the roster but no stored mode -> both default false.
+    // ⛔ EXPLICIT, not defaulted (REV 23). This used to read "no stored mode ->
+    // both default false"; the default now NOTIFIES, so a test expressing
+    // "both off" through ABSENCE was really testing the default, not the
+    // routing table it names. State the state you mean.
+    await store.setBridgeMode('bridge-C', { approval: false, notification: false });
     const block = blockWith({
       channels: [ui, bridge],
       store,
@@ -183,7 +187,9 @@ describe('D-169 Slice 4 — per-bridge ask fan-out', () => {
     const ui = createRecordedChannel('ui');
     const bridge = createRecordedChannel('bridge');
     const store = emptySettings();
-    // bridge-C present in the roster, no mode stored -> both off.
+    // ⛔ EXPLICIT (REV 23) — the default now notifies, so "both off" expressed
+    // through an ABSENT row was testing the default rather than the skip.
+    await store.setBridgeMode('bridge-C', { approval: false, notification: false });
     const block = blockWith({ channels: [ui, bridge], store, roster: rosterOf('bridge-C') });
 
     await block.ask(askMessage, askOptions, handler);
@@ -233,7 +239,11 @@ describe('D-169 Slice 4 — per-bridge ask fan-out', () => {
     const bridge = createRecordedChannel('bridge');
     const store = emptySettings();
     // Channel-level bridge ON, but the only paired bridge has both modes OFF.
+    // ⚠ Both stated explicitly (REV 23): the point is that the per-bridge record
+    // WINS over the channel-level toggle, which only means something when the
+    // per-bridge record is a real stored choice rather than a default.
     await store.setChannelMode('bridge', { notification: true });
+    await store.setBridgeMode('bridge-C', { approval: false, notification: false });
     const block = blockWith({ channels: [ui, bridge], store, roster: rosterOf('bridge-C') });
 
     await block.ask(askMessage, askOptions, handler);
@@ -251,7 +261,11 @@ describe('D-169 Slice 4 — per-bridge notify fan-out', () => {
     const store = emptySettings();
     await store.setBridgeMode('bridge-A', { notification: true });
     await store.setBridgeMode('bridge-B', { notification: true });
-    // bridge-C: no mode -> not notified.
+    // ⛔ EXPLICIT, not defaulted (REV 23). This used to read "no stored mode ->
+    // both default false"; the default now NOTIFIES, so a test expressing
+    // "both off" through ABSENCE was really testing the default, not the
+    // routing table it names. State the state you mean.
+    await store.setBridgeMode('bridge-C', { approval: false, notification: false });
     const block = blockWith({
       channels: [ui, bridge],
       store,

@@ -245,7 +245,7 @@ export interface RestoreOnboarding {
  *  maps; the strings here cover the restore-specific steps. */
 export const RESTORE_ONBOARDING_COPY = {
   channel_failed:
-    'Paired with your server, but Recued couldn’t open the restore connection. Check that the server is running and try again.',
+    'Paired with your server, but Recued could not open the connection to put your backup back. Check the server is switched on, then try again.',
   /** ⛔ THE TWO SIDES OF `/auth/pair` NEED DIFFERENT ADVICE, because the code is
    *  SINGLE-USE. `/auth/pair` consumes it and returns a bearer; `finalize` then
    *  persists locally. Reporting only “can’t reach your server” for a failure
@@ -259,24 +259,24 @@ export const RESTORE_ONBOARDING_COPY = {
    *  advice turns on RELOADING, not on retrying: reload and the code really is
    *  spent with nothing to show for it. */
   pair_interrupted_before_issue:
-    'Lost contact with your server while pairing. Check that it is still running, then try again — if the code is refused, run `recued pair` on the server for a fresh one.',
+    'Recued lost contact with your server while pairing. Check it is still switched on, then try again. If the code is refused, run `recued pair` on the server to get a new one.',
   pair_interrupted_after_issue:
-    'Your server accepted the pairing, but this browser lost contact before saving it. Try again on this page — do not reload, or you will need a fresh code from `recued pair`.',
+    'Your server said yes, but this browser lost contact before it could save. Try again on this page. Do not reload, or you will need a new code from `recued pair`.',
   upload_failed: 'Upload failed:',
   wrong_key:
-    "That recovery key doesn’t match this backup. Check your written copy and try again.",
-  validate_failed: 'Could not read the backup:',
+    "That recovery key does not match this backup. Check what you wrote down and try again.",
+  validate_failed: 'Recued could not read the backup:',
   target_not_empty:
-    'This server already holds data, so it can’t be restored into from this screen. Use Settings → Backup & Recovery on the existing server instead.',
+    'This server already has things on it, so you cannot put a backup onto it from here. Use Settings, then Backup and Recovery, on that server instead.',
   realm_mismatch:
-    'This backup belongs to a different server identity and can’t be restored onto this one from here.',
+    'This backup belongs to a different server, so you cannot put it onto this one from here.',
   schema_too_new:
-    'This backup was made by a newer version of Recued than this server runs. Upgrade this server, then restore.',
-  restore_failed: 'The restore failed:',
+    'This backup came from a newer Recued than this server runs. Update this server first, then put the backup back.',
+  restore_failed: 'Putting your backup back failed:',
   already_paired:
-    'Another tab or window finished pairing this browser to a server while this restore was open. Reload to continue.',
+    'Another tab paired this browser to a server while this was open. Reload the page to carry on.',
   server_changed:
-    'This browser already paired with a different server during this restore. Reload to restore onto another server.',
+    'This browser paired with a different server while this was going on. Reload the page to use another server.',
 } as const;
 
 /** The dry-run + commit import both decrypt the archive server-side, which can

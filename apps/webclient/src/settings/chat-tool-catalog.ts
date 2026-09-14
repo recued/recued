@@ -86,57 +86,57 @@ export const CHAT_TOOL_CATALOG_KIND_COPY: Readonly<Record<IngredientKind, {
   risk_tier: 'safe' | 'risky';
 }>> = {
   http: {
-    label: 'HTTP adapters',
+    label: 'Talking to other services',
     description:
-      'Mail / calendar / contact / CRM platform adapters. Required for most search recipes.',
+      'Your mail, calendar, contacts and CRM. Most Recipes that search need these.',
     risk_tier: 'safe',
   },
   ai: {
     label: 'AI synthesis',
     description:
-      'Programmatic AI (BYOK / free-pool) for summaries, scoring, and extraction. Routed through your configured providers per § A.14.',
+      'AI used behind the scenes to sum things up, score them, or pull facts out. It goes through whichever AI you have set up.',
     risk_tier: 'safe',
   },
   storage: {
     label: 'Local storage',
     description:
-      'Local warehouse + memory + enrichment reads/writes. Stays on your machine.',
+      'Reading and writing your own things and memories. None of it leaves your machine.',
     risk_tier: 'safe',
   },
   service: {
     label: 'Long-running services',
     description:
-      'D-118 long-running services (background sync, watchers). Local-only.',
+      'Jobs that keep running in the background, watching for changes. All on your machine.',
     risk_tier: 'safe',
   },
   dom: {
     label: 'Browser DOM extraction',
     description:
-      'Bridge-only DOM scrapers. High-risk: scrapes whatever tab is open. Off by default.',
+      'Reading whatever web page is open, through the Browser Bridge. Risky, because it reads whatever tab you are on. Off to start with.',
     risk_tier: 'risky',
   },
   chat: {
     label: 'Web-chat AI tabs',
     description:
-      'Web-chat-tab AI (Gemini / DeepSeek / ChatGPT). Sends prompt text to the chat provider. Off by default.',
+      'Using an AI chat page you already have open, like Gemini, DeepSeek or ChatGPT. What you write goes to them. Off to start with.',
     risk_tier: 'risky',
   },
   mcp: {
-    label: 'Pre-D-125 MCP path',
+    label: 'The old way of reaching AI apps',
     description:
-      'Legacy MCP-client ingredient kind. Most users want `connection.mcp.*` instead. Off by default.',
+      'The old way of doing this. Most people want the newer one instead. Off to start with.',
     risk_tier: 'risky',
   },
   connection: {
     label: 'Outbound connections',
     description:
-      'D-125 outbound named endpoints (API / MCP / notification). Write-capable connections live here. Off by default.',
+      'Reaching out to services you have set up. Anything that can change things lives here. Off to start with.',
     risk_tier: 'risky',
   },
   cli: {
     label: 'Local tools',
     description:
-      'D-182 local-binary toolkit ops (whisper / docling / ffmpeg / imagemagick). Runs a local command on your machine. Off by default — enable to let the agent use installed tools (execution still needs a per-tool grant).',
+      'Programs installed on your own machine, like whisper, docling, ffmpeg and imagemagick. These run on your computer. Off to start with. Turn it on to let the AI use them, and you still allow each one separately.',
     risk_tier: 'risky',
   },
 } as const;

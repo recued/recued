@@ -769,7 +769,7 @@ describe('D-166 Permissions override inventory panel', () => {
     const fullText = allText(rowFor(host, 'user_self', DEALS, DEALS_WRITE)!).join(' ');
     expect(fullText).toContain('denied');
     expect(fullText).toContain('approval: always');
-    expect(fullText).toContain('max risk without approval: write');
+    expect(fullText).toContain('how risky it may get before asking you: write');
     expect(fullText).toContain('timeout: 2500 ms');
     expect(fullText).toContain('cache TTL: 15000 ms');
 
@@ -813,7 +813,7 @@ describe('D-166 Permissions override inventory panel', () => {
     expect(calls.runListOverrides).toHaveBeenCalledTimes(1);
     expect(collectByAttr(host, PERMISSIONS_PANEL_EMPTY_ATTR)).toHaveLength(1);
     expect(collectByAttr(host, PERMISSIONS_OVERRIDE_CARD_ATTR)).toHaveLength(0);
-    expect(allText(host).join(' ')).toContain('No permission overrides');
+    expect(allText(host).join(' ')).toContain('No rules yet');
     mount.dispose();
   });
 
@@ -1060,7 +1060,7 @@ describe('D-171 doors frame', () => {
 
     const headings = collectByAttr(host, PERMISSIONS_OVERRIDES_HEADING_ATTR);
     expect(headings).toHaveLength(1);
-    expect(headings[0]!.textContent).toBe('Per-tool restrictions');
+    expect(headings[0]!.textContent).toBe('Rules for each tool');
 
     const root = onlyByAttr(host, PERMISSIONS_PANEL_HOST_ATTR);
     expect(root.children[0]).toBe(sections[0]);
@@ -1109,7 +1109,7 @@ describe('D-171 doors frame', () => {
     expect(mount.getState()).toBe('ready');
     expectDoorsFrame(host);
     expect(collectByAttr(host, PERMISSIONS_PANEL_EMPTY_ATTR)).toHaveLength(1);
-    expect(allText(host).join(' ')).toContain('No permission overrides');
+    expect(allText(host).join(' ')).toContain('No rules yet');
     expect(collectByAttr(host, PERMISSIONS_OVERRIDE_CARD_ATTR)).toHaveLength(0);
     expect(collectByAttr(host, PERMISSIONS_OVERRIDE_ROW_ATTR)).toHaveLength(0);
     mount.dispose();
@@ -1194,12 +1194,12 @@ describe('D-171 slice 4 — reception / messenger doors (static informational)',
     expect(link!.textContent).toContain('Reception page');
 
     const text = allText(block!).join(' ');
-    expect(text).toContain('public links');
-    expect(text).toContain('access boundary');
+    expect(text).toContain('the links you share');
+    expect(text).toContain('decides for itself what it lets people do');
     // Honest posture (codex P2): does NOT claim the Per-tool restrictions gate
     // anonymous public-link traffic.
-    expect(text).toContain('not by the Per-tool restrictions below');
-    expect(text).toContain('No token to copy');
+    expect(text).toContain('not by the Rules for each tool below');
+    expect(text).toContain('There is no key to copy');
     mount.dispose();
   });
 
@@ -1229,11 +1229,11 @@ describe('D-171 slice 4 — reception / messenger doors (static informational)',
     }
 
     const text = allText(block!).join(' ');
-    expect(text).toContain('Inbound messages');
+    expect(text).toContain('Messages from a connected messenger');
     // Messenger's actors (user_self / contracted_user) ARE in ACTOR_OPTIONS, so
     // the per-tool tie-in is accurate here (unlike reception's anonymous path).
-    expect(text).toContain('Per-tool restrictions below also apply');
-    expect(text).toContain('No token to copy');
+    expect(text).toContain('Rules for each tool below also apply');
+    expect(text).toContain('There is no key to copy');
     mount.dispose();
   });
 
@@ -1432,7 +1432,7 @@ describe('D-171 mcp door (inbound-token lifecycle)', () => {
     expect(store.revoke).not.toHaveBeenCalled();
     expect(collectByAttr(host, PERMISSIONS_MCP_DOOR_DISABLE_CONFIRM_ATTR)).toHaveLength(1);
     expect(collectByAttr(host, PERMISSIONS_MCP_DOOR_DISABLE_CANCEL_ATTR)).toHaveLength(1);
-    expect(allText(host).join(' ')).toContain('will stop working immediately');
+    expect(allText(host).join(' ')).toContain('will stop working at once');
 
     // Cancel disarms without revoking.
     onlyByAttr(host, PERMISSIONS_MCP_DOOR_DISABLE_CANCEL_ATTR).click();
@@ -1941,7 +1941,7 @@ describe('D-171 slice 2c — mcp door per-tool grant checklist', () => {
     const chip = collectByAttr(row!, PERMISSIONS_MCP_DOOR_GRANT_TOOL_ALSO_READS_ATTR)[0];
     expect(chip).toBeDefined();
     expect(chip!.getAttribute('data-reads')).toBe('team');
-    expect(chip!.textContent).toContain('also reads: team');
+    expect(chip!.textContent).toContain('also looks at: team');
     // A plain read tool carries no disclosure chip.
     expect(
       collectByAttr(toolRow(host, 'mail.search')!, PERMISSIONS_MCP_DOOR_GRANT_TOOL_ALSO_READS_ATTR),
@@ -2689,7 +2689,7 @@ describe('D-171 slice 3b — mcp door Advanced (lazy cap/expiry)', () => {
 
     // The summary names the kill-switch having fired.
     expect(summaryEl(host)?.getAttribute('data-state')).toBe('exhausted');
-    expect(summaryEl(host)?.textContent).toContain('blocked');
+    expect(summaryEl(host)?.textContent).toContain('The door is shut');
 
     // Save without editing → re-mint (restores).
     await mount.submitMcpDoorLimits();
@@ -2706,12 +2706,12 @@ describe('D-171 slice 3b — mcp door Advanced (lazy cap/expiry)', () => {
     mount.setAdvancedField('capEnabled', true);
     mount.setAdvancedField('maxUses', '');
     await mount.submitMcpDoorLimits();
-    expect(mount.getAdvancedError()).toContain('Usage cap must be');
+    expect(mount.getAdvancedError()).toContain('The limit has to be');
     expect(contracts.mint).not.toHaveBeenCalled();
 
     mount.setAdvancedField('maxUses', '0');
     await mount.submitMcpDoorLimits();
-    expect(mount.getAdvancedError()).toContain('Usage cap must be');
+    expect(mount.getAdvancedError()).toContain('The limit has to be');
     expect(contracts.mint).not.toHaveBeenCalled();
     mount.dispose();
   });
@@ -2815,7 +2815,7 @@ describe('D-171 slice 3b — mcp door Advanced (lazy cap/expiry)', () => {
     mount.dispose();
   });
 
-  it('degrades to a "Limits unavailable" line when listContracts fails', async () => {
+  it('degrades to a "Recued cannot read the limits" line when listContracts fails', async () => {
     const store = makeFakeTokenStore([tokenRecord({ token_id: 'door_live' })]);
     const contracts = makeFakeContractStore([]);
     contracts.list.mockRejectedValueOnce(new Error('contracts boom'));
@@ -2836,12 +2836,12 @@ describe('D-171 slice 3b — mcp door Advanced (lazy cap/expiry)', () => {
     // The door + Advanced shell still render; only the limit detail degrades.
     expect(mcpStatusText(host)).toBe('Open');
     expect(advancedSection(host)).toHaveLength(1);
-    expect(summaryEl(host)?.textContent).toContain('Limits unavailable');
+    expect(summaryEl(host)?.textContent).toContain('Recued cannot read the limits');
     expect(summaryEl(host)?.textContent).toContain('contracts boom');
     mount.dispose();
   });
 
-  it('surfaces the "fresh usage count" note only while a cap is enabled', async () => {
+  it('surfaces the "the count again from zero" note only while a cap is enabled', async () => {
     // Re-minting reseeds uses_remaining, so any save resets a consumed cap. The
     // note makes that unavoidable reset honest (shown only when a cap is in play).
     const { host, mount } = mountAdvanced([tokenRecord({ token_id: 'door_live' })]);
@@ -2853,7 +2853,7 @@ describe('D-171 slice 3b — mcp door Advanced (lazy cap/expiry)', () => {
     expect(collectByAttr(host, PERMISSIONS_MCP_DOOR_ADVANCED_NOTE_ATTR)).toHaveLength(1);
     expect(
       collectByAttr(host, PERMISSIONS_MCP_DOOR_ADVANCED_NOTE_ATTR)[0]!.textContent,
-    ).toContain('fresh usage count');
+    ).toContain('the count again from zero');
 
     // Expiry-only (cap off) shows no cap-reset note.
     mount.setAdvancedField('capEnabled', false);
@@ -2915,7 +2915,7 @@ describe('D-166 Permissions create form', () => {
 
     expect(mount.getCatalog()).toEqual(catalog);
     expect(selectOptions(host, PERMISSIONS_CREATE_INGREDIENT_ATTR)).toEqual([
-      { value: '', label: 'Select ingredient…' },
+      { value: '', label: 'Choose an Ingredient…' },
       { value: DEALS, label: 'HubSpot Deals' },
       { value: CONTACTS, label: 'HubSpot Contacts' },
     ]);
@@ -2934,7 +2934,7 @@ describe('D-166 Permissions create form', () => {
     mount.setCreateField('ingredient_id', DEALS);
 
     expect(selectOptions(host, PERMISSIONS_CREATE_OPERATION_ATTR)).toEqual([
-      { value: '', label: 'All operations (ingredient-wide)' },
+      { value: '', label: 'Everything this Ingredient does' },
       { value: DEALS_READ, label: 'read (read)' },
       { value: DEALS_WRITE, label: 'write (write)' },
     ]);
@@ -2944,7 +2944,7 @@ describe('D-166 Permissions create form', () => {
 
     const operationOptions = selectOptions(host, PERMISSIONS_CREATE_OPERATION_ATTR);
     expect(operationOptions).toEqual([
-      { value: '', label: 'All operations (ingredient-wide)' },
+      { value: '', label: 'Everything this Ingredient does' },
       { value: CONTACTS_WRITE, label: 'write (write)' },
     ]);
     expect(operationOptions.map((o) => o.value)).not.toContain(DEALS_WRITE);
@@ -3040,10 +3040,10 @@ describe('D-166 Permissions create form', () => {
     await mount.submitCreate();
 
     expect(mount.getCreateError()).toBe(
-      'Set at least one restriction (deny, approval, or max risk without approval).',
+      'Set at least one rule: block it, ask you first, or cap how risky it may get.',
     );
     expect(collectByAttr(host, PERMISSIONS_CREATE_ERROR_ATTR)[0]!.textContent).toBe(
-      'Set at least one restriction (deny, approval, or max risk without approval).',
+      'Set at least one rule: block it, ask you first, or cap how risky it may get.',
     );
     expect(calls.runUpsertOverride).not.toHaveBeenCalled();
     mount.dispose();
@@ -3062,14 +3062,14 @@ describe('D-166 Permissions create form', () => {
 
     await mount.submitCreate();
 
-    expect(mount.getCreateError()).toBe('Choose an actor to restrict.');
+    expect(mount.getCreateError()).toBe('Choose who to put a rule on.');
 
     mount.setCreateField('actor', 'user_self');
     mount.setCreateField('ingredient_id', '');
 
     await mount.submitCreate();
 
-    expect(mount.getCreateError()).toBe('Choose an ingredient.');
+    expect(mount.getCreateError()).toBe('Choose an Ingredient.');
     expect(calls.runUpsertOverride).not.toHaveBeenCalled();
     mount.dispose();
   });
@@ -3096,7 +3096,7 @@ describe('D-166 Permissions create form', () => {
     await mount.submitCreate();
 
     expect(calls.runUpsertOverride).toHaveBeenCalledTimes(1);
-    expect(mount.getCreateError()).toContain('can only tighten');
+    expect(mount.getCreateError()).toContain('can only make rules stricter');
     expect(mount.getCreateError()).toContain('approval');
     expect(mount.getCreateError()).toContain('max_risk_without_approval');
     expect(selectedOptionValue(host, PERMISSIONS_CREATE_ACTOR_ATTR)).toBe('user_self');
@@ -3228,7 +3228,7 @@ describe('D-166 Permissions create form', () => {
     mount.setCreateField('denied', true);
     await mount.submitCreate();
 
-    expect(mount.getCreateError()).toBe('Choose an ingredient.');
+    expect(mount.getCreateError()).toBe('Choose an Ingredient.');
     expect(calls.runUpsertOverride).not.toHaveBeenCalled();
     mount.dispose();
   });

@@ -182,8 +182,8 @@ describe('createFoundationalOAuthContinuity', () => {
       note: 'Calendar can be added later.',
     });
     expect(work.update).toHaveBeenLastCalledWith({
-      label: 'Gmail connected — view next steps',
-      returnLabel: 'View connection',
+      label: 'Gmail is connected — see what to do next',
+      returnLabel: 'See the Connection',
       phase: 'result_ready',
     });
 
@@ -213,7 +213,7 @@ describe('createFoundationalOAuthContinuity', () => {
     expect(enroll).not.toHaveBeenCalled();
     expect(continuity.snapshot()).toMatchObject({
       status: 'failed',
-      error: 'Sign-in cancelled. No account was connected.',
+      error: 'You stopped signing in. No account was connected.',
     });
     continuity.dispose();
   });
@@ -288,7 +288,7 @@ describe('createFoundationalOAuthContinuity', () => {
     });
     expect(work.beginWork).toHaveBeenCalledWith(expect.objectContaining({
       returnHref: '#connections/mail',
-      returnLabel: 'Restart sign-in',
+      returnLabel: 'Start signing in again',
     }));
     // A boot that stops before the exact lane consumes the result does not lose
     // it. The next boot may restore it again, then consumption retires it.
@@ -384,7 +384,7 @@ describe('createFoundationalOAuthContinuity', () => {
     expect(enroll).not.toHaveBeenCalled();
     expect(continuity.snapshot()).toMatchObject({
       status: 'failed',
-      error: expect.stringContaining('Nothing was sent to the server'),
+      error: expect.stringContaining('Nothing was sent to your server'),
     });
     continuity.dispose();
   });

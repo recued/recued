@@ -97,12 +97,12 @@ const CONNECTION_COPY: Record<
   },
   connection_lost: {
     kind: 'in_doubt',
-    copy: 'The connection dropped before this finished, so its result is unknown.',
+    copy: 'The connection dropped before this finished, so Recued does not know what happened.',
     suppressible: false,
   },
   webclient_reauth_required: {
     kind: 'auth',
-    copy: 'Your session needs to be re-paired.',
+    copy: 'This browser has to be paired again.',
     suppressible: false,
   },
   // Teardown / caller-abort — not a server problem; surfaces normally show
@@ -123,9 +123,9 @@ const CONNECTION_COPY: Record<
 /** The one connection cause the server can never report, because the browser
  *  refuses the socket before the server sees it. See `net/insecure-origin.ts`. */
 const BLOCKED_BY_BROWSER_COPY =
-  'This browser blocked the connection: the page is secure (https) but your '
-  + 'server’s address is not. Open the webclient from the server’s own address, '
-  + 'or give the server a certificate.';
+  'Your browser blocked this. This page is safe (https), but your '
+  + 'server’s address is not. Open Recued from your server’s own address, '
+  + 'or give your server a certificate.';
 
 const codeOf = (err: unknown): string | null => {
   if (err instanceof RpcError) return err.code;

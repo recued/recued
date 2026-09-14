@@ -172,6 +172,13 @@ describe('startHousekeepingStartup', () => {
       auditLog: options.storage.auditLog,
       eventBus: options.storage.eventBus,
       backgroundServices: options.backgroundServices,
+      // D-269 step 1 — the declared server zone, for D-139 § A.3.7's engagement
+      // timezone fallback. ⚠ Asserted as a FUNCTION, not a literal: it is a
+      // closure over the store built at this call site, so a value comparison
+      // would pin an identity nothing can reproduce. What matters here is that
+      // the dep is forwarded at all — the resolution itself is driven in
+      // `d-269-prefs-timezone-backed`.
+      prefsTimezone: expect.any(Function),
     });
     expect(options.publishVendorRefs).toHaveBeenCalledWith(vendorRefs);
     expect(startupMocks.composeHousekeepingLlmCallables).toHaveBeenCalledWith({

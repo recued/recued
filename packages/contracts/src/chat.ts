@@ -93,6 +93,10 @@ export type Tier1ToolName =
   | 'account.search'
   | 'work.search'
   | 'work.read'
+  | 'work.create'
+  | 'calendar.create'
+  | 'calendar.update'
+  | 'work.update'
   | 'file.search'
   | 'recipe.run'
   | 'recipe.stop';
@@ -108,6 +112,10 @@ export const TIER1_TOOL_NAMES: ReadonlyArray<Tier1ToolName> = [
   'account.search',
   'work.search',
   'work.read',
+  'work.create',
+  'calendar.create',
+  'calendar.update',
+  'work.update',
   'file.search',
   'recipe.run',
   'recipe.stop',
@@ -136,6 +144,10 @@ export const TIER1_TOPIC_TAGS: Readonly<Record<Tier1ToolName, ReadonlyArray<stri
   'account.search': ['account', 'company', 'organization', 'crm', 'lookup'],
   'work.search': [...WORK_ENTITY_KINDS, 'todo', 'lookup'],
   'work.read': [...WORK_ENTITY_KINDS, 'detail', 'lookup'],
+  'work.create': [...WORK_ENTITY_KINDS, 'add', 'capture', 'todo', 'create'],
+  'calendar.create': ['calendar', 'event', 'meeting', 'schedule', 'book', 'create'],
+  'calendar.update': ['calendar', 'event', 'meeting', 'reschedule', 'move', 'cancel'],
+  'work.update': [...WORK_ENTITY_KINDS, 'done', 'complete', 'reschedule', 'update'],
   'file.search': ['file', 'attachment', 'document', 'upload', 'lookup'],
   'recipe.run': ['recipe', 'invoke', 'action', 'workflow'],
   // D-259 § 7.4 — steering, not searching. Tagged beside `recipe.run` because
@@ -172,6 +184,40 @@ export const TIER1_CLASSIFICATIONS: Readonly<
   'account.search': 'read',
   'work.search': 'read',
   'work.read': 'read',
+  // Deliberately `unknown` — NOT `write` — on the `memory.write` precedent
+  // above. A `write` classification forces the P3 plan-approval gate on EVERY
+  // dispatch, and an approval card between "add a task" and a task is the
+  // whole cost of the feature. This write is soft in the same three senses:
+  // it lands in the owner's OWN local work graph (no account, no connection,
+  // nothing leaves the machine), the owner sees the row immediately in Today
+  // and can edit or delete it, and it is grant-gated per kind
+  // (`core.work-entity.<kind>.create`, owner-on / door-off) which is the
+  // enforcement boundary.
+  // ⛔ THIS REASONING DOES NOT EXTEND TO UPDATE OR DELETE. Creating is
+  // additive and visible; rescheduling or cancelling an existing commitment
+  // changes something the owner already relied on, and is not undone by
+  // deleting a row. Those belong at `write`, with the gate.
+  'work.create': 'unknown',
+  // ⛔ `write`, NOT `unknown` — the OPPOSITE call from `work.create` above, and
+  // the reason the two slices are separate. `requiresPlanApproval` returns true
+  // unconditionally for `write`, so every calendar mutation is PROPOSED to the
+  // owner and executes only on confirm.
+  //
+  // 🔑 THE ASYMMETRY IS THE DESIGN, not caution creeping in. Creating a task is
+  // additive: the owner sees a new row and deletes it if it is wrong. Moving or
+  // cancelling a calendar event CHANGES SOMETHING THEY ALREADY RELIED ON, and
+  // deleting the row afterwards does not un-tell the people who saw it move. An
+  // event also reaches beyond this machine the moment the calendar is a synced
+  // one. "Move the dentist to Thursday" is exactly the sentence that should
+  // stop and show its work.
+  'calendar.create': 'write',
+  'calendar.update': 'write',
+  // `write`, joining the calendar pair rather than `work.create` — the boundary
+  // this slice was split on. Creating a task is additive and the owner deletes
+  // it if wrong; marking one DONE, moving its deadline or retitling it changes a
+  // row they have already been reading, and "done" in particular is a claim
+  // about the world that reactive consumers act on (`completed` events fire).
+  'work.update': 'write',
   // Returns file IDENTITY only (name / size / origin / scan status), never
   // bytes. Content egress stays on the Gateway-gated `data-file-read`, which
   // is a separate admission and writes its own `file_content_read` audit row.
@@ -211,6 +257,20 @@ export const TIER1_CONCURRENCY_SAFE: Readonly<
   // idempotent vendor GETs — safe to batch alongside the other reads.
   'work.search': true,
   'work.read': true,
+  // Each create mints its own row id, so two creates in one turn ("add a task
+  // for X and one for Y") never race a shared key — same append-only argument
+  // as `memory.write`.
+  'work.create': true,
+  // A create mints a new event id — batchable like the other appends.
+  'calendar.create': true,
+  // ⛔ NEVER batched. Two updates to ONE event inside a turn ("move it to
+  // Thursday and make it an hour") would race on the same `source_id`, and the
+  // provider's last write wins silently. Same reasoning as `recipe.stop`.
+  'calendar.update': false,
+  // ⛔ Sequential for the `calendar.update` reason, not the write reason: two
+  // updates to ONE entity in a turn address the same `id` and the last write
+  // silently wins. The axis is shared identity.
+  'work.update': false,
   'file.search': true,
   'recipe.run': false,
   // Never batched in parallel with anything: a stop and the call it would stop
@@ -1255,6 +1315,16 @@ export interface ChatProvenanceRef {
 export interface ChatMessageAttachment {
   file_id: string;
   media_class: string;
+  /** Draft selection guard; checked and replaced by a version ID at admission. */
+  selection_revision?: string;
+  /** Server-resolved immutable attachment metadata; absent on older servers. */
+  source_file_id?: string;
+  filename?: string;
+  mime_type?: string;
+  size?: number;
+  availability?: 'available' | 'deleted' | 'missing';
+  /** Captured from a legacy reference; original submission bytes are unproven. */
+  legacy_capture?: boolean;
 }
 
 /** Closed vocabulary for how a Data item relates to an execution run. The
@@ -1358,6 +1428,18 @@ export interface ChatDataDiagnosisContext extends ChatDataDiagnosisRequest {
   run_correlation: 'matched' | 'unverified';
 }
 
+/** Same-conversation reply identity. Unmapped native replies stay explicit;
+ * they must never be reassigned to the most recent retained message. */
+export type ChatReplyReference =
+  | { message_id: string; vendor?: string; native_message_id?: string }
+  | { vendor: string; native_message_id: string };
+
+/** Preview is resolved from retained text at read time, never supplied by a
+ * client or copied into message content. Absent preview means unavailable. */
+export type ChatMessageReply = ChatReplyReference & {
+  preview?: { role: 'user' | 'assistant'; text: string };
+};
+
 export interface ChatMessage {
   id: string;
   session_id: string;
@@ -1376,6 +1458,7 @@ export interface ChatMessage {
   tool_call?: import('./chat-tool-call.js').ChatToolCallRecord;
   provenance?: ChatProvenanceRef[];
   attachments?: ChatMessageAttachment[];
+  reply_to?: ChatMessageReply;
   /** Durable grounding for a user-requested Data explanation or safe check.
    * Server-stamped after validating the same-session consumed action and run
    * correlation. Presentation-only; never approval or retry authority. */
@@ -1430,6 +1513,8 @@ export interface ChatEgressPacket {
 export interface ChatSessionSummary {
   id: string;
   title?: string;
+  /** Optional on older servers; identity survives a user-renamed title. */
+  messenger?: import('./chat-delivery.js').ChatMessengerSessionStatus;
   created_at: number;
   last_active_at: number;
   message_count: number;
@@ -1474,11 +1559,20 @@ export interface ChatSessionSummary {
  *  slice). The rpc registry rejects any method not in this set. */
 export type ChatRpcMethod =
   | 'chat.sessions.list'
+  | 'chat.messages.search'
   | 'chat.session.get'
   | 'chat.session.create'
   | 'chat.session.delete'
   | 'chat.session.export'
   | 'chat.egress.get'
+  | 'chat.deliveries.list'
+  | 'chat.delivery.retry'
+  | 'chat.delivery.skip'
+  | 'chat.messenger.connect'
+  | 'chat.turns.list'
+  | 'chat.turn.withdraw'
+  | 'chat.turn.cancel'
+  | 'chat.turn.retry'
   | 'chat.send'
   /** Persist the owner's explicit closure of one completed, grounded safe
    * check. It cannot approve, execute, or retry an action. */
@@ -1600,11 +1694,17 @@ export type ChatRpcMethod =
 
 export const CHAT_RPC_METHODS: ReadonlyArray<ChatRpcMethod> = [
   'chat.sessions.list',
+  'chat.messages.search',
   'chat.session.get',
   'chat.session.create',
   'chat.session.delete',
   'chat.session.export',
   'chat.egress.get',
+  'chat.deliveries.list', 'chat.delivery.retry', 'chat.delivery.skip', 'chat.messenger.connect',
+  'chat.turns.list',
+  'chat.turn.withdraw',
+  'chat.turn.cancel',
+  'chat.turn.retry',
   'chat.send',
   'chat.data_diagnosis.resolve',
   'chat.plans.pending.list',
@@ -1771,6 +1871,41 @@ export interface ChatHistoryCursor {
   message_id: string;
 }
 
+/** Paired-owner History search. Cursors are transient scan positions, and
+ * results contain only retained user/assistant message text. */
+export interface ChatMessageSearchRequest {
+  query: string;
+  before?: ChatHistoryCursor;
+  filters?: import('./chat-history-filters.js').ChatHistoryFilters;
+  session_id?: string;
+}
+
+export interface ChatMessageSearchMatch {
+  session_id: string;
+  message_id: string;
+  title?: string;
+  role: 'user' | 'assistant';
+  ts: number;
+  snippet: string;
+}
+
+export interface ChatMessageSearchResult {
+  matches: ChatMessageSearchMatch[];
+  /** More retained rows remain to search, even if this page found no match. */
+  next_cursor?: ChatHistoryCursor;
+  /** Some retained rows could not be decrypted; never claim an exhaustive search. */
+  incomplete: boolean;
+}
+
+export interface ChatSessionGetRequest {
+  session_id: string;
+  limit?: number;
+  before?: ChatHistoryCursor;
+  after?: ChatHistoryCursor;
+  /** Load a bounded window containing this exact same-session message. */
+  around_message_id?: string;
+}
+
 export type ChatSessionChangedField =
   | 'picker'
   | 'model_pref'
@@ -1782,7 +1917,11 @@ export type ChatSessionChangedField =
    *  field here that is PROCESS state rather than stored state: it is never
    *  read back from a row, and after a server restart every session is idle
    *  because a restart ends turns rather than interrupting them. */
-  | 'busy';
+  | 'busy'
+  | 'attachments'
+  | 'queue'
+  | 'message'
+  | 'delivery';
 
 export const CHAT_SESSION_CHANGED_FIELDS: ReadonlyArray<ChatSessionChangedField> = [
   'picker',
@@ -1791,6 +1930,8 @@ export const CHAT_SESSION_CHANGED_FIELDS: ReadonlyArray<ChatSessionChangedField>
   'archived',
   'tool_call',
   'busy',
+  'attachments',
+  'queue', 'message', 'delivery',
 ] as const;
 
 export const CHAT_SESSION_CHANGED_FIELD_SET: ReadonlySet<ChatSessionChangedField> =
@@ -1901,6 +2042,10 @@ export const TIER1_TOOL_ENTITY: Readonly<Record<Tier1ToolName, OpEntity>> = {
   'account.search': 'crm',
   'work.search': 'work',
   'work.read': 'work',
+  'work.create': 'work',
+  'calendar.create': 'calendar',
+  'calendar.update': 'calendar',
+  'work.update': 'work',
   'file.search': 'file',
   'recipe.run': 'recipe',
   'recipe.stop': 'recipe',
@@ -2244,6 +2389,104 @@ export const TIER1_TOOL_DESCRIPTORS: Readonly<Record<Tier1ToolName, Tier1ToolDes
     classification: TIER1_CLASSIFICATIONS['work.read'],
     topic_tags: TIER1_TOPIC_TAGS['work.read'],
     concurrency_safe: TIER1_CONCURRENCY_SAFE['work.read'],
+  },
+  'work.create': {
+    name: 'work.create',
+    description:
+      "Create something the user has to ACT ON or KEEP — a `task`, `note`, `commitment` or `project` — in their own local work graph. It shows up immediately in Today and the matching list, needs no account and no connection, never leaves this machine, and the user can edit or delete it. Reach for it when they ask you to add, capture, note down, or track something: \"add a task to call the dentist\", \"note that down\", \"start a project for the Dublin move\". \u26d4 This is for things to DO or KEEP; `memory.write` is for knowledge to RECALL later. The user's wording usually settles it: \"remember TO send the invoice\" is a task, \"remember THAT Acme moved to net-60\" is a memory. When both fit, prefer this one — a row the user can see and work through beats a fact they have to search for. \u26a0 Creating is not idempotent: each call makes a new row, so do not re-create something you already created in this turn. This governs what you CREATE, nothing else — reading and reporting work items is unchanged.",
+    arg_schema: {
+      type: 'object',
+      required: ['kind'],
+      properties: {
+        kind: {
+          type: 'string',
+          enum: ['task', 'note', 'commitment', 'project'],
+          description:
+            'REQUIRED — what to create. `task` = something to do (optionally with a due date). `note` = something to keep, body required. `commitment` = something promised to or by a named person. `project` = a container other tasks hang under.',
+        },
+        title: {
+          type: 'string',
+          description:
+            'The one-line subject, as the user would recognise it ("Call the dentist"). REQUIRED for `task`, `commitment` and `project`; optional for `note`, which titles itself from the body when omitted.',
+        },
+        body: {
+          type: 'string',
+          description:
+            'Longer detail. REQUIRED for `note` (it is the note). Optional elsewhere — omit when the title already says it all.',
+        },
+        due_at: {
+          type: 'number',
+          description:
+            'Optional Unix-ms deadline. Set it only when the user gave one; do NOT invent a date to make a task look complete.',
+        },
+      },
+    },
+    classification: TIER1_CLASSIFICATIONS['work.create'],
+    topic_tags: TIER1_TOPIC_TAGS['work.create'],
+    concurrency_safe: TIER1_CONCURRENCY_SAFE['work.create'],
+  },
+  'calendar.create': {
+    name: 'calendar.create',
+    description:
+      "Put a new event on the user's calendar. \u26a0 This CHANGES their schedule, so it is proposed to them first and only runs once they confirm \u2014 say what you are about to add, do not promise it is done. Times are Unix ms and you must supply the `timezone` the user means; when they say \"3pm\" without one, use the timezone of their other events rather than guessing UTC. \u26d4 Do NOT invent a duration: if they gave a start and no end, ask, or use the length they used for the same kind of meeting before \u2014 a wrong end time is a double-booking they will not notice until it bites. By default this writes to the LOCAL calendar, which always exists and needs no account. Name `calendar_id` only to write to one they told you about or one a `calendar.search` result actually showed.",
+    arg_schema: {
+      type: 'object',
+      required: ['summary', 'start_at', 'end_at', 'timezone'],
+      properties: {
+        summary: { type: 'string', description: 'REQUIRED — the event title as the user would read it on their calendar.' },
+        start_at: { type: 'number', description: 'REQUIRED — start, Unix ms.' },
+        end_at: { type: 'number', description: 'REQUIRED — end, Unix ms. Must be after `start_at`.' },
+        timezone: { type: 'string', description: "REQUIRED — IANA zone the times are meant in, e.g. 'Europe/Dublin'. Do not default to UTC to avoid asking." },
+        description: { type: 'string', description: 'Optional detail / agenda.' },
+        is_all_day: { type: 'boolean', description: 'Optional — true for a day-scoped entry (a leave day), false or omitted for a timed one.' },
+        calendar_id: { type: 'string', description: 'Optional — the calendar instance to write to. Omit for the local calendar, which always exists.' },
+      },
+    },
+    classification: TIER1_CLASSIFICATIONS['calendar.create'],
+    topic_tags: TIER1_TOPIC_TAGS['calendar.create'],
+    concurrency_safe: TIER1_CONCURRENCY_SAFE['calendar.create'],
+  },
+  'calendar.update': {
+    name: 'calendar.update',
+    description:
+      "Change an event already on the user's calendar \u2014 move it, rename it, or cancel it by setting `status` to `cancelled`. \u26a0 This CHANGES a commitment other people may have seen, so it is proposed to them first and only runs once they confirm. \u26d4 Find the event with `calendar.search` and use the `source_id` it returned. Never guess an id, and never update when the search returned more than one plausible match \u2014 say which ones you found and ask which they mean. Sending the wrong id edits somebody else's meeting. \u26a0 Send ONLY the fields that change; anything you omit keeps its current value. Do not restate the whole event, and do not re-send a field you did not mean to touch.",
+    arg_schema: {
+      type: 'object',
+      required: ['source_id'],
+      properties: {
+        source_id: { type: 'string', description: 'REQUIRED — the id of the event to change, exactly as `calendar.search` returned it.' },
+        summary: { type: 'string', description: 'Optional new title. Omit to leave it alone.' },
+        start_at: { type: 'number', description: 'Optional new start, Unix ms. Send `end_at` too when moving an event, or it keeps its old end.' },
+        end_at: { type: 'number', description: 'Optional new end, Unix ms.' },
+        timezone: { type: 'string', description: 'Optional IANA zone for the new times. Required when you send a new `start_at` in a different zone.' },
+        status: { type: 'string', enum: ['confirmed', 'cancelled'], description: "Optional — set 'cancelled' to call the event off without deleting the record." },
+        calendar_id: { type: 'string', description: 'Optional — the calendar instance the event lives on. Omit for the local calendar.' },
+      },
+    },
+    classification: TIER1_CLASSIFICATIONS['calendar.update'],
+    topic_tags: TIER1_TOPIC_TAGS['calendar.update'],
+    concurrency_safe: TIER1_CONCURRENCY_SAFE['calendar.update'],
+  },
+  'work.update': {
+    name: 'work.update',
+    description:
+      "Change something already in the user's work graph: mark a task done, move a deadline, retitle it, or edit a note's text. \u26a0 This CHANGES a row they have already been reading, so it is proposed to them first and runs only once they confirm \u2014 say what you are about to change, do not report it done. \u26d4 Find the row with `work.search` and use the `id` it returned. Never guess an id, and when the search returned more than one plausible match, say which you found and ask which they mean. \u26a0 Send ONLY what changes; anything omitted keeps its value. \u26d4 `done` is a claim about the world, not a field edit \u2014 send it on its own, in a call that changes nothing else. To create something new use `work.create`; this tool only changes what already exists.",
+    arg_schema: {
+      type: 'object',
+      required: ['kind', 'id'],
+      properties: {
+        kind: { type: 'string', enum: ['task', 'note', 'commitment', 'project'], description: 'REQUIRED — the kind of the row being changed, as `work.search` reported it.' },
+        id: { type: 'string', description: 'REQUIRED — the id of the row to change, exactly as `work.search` returned it.' },
+        done: { type: 'boolean', description: 'Tasks only. `true` marks the task complete, `false` reopens it. Send it ALONE — not alongside title/body/due_at.' },
+        title: { type: 'string', description: 'Optional new one-line subject.' },
+        body: { type: 'string', description: "Optional new detail. For a note this is the note's text." },
+        due_at: { type: 'number', description: 'Optional new deadline, Unix ms. Set only when the user gave one.' },
+        state: { type: 'string', description: "Optional free-form pipeline state (e.g. 'blocked'). It does NOT mark anything done — use `done` for that." },
+      },
+    },
+    classification: TIER1_CLASSIFICATIONS['work.update'],
+    topic_tags: TIER1_TOPIC_TAGS['work.update'],
+    concurrency_safe: TIER1_CONCURRENCY_SAFE['work.update'],
   },
   'file.search': {
     name: 'file.search',

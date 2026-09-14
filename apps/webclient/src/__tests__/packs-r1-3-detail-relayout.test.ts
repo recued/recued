@@ -425,7 +425,7 @@ describe('Packs R1.3 — detail section layout', () => {
     /** ⛔ The framing line is load-bearing: without it the list is indistinguishable
      *  from a grant matrix showing state the pack ALREADY has. */
     expect(text, 'a preview must not read as current state').toContain('Not installed');
-    expect(text).toContain('nothing is granted yet');
+    expect(text).toContain('nothing is allowed yet');
     expect(text, 'the operations must actually be disclosed').toContain('Read');
     expect(text, 'and the account it wants').toContain('demo');
 
@@ -441,7 +441,7 @@ describe('Packs R1.3 — detail section layout', () => {
      *  its own body is how a reader decides one of the two is stale, and it was the last
      *  thing on this pane still describing the installed case. */
     expect(text, 'the heading must not announce owner defaults over a preview')
-      .not.toContain('Operation defaults');
+      .not.toContain('What it may do, to start with');
     expect(text).toContain('Before you install');
     mount.dispose?.();
   });
@@ -462,10 +462,10 @@ describe('Packs R1.3 — detail section layout', () => {
     findByAttrValue(host, PACKS_DETAIL_TAB_ATTR, 'permissions')!.click();
 
     const text = collectTextContent(findByAttr(host, PACKS_DETAIL_TAB_PANEL_ATTR)!);
-    expect(text).toContain('Operation defaults');
+    expect(text).toContain('What it may do, to start with');
     expect(text, 'an installed pack must not be told it is not installed')
       .not.toContain('Before you install');
-    expect(text).not.toContain('nothing is granted yet');
+    expect(text).not.toContain('nothing is allowed yet');
     mount.dispose?.();
   });
 

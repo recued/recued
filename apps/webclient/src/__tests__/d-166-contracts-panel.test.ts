@@ -334,7 +334,7 @@ describe('D-166 Contracts panel', () => {
 
     const revokedRow = rowFor(host, 'ct_revoked')!;
     const revokedText = allText(revokedRow).join(' ');
-    expect(revokedText).toContain('Unrestricted scope');
+    expect(revokedText).toContain('Everything (any channel, anyone, any ingredient)');
     expect(revokedText).toContain('operator stopped it');
     expect(collectByClass(revokedRow, 'ct-revoked-line')).toHaveLength(1);
     expect(revokeButtonFor(host, 'ct_revoked')).toBeUndefined();

@@ -33,6 +33,7 @@ const senderRecued: MailSenderSourceOption = {
   label: 'Inbox (alice@example.com)',
   account_email: 'alice@example.com',
   send_capable: true,
+  draft_capable: false,
   mail_instance_slug: 'primary',
 };
 
@@ -41,6 +42,7 @@ const senderHubspot: MailSenderSourceOption = {
   label: 'HubSpot (alice@example.com)',
   account_email: 'alice@example.com',
   send_capable: true,
+  draft_capable: false,
   mail_instance_slug: 'hubspot-primary',
 };
 
@@ -49,6 +51,7 @@ const senderNoSend: MailSenderSourceOption = {
   label: 'Inbox (alice@example.com)',
   account_email: 'alice@example.com',
   send_capable: false,
+  draft_capable: false,
   mail_instance_slug: 'primary',
 };
 

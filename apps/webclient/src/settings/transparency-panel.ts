@@ -123,7 +123,7 @@ interface ToggleRowSpec {
 
 const MASTER_ROW: ToggleRowSpec = {
   key: 'ui.transparency.enabled',
-  label: 'Show inline thought stream',
+  label: 'Show what Recued is thinking',
   detail:
     'Per-turn narrative of what Recued is doing during AI turns — ' +
     'tool provenance rows and failure notices always render.',

@@ -125,12 +125,12 @@ export const buildServerUpdateReceiptDiagnostic = (options: {
       || options.connectionIdentity === null
       ? []
       : [`Connection: ${diagnosticLine(options.connectionIdentity)}`]),
-    `Selected profile: ${diagnosticLine(options.profileLabel ?? '') || 'unnamed'}`,
+    `Server you picked: ${diagnosticLine(options.profileLabel ?? '') || 'unnamed'}`,
     `Server host: ${diagnosticServerHost(options.serverUrl)}`,
     `Expected operation: ${options.verification.operation}`,
     `Verification result: ${result}`,
     options.verification.phase === 'completed'
-      ? 'Safety state: server controls are unlocked; original operation outcome remains unknown'
+      ? 'Safety state: server controls are unlocked; original operation result is still unknown'
       : options.verification.phase === 'closed'
       || options.verification.phase === 'checking_baseline'
       || options.verification.phase === 'baseline_retryable'

@@ -15,7 +15,7 @@ const AIRBYTE_FIELDS: readonly ConnectionField[] = [
     key: 'name',
     label: 'Name',
     type: 'identifier',
-    help: 'Lowercase identifier used in recipes (for example, `airbyte`).',
+    help: 'A short lower-case name you use in Recipes, such as `airbyte`).',
     placeholder: 'airbyte',
   },
   {
@@ -56,7 +56,7 @@ const AIRBYTE_FIELDS: readonly ConnectionField[] = [
     key: 'auth.client_secret',
     label: 'Client Secret',
     type: 'secret',
-    help: 'From the same Airbyte Application. Stored encrypted and never exposed to recipes.',
+    help: 'From the same Airbyte Application. Recued keeps this locked away, and Recipes never see it.',
   },
   {
     key: 'auth.token_endpoint',

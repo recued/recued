@@ -122,8 +122,8 @@ export interface PacksSurfaceMount {
 }
 
 const ADD_URL_DEFERRED =
-  'Direct pack URLs aren’t supported yet — paste a marketplace slug.';
-const ADD_EMPTY = 'Enter a pack slug.';
+  'Recued cannot take a web address yet. Paste a Marketplace name instead.';
+const ADD_EMPTY = 'Type a Pack name.';
 
 export const mountPacksSurface = (
   opts: MountPacksSurfaceOptions,
@@ -156,8 +156,8 @@ export const mountPacksSurface = (
     input.type = 'text';
     input.setAttribute(PACKS_SURFACE_ADD_INPUT_ATTR, '');
     input.className = 'packs-surface-add-input';
-    input.placeholder = 'Add by slug or marketplace URL…';
-    input.setAttribute('aria-label', 'Add a pack by slug or URL');
+    input.placeholder = 'Add by name or Marketplace address…';
+    input.setAttribute('aria-label', 'Add a Pack by name or address');
     const submit = doc.createElement('button') as HTMLButtonElement;
     submit.type = 'button';
     submit.setAttribute(PACKS_SURFACE_ADD_SUBMIT_ATTR, '');
@@ -397,7 +397,7 @@ export const mountPacksSurface = (
             installedOnly ? 'true' : 'false',
           );
           installedToggleError.textContent =
-            'Couldn’t switch pack views. Try again.';
+            'Recued could not switch. Try again.';
           installedToggleError.hidden = false;
         })
         .finally(() => {

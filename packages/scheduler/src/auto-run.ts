@@ -116,6 +116,20 @@ export interface AutoRunScheduler {
      *  only when `entry.dynamic === true`. Ignored otherwise. */
     nextRunHint: number | undefined,
     now: number,
+    /** D-268 — `disarmNow` disables the entry on THIS failure instead of
+     *  waiting for the counter to reach `CIRCUIT_BREAKER_THRESHOLD`.
+     *
+     *  ⛔ THE THRESHOLD WAS NEVER A PROPERTY OF THE RECIPE, IT IS A PROPERTY OF
+     *  THE FAILURE. Waiting five occurrences is meaningful only when waiting
+     *  could help; a revoked token does not un-revoke itself, and a recipe
+     *  naming a connection that does not exist will name it again next tick.
+     *  For those the wait is five cycles of a broken automation bought for
+     *  nothing. The CALLER classifies (it holds the error code); this module
+     *  keeps owning the counter and the flag.
+     *
+     *  ⚠ Optional so every existing caller — including the extension wiring —
+     *  keeps today's threshold-only behaviour unchanged. */
+    failureOpts?: { readonly disarmNow?: boolean },
   ): void;
   /** User-initiated rearm after circuit-breaker auto-disable. Zeros
    *  the failure counter, clears the disabled flag, mints a fresh
@@ -292,7 +306,7 @@ export function createAutoRunScheduler(
       entry.last_started_at = now;
     },
 
-    markFinished(recipe_id, outcome, nextRunHint, now) {
+    markFinished(recipe_id, outcome, nextRunHint, now, failureOpts) {
       const entry = roster.get(recipe_id);
       if (!entry) return;
       starting.delete(recipe_id);
@@ -306,7 +320,12 @@ export function createAutoRunScheduler(
         entry.consecutive_failures = 0;
       } else if (outcome === 'failed') {
         entry.consecutive_failures += 1;
-        if (entry.consecutive_failures >= CIRCUIT_BREAKER_THRESHOLD) {
+        // D-268 — either the failure class says "waiting buys nothing" or the
+        // counter has run out. The edge below still fires exactly once, so a
+        // stop-at-first disarm produces the same single notification a
+        // threshold crossing does.
+        if (failureOpts?.disarmNow === true
+          || entry.consecutive_failures >= CIRCUIT_BREAKER_THRESHOLD) {
           entry.auto_disabled = true;
         }
       } else {

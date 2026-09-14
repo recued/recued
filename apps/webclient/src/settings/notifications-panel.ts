@@ -312,8 +312,8 @@ export interface NotificationsPanelMount {
 // ════════════════════════════════════════════════════════════════
 
 const COPY = {
-  loading: 'Loading notification channels…',
-  error_heading: 'Could not load notification channels.',
+  loading: 'Loading the ways Recued can reach you…',
+  error_heading: 'Recued could not load the ways it can reach you.',
   toggling_label: 'Updating…',
   enabled_label: 'On',
   disabled_label: 'Off',
@@ -331,17 +331,23 @@ const COPY = {
   // follow-on slice; the row stays with the instruction, never hidden).
   email_step_1: 'Add a mail account in Connections',
   email_step_2: 'Pick it as the email sender',
-  email_step_3: 'Enable email here — approvals arrive as a link',
+  email_step_3: 'Turn email on here. Things to approve arrive as a link',
   // R31 slice 2 — the two-axis matrix column labels + the fixed-cell
   // states (an unavailable approval cell on a notify-only channel).
   axis_notify: 'Notify',
   axis_approvals: 'Approvals',
   axis_na: '—',
-  axis_na_hint: 'Notify only — approvals are answered in the webclient.',
+  axis_na_hint: 'This can only tell you. You answer in Recued itself.',
+  // D-269 REV 25 — the bridge's notification axis is not a switch.
+  axis_per_device: 'Per device',
+  axis_per_device_hint:
+    'Each paired bridge has its own switch below. A bridge notifies as soon as you pair it.',
+  axis_none_paired_hint:
+    'Nothing to set until a bridge is paired. A bridge notifies as soon as you pair it.',
   // R31 slice 2 — the panel-level anti-phishing verification phrase.
-  phrase_heading: 'Anti-phishing phrase',
+  phrase_heading: 'Your secret phrase',
   phrase_hint:
-    'Shown on every message Recued sends — a phrase only you know, so you can tell a genuine message from a phishing copy.',
+    'Recued puts this on every message it sends. Only you know it, so you can tell a real message from a fake one.',
   phrase_placeholder: 'e.g. purple otter',
   phrase_save: 'Save',
   phrase_saving: 'Saving…',
@@ -362,7 +368,7 @@ const COPY = {
  *  connection picker (which read the same field). */
 const CHANNEL_DISPLAY_NAME: Record<NotificationChannelName, string> = {
   ui: 'Webclient cards',
-  bridge: 'Browser Bridge OS',
+  bridge: 'Browser Bridge, on your desktop',
   email: 'Email',
   ...totalRecord(
     MESSENGER_VENDOR_SLUGS,
@@ -387,7 +393,7 @@ const CAPABILITY_PRESENTATION: Record<
   { label: string; tone: 'inline' | 'landing-page' | 'notify-only' }
 > = {
   'inline':        { label: 'Answer here',     tone: 'inline' },
-  'landing-page':  { label: 'Answer via link', tone: 'landing-page' },
+  'landing-page':  { label: 'Answer through a link', tone: 'landing-page' },
   'notify-only':   { label: 'Notify only',     tone: 'notify-only' },
 };
 
@@ -703,7 +709,7 @@ export const mountNotificationsPanel = (
         if (result.reason === 'bridge_unknown') {
           bridgeRowErrors.set(
             client_token_id,
-            'This bridge was unpaired elsewhere. Refresh to update the list.',
+            'This Bridge was unpaired somewhere else. Load the list again.',
           );
         }
       } catch (err) {
@@ -749,7 +755,7 @@ export const mountNotificationsPanel = (
       // chip so a programmatic test / future bypass doesn't drop silently.
       rowErrors.set(
         errKey,
-        'The webclient channel is always on and cannot be changed.',
+        'Recued itself is always on. You cannot turn it off.',
       );
       return;
     }
@@ -758,7 +764,7 @@ export const mountNotificationsPanel = (
       // that cell, so this is a defense-in-depth backstop.
       rowErrors.set(
         errKey,
-        'This channel can only notify — it can’t receive approvals.',
+        'This can only tell you things. You cannot approve anything through it.',
       );
       return;
     }
@@ -766,7 +772,7 @@ export const mountNotificationsPanel = (
     // stays rendered because the underlying `ready` flag is still `false`.
     rowErrors.set(
       errKey,
-      'Not set up yet — connect the channel before enabling.',
+      'Not set up yet. Connect it before you turn it on.',
     );
   };
 
@@ -938,6 +944,21 @@ export const mountNotificationsPanel = (
   // A togglable axis renders a switch button; a non-togglable axis
   // renders a fixed indicator — "Always on" for the `ui` floor, or the
   // "—" not-available marker for a notify-only channel's approval cell.
+  /** ⛔⛔ THE RULE, DERIVED ONCE: **a channel row carries no toggle on an axis
+   *  its own PER-INSTANCE rows govern.** Owner's framing, 2026-09-14, and it is
+   *  sharper than the bridge-shaped special case it replaces.
+   *
+   *  ⚠ AND IT CLOSES A HOLE REV 25 OPENED. That change suppressed the bridge
+   *  toggle UNCONDITIONALLY, while the sub-rows render only when
+   *  `runDescribeBridges` is wired — which the bootstrap supplies CONDITIONALLY
+   *  (both bridge rpcs must exist). Against a server without them the owner got
+   *  a bridge row with **no toggle and no sub-rows: a channel they could not
+   *  control at all.** Tying both sites to one predicate makes that
+   *  unrepresentable — the row that renders children is exactly the row that
+   *  hides its own switch, by construction rather than by two edits agreeing. */
+  const hasPerInstanceRows = (channel: NotificationChannelName): boolean =>
+    channel === 'bridge' && opts.runDescribeBridges !== undefined;
+
   const renderAxisCell = (
     row: NotificationChannelToggleView,
     axis: ChannelAxis,
@@ -955,6 +976,33 @@ export const mountNotificationsPanel = (
     label.textContent =
       axis === 'notification' ? COPY.axis_notify : COPY.axis_approvals;
     cell.appendChild(label);
+
+    // ⛔⛔ THE BRIDGE'S NOTIFICATION AXIS IS NOT A SWITCH, AT ANY NUMBER OF
+    // BRIDGES. `settings.bridge` is consulted only while ZERO bridges are paired
+    // — where it gates delivery to nobody — and the moment one is paired both
+    // dispatch paths skip the channel loop for `bridge` and the per-bridge rows
+    // decide. So it never changed what a person received, and rendering it as a
+    // control said otherwise. ⇒ Fixed indicator pointing at the rows that DO
+    // decide. The row itself stays: when no bridge is paired it is the only
+    // thing that says "Not set up" and offers "Install Browser Bridge", which is
+    // the whole discovery path. (D-269 REV 24/25 — owner's call.)
+    if (hasPerInstanceRows(row.channel) && axis === 'notification') {
+      const fixed = doc.createElement('span');
+      fixed.setAttribute(NOTIFICATIONS_AXIS_FIXED_ATTR, '');
+      fixed.setAttribute(NOTIFICATIONS_AXIS_ATTR, axis);
+      // ⚠ "Per device" POINTS AT ROWS THAT DO NOT EXIST YET when nothing is
+      // paired. There, the row's own status line already says "Not set up —
+      // Install Browser Bridge", which is the whole message; the axis cell
+      // should not also imply there are devices to configure.
+      const paired = row.ready;
+      fixed.className = paired ? 'notif-axis-fixed' : 'notif-axis-fixed notif-axis-na';
+      fixed.textContent = paired ? COPY.axis_per_device : COPY.axis_na;
+      const hint = paired ? COPY.axis_per_device_hint : COPY.axis_none_paired_hint;
+      fixed.setAttribute('title', hint);
+      fixed.setAttribute('aria-label', hint);
+      cell.appendChild(fixed);
+      return cell;
+    }
 
     if (!togglable) {
       // Fixed cell — the always-on floor (`ui`, `enabled === true`) or a
@@ -1120,10 +1168,19 @@ export const mountNotificationsPanel = (
     // level Browser Bridge row. The group only renders for the
     // `bridge` channel + only when the bridge-roster caller is wired.
     // When the bridge channel is OFF at the channel level, the sub-row
-    // group still renders (each per-bridge row's modes are independent
-    // policy + persistence; the channel-level toggle gates whether ANY
-    // bridge fan-out happens, but the per-bridge intent is durable).
-    if (row.channel === 'bridge' && opts.runDescribeBridges) {
+    // group still renders — each per-bridge row's modes are independent
+    // policy + persistence.
+    //
+    // ⛔⛔ THIS COMMENT USED TO SAY the channel-level toggle "gates whether ANY
+    // bridge fan-out happens". IT DOES NOT, and the code says so on both paths:
+    // `resolveNotifyChannels` and `resolveAskChannels` each skip the bridge in
+    // the channel loop with `if (usePerBridge && channel.name === 'bridge')`,
+    // and the per-bridge loop that follows never reads `settings.bridge`.
+    // ⇒ **Once ANY bridge is paired the channel-level toggle decides nothing**,
+    // and while none is paired it gates delivery to an empty audience. See
+    // D-269 REV 24 — the toggle's future is an open owner decision; this comment
+    // is corrected now because a wrong comment is how the belief spreads.
+    if (hasPerInstanceRows(row.channel)) {
       item.appendChild(renderBridgeRowGroup());
     }
     return item;
@@ -1140,7 +1197,7 @@ export const mountNotificationsPanel = (
       err.setAttribute(NOTIFICATIONS_BRIDGE_ROW_ERROR_ATTR, '');
       err.className = 'notif-row-error';
       err.setAttribute('role', 'alert');
-      err.textContent = `Could not list bridges: ${fetchError}`;
+      err.textContent = `Recued could not list your Bridges: ${fetchError}`;
       groupContainer.appendChild(err);
       return groupContainer;
     }
@@ -1149,7 +1206,7 @@ export const mountNotificationsPanel = (
       empty.setAttribute(NOTIFICATIONS_BRIDGE_EMPTY_ATTR, '');
       empty.className = 'notif-bridge-empty';
       empty.textContent =
-        'No bridges paired yet. Install the Browser Bridge + pair it from its popup.';
+        'No Bridges yet. Install the Browser Bridge, then pair it from its own window.';
       groupContainer.appendChild(empty);
       return groupContainer;
     }
@@ -1711,7 +1768,7 @@ export const NOTIFICATIONS_PANEL_STYLES = `
   color: var(--accent);
   border: 1px solid transparent;
 }
-/* R31 (defect #3) — 'landing-page' (Answer via link) renders as an
+/* R31 (defect #3) — 'landing-page' (Answer through a link) renders as an
    OUTLINED accent pill so it reads distinct from the filled 'inline'
    pill; pre-R31 both shared the identical filled accent. */
 [${NOTIFICATIONS_PANEL_ATTR}] .notif-row-capability-landing-page {

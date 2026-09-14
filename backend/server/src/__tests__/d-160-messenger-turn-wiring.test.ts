@@ -13,7 +13,7 @@
  *  routed to `block.submitAnswer` and ingest failures are contained.
  */
 
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createInMemorySessionStore,
   type ChannelInbound,
@@ -37,6 +37,7 @@ import type {
 
 import {
   composeMessengerTurnIngest,
+  credentialKey,
   messengerSessionId,
   type ComposeMessengerTurnIngestDeps,
   type MessengerTurnIngest,
@@ -50,6 +51,12 @@ import {
   encodePlaintextAuth,
   stubConnectionStore,
 } from './d-163-remote-channel-test-helpers.js';
+
+import Database from 'better-sqlite3';
+import { createChatStore, ensureChatSchema } from '../storage/chat-store.js';
+import { withQueuedChatTurns } from '../chat-turn-queue.js';
+const queueCleanups: Array<() => void> = [];
+afterEach(() => { for (const close of queueCleanups.splice(0)) close(); });
 
 const NOW = Date.UTC(2031, 0, 2, 3, 4, 5);
 const SLACK_TOKEN = 'xoxb-slack-row-token';
@@ -183,16 +190,11 @@ const makeOrchestrator = (
   );
   const runTurn = vi.fn<Orchestrator['runTurn']>(async () => ({ turn_id: 'chat-t1' }));
   const dispatchTool = vi.fn(async () => ({ ok: true, result: {} }) as const);
-  return {
-    sessionStore,
-    runMessengerTurn,
-    orchestrator: ({
-      runTurn,
-      runMessengerTurn,
-      sessionStore,
-      dispatch: { dispatchTool },
-    } as unknown) as Orchestrator,
-  };
+  const db = new Database(':memory:'); ensureChatSchema(db); const store = createChatStore(db);
+  const base = { runTurn, runMessengerTurn, sessionStore, dispatch: { dispatchTool } } as unknown as Orchestrator;
+  const orchestrator = withQueuedChatTurns(base, { db, store, pollMs: 10 });
+  queueCleanups.push(() => { orchestrator.turnQueue!.close(); db.close(); });
+  return { sessionStore, runMessengerTurn, orchestrator };
 };
 
 const composeIngest = (deps: {
@@ -705,7 +707,9 @@ describe('D-160 messenger turn composer - happy paths', () => {
         mime_type: 'image/png',
         src_path: expect.any(String),
         size_bytes: PNG_BYTES.length,
-        source_id: '1730000000.000100:0',
+        // Native IDs are scoped to their audience/account before file ingest.
+        // This harness has no bridge, so the account is the credential digest.
+        source_id: JSON.stringify(['slack', 'C123', credentialKey(SLACK_TOKEN), '1730000000.000100:0']),
       }),
     );
     expect(firstRunInput(runMessengerTurn).inbound.media).toEqual([
@@ -918,7 +922,7 @@ describe('D-160 messenger turn composer - queueing and run-stage robustness', ()
       ingest(
         'slack',
         'slack',
-        slackMessagePayload({ channel: 'C123', text: 'next' }),
+        slackMessagePayload({ channel: 'C123', text: 'next', ts: '1730000000.000200' }),
       ),
     ).resolves.toBe(true);
 
@@ -1000,7 +1004,7 @@ describe('D-160 messenger turn composer - queueing and run-stage robustness', ()
     const secondAccepted = ingest(
       'slack',
       'slack',
-      slackMessagePayload({ channel: 'C123', text: 'second' }),
+      slackMessagePayload({ channel: 'C123', text: 'second', ts: '1730000000.000200' }),
     );
 
     await expect(Promise.all([firstAccepted, secondAccepted])).resolves.toEqual([
@@ -1104,7 +1108,7 @@ describe('D-160 messenger turn dispatcher seam', () => {
     expect(block.submitAnswer).toHaveBeenCalledWith(reply);
   });
 
-  it('contains messengerTurnIngest throws so Slack dispatch resolves and logs', async () => {
+  it('propagates admission failure so Slack cannot acknowledge lost work', async () => {
     const logs = captureLogs();
     const payload = slackMessagePayload({ channel: 'C123' });
     const messengerTurnIngest = vi.fn<MessengerTurnIngest>(async () => {
@@ -1120,15 +1124,9 @@ describe('D-160 messenger turn dispatcher seam', () => {
       log: logs.log,
     });
 
-    await expect(dispatchSlackEvent(slackInboundEvent(payload))).resolves.toBeUndefined();
+    await expect(dispatchSlackEvent(slackInboundEvent(payload))).rejects.toThrow('ingest seam failed');
 
     expect(messengerTurnIngest).toHaveBeenCalledTimes(1);
-    expect(logs.entries).toContainEqual(
-      expect.objectContaining({
-        level: 'warn',
-        msg: expect.stringContaining('messenger turn ingest threw'),
-      }),
-    );
   });
 
   it('offers non-callback Telegram messages to messengerTurnIngest with the verified connection name', async () => {

@@ -316,6 +316,56 @@ describe('per-scheduler boot side effects', () => {
     });
   });
 
+  it('D-268 — cron boot forwards the failure-notice seam, and a rebuild keeps it', () => {
+    // ⛔ THE REBUILD HALF IS THE ONE THAT ROTS. `onExitMaintenance` calls
+    // `rebuild()` after `stopAll({ kind: 'scheduler' })`; a seam read once at
+    // first boot instead of through `ctx` would survive every test here and
+    // then vanish the first time an auth migration ran — leaving a server that
+    // reported failures until its first maintenance window and silently
+    // stopped afterwards.
+    const onAutomationFailure = (): void => undefined;
+    const ctx = makeContext({ onAutomationFailure } as never);
+
+    const slot = bootCronScheduler(ctx);
+    expect(createScheduler).toHaveBeenCalledWith(
+      expect.objectContaining({ onAutomationFailure }),
+    );
+
+    (createScheduler as unknown as { mockClear: () => void }).mockClear();
+    slot?.rebuild?.();
+    expect(createScheduler).toHaveBeenCalledWith(
+      expect.objectContaining({ onAutomationFailure }),
+    );
+  });
+
+  it('D-268 — auto-run boot forwards the same seam, and a rebuild keeps it', () => {
+    // Both schedulers read ONE context field, which is why it lives on
+    // `SchedulerBootContext` — a per-boot option would have needed the
+    // composition root to remember two.
+    const onAutomationFailure = (): void => undefined;
+    const ctx = makeContext({ onAutomationFailure } as never);
+
+    const slot = bootAutoRunScheduler(ctx);
+    expect(createServerAutoRunScheduler).toHaveBeenCalledWith(
+      expect.objectContaining({ onAutomationFailure }),
+    );
+
+    (createServerAutoRunScheduler as unknown as { mockClear: () => void }).mockClear();
+    slot?.rebuild?.();
+    expect(createServerAutoRunScheduler).toHaveBeenCalledWith(
+      expect.objectContaining({ onAutomationFailure }),
+    );
+  });
+
+  it('D-268 — a context without the seam passes no key at all', () => {
+    const ctx = makeContext();
+    bootCronScheduler(ctx);
+    const passed = (createScheduler as unknown as {
+      mock: { calls: Array<[Record<string, unknown>]> };
+    }).mock.calls[0]![0];
+    expect(passed).not.toHaveProperty('onAutomationFailure');
+  });
+
   it('auto-run boot falls back to createCircuitBreakerStore(db), starts, and registers', () => {
     const ctx = makeContext({ circuitStore: undefined });
     const registerSpy = spyOnRegister(ctx.registry);

@@ -180,17 +180,18 @@ describe('D-172 P4 messenger media capstone', () => {
       });
       expect(fetchMedia).toHaveBeenCalledWith(mediaRef, 'xoxb-test-token');
       const messages = await chatStore.listMessages(SESSION);
-      expect(messages).toHaveLength(1);
+      expect(messages).toHaveLength(2);
+      expect(messages[1]).toMatchObject({ role: 'assistant', content: 'Voice message received. Transcription is not configured yet.' });
       expect(messages[0]).toMatchObject({
         role: 'user',
         content: '',
-        attachments: [{ file_id: fileId, media_class: 'voice' }],
+        attachments: [{ source_file_id: fileId, media_class: 'voice' }],
       });
       const row = db
         .prepare(`SELECT attachments_blob FROM chat_messages WHERE message_id = ?`)
         .get(messages[0].id) as { attachments_blob: string };
       expect(JSON.parse(row.attachments_blob)).toEqual([
-        { file_id: fileId, media_class: 'voice' },
+        { file_id: messages[0]!.attachments![0]!.file_id, media_class: 'voice' },
       ]);
       expect(executeAiCall).not.toHaveBeenCalled();
       expect(sends.map((send) => send.text)).toEqual([

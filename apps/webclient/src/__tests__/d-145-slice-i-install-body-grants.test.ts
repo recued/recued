@@ -284,7 +284,7 @@ const setupMount = (
 // ------------------------------------------------------------------
 
 const INSTALL_BODY_GRANTS_LABEL =
-  'This pack will access the following body content:';
+  'This Pack will be able to read:';
 const CONTACT_BODY_GRANT = 'data.contact.engagements.body_content';
 const LONG_DOTTED_BODY_GRANT =
   'data.contact.engagements.body_content.extremely.long.closed.list.slug.v2026';

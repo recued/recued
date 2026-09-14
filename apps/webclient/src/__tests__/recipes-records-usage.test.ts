@@ -11,6 +11,7 @@ import type { BulkPackManifest, RecipeDefinition } from '@recued/contracts';
 
 import {
   RECORDS_ACTION_EFFECT,
+  buildPackOperationIndex,
   recipeDeclaredOps,
   recipeOpIds,
   recipeRecordsUsage,
@@ -109,9 +110,24 @@ describe('recipeOpIds', () => {
   });
 });
 
+/** Both functions now take a BUILT index rather than a roster, so that a
+ *  caller classifying many recipes builds it once instead of per recipe
+ *  (which cost ~58 s on the shipped corpus). These fixtures classify one
+ *  recipe at a time, so building per call is exactly right here — the
+ *  adapters keep each case reading as the assertion it is. */
+const usageOf = (
+  recipe: Parameters<typeof recipeRecordsUsage>[0],
+  packs: readonly Parameters<typeof buildPackOperationIndex>[0][number][],
+) => recipeRecordsUsage(recipe, buildPackOperationIndex(packs));
+
+const declaredOf = (
+  recipe: Parameters<typeof recipeDeclaredOps>[0],
+  packs: readonly Parameters<typeof buildPackOperationIndex>[0][number][],
+) => recipeDeclaredOps(recipe, buildPackOperationIndex(packs));
+
 describe('recipeRecordsUsage', () => {
   it('groups by entity with contract-ordered actions and effects', () => {
-    const usage = recipeRecordsUsage(
+    const usage = usageOf(
       recipe([
         'recued-core.job-status-board.job.delete',
         'recued-core.job-status-board.job.search',
@@ -141,7 +157,7 @@ describe('recipeRecordsUsage', () => {
         bind: { kind: 'core.records', action: 'delete', entity: 'job' },
       },
     ]);
-    const usage = recipeRecordsUsage(recipe(['recued-core.trap.job.create']), [misnamed]);
+    const usage = usageOf(recipe(['recued-core.trap.job.create']), [misnamed]);
     expect(usage[0]?.entities).toEqual([
       { entity: 'job', actions: ['delete'], effects: ['delete'] },
     ]);
@@ -149,13 +165,13 @@ describe('recipeRecordsUsage', () => {
 
   it('excludes a non-Records op of a Records pack', () => {
     expect(
-      recipeRecordsUsage(recipe(['recued-core.job-status-board.board.publish']), [JOB_BOARD]),
+      usageOf(recipe(['recued-core.job-status-board.board.publish']), [JOB_BOARD]),
     ).toEqual([]);
   });
 
   it('ignores kernel ops and unresolved pack ops', () => {
     expect(
-      recipeRecordsUsage(
+      usageOf(
         recipe(['core.ai.extract', 'recued-core.not-installed.job.get']),
         [JOB_BOARD],
       ),
@@ -169,7 +185,7 @@ describe('recipeRecordsUsage', () => {
       { op: 'c.get', bind: { kind: 'core.records', action: 'get', entity: '' } },
     ]);
     expect(
-      recipeRecordsUsage(
+      usageOf(
         recipe([
           'recued-core.broken.a.get',
           'recued-core.broken.b.get',
@@ -181,13 +197,13 @@ describe('recipeRecordsUsage', () => {
   });
 
   it('returns [] when the roster is empty', () => {
-    expect(recipeRecordsUsage(recipe(['recued-core.job-status-board.job.get']), [])).toEqual([]);
+    expect(usageOf(recipe(['recued-core.job-status-board.job.get']), [])).toEqual([]);
   });
 });
 
 describe('recipeDeclaredOps', () => {
   it('reports the STRICTEST declared risk across the recipe ops', () => {
-    const declared = recipeDeclaredOps(
+    const declared = declaredOf(
       recipe([
         'recued-core.job-status-board.job.search',
         'recued-core.job-status-board.job.create',
@@ -202,7 +218,7 @@ describe('recipeDeclaredOps', () => {
 
   it('flags approval: ask on any single op', () => {
     expect(
-      recipeDeclaredOps(
+      declaredOf(
         recipe([
           'recued-core.job-status-board.job.search',
           'recued-core.job-status-board.job_event.create',
@@ -211,13 +227,13 @@ describe('recipeDeclaredOps', () => {
       ).asks_approval,
     ).toBe(true);
     expect(
-      recipeDeclaredOps(recipe(['recued-core.job-status-board.job.search']), [JOB_BOARD])
+      declaredOf(recipe(['recued-core.job-status-board.job.search']), [JOB_BOARD])
         .asks_approval,
     ).toBe(false);
   });
 
   it('reports unresolved Tier-P ops instead of dropping them', () => {
-    const declared = recipeDeclaredOps(
+    const declared = declaredOf(
       recipe([
         'recued-core.job-status-board.job.search',
         'recued-core.not-installed.thing.do',
@@ -232,7 +248,7 @@ describe('recipeDeclaredOps', () => {
   });
 
   it('reports no risk when the recipe names no Tier-P op', () => {
-    const declared = recipeDeclaredOps(recipe(['core.ai.extract']), [JOB_BOARD]);
+    const declared = declaredOf(recipe(['core.ai.extract']), [JOB_BOARD]);
     expect(declared).toEqual({
       risk: null,
       asks_approval: false,
@@ -279,7 +295,7 @@ describe('RECORDS_ACTION_EFFECT', () => {
         allow: [{ entity: 'leg', action: 'create' }, { entity: 'book', action: 'delete' }],
       },
     }]);
-    const usage = recipeRecordsUsage(recipe(['recued-core.ledger.thing.post']), [batchPack]);
+    const usage = usageOf(recipe(['recued-core.ledger.thing.post']), [batchPack]);
     const entities = usage[0]?.entities ?? [];
     expect(entities.map((e) => e.entity).sort()).toEqual(['book', 'leg']);
     expect(entities.find((e) => e.entity === 'book')?.effects).toEqual(['delete']);

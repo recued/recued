@@ -352,7 +352,7 @@ const rowFor = (host: FakeElement, _slug: string): FakeElement => {
 // ──────────────────────────────────────────────────────────────────
 
 const DELETE_BODY_GRANTS_LABEL =
-  'This pack will release the following body content:';
+  'This Pack will stop being able to read:';
 const CONTACT_BODY_GRANT = 'data.contact.engagements.body_content';
 
 const asBodyGrants = (

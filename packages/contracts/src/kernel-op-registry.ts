@@ -431,6 +431,33 @@ export const KERNEL_OP_REGISTRY: readonly KernelOpEntry[] = [
   op('core.mail.draft.read', 'mail', 'mail-draft-read', 'read', 'mail'),
   op('core.mail.draft.update', 'mail', 'mail-draft-update', 'write', 'mail'),
   op('core.mail.draft.delete', 'mail', 'mail-draft-delete', 'destructive', 'mail'),
+  // D-264 — save a draft into the mail account's own Drafts folder, so the
+  // owner can pick it up in their phone or desktop mail client and finish it
+  // there.
+  //
+  // ⚠ NAMED FOR THE ACT. This was `core.mail.draft.export` until the owner
+  // pointed out that "export" implies crossing a boundary — a different account
+  // or device — and this crosses none: the target is derived from the draft's
+  // OWN `sender_mail_instance`, and there is no way to aim it elsewhere. The
+  // wrong name was not cosmetic; it is why the stored provider id was first
+  // written UNSCOPED, which let a re-pointed draft hand mailbox A's id to B.
+  // "Hand-off" was the other candidate and names the hoped-for OUTCOME (the
+  // owner may never pick it up); this names what actually happens.
+  //
+  // ⛔ `write`, and DELIBERATELY ABSENT from `OUTBOUND_SEND_INGREDIENT_SLUGS`.
+  // That set's own membership test is "does the RECIPE author a destination?",
+  // not "does a packet leave the machine" — every member takes a per-call
+  // target the owner must see before it goes. This op has one destination and
+  // the owner already owns it: their own mailbox. Nothing is delivered, nobody
+  // is contacted, and sending still takes a human action afterwards. Lifting it
+  // to `ask` would gate "put this where I can find it on my phone" behind the
+  // same prompt as "email this person", which is the miscalibration D-177 N.12
+  // corrected for `notification-send`.
+  //
+  // ⚠ It IS reversible in the only sense that matters here — the owner deletes
+  // the draft — but it is NOT invisible: the copy syncs to their devices. Hence
+  // `write` rather than `read`.
+  op('core.mail.draft.save-to-mailbox', 'mail', 'mail-draft-save-to-mailbox', 'write', 'mail'),
   // A bounded, coalescing hint with a flat pointer/settings envelope to a
   // contract-bound MCP client. The transport adds no query result; the client
   // must call `query_tool` through the ordinary live token/contract gates, and

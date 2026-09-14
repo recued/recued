@@ -42,10 +42,10 @@ export const renderPreapprovalAsk = (doc: Document, ask: ServerPendingAsk): HTML
   if (!ask.owner_review) return null;
   const card = doc.createElement('article'); card.className = 'rx-ask-card';
   card.setAttribute('data-recued-preapproval-ask', ask.ask_id);
-  const title = doc.createElement('h3'); title.textContent = ask.title ?? 'Review future execution'; card.append(title);
+  const title = doc.createElement('h3'); title.textContent = ask.title ?? 'Look at a future run'; card.append(title);
   const text = doc.createElement('p'); text.textContent = ask.text; card.append(text);
   const link = doc.createElement('a'); link.href = preapprovalHref(ask.owner_review.proposal_id);
-  link.textContent = 'Review execution'; card.append(link);
+  link.textContent = 'Look at this run'; card.append(link);
   return card;
 };
 
@@ -81,11 +81,11 @@ export const bootstrapPreapprovalRoute = (opts: {
   const render = (): void => {
     if (disposed) return;
     host.replaceChildren(); host.append(link('Approvals', serializeShellRoute('approvals')));
-    host.append(node('h1', opts.proposalId ? review?.recipe.display_name ?? inspection?.retired_review?.recipe_name ?? 'Reviewed execution' : 'Reviewed executions'));
+    host.append(node('h1', opts.proposalId ? review?.recipe.display_name ?? inspection?.retired_review?.recipe_name ?? 'Run you have looked at' : 'Runs you have looked at'));
     host.append(button(busy ? 'Loading…' : 'Refresh', () => { void refresh(); }));
     if (error) { const message = node('p', error); message.setAttribute('role', 'alert'); host.append(message); }
     if (!opts.proposalId) {
-      if (!busy && entries.length === 0 && !error) host.append(node('p', 'No reviewed executions yet.'));
+      if (!busy && entries.length === 0 && !error) host.append(node('p', 'You have not looked at any runs yet.'));
       const list = node('ul');
       for (const entry of entries) {
         const item = node('li'); item.append(link(`${entry.members[0]?.label ?? 'Execution'} · ${entry.members.length} operations`,
@@ -96,12 +96,12 @@ export const bootstrapPreapprovalRoute = (opts: {
       if (nextCursor) host.append(button('Load more', () => { void refresh(nextCursor!); }));
       return;
     }
-    host.append(link('All reviewed executions', preapprovalHref()));
+    host.append(link('Every run you have looked at', preapprovalHref()));
     if (inspection) {
       const state = node('p', `Execution: ${status(inspection.execution_status)}`); state.setAttribute('role', 'status'); host.append(state);
       if (inspection.status_reason) host.append(node('p', status(inspection.status_reason)));
       if (inspection.decision) host.append(node('p', `Owner decision: ${status(inspection.decision.decision)} · ${date(inspection.decision.decided_at)}`));
-      if (inspection.retired_review) host.append(node('p', `Review content expired on ${date(inspection.retired_review.at)}. The decision and operation outcomes remain available.`));
+      if (inspection.retired_review) host.append(node('p', `This stopped being valid on ${date(inspection.retired_review.at)}. The decision and operation outcomes remain available.`));
     }
     if (review) {
       const selectable = (id: string, ancestors = new Set<string>()): boolean => {
@@ -111,16 +111,16 @@ export const bootstrapPreapprovalRoute = (opts: {
         return member.required_child_ids.every(child => selectable(child, next));
       };
       const who = review.requested_through;
-      host.append(node('p', `Requested through ${who.display_name}${who.credential_label ? ` · ${who.credential_label}` : ''}`));
+      host.append(node('p', `Asked for through ${who.display_name}${who.credential_label ? ` · ${who.credential_label}` : ''}`));
       if (who.contract_id) host.append(node('p', `Contract: ${who.contract_id}`));
       host.append(node('p', review.scheduled_for !== null ? `Scheduled for ${date(review.scheduled_for, review.time_zone)}`
         : `Applies to the ${status(review.activation.kind)} occurrence.`));
       if (review.activation.kind !== 'one_shot') host.append(node('p',
-        'This approval covers the next eligible execution only. Later executions keep their ordinary approval requirements.'));
+        'This says yes to the next run only. Later runs still ask you as usual.'));
       host.append(node('p', `Decide by ${date(review.decision_deadline, review.time_zone)}. Operations must start by ${date(review.dispatch_deadline, review.time_zone)}.`));
       host.append(node('p', review.coverage === 'complete'
-        ? 'One decision covers every reviewed operation and its required reads in this execution.'
-        : 'Partial coverage. The calls listed as uncovered keep their normal approval requirements.'));
+        ? 'One yes covers everything listed here, and the files it needs to read.'
+        : 'This does not cover everything. Anything marked as not covered will still ask you.'));
       for (const note of review.interaction_notes) host.append(node('p', note));
       const selectedByServer = new Set(review.selected_member_ids);
       for (const member of review.members) {
@@ -138,20 +138,20 @@ export const bootstrapPreapprovalRoute = (opts: {
           };
           label.append(check);
         }
-        label.append(doc.createTextNode(`${member.parent_member_id ? 'Required read or sub-operation: ' : ''}${member.label}`)); section.append(label);
+        label.append(doc.createTextNode(`${member.parent_member_id ? 'Also needs to read or do: ' : ''}${member.label}`)); section.append(label);
         // ⛔ THE TIER LEADS. `always` / `destructive` became reviewable on
         // 2026-09-06, so a member can now be the deletion of a real record —
         // and until this line the review showed content hashes the owner cannot
         // verify by eye while withholding the one fact that decides the answer.
-        const tier = node('p', member.risk === 'destructive' ? 'Destructive — this permanently changes or removes data.'
-          : member.risk === 'admin' ? 'Admin — this changes account or workspace settings.'
-            : member.risk === 'write' ? 'Writes data.' : 'Reads only.');
+        const tier = node('p', member.risk === 'destructive' ? 'This changes or deletes things for good.'
+          : member.risk === 'admin' ? 'This changes your account or workspace settings.'
+            : member.risk === 'write' ? 'This writes things.' : 'This only looks at things.');
         tier.setAttribute('data-preapproval-risk', member.risk);
         if (member.risk === 'destructive' || member.risk === 'admin') tier.style.cssText = 'font-weight:650;color:var(--danger)';
         section.append(tier);
         section.append(node('p', member.detail), node('p', member.op_id));
-        if (member.conditional) section.append(node('p', 'Runs only when its reviewed condition passes.'));
-        if (!selectedByServer.has(member.member_id)) section.append(node('p', member.reason ?? 'Uncovered: not selected.'));
+        if (member.conditional) section.append(node('p', 'Runs only when the condition you saw is true.'));
+        if (!selectedByServer.has(member.member_id)) section.append(node('p', member.reason ?? 'Not covered: you did not pick it.'));
         const content = node('pre', JSON.stringify(member.arguments, null, 2));
         content.style.cssText = 'white-space:pre-wrap;overflow-wrap:anywhere'; section.append(content);
         if (Object.keys(member.output).length) section.append(node('pre', JSON.stringify(member.output, null, 2)));
@@ -163,13 +163,13 @@ export const bootstrapPreapprovalRoute = (opts: {
       for (const call of review.uncovered) host.append(node('p', `Uncovered ${call.op_id ?? 'call'}: ${call.reason}`));
       if (inspection?.status === 'awaiting_owner') {
         const dirty = changedSelection();
-        if (dirty) host.append(button('Update review', () => { void mutate(async () => {
+        if (dirty) host.append(button('Bring this up to date', () => { void mutate(async () => {
           await opts.call('preapproval.select', { proposal_id: review!.proposal_id, expected_revision: review!.revision, member_ids: [...selection] });
           pendingDecision = null;
         }); }, selection.size === 0));
         const expired = now() >= Math.min(review.challenge_expires_at ?? 0, review.decision_deadline);
         renderedExpired = expired;
-        if (expired) host.append(node('p', 'This review needs refreshing before you can decide.'));
+        if (expired) host.append(node('p', 'Bring this up to date before you decide.'));
         const decide = (decision: PreapprovalDecision): void => {
           if (!review || !review.challenge || busy || dirty || expired) return;
           if (!pendingDecision || pendingDecision.decision !== decision || pendingDecision.expected_revision !== review.revision) {
@@ -179,11 +179,11 @@ export const bootstrapPreapprovalRoute = (opts: {
           void mutate(async () => { await opts.call('preapproval.decide', pendingDecision!); });
         };
         host.append(button(review.activation.kind === 'one_shot' || review.activation.kind === 'next_schedule'
-          ? 'Approve and schedule' : 'Approve and arm', () => decide('approve'), dirty || expired),
+          ? 'Say yes and schedule it' : 'Say yes and set it up', () => decide('approve'), dirty || expired),
         button('Decline', () => decide('deny'), dirty || expired), button('Cancel action', () => decide('cancel'), dirty || expired));
       }
     }
-    if (inspection?.grant?.status === 'active') host.append(button('Revoke unused approval', () => { void mutate(async () => {
+    if (inspection?.grant?.status === 'active') host.append(button('Take back this yes', () => { void mutate(async () => {
       const grant = inspection!.grant!;
       if (!pendingRevoke || pendingRevoke.grant_id !== grant.grant_id || pendingRevoke.expected_revision !== grant.revision) {
         pendingRevoke = { grant_id: grant.grant_id, expected_revision: grant.revision, request_id: crypto.randomUUID() };
@@ -191,7 +191,7 @@ export const bootstrapPreapprovalRoute = (opts: {
       await opts.call('preapproval.revoke', pendingRevoke);
     }); }));
     if (inspection?.decision) {
-      host.append(node('h2', 'Operation receipts'));
+      host.append(node('h2', 'What happened'));
       for (const member of inspection.members) {
         const row = node('p', `${member.label}: ${status(member.status)}${member.status_message ? ` · ${member.status_message}` : ''}`);
         if (member.commit_id) row.append(doc.createTextNode(` · Receipt ${member.commit_id}`));
@@ -219,14 +219,14 @@ export const bootstrapPreapprovalRoute = (opts: {
   const refresh = async (cursor?: string): Promise<void> => {
     if (disposed || busy) return;
     busy = true; error = ''; render();
-    try { await load(cursor); } catch (cause) { error = cause instanceof Error ? cause.message : 'Could not load the review.'; }
+    try { await load(cursor); } catch (cause) { error = cause instanceof Error ? cause.message : 'Recued could not load this.'; }
     finally { busy = false; render(); }
   };
   const mutate = async (action: () => Promise<void>): Promise<void> => {
     if (disposed || busy) return;
     busy = true; error = ''; render();
     try { await action(); await load(); }
-    catch (cause) { error = cause instanceof Error ? cause.message : 'The decision could not be confirmed. Refresh to check its status.'; }
+    catch (cause) { error = cause instanceof Error ? cause.message : 'Recued could not check your decision. Load the page again to see where it got to.'; }
     finally { busy = false; render(); }
   };
   loaded = refresh();

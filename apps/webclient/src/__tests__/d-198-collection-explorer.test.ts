@@ -82,12 +82,12 @@ describe('collection-explorer — schema-driven list', () => {
     expect(renderCollectionExplorer(base({ instances: [], selectedSlug: null })))
       .toContain('Nothing connected');
     expect(renderCollectionExplorer(base({ records: [] }))).toContain('No records');
-    const failed = renderCollectionExplorer(base({ error: 'Source check failed' }));
+    const failed = renderCollectionExplorer(base({ error: 'Check where it came from failed' }));
     expect(failed).toContain('class="col-explorer-error" role="alert"');
     expect(failed).not.toContain(COLLECTION_RETRY_ACTION);
 
     const retryable = renderCollectionExplorer(base({
-      error: 'Source check failed',
+      error: 'Check where it came from failed',
       retryable: true,
     }));
     expect(retryable).toContain(COLLECTION_RETRY_ACTION);
@@ -95,7 +95,7 @@ describe('collection-explorer — schema-driven list', () => {
     expect(retryable).toContain('>Retry<');
 
     const retrying = renderCollectionExplorer(base({
-      error: 'Source check failed',
+      error: 'Check where it came from failed',
       retryable: true,
       retrying: true,
     }));
@@ -178,7 +178,7 @@ describe('collection-explorer — record detail', () => {
       },
     }));
     expect(file.match(/>Size</g)).toHaveLength(1);
-    expect(file).not.toContain('>Stored body size<');
+    expect(file).not.toContain('>Size kept in Recued<');
   });
 
   it('distinguishes stored body size when it differs from source size', () => {
@@ -195,7 +195,7 @@ describe('collection-explorer — record detail', () => {
       },
     }));
     expect(html).toContain('>Size<');
-    expect(html).toContain('>Stored body size<');
+    expect(html).toContain('>Size kept in Recued<');
   });
 
   it('uses canonical theme tokens for readable light and dark record details', () => {

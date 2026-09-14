@@ -44,7 +44,7 @@ const slack: ConnectionSchema = {
   kind: 'notification',
   subtype: 'slack',
   label: 'Slack',
-  description: 'Talk to Recued through Slack. Socket Mode is local-first and needs no public webhook.',
+  description: 'Talk to Recued in Slack. Socket Mode runs from your own machine, so nothing has to be open to the internet.',
   onboarding: {
     selectorKey: 'config.ingress_mode',
     guides: [
@@ -54,7 +54,7 @@ const slack: ConnectionSchema = {
         badge: 'Recommended · no public port',
         title: 'Connect Slack from this machine',
         description:
-          'Recued opens the Socket Mode connection outbound, so this works behind a normal office or home firewall.',
+          'Recued reaches out to Slack, so this works behind a normal home or office firewall.',
         portal: {
           label: 'Open Slack app settings',
           url: 'https://api.slack.com/apps',
@@ -94,18 +94,18 @@ const slack: ConnectionSchema = {
           },
         ],
         verification:
-          'Checks the bot token and opens a Socket Mode connection with the app-level token. It does not post a test message or confirm delivery or read status.',
+          'This checks both tokens and opens the connection. It does not send a test message, and it cannot tell you whether messages arrive or get read.',
         note:
-          'Recued only reads the conversation you bind here. If you add the bot to other channels, their messages are not what Recued acts on.',
+          'Recued only reads the one conversation you set up here. If you add the bot to other channels, Recued ignores those.',
         showWhen: (values) => (values['config.ingress_mode'] ?? 'socket') === 'socket',
       },
       {
         key: 'slack-webhook',
         tone: 'advanced',
         badge: 'Advanced · public HTTPS required',
-        title: 'Receive Slack events over a webhook',
+        title: 'Let Slack reach your server directly',
         description:
-          'Choose this only when Slack can reach this Recued server from the public internet. Socket Mode is the simpler local path.',
+          'Only pick this if Slack can reach your server from the internet. Socket Mode is simpler, and stays on your own machine.',
         portal: {
           label: 'Open Slack app settings',
           url: 'https://api.slack.com/apps',
@@ -113,7 +113,7 @@ const slack: ConnectionSchema = {
         steps: [
           {
             title: 'Publish this server over HTTPS',
-            detail: 'Slack must be able to reach https://<public-host>/webhooks/slack/slack from the internet. If it cannot, use Socket Mode instead — nothing below will work.',
+            detail: 'Slack has to be able to reach https://<public-host>/webhooks/slack/slack from the internet. If it cannot, use Socket Mode instead. Nothing below will work.',
           },
           {
             title: 'Create the app and add scopes',
@@ -137,7 +137,7 @@ const slack: ConnectionSchema = {
           },
         ],
         verification:
-          'Checks the bot token only. It does not test public webhook reachability, post a message, or confirm delivery or read status.',
+          'This only checks the bot token. It does not test whether Slack can reach you, does not send a message, and cannot tell you whether messages arrive or get read.',
         showWhen: (values) => values['config.ingress_mode'] === 'webhook',
       },
     ],
@@ -158,10 +158,10 @@ const slack: ConnectionSchema = {
       options: ['socket', 'webhook'],
       optionLabels: {
         socket: 'Local — Socket Mode (recommended)',
-        webhook: 'Public webhook (advanced)',
+        webhook: 'Let Slack reach your server (advanced)',
       },
       optional: true,
-      help: 'Local mode opens an outbound connection. Webhook mode requires public inbound HTTPS.',
+      help: 'Socket Mode reaches out to Slack. The other way needs Slack to reach in, over https.',
     },
     {
       key: 'config.channel_id',
@@ -189,7 +189,7 @@ const slack: ConnectionSchema = {
       label: 'App-level token',
       type: 'secret',
       placeholder: 'xapp-…',
-      help: 'Slack app-level token with connections:write. Required only for Socket Mode and stored encrypted with the bot token.',
+      help: 'A Slack app-level token with connections:write. Only Socket Mode needs it. Recued keeps it locked away with the bot token.',
       showWhen: (v) => v['config.ingress_mode'] === 'socket',
     },
     {
@@ -253,7 +253,7 @@ const telegram: ConnectionSchema = {
           },
         ],
         verification:
-          'Checks that the token belongs to a Telegram bot. It does not send a test message or confirm delivery or read status.',
+          'Checks that the token belongs to a Telegram bot. It does not send a test message or tell you whether messages arrive or get read.',
         note:
           'Telegram permits one intake method per bot. When local polling starts, Recued removes that bot’s existing webhook without dropping queued updates — and while Recued is polling, calling getUpdates yourself will take updates away from it. In a group, BotFather privacy mode (on by default) means the bot only sees commands and replies addressed to it.',
         showWhen: (values) => (values['config.ingress_mode'] ?? 'poll') === 'poll',
@@ -292,7 +292,7 @@ const telegram: ConnectionSchema = {
           },
         ],
         verification:
-          'Checks the bot token only. It does not test public webhook delivery, send a message, or confirm delivery or read status.',
+          'Checks the bot token only. It does not test public webhook delivery, send a message, or tell you whether messages arrive or get read.',
         note: 'Telegram cannot deliver through a webhook while the same bot is being polled elsewhere.',
         showWhen: (values) => values['config.ingress_mode'] === 'webhook',
       },
@@ -314,7 +314,7 @@ const telegram: ConnectionSchema = {
       options: ['poll', 'webhook'],
       optionLabels: {
         poll: 'Local — long polling (recommended)',
-        webhook: 'Public webhook (advanced)',
+        webhook: 'Let Slack reach your server (advanced)',
       },
       optional: true,
       help: 'Local mode uses outbound HTTPS. Webhook mode requires public inbound HTTPS.',
@@ -494,7 +494,7 @@ const discord: ConnectionSchema = {
           },
         ],
         verification:
-          'Checks that the token belongs to a Discord bot. It does not test channel permissions, post a message, or confirm delivery or read status.',
+          'Checks that the token belongs to a Discord bot. It does not test channel permissions, post a message, or tell you whether messages arrive or get read.',
         note:
           'Discord has no per-channel subscription — the Gateway hands Recued every channel the bot can read. Recued keeps only the channel you bind here and drops the rest as they arrive, so nothing from your other channels is stored or acted on.',
         showWhen: (values) => (values['config.ingress_mode'] ?? 'socket') === 'socket',
@@ -555,7 +555,7 @@ const discord: ConnectionSchema = {
       options: ['socket', 'webhook'],
       optionLabels: {
         socket: 'Local — Gateway (recommended)',
-        webhook: 'Public webhook — approvals only',
+        webhook: 'Let them reach your server — approvals only',
       },
       optional: true,
       help: 'Gateway uses one outbound connection. Webhook mode requires public inbound HTTPS and receives interactions only.',
@@ -838,7 +838,7 @@ const email: ConnectionSchema = {
       type: 'select',
       options_source: MAIL_SEND_CAPABLE_INSTANCES_SOURCE,
       help: 'The data.mail.<name> account this destination sends through. Configure SMTP for an IMAP account, or grant Send permission to Gmail / Microsoft, to populate this list.',
-      emptyGuidance: 'No send-capable mail accounts. Configure SMTP for an IMAP account or grant Send permission to a Gmail / Microsoft account first.',
+      emptyGuidance: 'You have no mailbox that can send. Set up SMTP for an IMAP account, or allow sending on a Gmail or Microsoft account first.',
     },
     {
       key: 'config.default_recipient',

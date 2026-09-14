@@ -894,7 +894,7 @@ export const mountDiscoverPanel = <Row>(
       clear(pager);
       clear(filters);
       summary.hidden = true;
-      setStatus(error ?? 'Couldn’t load the marketplace.', 'error', true);
+      setStatus(error ?? 'Recued could not load the Marketplace.', 'error', true);
       return;
     }
     const result = usingServer() ? view : localView();
@@ -921,7 +921,7 @@ export const mountDiscoverPanel = <Row>(
       // Never silent: a panel searching a downloaded catalogue must not look
       // like one searching the marketplace.
       setStatus(
-        `Marketplace search is unavailable — showing results from a downloaded ${opts.copy.kindPlural} catalogue.`,
+        `Marketplace search is not working. These results come from a downloaded ${opts.copy.kindPlural} catalogue.`,
         'notice',
         true,
       );
@@ -1073,7 +1073,7 @@ export const mountDiscoverPanel = <Row>(
       render();
     } else if (!background) {
       state = 'error';
-      error = res.message ?? 'Couldn’t reach the marketplace.';
+      error = res.message ?? 'Recued could not reach the Marketplace.';
       render();
     }
     // background + error → silently keep the last-good corpus.

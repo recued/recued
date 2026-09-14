@@ -153,6 +153,9 @@ const makeOptions = (
       s2sPreviewStoreRef: { tag: 's2s-preview-store' },
       correctionEventsStoreRef: { tag: 'correction-events-store' },
       fileStack: { disposeAll: vi.fn() },
+      serverTimeZoneStore: {
+        read: vi.fn(() => ({ mode: 'fixed', zone: 'Europe/Dublin', updated_at: 1 })),
+      },
     },
     app: {
       cacheStore: { tag: 'cache-store' },
@@ -196,6 +199,7 @@ const makeOptions = (
       close: vi.fn(async () => undefined),
     },
     scheduleStore: { tag: 'schedule-store' },
+    autoRunSettingsStore: { tag: 'auto-run-settings-store' },
     executeDeps: {
       tag: 'execute-deps',
       // D-196 §6.3 (s2b) — the gateway-spine pieces the reconciler build reads.
@@ -303,9 +307,17 @@ describe('startPostListenerRuntime', () => {
       executeDeps: options.executeDeps,
       recipeStore: options.storage.recipeStore,
       circuitStore: options.circuitStore,
+      autoRunSettingsStore: options.autoRunSettingsStore,
+      serverTimeZone: expect.any(Function),
       // R21.1 — the vault-unlocked predicate gates the scheduler ticks.
       isVaultUnlocked: options.app.isVaultUnlocked,
     });
+    const schedulerOptions = runtimeMocks.startSchedulers.mock.calls[0]![0];
+    expect(schedulerOptions.serverTimeZone()).toBe('Europe/Dublin');
+    vi.mocked(options.storage.serverTimeZoneStore.read).mockReturnValue({
+      mode: 'fixed', zone: 'America/Los_Angeles', updated_at: 2,
+    });
+    expect(schedulerOptions.serverTimeZone()).toBe('America/Los_Angeles');
     expect(runtimeMocks.composeCertStackLate).toHaveBeenCalledWith({
       certStack: options.certStack,
       tlsDomainStore: options.tlsDomainStore,
@@ -441,7 +453,18 @@ describe('startPostListenerRuntime', () => {
     let onVaultState: ((next: 'unlocked' | 'locked' | 'uninitialized') => void) | undefined;
     const recoverPendingAsks = vi.fn(async () => undefined);
     const options = makeOptions({
-      notificationBlock: { recoverPendingAsks } as never,
+      // D-266 — the double now declares the ask surface the boot reaches
+      // for. It previously carried `recoverPendingAsks` alone and passed
+      // only because nothing CALLED the rest; `register()` is the first
+      // eager call, so a partial double is now a real startup failure
+      // rather than a latent one.
+      notificationBlock: {
+        recoverPendingAsks,
+        ask: vi.fn(async (_m: unknown, _o: unknown, _h: unknown) => ({ ask_id: 'a1' })),
+        cancelAsk: vi.fn(async (_id: string) => 'not_open' as const),
+        listOpenAsks: vi.fn(async () => []),
+        registerAskHandler: vi.fn((_k: string, _f: unknown) => undefined),
+      } as never,
     });
     (options.app.vaultStateBus.subscribe as ReturnType<typeof vi.fn>)
       .mockImplementation((listener) => {
@@ -602,5 +625,51 @@ describe('D-232 § 24 — the retry sweep is REACHED at boot', () => {
     }).mock.calls.map((c) => c[0]?.name);
     expect(names).toContain('custom-domain-enrollment');
   });
-});
 
+  // ── D-268 ───────────────────────────────────────────────────────────────
+  it('D-268 — the boot hands the scheduler a failure-notice seam bound to the notification block', async () => {
+    // ⛔ THE JOIN, NOT THE HALVES. The scheduler's own suite proves it PRODUCES
+    // a notice, and the notification block's suite proves `notify` DELIVERS
+    // one. Neither proves this file connects them — and a seam nothing supplies
+    // is a feature that is dead on the wire while every other suite is green.
+    runtimeMocks.startSchedulers.mockReturnValue({ tag: 'schedulers-bundle' });
+    runtimeMocks.composeCertStackLate.mockResolvedValue({
+      tlsCertSource: undefined, tlsRenewerConfigured: false,
+    });
+    runtimeMocks.startHousekeepingStartup.mockResolvedValue({ scheduler: undefined });
+    const notify = vi.fn(async (_m: unknown) => undefined);
+    const options = makeOptions({
+      notificationBlock: {
+        notify,
+        recoverPendingAsks: vi.fn(async () => undefined),
+        ask: vi.fn(async (_m: unknown, _o: unknown, _h: unknown) => ({ ask_id: 'a1' })),
+        cancelAsk: vi.fn(async (_id: string) => 'not_open' as const),
+        listOpenAsks: vi.fn(async () => []),
+        registerAskHandler: vi.fn((_k: string, _f: unknown) => undefined),
+      } as never,
+    });
+
+    await startPostListenerRuntime(options);
+
+    const passed = runtimeMocks.startSchedulers.mock.calls[0]![0] as {
+      onAutomationFailure?: (n: unknown, u: unknown) => void;
+    };
+    expect(passed.onAutomationFailure).toBeInstanceOf(Function);
+    // And it reaches `notify` — a seam that is present but bound to nothing
+    // passes the assertion above and still delivers no notification.
+    passed.onAutomationFailure!({ title: 't', text: 'x' }, { kind: 'schedule', id: 's1', recipe_id: 'r' });
+    expect(notify).toHaveBeenCalledWith({ title: 't', text: 'x' });
+  });
+
+  it('D-268 — a boot with no notification block supplies no seam rather than a broken one', async () => {
+    runtimeMocks.startSchedulers.mockReturnValue({ tag: 'schedulers-bundle' });
+    runtimeMocks.composeCertStackLate.mockResolvedValue({
+      tlsCertSource: undefined, tlsRenewerConfigured: false,
+    });
+    runtimeMocks.startHousekeepingStartup.mockResolvedValue({ scheduler: undefined });
+    const options = makeOptions();
+    await startPostListenerRuntime(options);
+    const passed = runtimeMocks.startSchedulers.mock.calls[0]![0] as Record<string, unknown>;
+    expect(passed).not.toHaveProperty('onAutomationFailure');
+  });
+});

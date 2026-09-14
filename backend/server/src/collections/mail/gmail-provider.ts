@@ -84,6 +84,7 @@ import {
   type ProviderHealth,
   type ProviderSyncCallback,
   type ProviderSyncEventKind,
+  type SavedDraftMeta,
   type SentMessageMeta,
 } from './provider.js';
 import {
@@ -994,6 +995,87 @@ export const createGmailProvider = (
   // Token refresh runs once on the initial 401 (matches `getWithRetry`
   // for read paths); a second 401 after refresh indicates the user
   // revoked or downgraded scopes, so we surface AUTH_FAILED upstream.
+  /** D-264 — `POST users/me/drafts`, or `PUT users/me/drafts/{id}` to supersede.
+   *
+   *  Gmail's draft id is NOT the message id, and `drafts.update` keys on the
+   *  DRAFT id — so that is what `source_id` carries. Handing back the message
+   *  id would make every re-export create a new draft while looking correct.
+   *
+   *  Update keeps the same draft id, so a third export supersedes the second
+   *  rather than accumulating. A failed update falls back to creating a new
+   *  draft with `replaced: false` + a warning: the owner keeps the edit and is
+   *  told there are now two copies. */
+  const saveDraftImpl = async (
+    msg: OutgoingMessage,
+    prior?: { source_id: string },
+  ): Promise<SavedDraftMeta> => {
+    const savedAt = nowOf();
+    const raw = base64UrlEncode(buildGmailRfc5322(msg, savedAt));
+
+    const call = async (url: string, method: 'POST' | 'PUT'): Promise<Response> => {
+      const attempt = async (token: string) => fetcher(url, {
+        method,
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: { raw } }),
+      });
+      let res = await attempt(await ensureToken(false));
+      if (res.status === 401) res = await attempt(await ensureToken(true));
+      return res as Response;
+    };
+    const throwDraftError = (status: number, text: string): never => {
+      const detail = { kind: 'gmail' as const, slug: opts.slug, status };
+      if (status === 401 || status === 403) {
+        markError(`gmail draft auth ${status}`, text);
+        throw new IngredientError('MAIL_DRAFT_AUTH_FAILED',
+          `Gmail rejected the draft save (${status}): ${text.slice(0, 200)}`, detail);
+      }
+      if (status >= 400 && status < 500) {
+        throw new IngredientError('MAIL_DRAFT_WRITE_FAILED',
+          `Gmail rejected the draft (${status}): ${text.slice(0, 200)}`, detail);
+      }
+      markError(`gmail draft transient ${status}`, text);
+      throw new IngredientError('MAIL_DRAFT_NETWORK_FAILED',
+        `Gmail draft save failed transiently (${status}): ${text.slice(0, 200)}`, detail);
+    };
+    const readDraftId = async (res: Response, status: number): Promise<string> => {
+      const data = (await res.json()) as { id?: string } | null;
+      if (!data || typeof data.id !== 'string' || data.id.length === 0) {
+        throw new IngredientError('MAIL_DRAFT_NETWORK_FAILED',
+          'Gmail draft save returned a malformed response (missing id)',
+          { kind: 'gmail', slug: opts.slug, status });
+      }
+      return data.id;
+    };
+
+    if (prior) {
+      const res = await call(
+        `${GMAIL_API_BASE}/drafts/${encodeURIComponent(prior.source_id)}`, 'PUT',
+      );
+      if (res.ok) {
+        lastSuccessfulSyncAt = nowOf();
+        return { source_id: await readDraftId(res, res.status), saved_at: savedAt, replaced: true };
+      }
+      const text = await res.text().catch(() => '');
+      // A grant problem fails the create too; surface it instead of retrying
+      // into the same wall.
+      if (res.status === 401 || res.status === 403) throwDraftError(res.status, text);
+      const created = await call(`${GMAIL_API_BASE}/drafts`, 'POST');
+      if (!created.ok) throwDraftError(created.status, await created.text().catch(() => ''));
+      lastSuccessfulSyncAt = nowOf();
+      return {
+        source_id: await readDraftId(created, created.status), saved_at: savedAt, replaced: false,
+        warnings: [{ code: 'MAIL_DRAFT_PRIOR_NOT_REMOVED',
+          message: `the earlier draft ${prior.source_id} could not be updated `
+            + `(${res.status}); a new draft was saved instead` }],
+      };
+    }
+
+    const res = await call(`${GMAIL_API_BASE}/drafts`, 'POST');
+    if (!res.ok) throwDraftError(res.status, await res.text().catch(() => ''));
+    lastSuccessfulSyncAt = nowOf();
+    return { source_id: await readDraftId(res, res.status), saved_at: savedAt, replaced: false };
+  };
+
   const sendImpl = async (msg: OutgoingMessage): Promise<SentMessageMeta> => {
     const sentAt = nowOf();
     const rfc822 = buildGmailRfc5322(msg, sentAt);
@@ -1425,6 +1507,12 @@ export const createGmailProvider = (
     slug: opts.slug,
     sendCapable,
     mutationCapable,
+    // D-264 — creating a draft needs the same grant mutation does
+    // (`GMAIL_MODIFY_SCOPE`), so the VALUE coincides here. Kept as its own field
+    // because the QUESTIONS differ: a later change to what counts as
+    // mutation must not silently redefine what counts as draftable.
+    draftCapable: mutationCapable,
+    ...(mutationCapable ? { saveDraft: saveDraftImpl } : {}),
     accountEmail,
 
     async connect() {

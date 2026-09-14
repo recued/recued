@@ -59,6 +59,44 @@ export interface AskCardModel {
    *  COLLAPSED: the question is the decision, the body is the evidence, and a
    *  card that opens four pages by default stops being a card. */
   body?: string;
+  /** D-270 — the SERVER-RESOLVED "what will happen" rows, and when present they
+   *  REPLACE the scraped highlights rather than sitting beside them.
+   *
+   *  ⛔⛔ THE CARD HAS ALWAYS SHOWN VALUES — BY REGEX OVER ITS OWN PROSE.
+   *  `projectGeneratedApprovalAsk(model.text)` parses the rendered sentence,
+   *  keeps at most THREE fields chosen from a hardcoded key list
+   *  (`to · subject · title · body · top_tier_kind`), and buries the rest behind
+   *  "The technical bits". So an operation whose decisive field is not on that
+   *  list shows none of it in the summary, and every value is whatever the prose
+   *  happened to say rather than what the held op currently holds.
+   *
+   *  🔑 That is the hazard the landing contract names, already happening: two
+   *  surfaces deriving the same fact two ways, where *"the one that is wrong is
+   *  the one nobody is looking at."* These rows come from the checkpoint through
+   *  the operation's pack-declared `editable_args` allowlist — complete, not
+   *  capped, and rendered in a NAMED zone for `datetime`.
+   *
+   *  ⛔ REPLACES, NEVER APPENDS. Two summary blocks on one card is strictly
+   *  worse than either alone: the reader cannot tell which is authoritative.
+   *
+   *  ⛔ Absent ⇒ the card renders exactly as it did before, scraped highlights
+   *  and all. An unresolvable case is just an ordinary card — no notice, no empty
+   *  block (owner ruling 2026-09-13). And the set is ALL-OR-NOTHING: partial rows
+   *  would promise "what this commits to" while hiding a value.
+   *
+   *  ⚠ THE SCRAPED FIELDS STILL FILL "The technical bits", AND THAT IS A
+   *  DELIBERATE TRADE, NOT AN OVERSIGHT. These rows come from the operation's
+   *  `editable_args` — the REVIEWABLE fields, which is a narrower set than the
+   *  args the call dispatches. Suppressing the technical block when they are
+   *  present would hide every non-reviewable argument the card used to show, so
+   *  the block stays. The residual cost is that one field can render twice, in
+   *  two formats, when it appears in both — the summary row is the authoritative
+   *  one (resolved from the held op, in a named zone). Reopen if a real case
+   *  shows the two DISAGREEING on a value rather than on formatting.
+   *
+   *  Mirrors `ServerPendingAsk.details` structurally, like every other field
+   *  here. */
+  details?: ReadonlyArray<{ label: string; value: string }>;
   /** Unix-ms the ask was raised — `PendingAsk.created_at`, already carried on
    *  `ServerPendingAsk` and forwarded by the `notification.pending_asks`
    *  projection. Rendered as a compact age so a decision that has been waiting
@@ -176,6 +214,10 @@ interface ProjectedApprovalAsk {
   recipe: string;
   step: string;
   reason: string | null;
+  /** D-161 Part B — who STARTED the run, present only when it came in through
+   *  a door (a public form, or an outside AI). Absent for the owner's own runs,
+   *  which is the overwhelmingly common case and must stay silent. */
+  origin: string | null;
   fields: ReadonlyArray<{ key: string; value: string }>;
   highlights: ReadonlyArray<{ key: string; value: string }>;
 }
@@ -193,6 +235,7 @@ const projectGeneratedApprovalAsk = (text: string): ProjectedApprovalAsk | null 
 
   const fields: Array<{ key: string; value: string }> = [];
   let reason: string | null = null;
+  let origin: string | null = null;
   // The notification block groups fields nested under a shared path beneath
   // a value-less header (`metadata:` then its leaves, indented further).
   //
@@ -234,6 +277,23 @@ const projectGeneratedApprovalAsk = (text: string): ProjectedApprovalAsk | null 
     }
     const reasonLine = line.trim().match(/^Reason:\s*(.+)$/i);
     if (reasonLine !== null) reason = reasonLine[1]!.trim();
+    // D-161 Part B — the composer emits this FLUSH-LEFT so it never reaches the
+    // field rule above. Claimed here explicitly rather than left to fall
+    // through as ignored prose: a projected card renders only what it projects,
+    // so an unclaimed line is a line the owner never sees — which is precisely
+    // the failure this sentence exists to fix.
+    const originLine = line.trim().match(/^Started by:\s*(.+)$/i);
+    // ⛔ FIRST MATCH WINS — `origin ?? `, never plain assignment.
+    //
+    // `reason` is interpolated into the body RAW (`\n\nReason: ${reason}`, no
+    // whitespace collapse) and lands AFTER this line. Were a later match to
+    // overwrite, any text reaching `reason` that carried a newline plus its own
+    // "Started by: …" would REPLACE the substrate's provenance claim with one of
+    // its own choosing — a forged answer to the exact question this row exists to
+    // answer. The composer emits its line before anything but its own two
+    // sentences, so taking the first occurrence closes that by construction
+    // rather than by trusting every present and future `reason` producer.
+    if (originLine !== null) origin ??= originLine[1]!.trim().replace(/\.$/, '');
   }
 
   const fieldByKey = new Map(fields.map((field) => [field.key, field.value]));
@@ -252,6 +312,7 @@ const projectGeneratedApprovalAsk = (text: string): ProjectedApprovalAsk | null 
     target: operation[3] ?? null,
     step: operation[4]!,
     reason,
+    origin,
     fields,
     highlights,
   };
@@ -343,8 +404,35 @@ export const renderAskCard = (
     };
     appendSummaryRow('Action', projected.operation);
     if (projected.target !== null) appendSummaryRow('Target', projected.target);
-    for (const field of projected.highlights) {
-      appendSummaryRow(humanizeAskField(field.key), field.value);
+    // D-161 Part B — ABOVE the highlights, not inside Technical details. The
+    // highlights are the values the call would send; who supplied them changes
+    // how a reviewer reads every one of them, so it cannot sit behind a
+    // disclosure the reviewer may never open.
+    if (projected.origin !== null) appendSummaryRow('Started by', projected.origin);
+    // D-270 — server-resolved rows win over the prose scrape. The scraped
+    // highlights stay as the fallback for every ask the server could not resolve
+    // (owner ruling: that case is just an ordinary card), so this is a
+    // replacement at the row level and never a second block.
+    if (model.details !== undefined && model.details.length > 0) {
+      // ⛔ HUMANIZE AN UNLABELLED ROW, OR THIS REPLACEMENT IS A REGRESSION.
+      // `buildAskLandingDetails` falls back to the RAW arg key when a field
+      // declares no label, while the scraped path it replaces always ran
+      // `humanizeAskField`. Without this, making the server rows authoritative
+      // turns "Top tier kind" into `top_tier_kind` on exactly the fields whose
+      // pack never bothered to name them.
+      // ⚠ Applied ONLY to an identifier-shaped label, never to a declared one:
+      // `humanizeAskField` splits on `[._-]`, which would mangle a real label
+      // like "e-mail" into "E mail".
+      for (const row of model.details) {
+        appendSummaryRow(
+          /^[a-z][a-z0-9._]*$/.test(row.label) ? humanizeAskField(row.label) : row.label,
+          row.value,
+        );
+      }
+    } else {
+      for (const field of projected.highlights) {
+        appendSummaryRow(humanizeAskField(field.key), field.value);
+      }
     }
     card.appendChild(summary);
 
@@ -356,10 +444,10 @@ export const renderAskCard = (
       + 2
       + (projected.target === null ? 0 : 1)
       + (projected.reason === null ? 0 : 1);
-    detailsSummary.textContent = `Technical details (${technicalDetailCount})`;
+    detailsSummary.textContent = `The technical bits (${technicalDetailCount})`;
     detailsSummary.setAttribute(
       'aria-label',
-      `Technical details for ${actionSubject} (${technicalDetailCount})`,
+      `The technical bits for ${actionSubject} (${technicalDetailCount})`,
     );
     details.appendChild(detailsSummary);
     const detailsList = doc.createElement('dl');
@@ -417,7 +505,7 @@ export const renderAskCard = (
   errorEl.className = 'rx-ask-card-error';
   errorEl.setAttribute(ASK_CARD_ERROR_ATTR, model.ask_id);
   errorEl.setAttribute('role', 'alert');
-  errorEl.textContent = options.errorMessage ?? 'Could not submit — try again.';
+  errorEl.textContent = options.errorMessage ?? 'Recued could not send that. Try again.';
   errorEl.hidden = options.errorMessage == null;
 
   // D-234 § 234.4f — the document behind the question, in a disclosure. ⛔ It is
@@ -489,7 +577,7 @@ export const renderAskCard = (
   confirmation.className = 'rx-ask-card-confirm';
   confirmation.setAttribute(ASK_CARD_CONFIRM_ATTR, model.ask_id);
   confirmation.setAttribute('role', 'status');
-  confirmation.textContent = 'Confirm this change. It may affect data outside Recued.';
+  confirmation.textContent = 'Say yes to this. It may change things outside Recued.';
   confirmation.hidden = true;
 
   const buttonOptions: Array<{ button: HTMLButtonElement; option: AskCardOption }> = [];
@@ -918,7 +1006,7 @@ export const renderApprovalCard = (
     caution.className = 'rx-approval-card-caution';
     caution.setAttribute(APPROVAL_CARD_CAUTION_ATTR, model.approval_id);
     caution.textContent =
-      'Destructive action - this cannot be undone. Confirm to proceed.';
+      'This cannot be undone. Say yes to go ahead.';
     card.appendChild(caution);
     actions.appendChild(
       makeToggleButton(
@@ -1190,7 +1278,7 @@ export const renderChatPlanCard = (
       options.disabled === true
       || (decision === 'approve' && !payloadAvailable);
     if (decision === 'approve' && !payloadAvailable) {
-      btn.title = 'Exact reviewed details are required before approval.';
+      btn.title = 'Recued needs the exact details before you can say yes.';
     }
     btn.addEventListener('click', () => {
       if (

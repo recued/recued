@@ -119,7 +119,9 @@ describe('D-169 P1 notification bridge mode settings', () => {
       slack: { notification: true, approval: true, messenger: false },
       bridges: {
         'bridge-a': { notification: true, approval: false },
-        'bridge-b': { notification: false, approval: true },
+        // ⚠ `notification` unspecified in the patch ⇒ it reads the DEFAULT, which
+        // is now ON (owner ruling, REV 23). The subject here is the merge.
+        'bridge-b': { notification: true, approval: true },
       },
     });
   });
@@ -131,7 +133,7 @@ describe('D-169 P1 notification bridge mode settings', () => {
 
     const cleared = await store.clearBridgeMode('bridge-a');
     expect(cleared.bridges).toEqual({
-      'bridge-b': { notification: false, approval: true },
+      'bridge-b': { notification: true, approval: true },
     });
 
     const noOp = await store.clearBridgeMode('missing');
@@ -217,7 +219,12 @@ describe('D-169 P1 notification bridge mode settings', () => {
       {
         client_token_id: 'bridge-2',
         label: 'Bridge2 Edge on Windows',
-        modes: { notification: false, approval: false },
+        // ⛔⛔ THE ASSERTION THE OWNER'S RULING TURNS ON: a paired bridge with NO
+        // stored row reads the default, and the default now NOTIFIES. Installing
+        // the Bridge IS the opt-in; it used to arrive muted, and the channel-level
+        // toggle could not turn it on, because pairing is what stops that toggle
+        // deciding. Approval stays off — `CHANNEL_ROLES.bridge` refuses that axis.
+        modes: { notification: true, approval: false },
         connected: false,
       },
     ]);
@@ -269,7 +276,9 @@ describe('D-169 P1 notification bridge mode settings', () => {
       ok: true,
       settings: {
         bridges: {
-          'bridge-1': { notification: false, approval: true },
+          // ⚠ `notification` unspecified in the patch ⇒ reads the DEFAULT,
+          // which now notifies (owner ruling, REV 23).
+          'bridge-1': { notification: true, approval: true },
         },
       },
     });

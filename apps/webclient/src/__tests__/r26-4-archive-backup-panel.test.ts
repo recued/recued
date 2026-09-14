@@ -533,7 +533,7 @@ describe('R26.4 Delta 2b — export', () => {
     expect(mount.getView()).toBe('export-error');
     // Soft: NOT a hard error (getError only returns bad-tone lines).
     expect(mount.getError()).toBeNull();
-    expect(textOf(host).toLowerCase()).toContain('no longer available');
+    expect(textOf(host).toLowerCase()).toContain('is gone');
   });
 
   it('a status `error` state surfaces the message + moves to export-error', async () => {
@@ -778,7 +778,7 @@ describe('R26.4 Delta 2b — restore preview', () => {
     const path = findByAttr(host, ARCHIVE_RESTORE_PATH_ATTR);
     const key = findByAttr(host, ARCHIVE_RESTORE_MNEMONIC_ATTR);
     expect(path?.parent?.tagName).toBe('LABEL');
-    expect(textOf(path!.parent!)).toContain('path to a backup');
+    expect(textOf(path!.parent!)).toContain('where to find one already on your server');
     expect(key?.parent?.tagName).toBe('LABEL');
     expect(textOf(key!.parent!)).toContain('Recovery key for this backup');
   });
@@ -807,7 +807,7 @@ describe('R26.4 Delta 2b — restore preview', () => {
     findByAttr(host, ARCHIVE_RESTORE_PREVIEW_BTN_ATTR)?.focus();
     await mount.clickPreview();
     expect(mount.getView()).toBe('restore-entry');
-    expect(mount.getError()).toMatch(/doesn't match/);
+    expect(mount.getError()).toMatch(/do not match/);
     expect(doc.activeElement).toBe(
       findByAttr(host, ARCHIVE_RESTORE_MNEMONIC_ATTR),
     );
@@ -830,7 +830,7 @@ describe('R26.4 Delta 2b — restore preview', () => {
     await mount.clickPreview();
     expect(mount.getView()).toBe('restore-entry');
     expect(mount.getError()).toMatch(/valid 24-word/);
-    expect(mount.getError()).not.toMatch(/doesn't match/);
+    expect(mount.getError()).not.toMatch(/do not match/);
   });
 
   // M5 S3.0 — a backup whose db schema is newer than this server: the preview
@@ -918,7 +918,7 @@ describe('R26.4 Delta 2b — restore commit', () => {
     const commit = mount.clickCommit();
     const busy = findByAttr(host, ARCHIVE_BACKUP_BUSY_ATTR);
     expect(mount.getView()).toBe('restore-busy');
-    expect(textOf(host)).toContain('Restoring the backup…');
+    expect(textOf(host)).toContain('Putting the backup back…');
     expect(doc.activeElement).toBe(busy);
 
     await commit;
@@ -974,7 +974,7 @@ describe('R26.4 Delta 2b — restore commit', () => {
       new Error('ARCHIVE_INVALID_SIGNATURE: AEAD tag mismatch'),
     );
     expect(mount.getView()).toBe('restore-error');
-    expect(mount.getError()).toMatch(/doesn't match/);
+    expect(mount.getError()).toMatch(/do not match/);
   });
 
   // M5 S3.0 backstop — if a too-new archive somehow reaches commit (preview
@@ -1182,7 +1182,7 @@ describe('R26.4 M1 — restore: Q2 cross-realm gate', () => {
     const realmKey = findByAttr(host, ARCHIVE_RESTORE_REALM_KEY_ATTR);
     expect(realmKey?.parent?.tagName).toBe('LABEL');
     expect(textOf(realmKey!.parent!)).toContain('current recovery key');
-    expect(textOf(host).toLowerCase()).toContain('re-pair');
+    expect(textOf(host).toLowerCase()).toContain('pair again');
   });
 
   it('a cross-realm commit WITHOUT a valid current-realm key shows a hint, no swap', async () => {
@@ -1219,7 +1219,7 @@ describe('R26.4 M1 — restore: Q2 cross-realm gate', () => {
     mount.setRestoreCurrentRealmKey(REALM);
     await mount.clickCommit();
     expect(mount.getView()).toBe('restore-error');
-    expect(mount.getError()).toMatch(/current recovery key/);
+    expect(mount.getError()).toMatch(/current 24 words/);
   });
 });
 
@@ -1277,7 +1277,7 @@ describe('R26.4 M1 — passport-only export', () => {
     const ta = findByAttr(host, ARCHIVE_PASSPORT_JSON_ATTR);
     expect(ta?.value ?? '').toContain('support_redacted');
     expect(ta?.parent?.tagName).toBe('LABEL');
-    expect(textOf(ta!.parent!)).toContain('Exported identity passport JSON');
+    expect(textOf(ta!.parent!)).toContain('This server’s identity, as a file');
     expect(mount.getPassportJson()).toContain('support_redacted');
     expect(findByAttr(host, ARCHIVE_PASSPORT_DOWNLOAD_BTN_ATTR)).not.toBeNull();
     mount.clickPassportDownload();

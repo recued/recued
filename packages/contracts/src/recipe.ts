@@ -5,6 +5,7 @@ import type { ExecutionScope } from './execution-scope.js';
 import type { RunMode } from './memory.js';
 import type { RecipeWebhookRequirement, RecipeWebhookTrigger } from './webhook-profiles.js';
 import type { PaidDocumentDirectCheckoutClaimConfiguration } from './paid-document-direct-checkout-config.js';
+import type { ReviewCriteriaDeclaration } from './review-criteria-config.js';
 import type { RecipeFormFieldRequirement } from './recipe-form-fields.js';
 
 /** The well-known recipe variable name that, when declared by a recipe,
@@ -764,6 +765,14 @@ export interface RecipeMetadata {
    * form/recipe pair revision. It carries no product/economic terms, Seller
    * identity, hosted provider result, quantity, or total. */
   paid_document_direct_checkout?: PaidDocumentDirectCheckoutClaimConfiguration;
+  /** D-250 addendum — review criteria for a registry board, declared on the recipe so they
+   *  travel with the pinned version (a criteria change IS a version change, and reviews stay
+   *  comparable to what they were made against).
+   *  ⛔ ONE OPTIONAL FIELD, SHAPE OWNED ELSEWHERE — `review-criteria-config.ts`, following the
+   *  `paid_document_direct_checkout` precedent above. Registry boards are one feature and
+   *  most recipes will never declare a criterion; the schema should not grow a structured
+   *  concern for all of them. */
+  review_criteria?: ReviewCriteriaDeclaration['criteria'];
   /** D-220 Slice A1 — the named intake-form answers this recipe reads.
    *
    *  A recipe that consumes an accepted Reception submission reads answers by

@@ -41,7 +41,7 @@ const BOX_FIELDS: readonly ConnectionField[] = [
     key: 'name',
     label: 'Name',
     type: 'identifier',
-    help: 'Lowercase identifier used in recipes (e.g. `box`, `box-team`).',
+    help: 'A short lower-case name you use in Recipes, such as `box`, `box-team`).',
     placeholder: 'box',
   },
   {
@@ -55,7 +55,7 @@ const BOX_FIELDS: readonly ConnectionField[] = [
     key: 'config.vendor',
     label: 'Vendor',
     type: 'text',
-    help: 'Box vendor identifier — locked at enrollment.',
+    help: 'Box sets this when you connect. You cannot change it.',
     placeholder: 'box',
     hidden: true,
   },
@@ -73,14 +73,14 @@ const BOX_FIELDS: readonly ConnectionField[] = [
   // (Box has no server-side path filter) against the leaf's synthesized path.
   {
     key: 'config.import_scope',
-    label: 'Scope to a subtree (optional)',
+    label: 'Just part of it, if you want',
     type: 'text',
     optional: true,
     placeholder: 'Work/**',
     help:
-      'Optional path glob to limit which files are mirrored — e.g. `Work/**` '
+      'A pattern limiting which files Recued brings in, such as `Work/**` '
       + '(a folder) or `**/*.pdf` (a pattern). Leave blank to mirror everything. '
-      + 'Sync mirrors metadata only; contents are fetched lazily only when you '
+      + 'Recued brings in only the details, not the files themselves. It fetches a file only when you '
       + 'explicitly read a file.',
   },
   // Optional — bound the full walk to one folder subtree by its Box folder id.
@@ -100,7 +100,7 @@ const BOX_FIELDS: readonly ConnectionField[] = [
     label: 'Auth Type',
     type: 'select',
     options: ['oauth2_refresh'],
-    help: 'Box uses OAuth 2.0 with refresh tokens.',
+    help: 'Box asks you to sign in, and Recued stays signed in for you.',
     hidden: true,
   },
   {

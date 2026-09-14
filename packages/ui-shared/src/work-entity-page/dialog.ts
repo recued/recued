@@ -63,6 +63,15 @@ export interface WorkEntityDialogProps {
   ref_picker?: boolean;
   /** Replace the editor's interactive layer with a local discard review. */
   discard_guard?: boolean;
+  /** D-267 — pre-rendered provenance feed for an EDIT dialog: what has
+   *  happened to this entity, from `data.timeline('<kind>:<id>')`.
+   *
+   *  ⚠ A STRING the host builds, exactly as the collection explorer's
+   *  `detailTimelineHtml` works — the renderer places it and knows nothing
+   *  about runs, cursors or payload shapes. Absent on create (a row that does
+   *  not exist yet has no history) and absent while the read is in flight, so
+   *  the section never claims an empty past for an entity still loading. */
+  history_html?: string;
 }
 
 /** Render the dialog. The dialog body is wrapped in a backdrop +
@@ -156,6 +165,9 @@ export const renderWorkEntityDialog = (props: WorkEntityDialogProps): string => 
             refPicker: props.ref_picker === true,
           })}
           ${submitError}
+          ${props.state.mode === 'edit' && props.history_html
+            ? `<section class="work-entity-dialog-history" aria-label="What has happened to this ${e(spec.singular_label.toLowerCase())}">${props.history_html}</section>`
+            : ''}
           <footer class="work-entity-dialog-actions">
             <button
               type="button"

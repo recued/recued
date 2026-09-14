@@ -1410,6 +1410,7 @@ describe('D-148 § A.4 — bootstrapWebclient: route discriminator', () => {
     expect(sessionGet?.args).toEqual({
       session_id: 'chat_1',
       limit: CHAT_HISTORY_WINDOW,
+      around_message_id: 'msg_action',
     });
     expect(typeof sessionGet?.request_id).toBe('string');
     fixture.transportControls.fireMessage({
@@ -1551,11 +1552,11 @@ describe('D-148 § A.4 — bootstrapWebclient: route discriminator', () => {
     expect(triggers).toHaveLength(1);
     const trigger = triggers[0]!;
     expect(trigger.tagName).toBe('BUTTON');
-    expect(trigger.getAttribute('aria-label')).toBe('Run a recipe');
+    expect(trigger.getAttribute('aria-label')).toBe('Run a Recipe');
     expect(trigger.getAttribute('aria-haspopup')).toBe('dialog');
     expect(trigger.getAttribute('aria-keyshortcuts'))
       .toBe(GLOBAL_RUN_PALETTE_SHORTCUT);
-    expect(trigger.getAttribute('title')).toMatch(/^Run a recipe \(.+\)$/);
+    expect(trigger.getAttribute('title')).toMatch(/^Run a Recipe \(.+\)$/);
 
     fixture.hashSource.setHash('#data');
     expect(findChildByAttr(fixture.root, GLOBAL_RUN_PALETTE_TRIGGER_ATTR))
@@ -1591,6 +1592,15 @@ describe('D-148 § A.4 — bootstrapWebclient: route discriminator', () => {
     ).toEqual([
       'new-chat',
       'chats',
+      // D-267 — the zero-config tier. Deep-linked SEGMENTS of `#data`, not new
+      // routes: the entities were three levels down under a surface a fresh
+      // install never reached. `Data` stays as the seat for everything deeper
+      // (Commitments / Projects / Bookings / mirrors / Records / Memory).
+      'find',
+      'today',
+      'tasks',
+      'notes',
+      'contacts',
       'data',
       'recipes',
       'automation',
@@ -1613,6 +1623,11 @@ describe('D-148 § A.4 — bootstrapWebclient: route discriminator', () => {
     expect(drawerLinks.map((link) => link.getAttribute('href'))).toEqual([
       '#chat/new',
       '#chat',
+      '#data/search',
+      '#data/today',
+      '#data/task',
+      '#data/note',
+      '#data/contact',
       '#data',
       '#recipes',
       '#automation',
@@ -1627,8 +1642,9 @@ describe('D-148 § A.4 — bootstrapWebclient: route discriminator', () => {
       '#settings',
       '#settings/account',
     ]);
-    // The §D.L2 "Create" seat is an ACTION button (no href) between Chats and
-    // Data — it opens the shared Create overlay rather than navigating.
+    // The §D.L2 "Create" seat is an ACTION button (no href) leading the
+    // zero-config tier — it opens the shared Create overlay rather than
+    // navigating, so it carries no href and never highlights.
     const actionSeats = findChildrenByAttr(
       fixture.root,
       WEBCLIENT_SHELL_DRAWER_ACTION_ATTR,
@@ -1730,6 +1746,28 @@ describe('D-148 § A.4 — bootstrapWebclient: route discriminator', () => {
     expect(activeSeatIds()).toEqual(['new-chat']);
     fixture.hashSource.setHash('#chat/session/chat_1');
     expect(activeSeatIds()).toEqual(['chats']);
+    // D-267 — the promoted Data segments are exact siblings on the SAME route.
+    // ⛔ THE POINT OF THE ASSERTION IS THE PAIR: an exact tail lights its own
+    // seat AND a tail with no seat still falls through to Data. Promoting four
+    // tabs needed no change to the highlight machinery, and this is what proves
+    // it — `setActiveRoute` already matched an exact segment list before the
+    // route's `highlight` fallback, the same shape `New chat` has always used.
+    fixture.hashSource.setHash('#data/task');
+    expect(activeSeatIds()).toEqual(['tasks']);
+    fixture.hashSource.setHash('#data/today');
+    expect(activeSeatIds()).toEqual(['today']);
+    fixture.hashSource.setHash('#data/note');
+    expect(activeSeatIds()).toEqual(['notes']);
+    fixture.hashSource.setHash('#data/contact');
+    expect(activeSeatIds()).toEqual(['contacts']);
+    fixture.hashSource.setHash('#data/search');
+    expect(activeSeatIds()).toEqual(['find']);
+    // No seat for Commitments — it stays one click deeper, and falls back.
+    fixture.hashSource.setHash('#data/commitment');
+    expect(activeSeatIds()).toEqual(['data']);
+    fixture.hashSource.setHash('#data');
+    expect(activeSeatIds()).toEqual(['data']);
+
     // A route with NO drawer seat (Kitchen → reached via Recipes/Packs
     // [Author/Edit]) lights nothing — and the "Create" action seat never
     // highlights (it's not a nav link).
@@ -3102,7 +3140,7 @@ describe('D-148 § A.4 — bootstrapWebclient: route discriminator', () => {
     expect(data).not.toBeNull();
     expect(data!.innerHTML).toContain(DATA_ROUTE_LOGS_RETURN_ATTR);
     expect(data!.innerHTML).toContain(
-      'Check the item involved in the change',
+      'Check the item that was touched',
     );
     expect(data!.innerHTML).toContain(DATA_ROUTE_VERIFICATION_NEXT_ATTR);
     expect(data!.innerHTML).toContain(
@@ -3309,7 +3347,7 @@ describe('D-148 § A.4 — bootstrapWebclient: route discriminator', () => {
     expect(findByAttr(
       fixture.root,
       SERVER_SWITCHER_SWITCH_COMMIT_ATTR,
-    )?.textContent).toBe('Switch and check later');
+    )?.textContent).toBe('Switch, and check later');
     expect(reload).not.toHaveBeenCalled();
 
     // The work lease retained the exact source route at dispatch time. The
@@ -3369,7 +3407,7 @@ describe('D-148 § A.4 — bootstrapWebclient: route discriminator', () => {
     expect(findByAttr(
       fixture.root,
       ACCOUNT_MENU_ACTIVE_WORK_RETURN_ATTR,
-    )?.textContent).toBe('Restart sign-in');
+    )?.textContent).toBe('Start signing in again');
 
     findByAttr(fixture.root, ACCOUNT_MENU_ACTIVE_WORK_RETURN_ATTR)!.click();
     await flush();
@@ -3454,7 +3492,7 @@ describe('D-148 § A.4 — bootstrapWebclient: route discriminator', () => {
     )).toContain('Backup ready to review');
     expect(subtreeText(
       findByAttr(fixture.root, SERVER_SWITCHER_SWITCH_CONFIRM_ATTR)!,
-    )).toContain('A result is ready to review on home');
+    )).toContain('There is a result waiting on home');
     expect(findByAttr(
       fixture.root,
       SERVER_SWITCHER_RETURN_TO_WORK_ATTR,
@@ -3542,6 +3580,12 @@ describe('D-148 § A.4 — bootstrapWebclient: route discriminator', () => {
         messages: [],
         plans: [],
       },
+    });
+    await flush();
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: rpcCalls('chat.turns.list')[0]!.request_id,
+      result: { generation: 'session-generation', revision: 0, turns: [] },
     });
     await flush();
     const sendCall = rpcCalls('chat.send')[0]!;
@@ -3861,7 +3905,7 @@ describe('D-148 § A.4 DD#8 — bootstrapWebclient: events.subscribe wiring', ()
     expect(getCall?.args).toEqual({ action_ref: 'action-mail-1' });
     expect(subtreeText(
       findChildByAttr(fixture.root, NOTIFY_TOASTS_HOST_ATTR)!,
-    )).not.toContain('Approved action completed');
+    )).not.toContain('What you allowed is done');
 
     fixture.transportControls.fireMessage({
       type: 'rpc_result',
@@ -3908,7 +3952,7 @@ describe('D-148 § A.4 DD#8 — bootstrapWebclient: events.subscribe wiring', ()
     // rendering so a crash cannot store its delivery key under an old epoch.
     expect(subtreeText(
       findChildByAttr(fixture.root, NOTIFY_TOASTS_HOST_ATTR)!,
-    )).not.toContain('Approved action completed');
+    )).not.toContain('What you allowed is done');
     const subscribeCall = fixture.transportControls.sendCalls().find(
       (call): call is { request_id: string } =>
         (call as { method?: unknown })?.method === 'events.subscribe'
@@ -3954,7 +3998,7 @@ describe('D-148 § A.4 DD#8 — bootstrapWebclient: events.subscribe wiring', ()
 
     expect(subtreeText(
       findChildByAttr(fixture.root, NOTIFY_TOASTS_HOST_ATTR)!,
-    )).toContain('Approved action completed1 approved item completed.');
+    )).toContain('What you allowed is done1 approved item completed.');
     await handle.dispose();
   });
 
@@ -4127,7 +4171,7 @@ describe('D-148 § A.4 DD#8 — bootstrapWebclient: events.subscribe wiring', ()
 
     expect(subtreeText(
       findChildByAttr(fixture.root, NOTIFY_TOASTS_HOST_ATTR)!,
-    )).toContain('Approved action dispatchedThe approved operation was handed off.');
+    )).toContain('What you allowed was sentThe approved operation was handed off.');
     expect(timers).toHaveLength(2);
 
     fixture.transportControls.fireState('reconnecting');
@@ -4544,7 +4588,7 @@ describe('Tier 3 — bootstrapWebclient: server_heartbeat feeds half-open detect
     // No beats arrive → the two-phase stale timer crosses to `stalled`.
     fireOnlyLiveTimer(); // phase 1 → arms the confirmation timer
     fireOnlyLiveTimer(); // confirmation → stalled
-    expect(announcer!.textContent).toContain('not responding');
+    expect(announcer!.textContent).toContain('not answering');
 
     // THE WIRE UNDER TEST — a `server_heartbeat` broadcast must be demuxed to
     // `connectionStatus.noteHeartbeat()`, recovering the connection. If the
@@ -4822,7 +4866,7 @@ describe('Data → Kitchen accepted-response automation handoff', () => {
         saved: true,
         recipe_id: recipeId,
         version: 1,
-        name: 'Handle accepted form responses',
+        name: 'Deal with form answers you accept',
       },
     });
     await flush();
@@ -4892,7 +4936,7 @@ describe('Data → Kitchen accepted-response automation handoff', () => {
         saved: true,
         recipe_id: 'handle-form-test-responses',
         version: 1,
-        name: 'Handle accepted form responses',
+        name: 'Deal with form answers you accept',
       },
     });
     await flush();
@@ -5331,7 +5375,7 @@ describe('bootstrapWebclient: Account server profiles', () => {
       card!,
       UPDATES_CREDENTIAL_RETRY_STATUS_ATTR,
     )?.textContent)
-      .toContain('Server reconnected');
+      .toContain('The server is back');
     expect(findChildByAttr(
       fixture.root,
       ACCOUNT_MENU_BADGE_ATTR,
@@ -5360,7 +5404,7 @@ describe('bootstrapWebclient: Account server profiles', () => {
       ACCOUNT_MENU_SERVER_UPDATE_ATTR,
     )!;
     expect(inFlightGuide.children[0]?.textContent)
-      .toBe('Credential check underway');
+      .toBe('Checking the key');
     expect(subtreeText(inFlightGuide)).not.toMatch(/recovery finished/i);
     expect(findChildByAttr(
       inFlightGuide,
@@ -5445,17 +5489,17 @@ describe('bootstrapWebclient: Account server profiles', () => {
       guide,
       ACCOUNT_MENU_SERVER_UPDATE_RETURN_ATTR,
     )!;
-    expect(guide.children[0]?.textContent).toBe('Resume credential check');
+    expect(guide.children[0]?.textContent).toBe('Carry on checking the key');
     expect(subtreeText(guide)).toMatch(
-      /interrupted before both authoritative reads finished/i,
+      /stopped before Recued finished its checks/i,
     );
     expect(subtreeText(guide)).not.toMatch(
       /recovery finished|running 26\./i,
     );
     expect(subtreeText(guide)).toMatch(
-      /current-state baselines.*not persisted or replayed/i,
+      /never keeps keys, typed values, or results/i,
     );
-    expect(resume.textContent).toBe('Resume exact check');
+    expect(resume.textContent).toBe('Carry on checking');
     expect(resume.hasAttribute('disabled')).toBe(false);
     expect(findChildByAttr(
       firstFixture.root,
@@ -5468,7 +5512,7 @@ describe('bootstrapWebclient: Account server profiles', () => {
       '#connections/others/retry-credential-rotation/api/github-main',
     );
     expect(guide.children[0]?.textContent).toBe(
-      'Credential check underway',
+      'Checking the key',
     );
     expect(resume.hasAttribute('disabled')).toBe(true);
 
@@ -5477,7 +5521,7 @@ describe('bootstrapWebclient: Account server profiles', () => {
     // resume, and the consumed success receipt does not return.
     firstFixture.hashSource.setHash('#reception');
     expect(first.activeRoute()).toBe('reception');
-    expect(guide.children[0]?.textContent).toBe('Resume credential check');
+    expect(guide.children[0]?.textContent).toBe('Carry on checking the key');
     expect(resume.hasAttribute('disabled')).toBe(false);
     expect(JSON.parse(continuityStorage.getItem(
       CREDENTIAL_ROTATION_SERVER_UPDATE_CONTINUITY_SESSION_KEY,
@@ -5503,7 +5547,7 @@ describe('bootstrapWebclient: Account server profiles', () => {
       guide,
       ACCOUNT_MENU_SERVER_UPDATE_RETURN_ATTR,
     )!;
-    expect(guide.children[0]?.textContent).toBe('Resume credential check');
+    expect(guide.children[0]?.textContent).toBe('Carry on checking the key');
     expect(subtreeText(guide)).not.toMatch(
       /recovery finished|one-shot completion.*current-state baseline/i,
     );
@@ -5513,7 +5557,7 @@ describe('bootstrapWebclient: Account server profiles', () => {
       '#connections/others/retry-credential-rotation/api/github-main',
     );
     expect(guide.children[0]?.textContent).toBe(
-      'Credential check underway',
+      'Checking the key',
     );
     expect(resume.hasAttribute('disabled')).toBe(true);
     const listCallsBeforeDuplicate = reloadedFixture.transportControls
@@ -5574,17 +5618,17 @@ describe('bootstrapWebclient: Account server profiles', () => {
       ACCOUNT_MENU_SERVER_UPDATE_RETURN_ATTR,
     )!;
     expect(guide.children[0]?.textContent)
-      .toBe('Resume credential replacement');
+      .toBe('Carry on replacing the key');
     expect(subtreeText(guide)).toMatch(
-      /clean credential editor.*closed before any field changed/i,
+      /fresh key editor.*closed before any field changed/i,
     );
     expect(subtreeText(guide)).toMatch(
-      /no field value.*server-recovery receipt is restored/i,
+      /keeps no keys, typed values, or results/i,
     );
     expect(subtreeText(guide)).not.toMatch(
       /recovery finished|running 26\./i,
     );
-    expect(resume.textContent).toBe('Resume clean editor');
+    expect(resume.textContent).toBe('Reopen the fresh editor');
 
     resume.click();
     expect(handle.activeRoute()).toBe('connections');
@@ -5592,7 +5636,7 @@ describe('bootstrapWebclient: Account server profiles', () => {
       CREDENTIAL_ROTATION_SERVER_UPDATE_CONTINUITY_SESSION_KEY,
     )!)).toMatchObject({ phase: 'checking_return' });
     expect(guide.children[0]?.textContent).toBe(
-      'Credential check underway',
+      'Checking the key',
     );
 
     const connection = {
@@ -5685,7 +5729,7 @@ describe('bootstrapWebclient: Account server profiles', () => {
       ACCOUNT_MENU_SERVER_UPDATE_ATTR,
     )!;
     expect(guide.children[0]?.textContent)
-      .toBe('Resume credential replacement');
+      .toBe('Carry on replacing the key');
     expect(subtreeText(guide)).not.toMatch(
       /recovery finished|running 26\./i,
     );
@@ -5714,8 +5758,8 @@ describe('bootstrapWebclient: Account server profiles', () => {
       ACCOUNT_MENU_SERVER_UPDATE_RETURN_ATTR,
     )!;
     expect(guide.children[0]?.textContent)
-      .toBe('Resume credential replacement');
-    expect(resume.textContent).toBe('Resume clean editor');
+      .toBe('Carry on replacing the key');
+    expect(resume.textContent).toBe('Reopen the fresh editor');
     expect(subtreeText(guide)).not.toMatch(
       /recovery finished|running 26\.|success receipt/i,
     );
@@ -5884,7 +5928,7 @@ describe('bootstrapWebclient: Account server profiles', () => {
       ACCOUNT_MENU_SERVER_UPDATE_ATTR,
     )!;
     expect(guide.hasAttribute('hidden')).toBe(false);
-    expect(guide.children[0]?.textContent).toBe('Server update needs attention');
+    expect(guide.children[0]?.textContent).toBe('A server update needs a look');
     expect(findChildByAttr(
       guide,
       ACCOUNT_MENU_SERVER_UPDATE_STATUS_ATTR,
@@ -6062,7 +6106,7 @@ describe('bootstrapWebclient: Account server profiles', () => {
       card,
       UPDATES_CREDENTIAL_RETRY_STATUS_ATTR,
     )?.textContent).toMatch(
-      /fresh, read-only check confirmed.*stayed on server updates/i,
+      /look-only check says.*stayed on Server Updates/i,
     );
     expect(findChildByAttr(
       fixture.root,
@@ -6072,7 +6116,7 @@ describe('bootstrapWebclient: Account server profiles', () => {
       fixture.root,
       ACCOUNT_MENU_TRIGGER_ATTR,
     )?.getAttribute('aria-label')).toContain(
-      'Credential check is ready for api/github-main',
+      'The key check is ready for api/github-main',
     );
     expect(handle.activeRoute()).toBe('settings');
     expect(fixture.hashSource.getHash()).toBe('#settings/updates');
@@ -6224,7 +6268,7 @@ describe('bootstrapWebclient: Account server profiles', () => {
   // answers `applying` and the terminal arrives minutes later — and the only
   // listener lived inside that route. Leaving detached it, so the run finished
   // with nobody to hear it and the durable latch was never advanced to the state
-  // the receipt check engages on.
+  // the result again engages on.
   it('advances the update latch from a terminal that arrives with no Updates route mounted', async () => {
     const fixture = buildOpts();
     const profiles = buildProfileStore([HOME_PROFILE], 'p1');
@@ -7039,7 +7083,7 @@ describe('bootstrapWebclient: Account server profiles', () => {
     await flush();
     expect(recovery.getAttribute('data-phase')).toBe('baseline_confirmed');
     expect(subtreeText(recovery)).toMatch(
-      /running 26\.8\.1.*github-main.*no credential verification.*current state only.*original rollback outcome remains unknown/is,
+      /running 26\.8\.1.*github-main.*no credential verification.*current state only.*original rollback result is still unknown/is,
     );
     expect(JSON.parse(tabStorage.getItem(progressKey)!)).toMatchObject({
       phase: 'awaiting_reconnect',
@@ -7067,7 +7111,7 @@ describe('bootstrapWebclient: Account server profiles', () => {
     });
     expect(recovery.getAttribute('data-phase')).toBe('completed');
     expect(subtreeText(recovery)).toMatch(
-      /recovery finished.*controls are available again.*one-shot.*will not replay.*original rollback.*unknown/is,
+      /all sorted.*controls work again.*one-off note.*gone after a reload.*original rollback.*unknown/is,
     );
     expect(handle.activeRoute()).toBe('connections');
     expect(fixture.hashSource.getHash()).toBe(
@@ -7145,7 +7189,7 @@ describe('bootstrapWebclient: Account server profiles', () => {
       'data-recued-connections-route-content',
     )!;
     expect(subtreeInnerHtml(connectionContent)).toMatch(
-      /data-connection-credential-recovery="restart_ready".*server recovery is finished and server-change controls are unlocked.*original rollback outcome remains unknown.*data-conn-field="auth\.token"/is,
+      /data-connection-credential-recovery="restart_ready".*server recovery is finished and server-change controls are unlocked.*original rollback result is still unknown.*data-conn-field="auth\.token"/is,
     );
     expect(subtreeInnerHtml(connectionContent)).not.toContain(
       'rollback-ledger-receipt',
@@ -7168,7 +7212,7 @@ describe('bootstrapWebclient: Account server profiles', () => {
       ACCOUNT_MENU_SERVER_UPDATE_ATTR,
     )!;
     expect(readyGuide.children[0]?.textContent)
-      .toBe('Resume credential replacement');
+      .toBe('Carry on replacing the key');
     expect(subtreeText(readyGuide)).not.toMatch(
       /recovery finished|running 26\.8\.1/i,
     );
@@ -7308,7 +7352,7 @@ describe('bootstrapWebclient: Account server profiles', () => {
     expect(findChildByAttr(
       progress,
       UPDATES_CREDENTIAL_RETRY_STATUS_ATTR,
-    )?.textContent).toMatch(/open Recued tab.*duplicate server action/i);
+    )?.textContent).toMatch(/open Recued tab.*not do the same thing twice/i);
     expect(handle.activeRoute()).toBe('settings');
     expect(fixture.hashSource.getHash()).toBe('#settings/updates');
 
@@ -7358,7 +7402,7 @@ describe('bootstrapWebclient: Account server profiles', () => {
     expect(findChildByAttr(
       progress,
       UPDATES_CREDENTIAL_RETRY_STATUS_ATTR,
-    )?.textContent).toMatch(/returned server still lacks.*safe preflight/i);
+    )?.textContent).toMatch(/server you came back to still cannot do the safety check/i);
     expect(progress.hasAttribute('aria-busy')).toBe(false);
     expect(JSON.parse(continuityStorage.getItem(
       CREDENTIAL_ROTATION_SERVER_UPDATE_CONTINUITY_SESSION_KEY,
@@ -7654,7 +7698,7 @@ describe('bootstrapWebclient: Account server profiles', () => {
     const topbar = findChildByAttr(fixture.root, ATTENTION_TOPBAR_HOST_ATTR)!;
     topbar.fireClick({ action: 'open-attention' });
     expect(topbar.innerHTML).toContain(ATTENTION_INACTIVE_PROFILE_RECOVERY_ATTR);
-    expect(topbar.innerHTML).toContain('office may still need connection recovery');
+    expect(topbar.innerHTML).toContain('office may still have a connection to fix');
     expect(topbar.innerHTML).toContain('not a live result');
     expect(topbar.innerHTML).not.toContain('data-connection-name');
 
@@ -7818,7 +7862,7 @@ describe('bootstrapWebclient: Account server profiles', () => {
     await flush();
 
     expect(topbar.innerHTML).toContain('office is clear');
-    expect(topbar.innerHTML).toContain('fresh authoritative check found no');
+    expect(topbar.innerHTML).toContain('A new check found nothing left to fix');
     expect(reviewStorage.data.has(
       INACTIVE_PROFILE_RECOVERY_REVIEW_SESSION_KEY,
     )).toBe(false);
@@ -8155,7 +8199,7 @@ describe('bootstrapWebclient: Account server profiles', () => {
     expect(topbar.innerHTML).toContain(
       ATTENTION_RECOVERY_EXCURSION_RETURN_ATTR,
     );
-    expect(topbar.innerHTML).toContain('studio may still need connection recovery');
+    expect(topbar.innerHTML).toContain('studio may still have a connection to fix');
     topbar.fireClick({
       action: 'review-inactive-connection-recovery',
       serverProfileId: 'p3',
@@ -8495,7 +8539,7 @@ describe('bootstrapWebclient: Account server profiles', () => {
       'data-recued-connections-route-content',
     )!;
     expect(subtreeInnerHtml(connectionContent)).toContain(
-      'This recovery belongs to another server',
+      'This belongs to a different server',
     );
     expect(subtreeInnerHtml(connectionContent)).toContain('office');
     expect(subtreeInnerHtml(connectionContent)).toContain('home');
@@ -8558,7 +8602,7 @@ describe('bootstrapWebclient: Account server profiles', () => {
       '#connections/others',
     );
     expect(subtreeInnerHtml(connectionContent)).not.toContain(
-      'This recovery belongs to another server',
+      'This belongs to a different server',
     );
     await handle.dispose();
   });
@@ -8741,7 +8785,7 @@ describe('bootstrapWebclient: Account server profiles', () => {
     expect(reload).not.toHaveBeenCalled();
     expect(subtreeText(
       findByAttr(fixture.root, SERVER_SWITCHER_SWITCH_CONFIRM_ATTR)!,
-    )).toContain('Your unsent Chat draft stays only in this tab');
+    )).toContain('The Chat message you have not sent is only in this tab');
     expect(findByAttr(fixture.root, SERVER_SWITCHER_SWITCH_ERROR_ATTR)?.textContent)
       .toContain('Review the updated boundary');
 
@@ -8795,7 +8839,7 @@ describe('bootstrapWebclient: Account server profiles', () => {
       .toContain('Review the updated boundary');
     expect(subtreeText(
       findByAttr(fixture.root, SERVER_SWITCHER_SWITCH_CONFIRM_ATTR)!,
-    )).toContain('Your unsent Chat draft stays only in this tab');
+    )).toContain('The Chat message you have not sent is only in this tab');
 
     errors.mockRestore();
     await handle.dispose();
@@ -8938,7 +8982,7 @@ describe('bootstrapWebclient: Account server profiles', () => {
     findAllByAttr(fixture.root, SERVER_SWITCHER_ITEM_ATTR)[1]!.click();
 
     const review = findByAttr(fixture.root, SERVER_SWITCHER_SWITCH_CONFIRM_ATTR);
-    expect(subtreeText(review!)).toContain('Your unsent Chat draft stays only in this tab');
+    expect(subtreeText(review!)).toContain('The Chat message you have not sent is only in this tab');
     expect(profiles.state.activeId).toBe('p1');
     expect(reload).not.toHaveBeenCalled();
 
@@ -9175,7 +9219,7 @@ describe('bootstrapWebclient: Account server profiles', () => {
     await flush();
     expect(content.getAttribute('tabindex')).toBe('-1');
     expect(subtreeText(banner)).toContain(
-      'Back on home. Contracts is refreshed and ready.',
+      'Back on home. Contracts is up to date and ready.',
     );
     expect(action.textContent).toBe('Continue in Contracts');
     expect(action.hasAttribute('hidden')).toBe(false);
@@ -9273,7 +9317,7 @@ describe('bootstrapWebclient: Account server profiles', () => {
       'review',
     );
     expect(orientationAnnouncement.textContent).toBe(
-      'This changed. Review this status before continuing.',
+      'This changed. Check this before you carry on.',
     );
     expect(orientationAnnouncement.textContent).not.toContain(
       'Private server-owned detail',
@@ -9281,7 +9325,7 @@ describe('bootstrapWebclient: Account server profiles', () => {
     fireRouteMutation();
     expect(invalidatedError.focusCallCount).toBe(1);
     expect(orientationAnnouncement.textContent).toBe(
-      'This changed. Review this status before continuing.',
+      'This changed. Check this before you carry on.',
     );
 
     // When that exact condition resolves, return to the same still-current
@@ -9596,7 +9640,7 @@ describe('bootstrapWebclient: Account server profiles', () => {
     expect(topbar.innerHTML).toContain('attention-popover');
     expect(topbar.innerHTML).toContain('data-phase="failed"');
     expect(topbar.innerHTML).toContain('data-remediation="retry"');
-    expect(topbar.innerHTML).toContain('Contracts couldn’t be refreshed');
+    expect(topbar.innerHTML).toContain('Contracts could not be brought up to date');
     expect(topbar.innerHTML).toContain('Review Contracts');
     expect(topbar.innerHTML).toContain('Try again');
     expect(topbar.innerHTML).not.toContain('private transport diagnostic');
@@ -9717,8 +9761,8 @@ describe('bootstrapWebclient: Account server profiles', () => {
     );
     expect(topbar.innerHTML).toContain('data-phase="failed"');
     expect(topbar.innerHTML).toContain('data-remediation="escalated"');
-    expect(topbar.innerHTML).toContain('Still can’t verify Contracts');
-    expect(topbar.innerHTML).toContain('stopped the retry loop');
+    expect(topbar.innerHTML).toContain('Recued still cannot check Contracts');
+    expect(topbar.innerHTML).toContain('stopped trying');
     expect(topbar.innerHTML).toContain('Review Contracts');
     expect(topbar.innerHTML).toContain('Review server');
     expect(topbar.innerHTML).toContain('Stop recovery');
@@ -9760,7 +9804,7 @@ describe('bootstrapWebclient: Account server profiles', () => {
     expect(coldTopbar.innerHTML).toContain('data-phase="ready"');
     expect(coldTopbar.innerHTML).toContain('Recheck area');
     expect(coldTopbar.innerHTML).not.toContain('escalated');
-    expect(coldTopbar.innerHTML).not.toContain('stopped the retry loop');
+    expect(coldTopbar.innerHTML).not.toContain('stopped trying');
     await coldHandle.dispose();
 
     // Neither a reconnect nor a stale synthetic action escapes the cap.
@@ -9802,7 +9846,7 @@ describe('bootstrapWebclient: Account server profiles', () => {
     expect(topbar.innerHTML).toContain('data-remediation="escalated"');
     expect(topbar.innerHTML).toContain('data-review-target="server"');
     expect(topbar.innerHTML).toContain(
-      'What happened after reviewing home?',
+      'What happened after you looked at home?',
     );
     expect(topbar.innerHTML).toContain(
       'Looks resolved &mdash; verify &amp; choose again',
@@ -9888,7 +9932,7 @@ describe('bootstrapWebclient: Account server profiles', () => {
     );
     expect(topbar.innerHTML).toContain('data-review-target="area"');
     expect(topbar.innerHTML).toContain(
-      'What happened after reviewing Contracts?',
+      'What happened after you looked at Contracts?',
     );
 
     topbar.fireClick({ action: 'resolve-recovery-intent-review' });
@@ -9927,7 +9971,7 @@ describe('bootstrapWebclient: Account server profiles', () => {
     expect(topbar.innerHTML).toContain(
       'data-phase="verification_interrupted"',
     );
-    expect(topbar.innerHTML).toContain('Verification was interrupted');
+    expect(topbar.innerHTML).toContain('The check was cut short');
     expect(topbar.innerHTML).toContain('Retry verification');
     expect(topbar.innerHTML).toContain('Review Contracts');
     expect(topbar.innerHTML).not.toContain(
@@ -9954,9 +9998,9 @@ describe('bootstrapWebclient: Account server profiles', () => {
     )).toBe(readsBeforeReconnect);
     expect(topbar.innerHTML).toContain('data-phase="verification_handoff"');
     expect(topbar.innerHTML).toContain(
-      'Review the connection before another check',
+      'Look at the connection before checking again',
     );
-    expect(topbar.innerHTML).toContain('Review connection');
+    expect(topbar.innerHTML).toContain('Look at the connection');
     expect(topbar.innerHTML).toContain('Review Contracts');
     expect(topbar.innerHTML).not.toContain('Retry verification');
     expect(topbar.innerHTML).toContain(
@@ -10164,7 +10208,7 @@ describe('bootstrapWebclient: Account server profiles', () => {
     )).toBe(false);
     expect(topbar.innerHTML).not.toContain('top-bar-attention-badge');
     expect(subtreeText(banner)).not.toContain('Back on');
-    expect(subtreeText(banner)).not.toContain('refreshed and ready');
+    expect(subtreeText(banner)).not.toContain('up to date and ready');
     await handle.dispose();
   });
 
@@ -10308,7 +10352,7 @@ describe('bootstrapWebclient: Account server profiles', () => {
       diagnosis,
       ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RECONCILE_ATTR,
     )!;
-    expect(reconcile.textContent).toBe('Waiting for current server state…');
+    expect(reconcile.textContent).toBe('Waiting to hear how the server is doing…');
     expect(reconcile.hasAttribute('disabled')).toBe(true);
 
     // The action response is not a current-state baseline. Only a later fresh
@@ -10324,7 +10368,7 @@ describe('bootstrapWebclient: Account server profiles', () => {
         supervisor_mode: 'systemd',
       },
     });
-    expect(reconcile.textContent).toBe('Use current server state');
+    expect(reconcile.textContent).toBe('Use what the server says now');
     expect(reconcile.hasAttribute('disabled')).toBe(false);
     expect(storage.data.has(
       RECOVERY_INTENT_REVIEW_VERIFICATION_SESSION_KEY,
@@ -10338,9 +10382,9 @@ describe('bootstrapWebclient: Account server profiles', () => {
     expect(topbar.innerHTML).toContain(
       `${ATTENTION_RECOVERY_INTENT_SERVER_STATE_ATTR}="paused"`,
     );
-    expect(topbar.innerHTML).toContain('Current server state: paused');
+    expect(topbar.innerHTML).toContain('Your server right now: paused');
     expect(topbar.innerHTML).toContain(
-      'without claiming the earlier Pause request caused it',
+      'It does not claim the earlier Pause caused it',
     );
     expect(topbar.innerHTML).toContain(
       'Verify Contracts &amp; choose again',
@@ -10511,7 +10555,7 @@ describe('bootstrapWebclient: Account server profiles', () => {
     topbar.fireClick({ action: 'open-attention' });
     expect(topbar.innerHTML).toContain('data-phase="verification_ready"');
     expect(topbar.innerHTML).toContain('data-deferred="true"');
-    expect(topbar.innerHTML).toContain('Contracts check kept for later');
+    expect(topbar.innerHTML).toContain('Contracts check saved for later');
     expect(topbar.innerHTML).toContain(
       'Kept for later just now · expires in 30 min',
     );
@@ -10795,7 +10839,7 @@ describe('bootstrapWebclient: Account server profiles', () => {
     firstTopbar.fireClick({ action: 'open-attention' });
     expect(firstTopbar.innerHTML).toContain('data-phase="retry"');
     expect(firstTopbar.innerHTML).toContain(
-      'Contracts couldn’t be refreshed',
+      'Contracts could not be brought up to date',
     );
     expect(firstTopbar.innerHTML).toContain('Retry current Contracts');
     expect(firstTopbar.innerHTML).not.toContain(
@@ -11027,7 +11071,7 @@ describe('bootstrapWebclient: Account server profiles', () => {
     expect(findByAttr(
       diagnosis,
       ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RETURN_ATTR,
-    )?.textContent).toBe('Choose check or close');
+    )?.textContent).toBe('Choose: check, or close');
     expect(countRpcCalls(
       fixture.transportControls,
       'collection.contract.listContracts',
@@ -11957,9 +12001,9 @@ describe('bootstrapWebclient: Account server profiles', () => {
     topbar.fireClick({ action: 'open-attention' });
     expect(topbar.innerHTML).toContain('data-phase="verification_handoff"');
     expect(topbar.innerHTML).toContain(
-      'Verification keeps getting interrupted',
+      'The check keeps getting cut short',
     );
-    expect(topbar.innerHTML).toContain('Review connection');
+    expect(topbar.innerHTML).toContain('Look at the connection');
     expect(topbar.innerHTML).not.toContain('Retry verification');
     expect(topbar.innerHTML).not.toContain('Keep this private');
 
@@ -11976,7 +12020,7 @@ describe('bootstrapWebclient: Account server profiles', () => {
       'navigation',
     );
     expect(subtreeText(diagnosis)).toContain(
-      'The latest check ended when this tab left the saved work area',
+      'The check stopped because this tab moved away',
     );
     expect(storage.data.has(
       RECOVERY_INTENT_REVIEW_VERIFICATION_SESSION_KEY,
@@ -12125,7 +12169,7 @@ describe('bootstrapWebclient: Account server profiles', () => {
     expect(topbar.innerHTML).toContain(
       'Reconnect before returning to Contracts',
     );
-    expect(topbar.innerHTML).toContain('Review connection');
+    expect(topbar.innerHTML).toContain('Look at the connection');
     expect(topbar.innerHTML).toContain('Review Contracts');
     expect(topbar.innerHTML).not.toContain('Try again');
     expect(topbar.innerHTML).not.toContain('connection lost');
@@ -12202,7 +12246,7 @@ describe('bootstrapWebclient: Account server profiles', () => {
     );
     expect(topbar.innerHTML).not.toContain('top-bar-attention-badge');
     expect(subtreeText(banner)).not.toContain('Back on');
-    expect(subtreeText(banner)).not.toContain('refreshed and ready');
+    expect(subtreeText(banner)).not.toContain('up to date and ready');
 
     // A duplicate connected observation cannot replay the one-shot retry or
     // its exact arrival cue.
@@ -12368,7 +12412,7 @@ describe('bootstrapWebclient: Account server profiles', () => {
       true,
     );
     expect(subtreeText(banner)).not.toContain('Back on');
-    expect(subtreeText(banner)).not.toContain('refreshed and ready');
+    expect(subtreeText(banner)).not.toContain('up to date and ready');
 
     fixture.transportControls.fireState('reconnecting');
     fixture.transportControls.fireState('connected');
@@ -12536,7 +12580,7 @@ describe('bootstrapWebclient: Account server profiles', () => {
     );
     expect(topbar.innerHTML).not.toContain('top-bar-attention-badge');
     expect(subtreeText(banner)).not.toContain('Back on');
-    expect(subtreeText(banner)).not.toContain('refreshed and ready');
+    expect(subtreeText(banner)).not.toContain('up to date and ready');
     await handle.dispose();
   });
 
@@ -12703,7 +12747,7 @@ describe('bootstrapWebclient: Account server profiles', () => {
       'Keep this unfinished thought',
     );
     expect(subtreeText(banner)).toContain(
-      'Back on home. Contracts is refreshed and ready.',
+      'Back on home. Contracts is up to date and ready.',
     );
     expect(action.textContent).toBe('Continue in Contracts');
     expect(action.hasAttribute('hidden')).toBe(false);
@@ -12748,8 +12792,8 @@ describe('bootstrapWebclient: Account server profiles', () => {
     const banner = findByAttr(fixture.root, CONNECTION_BANNER_ATTR)!;
     const action = findByAttr(fixture.root, CONNECTION_BANNER_ACTION_ATTR)!;
     expect(banner.getAttribute('data-state')).toBe('attention');
-    expect(subtreeText(banner)).toContain('tab has moved since arrival');
-    expect(subtreeText(banner)).not.toContain('refreshed and ready');
+    expect(subtreeText(banner)).toContain('tab has moved on since');
+    expect(subtreeText(banner)).not.toContain('up to date and ready');
     expect(action.textContent).toBe('Return to Contracts');
     const content = routeContentRoot(fixture.root);
     const broadFocusesBeforeReturn = content.focusCallCount;
@@ -12814,11 +12858,11 @@ describe('bootstrapWebclient: Account server profiles', () => {
     const banner = findByAttr(fixture.root, CONNECTION_BANNER_ATTR)!;
     const action = findByAttr(fixture.root, CONNECTION_BANNER_ACTION_ATTR)!;
     expect(banner.getAttribute('data-state')).toBe('attention');
-    expect(subtreeText(banner)).toContain('Contracts is refreshed');
+    expect(subtreeText(banner)).toContain('Contracts is up to date');
     expect(subtreeText(banner)).toContain(
-      'item you had open wasn’t carried across servers',
+      'did not carry what you had open across to another server',
     );
-    expect(subtreeText(banner)).not.toContain('refreshed and ready');
+    expect(subtreeText(banner)).not.toContain('up to date and ready');
     expect(action.textContent).toBe('Choose again in Contracts');
     const content = routeContentRoot(fixture.root);
     const broadFocusesBeforeChoose = content.focusCallCount;
@@ -12875,8 +12919,8 @@ describe('bootstrapWebclient: Account server profiles', () => {
     const banner = findByAttr(fixture.root, CONNECTION_BANNER_ATTR)!;
     const action = findByAttr(fixture.root, CONNECTION_BANNER_ACTION_ATTR)!;
     expect(banner.getAttribute('data-state')).toBe('attention');
-    expect(subtreeText(banner)).toContain('couldn’t confirm Contracts is current');
-    expect(subtreeText(banner)).not.toContain('refreshed and ready');
+    expect(subtreeText(banner)).toContain('could not check that Contracts is up to date');
+    expect(subtreeText(banner)).not.toContain('up to date and ready');
     expect(action.textContent).toBe('Retry Contracts');
 
     // If the person browsed away while deciding, returning mounts one fresh
@@ -12908,7 +12952,7 @@ describe('bootstrapWebclient: Account server profiles', () => {
       error: { code: 'unavailable', message: 'still unavailable' },
     });
     await flush();
-    expect(subtreeText(banner)).toContain('couldn’t confirm Contracts is current');
+    expect(subtreeText(banner)).toContain('could not check that Contracts is up to date');
     expect(action.textContent).toBe('Retry Contracts');
 
     action.click();
@@ -12925,7 +12969,7 @@ describe('bootstrapWebclient: Account server profiles', () => {
     });
     await flush();
     expect(subtreeText(banner)).toContain(
-      'Back on home. Contracts is refreshed and ready.',
+      'Back on home. Contracts is up to date and ready.',
     );
     expect(action.textContent).toBe('Continue in Contracts');
     await handle.dispose();
@@ -12957,8 +13001,8 @@ describe('bootstrapWebclient: Account server profiles', () => {
 
     const banner = findByAttr(fixture.root, CONNECTION_BANNER_ATTR)!;
     const action = findByAttr(fixture.root, CONNECTION_BANNER_ACTION_ATTR)!;
-    expect(subtreeText(banner)).toContain('hasn’t confirmed Contracts is current');
-    expect(subtreeText(banner)).not.toContain('refreshed and ready');
+    expect(subtreeText(banner)).toContain('could not check that Contracts is up to date');
+    expect(subtreeText(banner)).not.toContain('up to date and ready');
     expect(action.textContent).toBe('Review Contracts');
     expect(findRpcCall(
       fixture.transportControls,
@@ -13044,7 +13088,7 @@ describe('bootstrapWebclient: Account server profiles', () => {
       fixture.root,
       RECOVERY_INTENT_ANNOUNCER_ATTR,
     )?.textContent).toBe(
-      'Review this status before continuing.',
+      'Check this before you carry on.',
     );
     expect(heading.focusCallCount).toBe(0);
     expect(content.focusCallCount).toBe(broadFocusesBeforeReview);
@@ -13092,7 +13136,7 @@ describe('bootstrapWebclient: Account server profiles', () => {
     const banner = findByAttr(fixture.root, CONNECTION_BANNER_ATTR)!;
     const action = findByAttr(fixture.root, CONNECTION_BANNER_ACTION_ATTR)!;
     expect(subtreeText(banner)).toContain(
-      'server is connected, but Recued hasn’t confirmed Contracts is current',
+      'server is connected, but Recued could not check that Contracts is up to date',
     );
     expect(action.textContent).toBe('Review Contracts');
     const contractReads = countRpcCalls(
@@ -13278,7 +13322,7 @@ describe('bootstrapWebclient: Account server profiles', () => {
     expect(findByAttr(fixture.root, SERVER_SWITCH_CONVERGENCE_DRAFT_ATTR)?.value)
       .toBe('Arrived after the failed automatic reload');
     expect(findByAttr(fixture.root, SERVER_SWITCH_CONVERGENCE_COMMIT_ATTR)?.textContent)
-      .toBe('Switch and discard draft');
+      .toBe('Switch, and lose the message');
 
     findByAttr(fixture.root, SERVER_SWITCH_CONVERGENCE_COMMIT_ATTR)!.click();
     await flush();
@@ -13383,7 +13427,7 @@ describe('bootstrapWebclient: Account server profiles', () => {
     expect(findByAttr(fixture.root, SERVER_SWITCH_CONVERGENCE_DRAFT_ATTR)?.value)
       .toBe('Arrived while the server pointer was being confirmed');
     expect(findByAttr(fixture.root, SERVER_SWITCH_CONVERGENCE_COMMIT_ATTR)?.textContent)
-      .toBe('Switch and discard draft');
+      .toBe('Switch, and lose the message');
 
     await handle.dispose();
   });
@@ -13435,8 +13479,8 @@ describe('bootstrapWebclient: Account server profiles', () => {
     await flush();
 
     const dialog = findByAttr(fixture.root, SERVER_SWITCH_CONVERGENCE_DIALOG_ATTR)!;
-    expect(subtreeText(dialog)).toContain('Work is still finishing on the original server');
-    expect(subtreeText(dialog)).toContain('outcome or receipt stays on the original server');
+    expect(subtreeText(dialog)).toContain('The first server is still working');
+    expect(subtreeText(dialog)).toContain('Whatever happened stays on the first server');
     expect(subtreeText(findByAttr(
       fixture.root,
       SERVER_SWITCH_CONVERGENCE_ACTIVE_WORK_ITEM_ATTR,
@@ -13446,7 +13490,7 @@ describe('bootstrapWebclient: Account server profiles', () => {
     expect(findByAttr(fixture.root, SERVER_SWITCH_CONVERGENCE_CHECK_ATTR)?.textContent)
       .toBe('Check status');
     expect(findByAttr(fixture.root, SERVER_SWITCH_CONVERGENCE_COMMIT_ATTR)?.textContent)
-      .toBe('Switch and check later');
+      .toBe('Switch, and check later');
     expect(reload).not.toHaveBeenCalled();
 
     // The source request settles with a known failure while the tab is paused.
@@ -13471,7 +13515,7 @@ describe('bootstrapWebclient: Account server profiles', () => {
     expect(findByAttr(fixture.root, SERVER_SWITCH_CONVERGENCE_DRAFT_ATTR)?.value)
       .toBe('Ask the source server to prepare this');
     expect(findByAttr(fixture.root, SERVER_SWITCH_CONVERGENCE_COMMIT_ATTR)?.textContent)
-      .toBe('Switch and discard draft');
+      .toBe('Switch, and lose the message');
     expect(reload).not.toHaveBeenCalled();
 
     findByAttr(fixture.root, SERVER_SWITCH_CONVERGENCE_COMMIT_ATTR)!.click();
@@ -13553,7 +13597,7 @@ describe('bootstrapWebclient: Account server profiles', () => {
     await flush();
     expect(clipboardWrite).toHaveBeenCalledWith('Private source-server thought');
     expect(findByAttr(fixture.root, SERVER_SWITCH_CONVERGENCE_STATUS_ATTR)?.textContent)
-      .toContain('still not stored on the new server');
+      .toContain('still not saved on the new server');
 
     findByAttr(fixture.root, SERVER_SWITCH_CONVERGENCE_COMMIT_ATTR)!.click();
     await flush();
@@ -13598,7 +13642,7 @@ describe('bootstrapWebclient: Account server profiles', () => {
     expect(findByAttr(fixture.root, SERVER_SWITCH_CONVERGENCE_ERROR_ATTR)?.textContent)
       .toContain('changed again');
     expect(findByAttr(fixture.root, SERVER_SWITCH_CONVERGENCE_COMMIT_ATTR)?.textContent)
-      .toBe('Switch and discard draft');
+      .toBe('Switch, and lose the message');
 
     findByAttr(fixture.root, SERVER_SWITCH_CONVERGENCE_COMMIT_ATTR)!.click();
     await flush();
@@ -13786,7 +13830,7 @@ describe('bootstrapWebclient: Account server profiles', () => {
     }));
     expect(reload).not.toHaveBeenCalled();
     expect(findByAttr(fixture.root, SERVER_SWITCHER_REMOVE_ERROR_ATTR)?.textContent)
-      .toContain('Access was revoked');
+      .toContain('Access was taken away');
     expect(findByAttr(fixture.root, SERVER_SWITCHER_REMOVE_LOCAL_ATTR)).not.toBeNull();
 
     rejectRemoval = false;

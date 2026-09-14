@@ -80,7 +80,7 @@ describe('server update receipt verification recovery', () => {
       },
     });
 
-    expect(diagnostic).toContain('Selected profile: Home server');
+    expect(diagnostic).toContain('Server you picked: Home server');
     expect(diagnostic).toContain('Server host: home.example:8443');
     expect(diagnostic).toContain('Expected operation: rollback');
     expect(diagnostic).toContain(

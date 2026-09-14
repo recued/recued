@@ -93,6 +93,10 @@ describe('D-137 P1 — TIER1_TOOL_NAMES closed list (§ A.1.1)', () => {
     'account.search',
     'work.search',
     'work.read',
+    'work.create',
+    'calendar.create',
+    'calendar.update',
+    'work.update',
     // D-172 P2 — +1: `file.search`. Identity-only read over the owner's files,
     // SESSION-SCOPED BY DEFAULT so the model can resolve "that PDF" without
     // being able to reach the whole file store by saying nothing.
@@ -104,7 +108,7 @@ describe('D-137 P1 — TIER1_TOOL_NAMES closed list (§ A.1.1)', () => {
     'recipe.stop',
   ];
 
-  it('lists exactly thirteen canonical primitives in spec order (P1 six + deal/account.search + work.search/read + memory.write + file.search + recipe.stop)', () => {
+  it('lists exactly seventeen canonical primitives in spec order (P1 six + deal/account.search + work.search/read/create/update + calendar.create/update + memory.write + file.search + recipe.stop)', () => {
     expect(TIER1_TOOL_NAMES).toEqual(expected);
   });
 
@@ -155,11 +159,20 @@ describe('D-137 P1 — TIER1_TOOL_NAMES closed list (§ A.1.1)', () => {
     expect(TIER1_CLASSIFICATIONS['memory.write']).toBe('unknown');
   });
 
-  it('read primitives batch-safe; recipe.run + recipe.stop sequential (D-164 § 6)', () => {
+  it('batch-safe unless two calls in one turn could hit the SAME row (D-164 § 6)', () => {
     // D-259 § 7.4.3 — `recipe.stop` joins `recipe.run` on the sequential side,
     // and for a sharper reason than "it mutates": a stop and the call it would
     // stop must never race inside ONE turn's tool batch.
-    const sequential = new Set(['recipe.run', 'recipe.stop']);
+    //
+    // ⚠ Slice 2 generalises the rule, so the name above changed with it: the
+    // test is no longer "reads are safe, recipe.* are not". `calendar.update`
+    // is sequential for the recipe.stop reason, not the write reason — two
+    // updates in one turn ("move it to Thursday and make it an hour") address
+    // the same `source_id` and the provider's last write silently wins.
+    // `calendar.create` stays parallel BECAUSE it mints a new id, and
+    // `work.create` and `memory.write` are parallel for the same append-only
+    // reason. ⇒ the axis is SHARED IDENTITY, not read-vs-write.
+    const sequential = new Set(['recipe.run', 'recipe.stop', 'calendar.update', 'work.update']);
     for (const name of TIER1_TOOL_NAMES) {
       expect(TIER1_CONCURRENCY_SAFE[name]).toBe(!sequential.has(name));
     }
@@ -351,12 +364,21 @@ describe('D-137 P1 — CHAT_RPC_METHODS closed list (§ Wire A)', () => {
   it('lists every chat method, including D-214 feedback and diagnostics', () => {
     expect(CHAT_RPC_METHODS).toEqual([
       'chat.sessions.list',
+      'chat.messages.search',
       'chat.session.get',
       'chat.session.create',
       'chat.session.delete',
       'chat.session.export',
       // D-167 transparency — read back the aliased "what we sent" egress history.
       'chat.egress.get',
+      'chat.deliveries.list',
+      'chat.delivery.retry',
+      'chat.delivery.skip',
+      'chat.messenger.connect',
+      'chat.turns.list',
+      'chat.turn.withdraw',
+      'chat.turn.cancel',
+      'chat.turn.retry',
       'chat.send',
       'chat.data_diagnosis.resolve',
       'chat.plans.pending.list',
@@ -620,8 +642,19 @@ describe('D-137 P1 — CHAT_SESSION_CHANGED_FIELDS closed list (§ Wire A)', () 
       'archived',
       'tool_call',
       'busy',
+      // a57f7304e — draft attachments.
+      'attachments',
+      'queue',
+      'message',
+      'delivery',
     ]);
-    expect(CHAT_SESSION_CHANGED_FIELD_SET.size).toBe(6);
+    // ⚠ Was `toBe(9)` and went stale the moment a57f7304e added a tenth field —
+    // a magic number beside a list that already pins membership exactly, so it
+    // could only ever restate the line above or contradict it. What it is
+    // actually for is that the SET and the ARRAY agree (no duplicate field), and
+    // stated that way it cannot go stale again. Same form as
+    // `pressure.test.ts`'s SERVER_RPC_METHODS check.
+    expect(CHAT_SESSION_CHANGED_FIELD_SET.size).toBe(CHAT_SESSION_CHANGED_FIELDS.length);
   });
 
   it('isChatSessionChangedField accepts every field + rejects unknown', () => {

@@ -401,7 +401,7 @@ describe('D-149 follow-on — mountLaunchWizard: finish + plan preview', () => {
       ...baseOpts(host, shell),
       initialConfigs: goodConfigs(),
     });
-    expect(getHtml()).toContain('What this wizard will set up');
+    expect(getHtml()).toContain('What this will set up for you');
     view.dispose();
   });
 
@@ -409,7 +409,7 @@ describe('D-149 follow-on — mountLaunchWizard: finish + plan preview', () => {
     const { host, getHtml } = makeFakeHost();
     const { shell } = makeFakeShell();
     const view = mountLaunchWizard(baseOpts(host, shell));
-    expect(getHtml()).not.toContain('What this wizard will set up');
+    expect(getHtml()).not.toContain('What this will set up for you');
     view.dispose();
   });
 
@@ -443,7 +443,7 @@ describe('D-149 follow-on — mountLaunchWizard: finish + plan preview', () => {
       initialStep: 'share',
     });
     click({ action: 'reception-wizard-finish' });
-    expect(getHtml()).toContain('before finishing setup');
+    expect(getHtml()).toContain('before you finish');
     expect(fns.runLaunchWizard).not.toHaveBeenCalled();
     view.dispose();
   });

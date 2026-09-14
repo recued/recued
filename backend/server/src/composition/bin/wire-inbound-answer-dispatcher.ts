@@ -250,26 +250,10 @@ export const composeInboundAnswerDispatcher = (
     }
   };
 
-  /** Offer a non-callback payload for a messenger turn. The ingest
-   *  itself never rejects (documented contract), but a defensive catch
-   *  keeps a seam bug from 502-ing the webhook into a vendor
-   *  redelivery loop that would re-run AI turns. */
-  const offerMessengerTurn = async (
-    vendor: string,
-    connection_name: string,
-    payload: unknown,
-  ): Promise<boolean> => {
-    if (!messengerTurnIngest) return false;
-    try {
-      return await messengerTurnIngest(vendor, connection_name, payload);
-    } catch (e) {
-      log?.('warn', `messenger inbound (${vendor}) — messenger turn ingest threw`, {
-        connection_name,
-        error: e instanceof Error ? e.message : String(e),
-      });
-      return false;
-    }
-  };
+  /** A transient durable-admission failure must reach the vendor acknowledgement
+   * boundary. Stable native IDs make a retry safe after an uncertain local ack. */
+  const offerMessengerTurn = async (vendor: string, connection_name: string, payload: unknown): Promise<boolean> =>
+    messengerTurnIngest ? messengerTurnIngest(vendor, connection_name, payload) : false;
 
   /** WatchSource messenger push source — emit a verified non-callback
    *  user message as a canonical bus event. Returns true when an event
@@ -420,8 +404,8 @@ export const composeInboundAnswerDispatcher = (
         });
         return;
       }
-      const emitted = emitInboundMessage(vendor, connection_name, channel, payload);
       const turnQueued = await offerMessengerTurn(vendor, connection_name, payload);
+      const emitted = emitInboundMessage(vendor, connection_name, channel, payload);
       log?.('info', emitted ? `messenger inbound (${vendor}) — message event emitted` : `messenger inbound (${vendor})`, {
         connection_name,
         ...idLog,

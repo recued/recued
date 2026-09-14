@@ -891,6 +891,23 @@ export interface MailProvider {
    *  P1.5). Throws `MAIL_SEND_*` typed errors on failure. */
   send?(msg: OutgoingMessage): Promise<SentMessageMeta>;
 
+  /** D-264 — park a message in the mailbox's own Drafts folder.
+   *
+   *  Optional, and in LOCKSTEP with `draftCapable` exactly as `send` is with
+   *  `sendCapable`: a provider sets the flag true only when it implements this.
+   *
+   *  ⚠ **NOT idempotent across calls.** Every call creates a draft. `prior`
+   *  carries the `source_id` a previous export returned so the provider can
+   *  supersede it where the API allows (Graph `PATCH`, Gmail `drafts.update`)
+   *  rather than leaving the owner two copies. IMAP has no update verb — it
+   *  appends a replacement and can only remove the old one if the client also
+   *  carries the D-239 delete verb, so it reports `replaced: false` plus a
+   *  warning rather than pretending. The caller must read `replaced`, never
+   *  assume it.
+   *
+   *  Throws `MAIL_DRAFT_*` typed errors on failure. */
+  saveDraft?(msg: OutgoingMessage, prior?: { source_id: string }): Promise<SavedDraftMeta>;
+
   /** D-200 — server-internal source-truth lookup for an already-fenced send.
    * Providers must inspect their Sent source and pass candidates through the
    * shared exactness gate. `not_found` is never failure/resend authority. */
@@ -922,6 +939,25 @@ export interface MailProvider {
    *  `MailCollection` and surfaced on the instance row so the dispatcher
    *  refuses with a legible capability error instead of a 500. */
   readonly mutationCapable: boolean;
+
+  /** D-264 — true iff this provider instance can park a NEW message in the
+   *  mailbox's Drafts folder. Distinct from both neighbours, and the
+   *  distinction is not cosmetic:
+   *
+   *    - vs `sendCapable` — the grants are independent. Gmail may hold
+   *      `gmail.send` without `gmail.modify`, Graph `Mail.Send` without
+   *      `Mail.ReadWrite`, and IMAP-without-SMTP can APPEND all day. Neither
+   *      flag implies the other in either direction.
+   *    - vs `mutationCapable` — same SCOPE for gmail/graph, different PROBE
+   *      for IMAP. D-239's flag means the client exposes the flag/move/delete
+   *      quartet; drafting needs `list` + `append`, which is a different pair.
+   *      They coincide on today's real clients and would diverge the moment
+   *      either group changed, so they are two fields rather than one alias.
+   *
+   *  ⚠ Optional, and `undefined` means NOT capable. An out-of-tree adapter
+   *  that predates this field keeps compiling and advertises nothing it
+   *  cannot do — the same fail-closed direction the four write verbs take. */
+  readonly draftCapable?: boolean;
 
   /** Set or clear the read/seen state. */
   markMessage?(args: {
@@ -1047,6 +1083,29 @@ export interface OutgoingMessage {
  *  picks the Sent record up. `_id` (canonical record id) lands on
  *  the rpc layer's response, not here — providers don't see the
  *  warehouse's record-id derivation. */
+/** D-264 — what a provider returns after parking a draft in the mailbox.
+ *
+ *  Deliberately NOT `SentMessageMeta`: a draft has no `sent_at`, may have no
+ *  stable RFC 5322 Message-Id yet, and carries one fact a sent message cannot
+ *  (whether it superseded an earlier copy). Reusing the sent shape would have
+ *  forced a lie in at least one field. */
+export interface SavedDraftMeta {
+  /** Provider-side identifier for the draft. Gmail: the draft id (NOT the
+   *  message id — `drafts.update` keys on this). Graph: the message resource
+   *  id. IMAP: the APPENDed UID rendered as a string, or the generated
+   *  Message-Id when the server returned no UID. */
+  source_id: string;
+  /** Unix-ms timestamp the provider accepted the draft. */
+  saved_at: number;
+  /** True iff a `prior` draft was actually superseded. ⛔ `false` with a
+   *  `prior` supplied means the old copy is STILL THERE — the owner has two.
+   *  Never infer this from the presence of `prior`. */
+  replaced: boolean;
+  /** Non-fatal problems, same shape and purpose as `SentMessageMeta.warnings`:
+   *  the draft was saved, and something else did not go to plan. */
+  warnings?: Array<{ code: string; message: string }>;
+}
+
 export interface SentMessageMeta {
   /** Provider-side identifier — Gmail message id, Graph id, or
    *  RFC 5322 Message-Id header for SMTP submission. The

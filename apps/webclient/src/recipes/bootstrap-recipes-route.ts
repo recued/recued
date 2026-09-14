@@ -119,6 +119,7 @@ import {
   type RecipePackRef,
 } from './recipe-pack-provenance.js';
 import {
+  buildPackOperationIndex,
   recipeDeclaredOps,
   recipeRecordsUsage,
   type RecordsEffect,
@@ -457,6 +458,9 @@ export type RecipesPackRecipeRefsCaller = (
 ) => Promise<Array<{ slug: string; version: number }>>;
 
 export interface BootstrapRecipesRouteOptions {
+  /** D-269 step 1 — the server's resolved IANA zone, forwarded to the run
+   *  modal's scheduled-activation stamp. Absent ⇒ this browser's, as before. */
+  serverTimeZone?: () => string | undefined;
   root: HTMLElement;
   document?: Document;
   /** Shell-owned scrolling element used for list continuity across detail and
@@ -1228,7 +1232,7 @@ const errMessage = (err: unknown): string =>
 const recipeConfigLoadError = (err: unknown): string => {
   const detail = errMessage(err).trim();
   const sentence = /[.!?]$/.test(detail) ? detail : `${detail}.`;
-  return `Couldn't load config: ${sentence} Try Config again.`;
+  return `Recued could not load the settings: ${sentence} Try again.`;
 };
 
 const recipeDisplayName = (entry: ServerRecipeListEntry): string =>
@@ -1383,7 +1387,7 @@ const renderRecordsUsage = (
   if (packs === null) {
     return `<div ${RECIPES_ROUTE_RECORDS_ATTR}="unknown"><strong>Records:</strong> the installed-pack list is unavailable, so this recipe's stored-data use can't be shown.</div>`;
   }
-  const usage = recipeRecordsUsage(entry.recipe, packs);
+  const usage = recipeRecordsUsage(entry.recipe, buildPackOperationIndex(packs));
   if (usage.length === 0) return '';
   const rows = usage
     .map((pack) => {
@@ -1400,10 +1404,10 @@ const renderRecordsUsage = (
     usage.flatMap((pack) => pack.entities.flatMap((ent) => ent.effects)),
   );
   const headline = effects.has('delete')
-    ? 'this recipe changes and DELETES data stored on this server.'
+    ? 'this Recipe changes things on this server, and DELETES some of them.'
     : effects.has('write')
-      ? 'this recipe reads and changes data stored on this server.'
-      : 'this recipe only reads data stored on this server.';
+      ? 'this Recipe reads and changes things on this server.'
+      : 'this Recipe only reads things on this server.';
   return `
     <div ${RECIPES_ROUTE_RECORDS_ATTR}="${effects.has('delete') ? 'destructive' : 'present'}">
       <strong>Records:</strong> ${headline}
@@ -1426,23 +1430,23 @@ const recipeGrantSummary = (
   // "Risk: unknown" no matter what its ops do.
   const declared = packs === null
     ? null
-    : recipeDeclaredOps(entry.recipe, packs);
+    : recipeDeclaredOps(entry.recipe, buildPackOperationIndex(packs));
   const risk = declared?.risk ?? tool?.risk_tier ?? tool?.classification ?? 'unknown';
   const approval =
     declared !== null && declared.asks_approval
-      ? 'At least one operation is declared approval: ask.'
+      ? 'At least one thing here will ask you first.'
       : risk === 'write' || risk === 'admin' || risk === 'destructive'
-        ? 'Approval policy applies before external side effects.'
+        ? 'Recued asks you before anything reaches the outside world.'
         : risk === 'read'
-          ? 'Read-class recipe; write approval is not declared.'
-          : 'Risk is resolved at dispatch from the recipe and tools.';
+          ? 'This Recipe only reads, so there is nothing to approve.'
+          : 'Recued works out the risk when it runs, from the Recipe and its tools.';
   const riskSource = declared?.risk !== undefined && declared.risk !== null
-    ? ' Declared by the pack.'
+    ? ' Set by the Pack.'
     : '';
   const unresolved = declared !== null && declared.unresolved.length > 0
     ? `<div ${RECIPES_ROUTE_RECORDS_ATTR}="unresolved"><strong>Unresolved operations:</strong> ${e(declared.unresolved.join(', '))} — the pack that declares them is not installed, so what they do can't be shown.</div>`
     : '';
-  const needs = requires.length > 0 ? requires.join(', ') : 'No manifest permissions declared.';
+  const needs = requires.length > 0 ? requires.join(', ') : 'This Recipe asks for no permissions.';
   const connectionsLine = renderConnectionsNeed(
     recipeRequiredConnections(entry.recipe),
     enrolledConnections,
@@ -1460,7 +1464,7 @@ const recipeGrantSummary = (
 const RUNNABILITY_PILL_COPY: Record<RunnabilityStatus, string> = {
   runnable: 'Runnable',
   degraded: 'Degraded',
-  blocked: 'Blocked — add a provider',
+  blocked: 'Cannot run. Add a provider',
 };
 
 const runnabilityPillCopy = (entry: RecipeRunnabilityEntry): string => {
@@ -1468,16 +1472,16 @@ const runnabilityPillCopy = (entry: RecipeRunnabilityEntry): string => {
   const missingPacks = missingPackRefsFromRunnability(entry);
   if (missingPacks.length === 0) return RUNNABILITY_PILL_COPY.blocked;
   return missingPacks.length === 1
-    ? 'Blocked — install a pack'
-    : 'Blocked — install packs';
+    ? 'Cannot run. Install a Pack'
+    : 'Cannot run. Install some Packs';
 };
 
 const missingPackRunAttrs = (missingPacks: readonly string[]): string =>
   missingPacks.length === 0
     ? ''
     : ` disabled title="${missingPacks.length === 1
-      ? 'Install the missing pack before running.'
-      : 'Install the missing packs before running.'}"`;
+      ? 'Install the missing Pack before you run this.'
+      : 'Install the missing Packs before you run this.'}"`;
 
 /** The per-recipe derived-runnability line: status pill + per-dependency
  *  detail. Empty when the recipe has no runnability entry. */
@@ -1512,10 +1516,10 @@ const renderPiiLine = (
         : 'info';
   const pillCopy =
     tone === 'manual'
-      ? 'PII — manual attention'
+      ? 'Personal details. You need to look'
       : tone === 'auto'
-        ? 'PII auto-protected'
-        : 'PII note';
+        ? 'Personal details, protected by Recued'
+        : 'About personal details';
   const detail = [
     ...(summary.headline !== '' ? [summary.headline] : []),
     ...summary.auto_protected.map((l) => l.message),
@@ -1557,7 +1561,7 @@ const renderPackageSource = (entry: ServerRecipeListEntry): string =>
   renderProvenance({
     primary: packageSource(entry),
     kind: 'source',
-    ariaLabel: 'Recipe package source',
+    ariaLabel: 'Where this Recipe came from',
   });
 
 const renderSourceErrors = (errors: RecipesLoadErrors): string => {
@@ -1631,7 +1635,7 @@ const renderFromPack = (refs: ReadonlyArray<RecipePackRef>): string => {
     href: '#packs',
     linkClassName: 'recipes-inline-link',
     primaryAttributes: { [RECIPES_ROUTE_FROM_PACK_ATTR]: packAttr },
-    ariaLabel: 'Recipe pack provenance',
+    ariaLabel: 'Which Pack this came from',
   });
 };
 
@@ -1682,7 +1686,7 @@ const renderRecipeFilters = (
   return `
     <div ${RECIPES_ROUTE_FILTERS_ATTR}>
       <input type="search" class="recipes-search" ${RECIPES_ROUTE_SEARCH_ATTR}
-        value="${e(filter.query)}" placeholder="Search recipes…" aria-label="Search installed recipes">
+        value="${e(filter.query)}" placeholder="Search Recipes…" aria-label="Search installed recipes">
       <div class="recipes-chip-row" role="group" aria-label="Filter by type">
         ${RECIPE_TRIGGER_CHIPS.map((c) => renderFilterChip('trigger', c.value, c.label, filter)).join('')}
       </div>
@@ -1859,7 +1863,7 @@ const renderDishesSection = (
         kind: 'source',
         primaryClassName: 'recipes-dish-origin',
         primaryAttributes: { 'data-dish-origin': origin.badge },
-        ariaLabel: 'Dish origin',
+        ariaLabel: 'Where this dish came from',
       })}
       <span class="recipes-dish-last">${e(
         last === undefined ? 'never run' : `last run ${last.commit_status}`,
@@ -1919,10 +1923,10 @@ const renderAutoRunToggle = (
   const actionLabel = `${lifecycle.label} auto-run`;
   const label = busy
     ? lifecycle.label === 'Arm'
-      ? 'Arming auto-run…'
+      ? 'Setting it to run on its own…'
       : lifecycle.label === 'Re-arm'
-        ? 'Re-arming auto-run…'
-        : 'Pausing auto-run…'
+        ? 'Setting it to run on its own again…'
+        : 'Pausing…'
     : actionLabel;
   const name = recipeDisplayName(entry);
   return `<button type="button" class="recipes-button${primary ? ' recipes-button--primary' : ''}"
@@ -2071,10 +2075,10 @@ const renderRelatedRecipeRow = (
         ${canConfig && hasVariables
           ? `<button type="button" class="recipes-button"
           ${RECIPES_ROUTE_ACTION_ATTR}="open-recipe-config"
-          aria-label="${actionName(configBusyRecipeId === entry.recipe_id ? 'Loading config…' : 'Config')}"
+          aria-label="${actionName(configBusyRecipeId === entry.recipe_id ? 'Loading settings…' : 'Config')}"
           ${RECIPES_ROUTE_RECIPE_ID_ATTR}="${e(entry.recipe_id)}"${configBusyRecipeId === entry.recipe_id
             ? ' aria-disabled="true" aria-busy="true"'
-            : ''}>${configBusyRecipeId === entry.recipe_id ? 'Loading config…' : 'Config'}</button>`
+            : ''}>${configBusyRecipeId === entry.recipe_id ? 'Loading settings…' : 'Config'}</button>`
           : ''}
         ${canSchedule ? `<button type="button" class="recipes-button"
           ${RECIPES_ROUTE_ACTION_ATTR}="open-schedule"
@@ -2131,8 +2135,8 @@ const renderRelatedRecipesSection = (
       ? `<div class="recipes-bundle-status" role="status" aria-live="polite"
           ${RECIPES_ROUTE_BUNDLE_STATUS_ATTR}="${e(carrierRead.slug)}">
           <p>${carrierRead.retrying
-            ? 'Retrying workflow pack contents…'
-            : 'Checking workflow pack contents…'}</p>
+            ? 'Trying again…'
+            : 'Checking what is in the Pack…'}</p>
           ${carrierRead.retrying
             ? `<button type="button" class="recipes-button"
                 ${RECIPES_ROUTE_ACTION_ATTR}="retry-bundle-carrier"
@@ -2154,8 +2158,8 @@ const renderRelatedRecipesSection = (
         ${bundlePack === null ? '' : `<a class="recipes-button${bundlePack.fullyInstalled ? '' : ' recipes-button--primary'}"
           href="${serializeShellRoute('packs', bundlePack.slug)}"
           ${RECIPES_ROUTE_BUNDLE_PACK_ATTR}="${e(bundlePack.slug)}">${bundlePack.fullyInstalled
-            ? 'View workflow pack'
-            : `Install complete workflow (${bundlePack.recipeCount})`}</a>`}
+            ? 'See the whole Pack'
+            : `Install everything (${bundlePack.recipeCount})`}</a>`}
       </div>
       ${bundlePack === null ? '' : `<p class="recipes-detail-note">${e(bundlePack.name)} is the bundled install pack for this recipe. Pack detail shows the full contents and grants before install.</p>`}
       ${carrierStatus}
@@ -2235,10 +2239,10 @@ const renderRecipeDetail = (
     : '';
   const autoRunError = autoRunErrors.get(entry.recipe_id);
   const emptyAutomationCopy = isManual
-    ? 'No schedules or triggers yet — add one from Schedule or in Automation.'
+    ? 'Nothing sets this off yet. Add a schedule here, or set one up under Automation.'
     : actionKind === 'autorun'
-      ? 'This recipe activates automatically — open Automation to review and manage its state.'
-      : 'This recipe activates from triggers — open Automation to review and manage them.';
+      ? 'This Recipe runs on its own. Open Automation to see it and change it.'
+      : 'Something sets this Recipe off. Open Automation to see what, and change it.';
   const variableDefs = Object.values(entry.recipe.variables ?? {});
   const defaultPrimitiveOnly = variableDefs.length > 0
     && variableDefs.every((definition) => !isInvocationVariable(definition));
@@ -2275,10 +2279,10 @@ const renderRecipeDetail = (
             ${RECIPES_ROUTE_RECIPE_ID_ATTR}="${e(entry.recipe_id)}">Schedule</button>` : ''}
           ${autoRunToggle}
           ${actionKind === 'autorun' && autoRun?.preapproval
-            ? `<a class="recipes-button" href="${e(preapprovalHref(autoRun.preapproval.proposal_id))}">Review approval</a>`
+            ? `<a class="recipes-button" href="${e(preapprovalHref(autoRun.preapproval.proposal_id))}">Look at this run</a>`
             : actionKind === 'autorun' && canPreapprove && autoRun?.lifecycle_revision !== undefined && !autoRun.auto_disabled
               ? `<button type="button" class="recipes-button" ${RECIPES_ROUTE_ACTION_ATTR}="review-auto-run"
-                ${RECIPES_ROUTE_RECIPE_ID_ATTR}="${e(entry.recipe_id)}">Review next run</button>` : ''}
+                ${RECIPES_ROUTE_RECIPE_ID_ATTR}="${e(entry.recipe_id)}">Look at the next run</button>` : ''}
           ${isManual ? '' : `<a class="recipes-button${autoRunToggle === '' ? ' recipes-button--primary' : ''}"
             href="${serializeShellRoute('automation', entry.recipe_id)}"
             ${RECIPES_ROUTE_AUTOMATION_LINK_ATTR}>Manage automation</a>`}
@@ -2287,7 +2291,7 @@ const renderRecipeDetail = (
             ${RECIPES_ROUTE_ACTION_ATTR}="open-recipe-config"
             ${RECIPES_ROUTE_RECIPE_ID_ATTR}="${e(entry.recipe_id)}"${configBusyRecipeId === entry.recipe_id
               ? ' aria-disabled="true" aria-busy="true"'
-              : ''}>${configBusyRecipeId === entry.recipe_id ? 'Loading config…' : 'Config'}</button>`
+              : ''}>${configBusyRecipeId === entry.recipe_id ? 'Loading settings…' : 'Config'}</button>`
             : ''}
           <a class="recipes-button"
             href="${serializeShellRoute('kitchen', 'recipe', entry.recipe_id)}"
@@ -3282,10 +3286,10 @@ export const bootstrapRecipesRoute = (
       await Promise.allSettled([
         opts.recipesListCaller !== undefined
           ? opts.recipesListCaller()
-          : Promise.reject(new Error('Installed recipes are not available on this server yet.')),
+          : Promise.reject(new Error('This server cannot list your Recipes yet.')),
         opts.toolCatalogCaller !== undefined
           ? opts.toolCatalogCaller()
-          : Promise.reject(new Error('The tool list is not available on this server yet.')),
+          : Promise.reject(new Error('This server cannot list its tools yet.')),
         // Soft enhancement — failure leaves `connections` null.
         opts.connectionsListCaller !== undefined
           ? opts.connectionsListCaller()
@@ -3490,7 +3494,7 @@ export const bootstrapRecipesRoute = (
         {
           label: 'Source',
           value: packRefs.length === 0
-            ? 'Standalone recipe'
+            ? 'A Recipe on its own'
             : packRefs.map((ref) => ref.pack_ref).join(', '),
         },
         {
@@ -3502,10 +3506,10 @@ export const bootstrapRecipesRoute = (
         {
           label: 'AI data',
           value: piiState?.headline
-            || (piiState === undefined ? 'Not checked' : 'No additional disclosure'),
+            || (piiState === undefined ? 'Not checked' : 'Nothing else to tell you'),
         },
       ],
-      primaryLabel: 'Open recipe',
+      primaryLabel: 'Open the Recipe',
     }, opener);
   };
 
@@ -3559,14 +3563,14 @@ export const bootstrapRecipesRoute = (
       const confirm = doc.defaultView?.confirm;
       if (
         confirm !== undefined
-        && !confirm('A recipe action is still in progress. Leave this recipe anyway?')
+        && !confirm('Something is still happening. Leave anyway?')
       ) return;
     } else if (hasUnsavedResultGridChanges()) {
       const confirm = doc.defaultView?.confirm;
       if (
         confirm !== undefined
         && !confirm(
-          'This recipe result has unsaved table changes. Leave this recipe anyway?',
+          'You have changes you have not saved. Leave anyway?',
         )
       ) return;
     }
@@ -3614,7 +3618,7 @@ export const bootstrapRecipesRoute = (
       && detailVisitGeneration === visitAtDispatch;
     const execute = opts.recipeExecuteCaller;
     if (execute === undefined) {
-      defaultRunError = 'Running is not available on this server yet.';
+      defaultRunError = 'This server cannot run things yet.';
       render();
       return;
     }
@@ -3693,6 +3697,7 @@ export const bootstrapRecipesRoute = (
     const runRecordRefSearch = recordRefSearchFor(entry.recipe);
     runModalRecipeId = recipe_id;
     childRunModal = RunModal.wireRunModal({
+      ...(opts.serverTimeZone ? { serverTimeZone: opts.serverTimeZone } : {}),
       recipe: entry,
       document: doc,
       initialTab: tab,
@@ -3847,7 +3852,7 @@ export const bootstrapRecipesRoute = (
     recipeConfigHandle = wireConfigEditorOverlay({
       document: doc,
       title: liveEntry.recipe.metadata?.name ?? recipe_id,
-      copy: 'These values apply to every run of this recipe. A single run can still override them.',
+      copy: 'These settings are used every time this Recipe runs. You can still change them for one run.',
       confirmLabel: 'Save',
       variables: liveEntry.recipe.variables ?? {},
       currentOverlay: current,
@@ -3863,7 +3868,7 @@ export const bootstrapRecipesRoute = (
         : {}),
       confirmingLabel: 'Saving…',
       confirmFailureCopy:
-        "Couldn't save config. Your edits are still here. Try again.",
+        "Recued could not save that. What you typed is still here. Try again.",
       onConfirm: async (config) => {
         await setCaller({
           recipe_id,
@@ -3895,7 +3900,7 @@ export const bootstrapRecipesRoute = (
       };
     } catch (error) {
       const next = new Map(autoRunErrors);
-      next.set(recipe_id, `Couldn’t update auto-run: ${errMessage(error)}`);
+      next.set(recipe_id, `Recued could not change that: ${errMessage(error)}`);
       autoRunErrors = next;
     } finally {
       const next = new Set(autoRunBusy);
@@ -4068,7 +4073,7 @@ export const bootstrapRecipesRoute = (
     if (execute === undefined) {
       resultFilterStates = new Map(resultFilterStates).set(filterKey, {
         ...active.state,
-        error: 'Running is not available on this server yet.',
+        error: 'This server cannot run things yet.',
       });
       render();
       return;
@@ -4159,7 +4164,7 @@ export const bootstrapRecipesRoute = (
     if (previewWindow === null) {
       resultFileErrors = new Map(resultFileErrors).set(
         registered.stableKey,
-        'The browser blocked the PDF preview window. Allow popups for this site or download the file instead.',
+        'Your browser blocked the preview window. Allow pop-ups for this address, or download the file instead.',
       );
       render();
       return;
@@ -4573,12 +4578,12 @@ export const bootstrapRecipesRoute = (
     hasInFlightWork: hasRecipeInFlightWork,
     inFlightWorkPrompt: () =>
       hasRecipeInFlightWork()
-        ? 'A recipe action is still in progress. Leave Recipes anyway?'
+        ? 'Something is still happening. Leave anyway?'
         : null,
     hasUnsavedChanges: hasUnsavedResultGridChanges,
     unsavedChangesPrompt: () =>
       hasUnsavedResultGridChanges()
-        ? 'This recipe result has unsaved table changes. Leave Recipes anyway?'
+        ? 'You have changes you have not saved. Leave anyway?'
         : null,
     dispose: () => {
       if (disposed) return;

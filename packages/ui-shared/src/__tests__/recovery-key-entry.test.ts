@@ -132,7 +132,7 @@ describe('submit — invalid input', () => {
     await h.submit();
 
     expect(store.getSlice().stage).toBe('entering');
-    expect(store.getSlice().error).toMatch(/typos|valid 24-word/);
+    expect(store.getSlice().error).toMatch(/typing mistakes|24-word recovery key/);
     expect(submitted).toBe(false);
   });
 
@@ -153,7 +153,7 @@ describe('submit — invalid input', () => {
     await h.submit();
 
     expect(store.getSlice().stage).toBe('entering');
-    expect(store.getSlice().error).toMatch(/No recovery key is set up/);
+    expect(store.getSlice().error).toMatch(/no recovery key yet/);
     expect(submitted).toBe(false);
   });
 
@@ -176,7 +176,7 @@ describe('submit — invalid input', () => {
     await h.submit();
 
     expect(store.getSlice().stage).toBe('entering');
-    expect(store.getSlice().error).toMatch(/doesn'?t match/);
+    expect(store.getSlice().error).toMatch(/does not match/);
     expect(submitted).toBe(false);
   });
 

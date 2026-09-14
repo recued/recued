@@ -236,7 +236,7 @@ export const mountScopedGrantPanel = (
     // global surface, so "in this chat" must say WHICH chat the grant binds.
     const sessionLine = doc.createElement('div');
     sessionLine.className = 'sg-session';
-    sessionLine.textContent = `Binds to chat session: ${row.snapshot.channel_session_id}`;
+    sessionLine.textContent = `Only for this chat: ${row.snapshot.channel_session_id}`;
     card.appendChild(sessionLine);
 
     // The triggering excerpt, verbatim (codex MEDIUM fold) — the human's
@@ -244,7 +244,7 @@ export const mountScopedGrantPanel = (
     const excerpt = doc.createElement('blockquote');
     excerpt.setAttribute(SCOPED_GRANT_EXCERPT_ATTR, '');
     excerpt.className = 'sg-excerpt';
-    excerpt.textContent = `Triggered by: “${row.triggering_excerpt}”`;
+    excerpt.textContent = `Started by: “${row.triggering_excerpt}”`;
     card.appendChild(excerpt);
 
     if (pendingByKey.has(key)) {
@@ -257,7 +257,7 @@ export const mountScopedGrantPanel = (
       const prompt = doc.createElement('span');
       prompt.className = 'sg-confirm-prompt';
       prompt.textContent =
-        'Dismiss? This proposal never returns for this chat session.';
+        'Hide this? It will not come back in this chat.';
       controls.appendChild(prompt);
       const confirm = makeButton(
         SCOPED_GRANT_DISMISS_CONFIRM_ATTR,
@@ -281,7 +281,7 @@ export const mountScopedGrantPanel = (
       note.setAttribute(SCOPED_GRANT_UNMINTABLE_ATTR, '');
       note.className = 'sg-unmintable';
       note.textContent =
-        'No enrolled connection can carry this action — enroll one in Settings → Connections, then ask again in the chat.';
+        'None of your Connections can do this. Set one up in Settings, then Connections, and ask again in the chat.';
       card.appendChild(note);
       const dismiss = makeButton(SCOPED_GRANT_DISMISS_ATTR, 'sg-dismiss', 'Dismiss', key);
       dismiss.addEventListener('click', () => setActive(key, 'dismiss-armed'));
@@ -322,7 +322,7 @@ export const mountScopedGrantPanel = (
 
       const ttlLabel = doc.createElement('label');
       ttlLabel.className = 'sg-editor-label';
-      ttlLabel.textContent = 'Expires after (minutes)';
+      ttlLabel.textContent = 'Runs out after (minutes)';
       const ttlInput = doc.createElement('input');
       ttlInput.setAttribute(SCOPED_GRANT_TTL_INPUT_ATTR, '');
       ttlInput.setAttribute('type', 'number');
@@ -335,7 +335,7 @@ export const mountScopedGrantPanel = (
 
       const usesLabel = doc.createElement('label');
       usesLabel.className = 'sg-editor-label';
-      usesLabel.textContent = 'Use budget';
+      usesLabel.textContent = 'How many times';
       const usesInput = doc.createElement('input');
       usesInput.setAttribute(SCOPED_GRANT_USES_INPUT_ATTR, '');
       usesInput.setAttribute('type', 'number');
@@ -360,7 +360,7 @@ export const mountScopedGrantPanel = (
           const next = new Map(state.cardErrors);
           next.set(
             key,
-            `Bounds must be whole numbers — minutes 1–${ttlCeilingMinutes}, uses 1–${SCOPED_GRANT_MAX_USES_DEFAULT} (tighten-only).`,
+            `These have to be whole numbers — minutes 1–${ttlCeilingMinutes}, uses 1–${SCOPED_GRANT_MAX_USES_DEFAULT} (tighten-only).`,
           );
           state = { ...state, cardErrors: next };
           render();
@@ -403,7 +403,7 @@ export const mountScopedGrantPanel = (
       const line = doc.createElement('div');
       line.setAttribute(SCOPED_GRANT_ERROR_ATTR, '');
       line.className = 'sg-error';
-      line.textContent = `Could not load scoped grant proposals: ${state.listError}`;
+      line.textContent = `Recued could not load these: ${state.listError}`;
       root.appendChild(line);
     }
 
@@ -412,13 +412,13 @@ export const mountScopedGrantPanel = (
     const heading = doc.createElement('h2');
     heading.setAttribute(SCOPED_GRANT_HEADING_ATTR, '');
     heading.className = 'sg-heading';
-    heading.textContent = 'Scoped grant proposals';
+    heading.textContent = 'Things Chat wants to be allowed to do';
     root.appendChild(heading);
 
     const copy = doc.createElement('p');
     copy.className = 'sg-copy';
     copy.textContent =
-      'You asked, in a chat, to auto-approve a bounded action on the senders of emails you forward. Approve to mint a session-bound, revocable grant; dismiss to keep the per-action approval card.';
+      'In a chat, you asked Recued to stop asking about one small thing for people who send you emails you forward on. Say yes and it holds only for this chat, and you can take it back at any time. Say no and Recued keeps asking you each time.';
     root.appendChild(copy);
 
     for (const row of state.suggestions) renderCard(row);

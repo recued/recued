@@ -59,11 +59,11 @@ const COLD_START_CREDENTIAL_REPAIR_STYLES_MARKER =
 const SPLASH_MESSAGE_ID = 'webclient-boot-splash-message';
 
 export const COLD_START_CREDENTIAL_REPAIR_ERROR_COPY =
-  'Recued could not finish resetting this browser’s local access. Nothing on your server was changed. Try again, or reload if the problem continues.';
+  'Recued could not finish clearing what this browser had saved. Nothing on your server changed. Try again. If it keeps failing, reload the page.';
 export const COLD_START_CREDENTIAL_HANDOFF_ERROR_COPY =
-  'Local access was cleared, but Recued could not open the secure reconnect. Reload to continue.';
+  'What this browser had saved is now cleared. Recued could not start signing in again. Reload the page to carry on.';
 export const COLD_START_CREDENTIAL_CHECK_COPY =
-  'Checking saved access…';
+  'Checking your saved sign-in…';
 export const COLD_START_CREDENTIAL_SETTLE_MS = 240;
 
 /** Give a potentially long cross-tab lock wait one quiet accessible status.
@@ -456,7 +456,7 @@ const repairCopy = (
       firstStep: reason === 'partial'
         ? 'Clear the incomplete local setup, then enter your recovery key again. Use a fresh pairing code only if the server asks for one.'
         : 'Clear the unreadable local access, then enter your recovery key again. Use a fresh pairing code only if the server asks for one.',
-      primary: 'Continue recovery here',
+      primary: 'Carry on here',
       primaryBusy: 'Preparing secure reconnect…',
       busyStatus: 'Preparing a clean secure reconnect in this tab…',
     };
@@ -577,7 +577,7 @@ export const mountColdStartCredentialRepairHost = (
       options.reloadAttempted === true
       && options.recoveryReentry !== true;
     const continuity = reloadContinuity
-      ? `<p class="cold-start-credential-repair-context" id="${COLD_START_CREDENTIAL_REPAIR_CONTEXT_ID}">This tab reloaded, but this browser’s saved access still needs repair. The exact page you opened is still selected, so you can keep recovering here.</p>`
+      ? `<p class="cold-start-credential-repair-context" id="${COLD_START_CREDENTIAL_REPAIR_CONTEXT_ID}">This tab reloaded, but this browser’s saved sign-in still needs fixing. The page you opened is still chosen, so you can keep trying here.</p>`
       : '';
     const materialCheckpoint = options.safeStopReentry === true
       ? `<div class="cold-start-credential-repair-material" id="${COLD_START_CREDENTIAL_REPAIR_MATERIAL_ID}">
@@ -625,7 +625,7 @@ export const mountColdStartCredentialRepairHost = (
             ? `<li>At the paused checkpoint, choose only what the server owner confirmed: the original key was found, or the server changed or was reset.</li>
               <li>If the current server has no usable recovery key, leave recovery stopped. Your exact page remains selected until a secure reconnect succeeds.</li>`
             : options.replacementServerReentry === true
-              ? `<li>Review the current server origin and the data-continuity warning before creating a new recovery key.</li>
+              ? `<li>Look at this server’s address, and the warning about what you might lose, before you make a new recovery key.</li>
                 <li>After its signed identity is verified and access is saved, Recued returns to the exact page still selected in this tab.</li>`
             : `<li>Enter your existing 24-word recovery key. Run <code>recued pair</code> only if the server asks for a pairing code.</li>
               <li>Return to the page you opened after the secure reconnect.</li>`}

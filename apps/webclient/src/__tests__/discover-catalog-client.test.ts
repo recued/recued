@@ -188,7 +188,7 @@ describe('fetchRecipeCatalog / fetchPackCatalog', () => {
     const res = await fetchRecipeCatalog({ origin: 'https://recued.com', fetchFn });
     expect(res.status).toBe('error');
     if (res.status !== 'error') throw new Error('expected error');
-    expect(res.message).toContain("Couldn't reach the marketplace");
+    expect(res.message).toContain("Recued could not reach the Marketplace");
   });
 
   it('folds a malformed JSON body into an error result', async () => {

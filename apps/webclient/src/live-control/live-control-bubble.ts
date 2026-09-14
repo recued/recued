@@ -779,8 +779,8 @@ export const mountLiveControlBubble = (
       const meta = doc.createElement('span');
       meta.className = 'lc-row-meta';
       const state = live ? ACTIVE_STATE_LABEL[live.state]
-        : call.state === 'interrupted' ? 'Interrupted — outcome unconfirmed'
-          : call.state === 'held' ? 'Waiting for a result' : 'Running';
+        : call.state === 'interrupted' ? 'Stopped part-way. Recued does not know what happened'
+          : call.state === 'held' ? 'Waiting to hear back' : 'Running';
       const lastSignal = live?.progress.last_signal_at ?? call.last_signal_at;
       meta.textContent = [state,
         ...(lastSignal === undefined ? [] : [`last progress ${formatElapsed(nowMs() - lastSignal)} ago`]),
@@ -809,7 +809,7 @@ export const mountLiveControlBubble = (
       }
       if (call.state === 'interrupted' && opts.dismissToolCall) {
         appendControl(controls, TOOL_REVIEW_ATTR, 'review', call.message_id,
-          'Mark reviewed', call.tool_name, false, reviewingCalls.has(call.message_id),
+          'Mark as looked at', call.tool_name, false, reviewingCalls.has(call.message_id),
           reviewingCalls.has(call.message_id), () => {
           if (reviewingCalls.has(call.message_id)) return;
           reviewingCalls.add(call.message_id);
@@ -988,41 +988,41 @@ export const mountLiveControlBubble = (
   const killRun = (run_id: string): Promise<void> =>
     runControl('kill', run_id, async () => {
       if (opts.killCaller === undefined) {
-        return { noticed: 'Kill is not available in this view.' };
+        return { noticed: 'You cannot stop it from here.' };
       }
       const { status } = await opts.killCaller({ run_id });
       if (status === 'killed') return;
       return {
         noticed:
           status === 'already_terminal'
-            ? 'That run already finished.'
-            : 'That run is no longer active.',
+            ? 'That run has already finished.'
+            : 'That run has stopped.',
       };
     });
 
   const cancelCall = (queued_call_id: string): Promise<void> =>
     runControl('cancel', queued_call_id, async () => {
       if (opts.cancelCaller === undefined) {
-        return { noticed: 'Cancel is not available in this view.' };
+        return { noticed: 'You cannot cancel from here.' };
       }
       const { status } = await opts.cancelCaller({ queued_call_id });
       if (status === 'cancelled_before_dispatch') return;
       return {
         noticed:
           status === 'already_dispatched'
-            ? 'That call already started — use Kill instead.'
-            : 'That queued call is no longer waiting.',
+            ? 'That has already started. Use Stop instead.'
+            : 'That is no longer waiting.',
       };
     });
 
   const promoteCall = (queued_call_id: string): Promise<void> =>
     runControl('promote', queued_call_id, async () => {
       if (opts.promoteCaller === undefined) {
-        return { noticed: 'Promote is not available in this view.' };
+        return { noticed: 'You cannot move it up from here.' };
       }
       const { status } = await opts.promoteCaller({ queued_call_id });
       if (status === 'promoted') return;
-      return { noticed: 'That queued call is no longer waiting.' };
+      return { noticed: 'That is no longer waiting.' };
     });
 
   // ── GRANTS loaders + actions (ported from the Runs route) ──────────
@@ -1070,7 +1070,7 @@ export const mountLiveControlBubble = (
     render();
     try {
       if (opts.grantsRevokeCaller === undefined) {
-        grantsNotice = 'Revoke is not available in this view.';
+        grantsNotice = 'You cannot take it back from here.';
         return;
       }
       await opts.grantsRevokeCaller({ contract_id });

@@ -469,6 +469,8 @@ import {
   type SchedulesDeleteCaller as AutomationSchedulesDeleteCaller,
   type SchedulesListCaller as AutomationSchedulesListCaller,
   type SchedulesUpdateCaller as AutomationSchedulesUpdateCaller,
+  type SchedulesMissedCaller as AutomationSchedulesMissedCaller,
+  type SchedulesAnswerMissedCaller as AutomationSchedulesAnswerMissedCaller,
   type TriggersDeleteCaller as AutomationTriggersDeleteCaller,
   type TriggersListCaller as AutomationTriggersListCaller,
   type TriggersUpdateCaller as AutomationTriggersUpdateCaller,
@@ -496,6 +498,11 @@ import {
   mountGlobalRunPalette,
   type GlobalRunPaletteHandle,
 } from './shell/global-run-palette.js';
+import {
+  mountUniversalSearchShortcut,
+  type UniversalSearchShortcutHandle,
+} from './shell/universal-search-shortcut.js';
+import { SEARCH_INPUT_ATTR } from './data/universal-search.js';
 import {
   openCreateOverlay,
   type CreateOverlayHandle,
@@ -547,6 +554,18 @@ import type {
   NotificationsSetChannelCaller,
   NotificationsSetVerificationPhraseCaller,
 } from './settings/notifications-panel.js';
+import type {
+  ServerTimeZoneGetCaller,
+  ServerTimeZoneSetCaller,
+} from './settings/server-timezone-panel.js';
+import type {
+  QuietHoursGetCaller,
+  QuietHoursSetCaller,
+} from './settings/quiet-hours-panel.js';
+import type {
+  KindPolicyGetCaller,
+  KindPolicySetCaller,
+} from './settings/notification-kind-policy-panel.js';
 import type {
   PacksInstallBySlugCaller,
   PacksInstallPreviewCaller,
@@ -916,8 +935,15 @@ export const WEBCLIENT_SHELL_CONTENT_ATTR =
  *
  * Wiring: `New chat` → `#chat/new`; `Chats` → `#chat` (the history home is the
  * empty-hash default landing, §D.L1 Step 5). `Create` is an ACTION seat that opens the shared
- * Create overlay (the same 4-kind capture as the L1 composer button — it
+ * Create overlay (the same capture targets as the L1 composer button — it
  * absorbed the retired `#compose` route), `Account` → `#settings/account`.
+ * D-267 adds the zero-config tier beside it — `Find` / `Today` / `Tasks` /
+ * `Notes` / `Contacts`, each a deep-linked segment of `#data` rather than a new
+ * route. ⛔ EXACTLY ONE seat per route still carries `highlight`; the segment
+ * seats deliberately do NOT, because `setActiveRoute` matches an exact segment
+ * tail FIRST and only then falls back to the highlight seat — so `#data/task`
+ * lights Tasks and every other `#data/*` falls through to Data, with no change
+ * to the highlight machinery.
  * `Packs` is its own
  * `#packs` route (D-187 §6 follow-on — the browse → detail surface over the
  * catalog ∪ installed roster), promoted out of Settings. `home`/`kitchen`/`approvals` are
@@ -969,9 +995,29 @@ const WEBCLIENT_DRAWER_SECTIONS: ReadonlyArray<WebclientDrawerSection> = [
     ],
   },
   {
+    // D-267 — the zero-config tier: everything here works with no model, no
+    // mailbox and no connection. `Today` / `Tasks` / `Notes` / `Contacts` /
+    // `Find` are DEEP-LINKED SEGMENTS of the one Data surface, not new routes —
+    // `#data/<tab>` was already durable and the route already loads only the
+    // active tab, so a seat costs exactly what its tab costs. `Data` stays as
+    // the seat for everything one click deeper (Commitments, Projects,
+    // Bookings, Form responses, the mirrors, Records, Memory).
+    //
+    // ⚠ This amends D-174 I-8 ("entities earn prominence by drill-down, not a
+    // rail seat"), which traded the seat for prominence on the Home cockpit —
+    // a surface that was then retired. See D-174 § I-8.
     items: [
       { id: 'create', label: 'Create', glyph: '✎', route: null, action: 'create' },
+      { id: 'find', label: 'Find', glyph: '🔍', route: 'data', segments: ['search'] },
+      { id: 'today', label: 'Today', route: 'data', segments: ['today'] },
+      { id: 'tasks', label: 'Tasks', route: 'data', segments: ['task'] },
+      { id: 'notes', label: 'Notes', route: 'data', segments: ['note'] },
+      { id: 'contacts', label: 'Contacts', route: 'data', segments: ['contact'] },
       { id: 'data', label: 'Data', route: 'data', highlight: true },
+    ],
+  },
+  {
+    items: [
       { id: 'recipes', label: 'Recipes', route: 'recipes', highlight: true },
       { id: 'automation', label: 'Automation', route: 'automation', highlight: true },
     ],
@@ -1337,6 +1383,16 @@ export const WEBCLIENT_SHELL_STYLES = `
 [${WEBCLIENT_SHELL_DRAWER_LINK_ATTR}],
 [${WEBCLIENT_SHELL_DRAWER_ACTION_ATTR}] {
   position: relative;
+  /* ⛔ BORDER-BOX, OR min-height MEANS SOMETHING ELSE THAN IT SAYS. These seats
+     were content-box, so min-height:40px reserved 40px of CONTENT and the
+     8px+8px padding sat on top: every seat rendered 56px for a label that needs
+     16px. Across 19 seats that is 304px of pure accounting error — the whole
+     reason this menu is 1,235px tall, overflows every viewport, and had no room
+     for the two seats the owner asked for. box-sizing is NOT inherited and the
+     shell has no universal reset, so the drawer panel being border-box did
+     nothing for its children.
+     NOTE: no backticks in this comment — it lives inside a template literal. */
+  box-sizing: border-box;
   min-height: 40px;
   display: flex;
   align-items: center;
@@ -3080,6 +3136,8 @@ export const bootstrapWebclient = async (
     }
     return safeServerSwitchLandingHash(sourceHash);
   };
+  let pendingChatRecovery = options.reauthRecovery;
+  let pendingChatFile: { hash: string; file: import('@recued/contracts').FileAttachmentSelection } | undefined;
   const navigateHash = (hash: string): void => {
     if (hashSource?.setHash !== undefined) {
       hashSource.setHash(hash);
@@ -3119,6 +3177,10 @@ export const bootstrapWebclient = async (
   // its host belongs to this persistent shell. Closures declared before that
   // point read this nullable owner rather than reaching into the Chat route.
   let globalRunPalette: GlobalRunPaletteHandle | null = null;
+  // D-267 — the one universal-search entry every surface calls: the Ctrl/Cmd+/
+  // chord, the chat composer's Find chip, and (as a plain link) the drawer seat.
+  // Mounted below, once `navigateHash` exists.
+  let universalSearchShortcut: UniversalSearchShortcutHandle | null = null;
   const appShell = createWebclientShell({
     root: options.root,
     document: doc,
@@ -5896,7 +5958,7 @@ export const bootstrapWebclient = async (
                     replaySuppressedRetirementReauth();
                     console.error('webclient: revoke server access failed', err);
                     throw new Error(
-                      `Couldn’t revoke this browser’s access. ${humanizeRpcError(err)} The saved profile is still here; retry or forget it locally.`,
+                      `Recued could not take this browser’s access away. ${humanizeRpcError(err)} The saved profile is still here; retry or forget it locally.`,
                     );
                   }
                 }
@@ -5913,7 +5975,7 @@ export const bootstrapWebclient = async (
                     // revoked, and the inline local-only action is now the
                     // honest recovery from a failed IndexedDB deletion.
                     throw new Error(
-                      'Access was revoked, but this browser could not remove the saved profile. Try “Forget on this browser” again.',
+                      'Access was taken away, but this browser could not remove the saved server. Try “Forget on this browser” again.',
                     );
                   }
                   throw new Error(
@@ -6476,6 +6538,51 @@ export const bootstrapWebclient = async (
     options.enableNotificationsPanel === false
       ? undefined
       : (args) => rpcConn.call('notifications.set_channel', args);
+  // D-269 step 1 — Settings → Server → Timezone. Unconditional: unlike the
+  // notifications panel there is no feature flag, and a pre-D-269 server simply
+  // answers `not_configured`, which the panel surfaces in its own error line
+  // rather than crashing the route.
+  // D-269 step 3 — quiet hours. Unconditional like the timezone callers: a
+  // pre-D-269 server answers `not_configured`, which the panel surfaces in its
+  // own error line rather than crashing the route.
+  // D-269 step 2 — the per-kind reminder policy.
+  const kindPolicyGetCaller: KindPolicyGetCaller =
+    () => rpcConn.call('notification.kind_policy.get', {});
+  const kindPolicySetCaller: KindPolicySetCaller =
+    (args) => rpcConn.call('notification.kind_policy.set', args);
+  const quietHoursGetCaller: QuietHoursGetCaller =
+    () => rpcConn.call('notification.quiet_hours.get', {});
+  const quietHoursSetCaller: QuietHoursSetCaller =
+    (args) => rpcConn.call('notification.quiet_hours.set', args);
+  const serverTimeZoneGetCaller: ServerTimeZoneGetCaller =
+    () => rpcConn.call('server.timezone.get', {});
+  const serverTimeZoneSetCaller: ServerTimeZoneSetCaller =
+    (args) => rpcConn.call('server.timezone.set', args);
+
+  // D-269 step 1 — the server's resolved zone, held for the DURABLE stamps
+  // (saved-view alert, scheduled mail, scheduled run). Those rows are evaluated
+  // SERVER-SIDE, so the browser's zone was never the right answer for them.
+  //
+  // ⚠ FETCHED ONCE, NOT PER STAMP. A stamp is made inside a click handler that
+  // cannot wait on a round trip, and an rpc per stamp would race the write it
+  // is meant to inform. Fire-and-forget: a failure or a pre-D-269 server leaves
+  // it undefined and every stamp falls back to the browser — today's behaviour,
+  // unchanged.
+  //
+  // ⚠ STALENESS IS BOUNDED BY WHAT CAN ACTUALLY MOVE IT. Under `fixed` the
+  // value only changes when the owner changes it, and the Timezone panel pushes
+  // the new value here on save. Under `follows_host` it tracks the server's own
+  // machine — which, on the install where that mode is correct, is THIS machine,
+  // so the browser fallback agrees with it anyway.
+  let serverTimeZoneResolved: string | undefined;
+  const getServerTimeZone = (): string | undefined => serverTimeZoneResolved;
+  void (async () => {
+    try {
+      serverTimeZoneResolved = (await serverTimeZoneGetCaller()).resolved_zone;
+    } catch {
+      serverTimeZoneResolved = undefined;
+    }
+  })();
   // D-169 P1 Codex Angle 4 fold — per-bridge sub-row callers. Wired
   // alongside the channel-level toggles so Settings → Notifications
   // renders one row per paired bridge with notification + approval
@@ -6723,7 +6830,7 @@ export const bootstrapWebclient = async (
       (input: typeof args) => rpcConn.call('form_response.export', input),
     )(args);
   // Wire the §D.L2 drawer "Create" action seat (its shell thunk resolves here)
-  // to the shared Create overlay — the same 4-kind capture the L1 composer
+  // to the shared Create overlay — the same capture targets the L1 composer
   // [✎ Create] button opens, with the same local-write callers as Data. Track
   // the handle so it survives one-at-a-time (a re-click is a no-op while open)
   // and so bootstrap `dispose()` can tear it down (it portals to body).
@@ -6992,6 +7099,11 @@ export const bootstrapWebclient = async (
     rpcConn.call('schedules.update', args);
   const automationSchedulesDeleteCaller: AutomationSchedulesDeleteCaller = (args) =>
     rpcConn.call('schedules.delete', args);
+  // D-266 — the missed-run card and its answer.
+  const automationSchedulesMissedCaller: AutomationSchedulesMissedCaller = () =>
+    rpcConn.call('schedules.missed', undefined);
+  const automationSchedulesAnswerMissedCaller: AutomationSchedulesAnswerMissedCaller = (args) =>
+    rpcConn.call('schedules.answerMissed', args);
   const automationTriggersListCaller: AutomationTriggersListCaller = () =>
     rpcConn.call('triggers.list', undefined);
   const automationTriggersUpdateCaller: AutomationTriggersUpdateCaller = (args) =>
@@ -7032,12 +7144,35 @@ export const bootstrapWebclient = async (
       ...currentRouteWorkDetails(),
       label,
     })(...args);
+  universalSearchShortcut = mountUniversalSearchShortcut({
+    document: doc,
+    prepareOpen: appShell.closeDrawer,
+    navigate: () => navigateHash(serializeShellRoute('data', 'search')),
+    // The search surface is one address; ask the ROUTER what is mounted rather
+    // than string-comparing the hash, so an encoded or `#/`-prefixed spelling
+    // of the same place still counts as already-there.
+    isActive: () => {
+      const here = parseShellRoute(hashSource?.getHash() ?? activeHash);
+      return here.surface === 'data' && here.segments[0] === 'search';
+    },
+    // ⚠ The only DOM the shell touches inside a route, and it is deliberate:
+    // the alternative is a focus seam threaded through savedDataRoute into the
+    // data route for one keystroke. The attribute is imported from the module
+    // that DEFINES it, so a rename moves both ends together.
+    focusActive: () => {
+      appShell.contentRoot
+        .querySelector<HTMLInputElement>(`[${SEARCH_INPUT_ATTR}]`)
+        ?.focus?.({ preventScroll: true });
+    },
+  });
   globalRunPalette = mountGlobalRunPalette({
     document: doc,
     triggerHost: appShell.runPaletteHost,
     portal: (doc as { body?: HTMLElement }).body ?? appShell.root,
     prepareOpen: appShell.closeDrawer,
     palette: {
+      // D-269 — the SERVER's zone for a scheduled run's activation stamp.
+      serverTimeZone: getServerTimeZone,
       recipeList: recipesListCaller,
       execute: trackGlobalRunWrite('Running a recipe', recipeExecuteCaller),
       schedulesList: automationSchedulesListCaller,
@@ -7652,7 +7787,7 @@ export const bootstrapWebclient = async (
   // whose own card says "You can leave this page". Taking that invitation
   // detached the listener, so the terminal (a FAILURE included) landed with
   // nobody to hear it and the durable latch was never advanced to the
-  // `awaiting_reconnect` state the receipt check engages on. The run completed
+  // `awaiting_reconnect` state the result again engages on. The run completed
   // and its outcome was unobservable.
   //
   // 🔑 SO THE LATCH IS ADVANCED HERE, at bootstrap scope, which outlives every
@@ -9004,6 +9139,7 @@ export const bootstrapWebclient = async (
 
   const mountRoute = (
     route: WebclientRouteId,
+    chatFile?: import('@recued/contracts').FileAttachmentSelection,
   ): RecoveryContextProbe & {
     update?: () => void;
     dispose: () => void;
@@ -9026,6 +9162,10 @@ export const bootstrapWebclient = async (
     /** Chat-only in-memory rescue seam for a forced re-pair. */
     getRecoveryDraft?: () => ChatRouteRecoveryDraft | null;
   } => {
+    // A re-pair draft belongs to this first return, not every later Chat mount.
+    const chatRecovery = route === 'chat' && pendingChatRecovery?.returnHash === hashSource?.getHash()
+      ? pendingChatRecovery?.chatDraft : undefined;
+    pendingChatRecovery = undefined;
     settledProfileRecoveryNeedsAddressCleanup = false;
     refreshActivePostSafeStopProfileContext = () => undefined;
     const withTrackedServerSwitchWork = <T extends { dispose(): void }>(
@@ -9712,6 +9852,8 @@ export const bootstrapWebclient = async (
             entry.recipe,
           );
           packsRunModal = RunModal.wireRunModal({
+        // D-269 — the SERVER's zone for durable, server-evaluated stamps.
+        serverTimeZone: getServerTimeZone,
             recipe: entry,
             ...(options.document !== undefined ? { document: options.document } : {}),
             initialTab: 'run',
@@ -9859,6 +10001,8 @@ export const bootstrapWebclient = async (
       // browses the marketplace recipe catalog (lazy-loaded on first open).
       const mountInstalled = (host: HTMLElement) =>
         bootstrapRecipesRoute({
+          // D-269 — forwarded to this route's run modal.
+          serverTimeZone: getServerTimeZone,
           root: host,
           scrollRoot: appShell.contentRoot,
           ...(options.document !== undefined ? { document: options.document } : {}),
@@ -9993,6 +10137,8 @@ export const bootstrapWebclient = async (
         ? null
         : parseDataEntityVerificationAddress(parsedDataRoute);
       return withTrackedServerSwitchWork(bootstrapSavedDataRoute({
+        // D-269 — the SERVER's zone for durable, server-evaluated stamps.
+        serverTimeZone: getServerTimeZone,
         savedViews: {
           list: () => rpcConn.call('data_views.list', undefined),
           get: (args) => rpcConn.call('data_views.get', args),
@@ -10066,6 +10212,34 @@ export const bootstrapWebclient = async (
         uploadDeleteCaller: dataUploadDeleteCaller,
         uploadConnectFactory,
         fileReadCaller: dataFileReadCaller,
+        filePreviewCallers: {
+          preview: args => rpcConn.call('data.file.attachments.preview', args, { timeout: 150_000 }),
+          read: args => rpcConn.call('data.file.read', args, { timeout: 150_000 }),
+        },
+        fileChatCallers: {
+          preview: {
+            preview: args => rpcConn.call('data.file.attachments.preview', args, { timeout: 150_000 }),
+            read: args => rpcConn.call('data.file.read', args, { timeout: 150_000 }),
+          },
+          get: args => rpcConn.call('data.file.attachments.get', args),
+          sessions: () => rpcConn.call('chat.sessions.list', undefined),
+          cloud: {
+            sources: () => rpcConn.call('data.file.attachments.sources', undefined),
+            list: args => rpcConn.call('data.file.attachments.remote.list', args),
+            get: args => rpcConn.call('data.file.attachments.remote.get', args),
+            importFile: args => rpcConn.call('data.file.attachments.import', args, { timeout: 150_000 }),
+          },
+        },
+        onUseFileInChat: ({ file, sessionId }) => {
+          const hash = sessionId === null ? serializeShellRoute('chat', 'new') : serializeShellRoute('chat', 'session', sessionId);
+          pendingChatFile = { hash, file }; navigateHash(hash);
+        },
+        fileUsageCaller: args => rpcConn.call('data.file.usage', args),
+        fileMutateCaller: args => switchWorkTracker.track((input: typeof args) => rpcConn.call('data.file.mutate', input))(args),
+        // D-267 — Today's zero-state capture button. The SAME shared opener the
+        // drawer seat and the chat composer chip use, so a capture made from
+        // Today is indistinguishable from one made anywhere else.
+        openCreateOverlay: () => createSeatHandler?.(),
         // Exact citation route wins over the legacy positional deep link. It
         // carries the collection instance needed to disambiguate two accounts.
         ...(sourceRecordAddress !== null
@@ -10155,6 +10329,10 @@ export const bootstrapWebclient = async (
         ),
         schedulesDeleteCaller: switchWorkTracker.track(
           automationSchedulesDeleteCaller,
+        ),
+        schedulesMissedCaller: automationSchedulesMissedCaller,
+        schedulesAnswerMissedCaller: switchWorkTracker.track(
+          automationSchedulesAnswerMissedCaller,
         ),
         triggersListCaller: automationTriggersListCaller,
         triggersUpdateCaller: switchWorkTracker.track(
@@ -10371,6 +10549,19 @@ export const bootstrapWebclient = async (
       const chatRoute = bootstrapChatRoute({
         root: appShell.contentRoot,
         conn: chatConn,
+        filePreviewCallers: {
+          preview: args => rpcConn.call('data.file.attachments.preview', args, { timeout: 150_000 }),
+          read: args => rpcConn.call('data.file.read', args, { timeout: 150_000 }),
+        },
+        fileListCaller: args => rpcConn.call('data.file.attachments.list', args),
+        cloudFileCallers: {
+          sources: () => rpcConn.call('data.file.attachments.sources', undefined),
+          list: args => rpcConn.call('data.file.attachments.remote.list', args),
+          importFile: args => rpcConn.call('data.file.attachments.import', args, { timeout: 150_000 }),
+        },
+        conversationFilesCaller: args => rpcConn.call('data.file.attachments.conversation', args),
+        fileSelectionCaller: args => rpcConn.call('data.file.attachments.get', args),
+        ...(chatFile ? { initialFileAttachments: [chatFile] } : {}),
         // D-172 P2 — the same `upload.*` control plane + binary socket the
         // Data → Files panel uses, so a file dropped in Chat lands in the ONE
         // `data.file` inventory rather than a second one. Passed as a pair: the
@@ -10386,8 +10577,8 @@ export const bootstrapWebclient = async (
         ...(options.document !== undefined ? { document: options.document } : {}),
         subscribe: subscriber.on,
         reconnect,
-        ...(options.reauthRecovery?.chatDraft !== undefined
-          ? { initialRecoveryDraft: options.reauthRecovery.chatDraft }
+        ...(chatRecovery !== undefined
+          ? { initialRecoveryDraft: chatRecovery }
           : {}),
         // Shell-frame Step 4 — the [✎ Create] composer overlay reuses the
         // compose route's local-write callers.
@@ -10419,6 +10610,9 @@ export const bootstrapWebclient = async (
         // chat mounts opt in explicitly so their established empty state stays
         // stable.
         enableFirstRunActivation: true,
+        // D-267 — the composer's Find chip. Same entry as the Ctrl/Cmd+/ chord
+        // and the drawer seat, so all three land the owner in one search.
+        openUniversalSearch: () => { universalSearchShortcut?.open(); },
         // Bare Chat is the returning-user history landing. Typed setup/source
         // links and `#chat/new` remain deliberate draft experiences; a
         // session/answer/plan link opens its exact durable thread below.
@@ -10727,6 +10921,22 @@ export const bootstrapWebclient = async (
         ...(options.onDevicesListError !== undefined
           ? { onDevicesListError: options.onDevicesListError }
           : {}),
+        // D-269 step 1 — the Timezone tab. `switchWorkTracker.track` on the
+        // write so a save in flight participates in the same route-switch
+        // guard every other settings mutation does.
+        kindPolicyGetCaller,
+        kindPolicySetCaller: switchWorkTracker.track(kindPolicySetCaller),
+        quietHoursGetCaller,
+        quietHoursSetCaller: switchWorkTracker.track(quietHoursSetCaller),
+        serverTimeZoneGetCaller,
+        // ⚠ The write also REFRESHES the held value, so a stamp made right after
+        // the owner changes the setting carries the new zone rather than the one
+        // this session booted with.
+        serverTimeZoneSetCaller: switchWorkTracker.track(async (args) => {
+          const next = await serverTimeZoneSetCaller(args);
+          serverTimeZoneResolved = next.resolved_zone;
+          return next;
+        }),
         ...(notificationsDescribeCaller !== undefined
           && notificationsSetChannelCaller !== undefined
           ? {
@@ -11419,6 +11629,8 @@ export const bootstrapWebclient = async (
       // that resolves means the run was ACCEPTED, never that mail was sent.
       activeSettingsRoute = null;
       return bootstrapMailRoute({
+        // D-269 — the SERVER's zone for durable, server-evaluated stamps.
+        serverTimeZone: getServerTimeZone,
         root: appShell.contentRoot,
         drafts: mailDraftCallers,
         ...(options.document !== undefined ? { document: options.document } : {}),
@@ -11691,6 +11903,8 @@ export const bootstrapWebclient = async (
       ? null
       : parseReceptionAddress(parseShellRoute(hashSource.getHash()));
     return withTrackedServerSwitchWork(bootstrapReceptionRoute({
+      // D-269 — forwarded to this route's run modal.
+      serverTimeZone: getServerTimeZone,
       root: appShell.contentRoot,
       shell: receptionShell,
       conn: trackSelectedRpcMethods<BootstrapReceptionRouteOptions['conn']>(
@@ -13271,6 +13485,8 @@ export const bootstrapWebclient = async (
   // case real: `#reception` ↔ `#settings` flips the route through the helper.
   const detachHash = hashSource
     ? hashSource.onChange((hash) => {
+        const chatFile = pendingChatFile?.hash === hash ? pendingChatFile.file : undefined;
+        pendingChatFile = undefined;
         if (
           hash !== activeHash
           && recoveryIntentContinuationPhase === 'checking'
@@ -13375,7 +13591,7 @@ export const bootstrapWebclient = async (
         activeRoute = next;
         activeHash = hash;
         appShell.setActiveRoute(next, parseShellRoute(hash).segments);
-        mountedRouteHandle = mountRoute(next);
+        mountedRouteHandle = mountRoute(next, chatFile);
         finishPendingRecoveryReturnAction(hash);
       })
     : (): void => undefined;
@@ -13559,6 +13775,11 @@ export const bootstrapWebclient = async (
       if (globalRunPalette !== null) {
         globalRunPalette.dispose();
         globalRunPalette = null;
+      }
+      // The search chord owns a document listener and nothing else.
+      if (universalSearchShortcut !== null) {
+        universalSearchShortcut.dispose();
+        universalSearchShortcut = null;
       }
       // The convergence overlay portals beside the shell and marks the shell
       // inert, so retire it before removing either subtree.

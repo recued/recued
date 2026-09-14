@@ -140,11 +140,40 @@ describe('buildGoogleRemoteByteResolver', () => {
     expect(calls[0].headers.authorization).toBe('Bearer tok');
   });
 
-  it('a native Google doc (vnd.google-apps.*) is remote_unresolvable BEFORE any fetch', async () => {
+  it('an unsupported native Google type is remote_unresolvable BEFORE any fetch', async () => {
     const { fetchImpl, calls } = stub([]);
-    const r = req({ meta: meta({ mime_type: 'application/vnd.google-apps.document' }) });
+    const r = req({ meta: meta({ mime_type: 'application/vnd.google-apps.form' }) });
     expect(await catchCode(buildGoogleRemoteByteResolver({ fetchImpl })(r))).toBe('remote_unresolvable');
     expect(calls.length).toBe(0);
+  });
+
+  it.each([
+    ['document', '.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
+    ['spreadsheet', '.xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'],
+    ['presentation', '.pptx', 'application/vnd.openxmlformats-officedocument.presentationml.presentation'],
+  ])('advertises and fetches the same %s export without a duplicate extension', async (kind, extension, mime) => {
+    const { fetchImpl, calls } = stub([{ bytes: Buffer.from('office'), contentType: 'application/octet-stream' }]);
+    const resolver = buildGoogleRemoteByteResolver({ fetchImpl });
+    const m = meta({ filename: `Plan${extension!.toUpperCase()}`, mime_type: `application/vnd.google-apps.${kind}` });
+    const descriptor = resolver.describe!(m);
+    expect(descriptor.export_as).toEqual({ filename: m.filename, mime_type: mime });
+    expect(calls).toHaveLength(0);
+    expect(await resolver(req({ remote_id: 'id /?#', meta: m }))).toEqual({ bytes: Buffer.from('office'), ...descriptor.export_as });
+    const url = new URL(calls[0]!.url);
+    expect(url.pathname).toBe('/drive/v3/files/id%20%2F%3F%23/export');
+    expect(url.searchParams.get('mimeType')).toBe(mime);
+    expect(url.searchParams.has('alt')).toBe(false);
+    expect(calls[0]!.headers.authorization).toBe('Bearer tok');
+  });
+
+  it('refuses wrong export types and caps exported bytes even when source size is unknown', async () => {
+    const m = meta({ filename: 'Document', mime_type: 'application/vnd.google-apps.document' });
+    const wrong = stub([{ bytes: Buffer.from('<html>'), contentType: 'text/html' }]);
+    await expect(buildGoogleRemoteByteResolver(wrong)(req({ meta: m }))).rejects.toMatchObject({ code: 'remote_fetch_failed' });
+    const large = stub([{ contentLength: String(11 * 1024 * 1024) }]);
+    await expect(buildGoogleRemoteByteResolver(large)(req({ meta: m }))).rejects.toMatchObject({ code: 'remote_too_large' });
+    const chunked = stub([{ bytes: Buffer.from('longer than cap') }]);
+    await expect(buildGoogleRemoteByteResolver(chunked)(req({ meta: m, maxBytes: 5 }))).rejects.toMatchObject({ code: 'remote_too_large' });
   });
 
   it('an oversized Content-Length → remote_too_large before buffering', async () => {

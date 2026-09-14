@@ -1154,6 +1154,20 @@ const buildRawOpHold = async (
       // always the completed provider result. Persist the trusted fact rather
       // than inferring from provider-controlled JSON on resume.
       gated_action_settlement_mode: 'returned_result',
+      // D-161 Part B (display) — name the STARTER, exactly as the recipe path
+      // does at its own checkpoint write (`execute-handler.ts`).
+      //
+      // ⛔ THIS PATH IS THE ONE THAT MOST NEEDS IT, AND IT WAS MISSED. A raw op
+      // is a door dispatch BY CONSTRUCTION — `RawOpCheckpoint.execution_source`
+      // is documented as "the door's MCP ExecutionSource". Its ask opens "An AI
+      // agent wants to run …", which says an agent asked but NOT whether it is
+      // the owner's own desktop client or a third party's delegated token —
+      // precisely the distinction this line exists to draw. Left unstamped it
+      // stayed silent here AND on every boot re-raise, since the sweep renders
+      // from this same stored context.
+      ...(isDoorDispatchSource(hold.executionSource)
+        ? { origin_actor: hold.executionSource.actor }
+        : {}),
       ...(ctx.owner_override_offer !== undefined
         ? { owner_override_offer: ctx.owner_override_offer }
         : {}),

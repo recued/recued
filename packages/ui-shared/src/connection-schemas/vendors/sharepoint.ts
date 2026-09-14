@@ -45,7 +45,7 @@ const SHAREPOINT_FIELDS: readonly ConnectionField[] = [
     key: 'name',
     label: 'Name',
     type: 'identifier',
-    help: 'Lowercase identifier used in recipes (e.g. `sharepoint`, `sharepoint-team-docs`).',
+    help: 'A short lower-case name you use in Recipes, such as `sharepoint`, `sharepoint-team-docs`).',
     placeholder: 'sharepoint',
   },
   {
@@ -59,7 +59,7 @@ const SHAREPOINT_FIELDS: readonly ConnectionField[] = [
     key: 'config.vendor',
     label: 'Vendor',
     type: 'text',
-    help: 'SharePoint vendor identifier — locked at enrollment.',
+    help: 'SharePoint sets this when you connect. You cannot change it.',
     placeholder: 'sharepoint',
     hidden: true,
   },
@@ -77,12 +77,12 @@ const SHAREPOINT_FIELDS: readonly ConnectionField[] = [
   // (Graph's /delta feed has no server-side path filter).
   {
     key: 'config.import_scope',
-    label: 'Scope to a subtree (optional)',
+    label: 'Just part of it, if you want',
     type: 'text',
     optional: true,
     placeholder: 'Shared Documents/**',
     help:
-      'Optional path glob to limit which files are mirrored — e.g. '
+      'A pattern limiting which files Recued brings in, such as '
       + '`Shared Documents/**` (a folder) or `**/*.pdf` (a pattern). Leave blank '
       + 'to mirror the whole library. Sync mirrors metadata only; contents are '
       + 'fetched lazily only when you explicitly read a file.',
@@ -156,8 +156,8 @@ const SHAREPOINT_FIELDS: readonly ConnectionField[] = [
     type: 'text',
     optional: true,
     help:
-      'OAuth scopes requested at authorization. Pre-filled from Microsoft\'s '
-      + 'defaults plus the scopes your installed packs need — edit to add or trim.',
+      'What Recued asks permission for. Filled in from Microsoft\'s '
+      + 'own defaults, plus whatever your installed Packs need. You can add or remove.',
   },
   {
     key: 'auth.token_endpoint',

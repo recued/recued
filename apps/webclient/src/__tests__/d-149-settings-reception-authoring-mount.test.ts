@@ -651,10 +651,10 @@ describe('D-149 follow-on — mountAuthoringForm: editing', () => {
     // an entity-mapping control, which is what this test is named for.
     //
     // ⚠ Probes its LABEL, not `data-field-key`: a multiselect emits that
-    // attribute once per OPTION, and a fresh form defines no visitor fields, so
+    // attribute once per OPTION, and a fresh form defines nothing for visitors to fill in, so
     // the control renders with zero checkboxes and no field-key at all. The
     // label is what actually tells the reader the control is on screen.
-    const MAPPING_CONTROL = 'Fields routed into the target entity';
+    const MAPPING_CONTROL = 'Boxes saved into the thing you make';
     expect(getHtml()).not.toContain(MAPPING_CONTROL);
 
     field({

@@ -183,7 +183,7 @@ describe('after first run — the pointer', () => {
     const h = mount({ sessions: [summary('chat_1', 4)], connections: 3, recipes: 0 });
     await tick(12);
     const link = collect(h.root, CHAT_ROUTE_ACTIVATION_POINTER_LINK_ATTR)[0]!;
-    expect(link.textContent).toBe('Browse ready-made recipes');
+    expect(link.textContent).toBe('Look through ready-made Recipes');
     h.route.dispose();
   });
 

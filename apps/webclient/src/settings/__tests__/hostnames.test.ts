@@ -479,7 +479,7 @@ describe('D-152 P6 hostnames panel', () => {
     await panel.whenLoaded();
 
     expect(findByAttr(host, HOSTNAMES_ROW_STATUS_ATTR, 'failed')).not.toBeNull();
-    expect(textOf(host)).toContain('retrying');
+    expect(textOf(host)).toContain('Trying again');
     panel.dispose();
   });
 
@@ -854,9 +854,9 @@ describe('R27 delta-B — Pro DDNS toggle (hostnames panel)', () => {
     });
     await panel.whenLoaded();
     expect(findByAttr(host, HOSTNAMES_DDNS_SECTION_ATTR)).not.toBeNull();
-    expect(findByAttr(host, HOSTNAMES_DDNS_TOGGLE_ATTR)?.textContent).toBe('Pause DDNS');
+    expect(findByAttr(host, HOSTNAMES_DDNS_TOGGLE_ATTR)?.textContent).toBe('Pause the address');
     expect(findByAttr(host, HOSTNAMES_DDNS_BLOCKED_ATTR)).toBeNull();
-    expect(textOf(host)).toContain('does NOT cancel your Pro subscription');
+    expect(textOf(host)).toContain('does NOT cancel Pro');
     panel.dispose();
   });
 
@@ -867,7 +867,7 @@ describe('R27 delta-B — Pro DDNS toggle (hostnames panel)', () => {
       runDdnsControlContext: vi.fn(async () => ddnsContext()),
     });
     await panel.whenLoaded();
-    expect(findByAttr(host, HOSTNAMES_DDNS_TOGGLE_ATTR)?.textContent).toBe('Resume DDNS');
+    expect(findByAttr(host, HOSTNAMES_DDNS_TOGGLE_ATTR)?.textContent).toBe('Start the address again');
     expect(
       findByAttr(host, HOSTNAMES_DDNS_STATE_ATTR)?.getAttribute(HOSTNAMES_DDNS_STATE_ATTR),
     ).toBe('paused');
@@ -900,7 +900,7 @@ describe('R27 delta-B — Pro DDNS toggle (hostnames panel)', () => {
     findByAttr(host, HOSTNAMES_DDNS_TOGGLE_ATTR)!.click();
     await flushMicrotasks();
     expect(runDdnsSetEnabled).toHaveBeenCalledWith({ enabled: false });
-    expect(findByAttr(host, HOSTNAMES_DDNS_TOGGLE_ATTR)?.textContent).toBe('Resume DDNS');
+    expect(findByAttr(host, HOSTNAMES_DDNS_TOGGLE_ATTR)?.textContent).toBe('Start the address again');
     panel.dispose();
   });
 
@@ -917,7 +917,7 @@ describe('R27 delta-B — Pro DDNS toggle (hostnames panel)', () => {
     findByAttr(host, HOSTNAMES_DDNS_TOGGLE_ATTR)!.click();
     await flushMicrotasks();
     expect(findByAttr(host, HOSTNAMES_DDNS_ERROR_ATTR)).not.toBeNull();
-    expect(findByAttr(host, HOSTNAMES_DDNS_TOGGLE_ATTR)?.textContent).toBe('Pause DDNS');
+    expect(findByAttr(host, HOSTNAMES_DDNS_TOGGLE_ATTR)?.textContent).toBe('Pause the address');
     panel.dispose();
   });
 });
@@ -1073,7 +1073,7 @@ describe('D-152 P6 hostnames panel route mount', () => {
       await mountDdnsRoute('wss://192.168.1.9:8443/ws', 'active');
     expect(ddnsStatusCaller).toHaveBeenCalledTimes(1);
     expect(accountProConvenienceStatusCaller).toHaveBeenCalled();
-    expect(findByAttr(host, HOSTNAMES_DDNS_TOGGLE_ATTR)?.textContent).toBe('Pause DDNS');
+    expect(findByAttr(host, HOSTNAMES_DDNS_TOGGLE_ATTR)?.textContent).toBe('Pause the address');
     expect(findByAttr(host, HOSTNAMES_DDNS_BLOCKED_ATTR)).toBeNull();
     route.dispose();
   });

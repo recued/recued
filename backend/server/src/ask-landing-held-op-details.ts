@@ -250,7 +250,14 @@ const resolveEditControl = (
  *  which is still the honest rendering for any page that cannot accept a
  *  submission for this hold. */
 export const buildAskLandingDetails = (
-  item: InboxItem,
+  // ⚠ D-270 WIDENED THIS PARAMETER TO EXACTLY WHAT THE BODY READS, and no
+  // further. It took a full `InboxItem` — a reception-shaped projection — while
+  // touching only these three members, which meant a caller with the same three
+  // facts about a NON-reception hold could not reuse it and would have written a
+  // second row-builder. Two builders is two places the `datetime` zone rule and
+  // the label fallback can drift. The narrowing is honest rather than
+  // permissive: `InboxItem` still satisfies it structurally.
+  item: Pick<InboxItem, 'args' | 'arg_schema' | 'proposed_action'>,
   opts: { readonly timeZone: string; readonly editable?: boolean },
 ): AskLandingHeldOpDetails => {
   const details: AskLandingDetail[] = [];

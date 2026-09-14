@@ -196,7 +196,7 @@ describe('createConnectionsReadinessController.renderForPack', () => {
     expect(textOf(cta)).toContain('Set up');
   });
 
-  it('renders a NO-SCOPE connection as connected (no "scopes not verified") once enrolled', async () => {
+  it('renders a NO-SCOPE connection as connected (no "Recued has not checked what it may do") once enrolled', async () => {
     const ctrl = mount([conn('stripe', undefined)]); // enrolled, API-key (no granted scopes)
     await ctrl.refresh();
     const pack = packWith(

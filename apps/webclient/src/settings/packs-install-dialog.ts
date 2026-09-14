@@ -31,6 +31,9 @@ import type {
   InstallScopeWho,
   PackListEntry,
 } from '@recued/contracts';
+// Same byte formatter the Records explorer uses — these are the same quota
+// ceilings, shown one screen earlier.
+import { formatPressureBytes } from '@recued/contracts';
 import {
   installGrantModelFromManifest,
   renderInstallGrantPicker,
@@ -108,19 +111,19 @@ export const GRANT_OVERLAP_ALSO_VIA_PREFIX = ' — also via ';
 // ════════════════════════════════════════════════════════════════
 
 const DIALOG_COPY = {
-  eyebrow: 'Pack setup',
+  eyebrow: 'Setting up this Pack',
   update_eyebrow: 'Pack update',
   heading_prefix: 'Install ',
   update_heading_prefix: 'Update ',
   intro:
-    'Review what this pack adds, then choose any connection and access it should receive.',
+    'Look at what this Pack adds, then choose what it may connect to and what it may do.',
   update_intro:
-    'Review what this update changes, then confirm the connection and access it should receive.',
-  permissions_label: 'This pack requires:',
-  body_grants_label: 'This pack will access the following body content:',
+    'Look at what this update changes, then say what it may connect to and what it may do.',
+  permissions_label: 'This Pack needs:',
+  body_grants_label: 'This Pack will be able to read:',
   recipes_label_prefix: 'Will install ',
   recipes_label_suffix: ' recipes:',
-  no_recipes: 'No recipes to install.',
+  no_recipes: 'No Recipes to install.',
   required_permission_note: '(always required)',
   install_label: 'Install',
   installing_label: 'Installing…',
@@ -130,17 +133,17 @@ const DIALOG_COPY = {
   // Slice C — cross-pack collision copy.
   collision_heading: '⚠ Recipe slug overlap with other packs:',
   collision_followup:
-    'Installing this pack will overwrite each shared slug with this pack’s pinned version. Uninstalling either pack removes the shared slug entirely.',
+    'Installing this Pack replaces anything with the same name. Removing either Pack takes those away for good.',
   recipe_collision_prefix: ' — also in ',
   // Slice J — install-side overlap copy (additive framing).
   grant_overlap_heading:
-    'This body content is already accessible via other installed packs:',
-  owner_operation_review_heading: 'Global operation rulings to review',
+    'Other Packs you have installed can already read this:',
+  owner_operation_review_heading: 'Rules that apply everywhere',
   owner_operation_review_intro:
-    'This update changes pack operations with owner-wide Risk or Approval values. Those owner values remain global after the update.',
+    'This update changes things you have already set rules for. Your rules still apply everywhere afterwards.',
   owner_operation_review_removed:
-    'Removed operations keep their ruling stored but inactive unless the operation returns.',
-  records_review_heading: 'Records data transition to review',
+    'If something is removed, your rule for it is kept but does nothing, unless it comes back.',
+  records_review_heading: 'What happens to your records',
 } as const;
 
 /** Failure-code → copy mapping for the engine's `BulkPackInstallResult.
@@ -151,17 +154,17 @@ const INSTALL_FAILURE_COPY: Record<
   string
 > = {
   permission_denied:
-    'Install rejected: a required permission was not granted.',
+    'Recued did not install it: you did not allow something it needs.',
   version_mismatch:
-    'Install rejected: the server runs a different pack manifest version.',
+    'Recued did not install it: your server expects a different version.',
   review_stale:
-    'This pack changed after you reviewed it. Refresh and review the current update.',
+    'This Pack changed after you looked at it. Load the page again and look at the new one.',
   validator_rejected:
-    'Install rejected: the manifest failed substrate validation.',
+    'Recued did not install it: the Pack did not pass its checks.',
   unresolved:
-    'Install rejected: one or more recipes in the pack could not be resolved.',
+    'Recued did not install it: it could not find one or more of the Recipes.',
   unexpected:
-    'Install rejected: an unexpected substrate error occurred.',
+    'Recued did not install it: something went wrong.',
 };
 
 /** User-facing copy for an `ok: false` install outcome. Defensive on both
@@ -170,9 +173,9 @@ const INSTALL_FAILURE_COPY: Record<
  *  `undefined`; a missing code surfaces the generic unknown-failure line. */
 export const installFailureCopy = (code: string | undefined, detail?: string): string => {
   const head = code === undefined
-    ? 'Install rejected: unknown failure.'
+    ? 'Recued did not install it, and does not know why.'
     : INSTALL_FAILURE_COPY[code as keyof typeof INSTALL_FAILURE_COPY]
-      ?? `Install rejected: ${code}.`;
+      ?? `Recued did not install it: ${code}.`;
   // ⛔ The engine ships a SPECIFIC reason next to the code and this dropped it.
   // "the manifest failed substrate validation" is unactionable; the message
   // behind it was `recipe 'delete-billable-item': Tier-P op
@@ -276,8 +279,8 @@ const renderInstallRecipeDisclosure = (
   head.className = 'pid-recipe-disclosure-head';
   // ⚠ "reachable", not "approved" — the grant is ACCESS and nothing else.
   head.textContent = recipes.length === 1
-    ? 'Installing makes 1 recipe reachable by the AI:'
-    : `Installing makes ${recipes.length} recipes reachable by the AI:`;
+    ? 'Installing lets the AI use 1 Recipe:'
+    : `Installing lets the AI use ${recipes.length} Recipes:`;
   box.appendChild(head);
   const list = doc.createElement('ul');
   list.className = 'pid-recipe-disclosure-list';
@@ -388,9 +391,9 @@ export const renderConnectionHintDisclosure = (
   const line = doc.createElement('p');
   line.className = 'packs-dialog-summary';
   line.textContent =
-    `This pack connects to ${connection}. Install it first — the pack's Connections `
-    + 'row then opens a form already filled in with what the publisher suggested, '
-    + 'and you can change anything before saving.';
+    `This Pack connects to ${connection}. Install it first — the pack's Connections `
+    + 'row opens a form already filled in with what the publisher suggested, '
+    + 'and you can change anything before you save.';
   section.appendChild(line);
   return section;
 };
@@ -546,7 +549,8 @@ export const renderPacksInstallDialog = (
     kinds.className = 'packs-dialog-records-review-kinds';
     for (const kind of recordsReview.row_counts) {
       const row = doc.createElement('li');
-      row.textContent = `${kind.kind}: ${kind.rows} rows, ${kind.payload_bytes} logical bytes`;
+      row.textContent =
+        `${kind.kind}: ${kind.rows} rows, ${formatPressureBytes(kind.payload_bytes)} logical`;
       kinds.appendChild(row);
     }
     review.appendChild(kinds);
@@ -574,7 +578,7 @@ export const renderPacksInstallDialog = (
     if (recordsReview.destructive_changes.length > 0) {
       const destructiveHeading = doc.createElement('p');
       destructiveHeading.className = 'packs-dialog-records-review-destructive-heading';
-      destructiveHeading.textContent = 'Potentially destructive migration mappings:';
+      destructiveHeading.textContent = 'These changes could lose things:';
       review.appendChild(destructiveHeading);
       const destructive = doc.createElement('ul');
       for (const mapping of recordsReview.destructive_changes) {
@@ -596,12 +600,14 @@ export const renderPacksInstallDialog = (
       .join(', ') || 'keep (default)';
     policy.textContent =
       `Usage ${recordsReview.quota.row_count}/${recordsReview.quota.row_limit} rows, `
-      + `${recordsReview.quota.payload_bytes}/${recordsReview.quota.byte_limit} bytes · `
+      + `${formatPressureBytes(recordsReview.quota.payload_bytes)}`
+      + `/${formatPressureBytes(recordsReview.quota.byte_limit)} · `
       + `Global ${recordsReview.global_quota.row_count}/${recordsReview.global_quota.row_limit} rows, `
-      + `${recordsReview.global_quota.payload_bytes}/${recordsReview.global_quota.byte_limit} bytes`
+      + `${formatPressureBytes(recordsReview.global_quota.payload_bytes)}`
+      + `/${formatPressureBytes(recordsReview.global_quota.byte_limit)}`
       + `${recordsReview.global_quota.reserved_payload_bytes === 0
         ? ''
-        : ` (+${recordsReview.global_quota.reserved_payload_bytes} reserved)`} · `
+        : ` (+${formatPressureBytes(recordsReview.global_quota.reserved_payload_bytes)} reserved)`} · `
       + `Retention: ${retention}`;
     review.appendChild(policy);
 
@@ -610,8 +616,8 @@ export const renderPacksInstallDialog = (
     lifecycle.textContent =
       `${recordsReview.active_executions} active executions; `
       + `${recordsReview.unacknowledged_events} unacknowledged events will be drained or explicitly retired. `
-      + `${recordsReview.export_checkpoint_available ? 'Export is available' : 'Export unavailable'}${recordsReview.export_recommended ? ' and recommended' : ''}. `
-      + `The pack is temporarily unavailable during the resumable transition. `
+      + `${recordsReview.export_checkpoint_available ? 'Export is available' : 'Cannot export'}${recordsReview.export_recommended ? ' and recommended' : ''}. `
+      + `The Pack stops working while this happens, and picks up again afterwards. `
       + `Reverse route: ${recordsReview.reverse_route_exists ? 'available' : 'not available'}.`;
     review.appendChild(lifecycle);
     container.appendChild(review);

@@ -16,6 +16,23 @@ import type Database from 'better-sqlite3';
 import type { Dish } from '@recued/contracts';
 import { initializePreapprovalLifecycle, mutatePreapprovalResource } from './storage/preapproval-lifecycle.js';
 
+/** The slice of a dish a pre-approval COMMITS TO. Pinned as a dependency at
+ *  prepare time (`preapproval-recipe-sources.ts`); every dish write re-hashes
+ *  it, and a changed hash bumps the revision and invalidates every execution
+ *  pinned to this dish.
+ *
+ *  ⚠ `enabled` IS AN ENFORCEMENT POINT, NOT MERELY A CHANGE SIGNAL — do not
+ *  "simplify" it out. `preapproval-driver.ts` dispatches a reviewed run with
+ *  NO `dish_id`, so the fire-time dish gate in `scheduler.ts` never applies to
+ *  one; invalidation-on-pause is the only thing stopping a reviewed run from
+ *  firing against a paused dish. Removing the field needs a dispatch-time
+ *  `dish.enabled` re-check in the driver FIRST.
+ *
+ *  Scope: on a schedule/trigger-managed dish the owner's pause already clears
+ *  the pre-approval through the rule's own row (`notePreapprovalOwnerMutation`
+ *  in `schedule-store.ts` / `triggers/store.ts`), and `dishes.update` freezes
+ *  `enabled` on those rows regardless. This field carries the rule alone only
+ *  for an unmanaged or default dish. */
 export const dishPreapprovalMaterial = (dish: Dish): Record<string, unknown> => ({
   recipe_id: dish.recipe_id, publisher_id: dish.publisher_id, enabled: dish.enabled, config_overlay: dish.config_overlay,
   group_id: dish.group_id ?? null,

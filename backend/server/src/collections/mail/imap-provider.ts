@@ -82,6 +82,7 @@ import {
   type ProviderHealth,
   type ProviderSyncCallback,
   type ProviderSyncEventKind,
+  type SavedDraftMeta,
   type SentMessageMeta,
 } from './provider.js';
 import type { OAuthAccountStore } from './oauth.js';
@@ -326,6 +327,16 @@ export const DEFAULT_SMTP_PORT = 587;
  *  the standard `\Sent` special-use flag. Tried in order; the first
  *  match in the listed mailboxes wins. `INBOX.Sent` is the
  *  Cyrus / Courier prefix style. */
+/** D-264 — the `\Drafts` twin of the Sent chain. Same shape and same reason:
+ *  RFC 6154 special-use is authoritative where the server publishes it, and
+ *  these are the names in the wild when it does not. */
+export const IMAP_DRAFTS_FOLDER_FALLBACK_CANDIDATES = [
+  'Drafts',
+  'Draft',
+  'INBOX.Drafts',
+  '[Gmail]/Drafts',
+] as const;
+
 export const IMAP_SENT_FOLDER_FALLBACK_CANDIDATES = [
   'Sent',
   'Sent Items',
@@ -469,19 +480,35 @@ export const buildImapRfc5322 = (
  *  fallback candidate list (case-sensitive, mirrors what most
  *  modern servers expose). Returns null when no candidate matches —
  *  caller surfaces that as an APPEND warning. */
-export const findSentFolder = async (
+/** Special-use flag first, then a name-fallback chain. Shared by the Sent and
+ *  Drafts lookups so the two cannot drift in how they resolve a folder — only
+ *  in WHICH folder they resolve. */
+const findSpecialUseFolder = async (
   client: ImapClient,
+  specialUse: string,
+  fallbacks: readonly string[],
 ): Promise<string | null> => {
   if (typeof client.list !== 'function') return null;
   const list = await client.list();
-  const flagged = list.find((box) => box.specialUse === '\\Sent');
+  const flagged = list.find((box) => box.specialUse === specialUse);
   if (flagged) return flagged.path;
   const known = new Set(list.map((box) => box.path));
-  for (const candidate of IMAP_SENT_FOLDER_FALLBACK_CANDIDATES) {
+  for (const candidate of fallbacks) {
     if (known.has(candidate)) return candidate;
   }
   return null;
 };
+
+export const findSentFolder = async (
+  client: ImapClient,
+): Promise<string | null> =>
+  findSpecialUseFolder(client, '\\Sent', IMAP_SENT_FOLDER_FALLBACK_CANDIDATES);
+
+/** D-264 — where a parked draft goes. */
+export const findDraftsFolder = async (
+  client: ImapClient,
+): Promise<string | null> =>
+  findSpecialUseFolder(client, '\\Drafts', IMAP_DRAFTS_FOLDER_FALLBACK_CANDIDATES);
 
 // ────────────────────────────────────────────────────────────────
 // Canonicalization helpers
@@ -1376,6 +1403,104 @@ export const createImapProvider = (
     }
   };
 
+  /** D-264 — APPEND the message into `\Drafts` with the `\Draft` flag.
+   *
+   *  ⛔ NO SMTP. That is the entire point: an IMAP mailbox enrolled without an
+   *  SMTP block is `sendCapable: false` and can still do this, which is the
+   *  case D-264 exists for. The `from` address therefore falls back to the IMAP
+   *  username rather than reading `smtp.from`, which may not exist.
+   *
+   *  ⚠ IMAP HAS NO UPDATE VERB. Superseding a `prior` draft means deleting it,
+   *  which needs the D-239 delete verb — a DIFFERENT capability from the
+   *  `list`+`append` pair this method requires. When the client lacks it the
+   *  draft is still saved and `replaced` comes back FALSE with a warning: the
+   *  owner has two copies and is told so, rather than the method claiming a
+   *  replacement it did not perform. */
+  const saveDraftImpl = async (
+    msg: OutgoingMessage,
+    prior?: { source_id: string },
+  ): Promise<SavedDraftMeta> => {
+    const cfg = opts.config();
+    const fromAddress = cfg.smtp?.from ?? cfg.username;
+    const messageId = generateImapMessageId(fromAddress, cfg.host, messageIdUuid);
+    const savedAt = nowOf();
+    const rfc822 = buildImapRfc5322(msg, { from: fromAddress, messageId, sentAt: savedAt });
+
+    const state = folders.values().next().value;
+    if (!state || !state.client) {
+      throw new IngredientError('MAIL_DRAFT_NOT_CAPABLE',
+        `IMAP provider ${opts.slug} has no connected client for APPEND`,
+        { kind: 'imap', slug: opts.slug });
+    }
+    const client = state.client;
+    if (typeof client.list !== 'function' || typeof client.append !== 'function') {
+      throw new IngredientError('MAIL_DRAFT_NOT_CAPABLE',
+        `IMAP client for ${opts.slug} lacks list/append`,
+        { kind: 'imap', slug: opts.slug });
+    }
+    let folder: string | null;
+    try {
+      folder = await findDraftsFolder(client);
+    } catch (err) {
+      markError('imap Drafts folder discovery failed', err);
+      throw new IngredientError('MAIL_DRAFT_FOLDER_NOT_FOUND',
+        `Drafts folder discovery failed: ${err instanceof Error ? err.message : String(err)}`,
+        { kind: 'imap', slug: opts.slug });
+    }
+    if (!folder) {
+      throw new IngredientError('MAIL_DRAFT_FOLDER_NOT_FOUND',
+        `no Drafts folder found via \\Drafts flag or fallback chain `
+        + `(${IMAP_DRAFTS_FOLDER_FALLBACK_CANDIDATES.join(', ')})`,
+        { kind: 'imap', slug: opts.slug });
+    }
+
+    let appended: unknown;
+    try {
+      appended = await client.append(folder, rfc822, ['\\Draft']);
+    } catch (err) {
+      markError('imap Drafts APPEND failed', err);
+      throw new IngredientError('MAIL_DRAFT_WRITE_FAILED',
+        `IMAP APPEND to ${folder} failed: ${err instanceof Error ? err.message : String(err)}`,
+        { kind: 'imap', slug: opts.slug });
+    }
+    // imapflow returns `{ uid, uidValidity, ... }` when the server answers
+    // APPENDUID; plenty of servers do not, and the generated Message-Id is the
+    // only handle left. Either way the id must be a value a later export can
+    // hand back, so it is never empty.
+    const uid = (appended as { uid?: unknown } | null)?.uid;
+    const source_id = typeof uid === 'number' && Number.isSafeInteger(uid)
+      ? String(uid)
+      : messageId;
+
+    const warnings: Array<{ code: string; message: string }> = [];
+    // ⛔⛔ THE PRIOR DRAFT IS NEVER DELETED HERE, AND THAT IS A CORRECTNESS
+    // DECISION, NOT A GAP. This originally called
+    // `client.messageDelete(priorUid, { uid: true })`, which would have DESTROYED
+    // UNRELATED INBOX MAIL: `append` deliberately does not disturb the SELECTed
+    // mailbox (see `appendToSentBestEffort`), so the client is still on the sync
+    // folder — INBOX — when the delete runs. A UID is only meaningful inside the
+    // mailbox it belongs to, so "delete UID 7" deleted INBOX's message 7 while
+    // the draft in Drafts survived, and the call then reported
+    // `replaced: true`. Silent, irreversible, and it looked like success.
+    //
+    // Selecting Drafts first is not the fix either: this client is shared with
+    // the live sync loop, and moving its selection mid-sync is the exact side
+    // effect APPEND was chosen to avoid.
+    //
+    // So IMAP does what IMAP can do — it appends, and says the old copy is still
+    // there. That is the honest outcome the `replaced` contract exists to carry.
+    const replaced = false;
+    if (prior) {
+      warnings.push({ code: 'MAIL_DRAFT_PRIOR_NOT_REMOVED',
+        message: 'IMAP cannot replace a saved draft, so the earlier copy is still '
+          + 'in your Drafts folder. Delete it in your mail app.' });
+    }
+
+    lastSuccessfulSyncAt = nowOf();
+    return { source_id, saved_at: savedAt, replaced,
+      ...(warnings.length > 0 ? { warnings } : {}) };
+  };
+
   const sendImpl = async (msg: OutgoingMessage): Promise<SentMessageMeta> => {
     const cfg = opts.config();
     const smtp = cfg.smtp;
@@ -1891,6 +2016,27 @@ export const createImapProvider = (
     return mutationCapableMemo;
   };
 
+  /** D-264 — the DRAFT pair, probed the same lazy way and deliberately NOT
+   *  folded into `probeMutationCapable`. Parking a draft is an APPEND into a
+   *  folder found by special-use flag, so it needs exactly what
+   *  `appendToSentBestEffort` already checks for at :1350 — `list` + `append`
+   *  — and none of D-239's flag/move/delete quartet. The two happen to agree
+   *  on imapflow; a client that grew one group and not the other would make
+   *  a single shared probe answer the wrong question for one of them. */
+  let draftCapableMemo: boolean | undefined;
+  const probeDraftCapable = (): boolean => {
+    if (draftCapableMemo !== undefined) return draftCapableMemo;
+    try {
+      const probe = makeClient('__draft_probe__');
+      draftCapableMemo =
+        typeof probe.list === 'function'
+        && typeof probe.append === 'function';
+    } catch {
+      draftCapableMemo = false;
+    }
+    return draftCapableMemo;
+  };
+
   const sendCapable = !!opts.config().smtp;
   // D-127 P1.6 — accountEmail derives from the SMTP block's `from`
   // override, falling back to the IMAP username (which IS the email
@@ -1980,6 +2126,10 @@ export const createImapProvider = (
     // and only if something actually asks.
     get mutationCapable() {
       return probeMutationCapable();
+    },
+    /** D-264 — lazy for the same reason as its neighbour. */
+    get draftCapable() {
+      return probeDraftCapable();
     },
     accountEmail,
 
@@ -2135,6 +2285,19 @@ export const createImapProvider = (
     lookupSentByReconciliationId,
 
     ...(sendCapable ? { send: sendImpl } : {}),
+    // D-264 — attached UNCONDITIONALLY, unlike `send`.
+    //
+    // ⛔ `...(probeDraftCapable() ? { saveDraft } : {})` looks like the lockstep
+    // `send` uses and is not: that spread EVALUATES the probe at construction,
+    // on every boot for every enrolled mailbox, which is exactly the cost
+    // `draftCapable`'s getter defers. `sendCapable` can gate method presence
+    // because it is a config read; this one cannot.
+    //
+    // Gating on the FLAG rather than on method presence is the rule D-239
+    // already set — "the dispatcher's capability gate reads the flag rather
+    // than probing for methods" — and `saveDraftImpl` refuses with
+    // `MAIL_DRAFT_NOT_CAPABLE` anyway if it is called on a client that cannot.
+    saveDraft: saveDraftImpl,
 
     // D-239 — attached UNCONDITIONALLY, unlike gmail/graph, because IMAP's
     // capability is a property of the CLIENT rather than of a grant, and

@@ -942,7 +942,7 @@ export const mountTlsCertificatesPanel = (
       // round trip, not to duplicate the validator.
       const complaint =
         domain === ''
-          ? 'Hostname is required.'
+          ? 'You need to give a name.'
           : !cert_pem.includes('-----BEGIN ')
             ? 'Certificate must be a PEM block beginning with "-----BEGIN CERTIFICATE-----".'
             : !private_key_pem.includes('-----BEGIN ')

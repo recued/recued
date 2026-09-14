@@ -39,7 +39,7 @@ const EXPECTED_DOMAIN_COUNTS: Record<string, number> = {
   // `data.mail` mutates an EXISTING message for the first time here; the prior
   // nine were reads plus the two send-side verbs, which only ever created.
   // D-261 — four individually governed durable draft operations.
-  mail: 17,
+  mail: 18,
   contact: 4,
   customer: 1,
   notification: 2,
@@ -234,6 +234,7 @@ describe('D-182 slice 3a — kernel op registry', () => {
       'core.mail.draft.create|mail|mail-draft-create|write',
       'core.mail.draft.delete|mail|mail-draft-delete|destructive',
       'core.mail.draft.read|mail|mail-draft-read|read',
+      'core.mail.draft.save-to-mailbox|mail|mail-draft-save-to-mailbox|write',
       'core.mail.draft.update|mail|mail-draft-update|write',
       'core.mail.email.get|mail|email-get|read',
       'core.mail.email.list|mail|email-list|read',

@@ -25,17 +25,17 @@
  *  (insecure context), so Web Crypto is unavailable. Names both fixes — open
  *  from `http://localhost` on the server machine, or put HTTPS in front. */
 export const INSECURE_CONTEXT_SPLASH_MESSAGE =
-  'Recued needs a secure context to run. This page was opened over an insecure ' +
-  '(non-HTTPS) connection, so the browser blocks the Web Crypto APIs that ' +
-  'pairing needs. Open the webclient from http://localhost on the machine ' +
-  'running your server, or set up HTTPS (Recued Pro, or your own certificate / ' +
-  'reverse proxy) to reach it from another device.';
+  'This page was opened on a web address that is not safe enough. It starts ' +
+  'with http, not https, so your browser turns off the security Recued needs ' +
+  'to pair this device. Two ways to fix it. On the computer running your ' +
+  'server, open http://localhost instead. Or give the server an https address ' +
+  '(Recued Pro sets one up, or bring your own), then open that.';
 
 /** Splash copy for the rarer case: a secure context whose browser still
  *  lacks `crypto.subtle` (a very old or stripped-down browser). */
 export const WEBCRYPTO_MISSING_SPLASH_MESSAGE =
-  'Recued needs the Web Crypto API, which this browser does not provide. ' +
-  'Please use a current version of Chrome, Firefox, Safari, or Edge.';
+  'This browser is missing the security tools Recued needs. ' +
+  'Use an up-to-date Chrome, Firefox, Safari, or Edge.';
 
 export interface SecureContextEnv {
   /** `window.isSecureContext` — true for https and for http on a loopback

@@ -49,10 +49,10 @@ export const PAIR_SERVER_MESSAGE_MAX_CHARS = 280;
  *  `server-vault-enrollment.ts`'s outcome mapping. */
 export const PAIR_SERVER_ERROR_COPY = {
   invalid_code:
-    'That pairing code is invalid, expired, or already used. Refresh it from the server terminal.',
+    'That pairing code is wrong, has run out, or has been used. Get a new one from the server terminal.',
   recovery_key_invalid:
-    "That recovery key doesn't match the one your server has on file. Re-check your written copy and re-enter.",
-  bad_request: 'The server rejected the request. Re-check the fields and try again.',
+    "Those words do not match what your server has. Check what you wrote down and type them again.",
+  bad_request: 'Your server said no. Check what you typed and try again.',
   server_not_configured:
     'This server is not ready to verify a recovery key. Ask the person who runs it to check the server logs and configuration, then restart Recued before trying again. A fresh pairing code will not fix this server setup problem.',
   // ── D-212-era codes the hand-copied lists never learned ──────────────
@@ -67,9 +67,9 @@ export const PAIR_SERVER_ERROR_COPY = {
   // The one case where "check the URL" IS the right advice: something
   // answered, but it does not serve this endpoint.
   not_found:
-    'Something answered at that address, but it isn’t a recued-server — or it’s too old to pair this way. Check the URL.',
+    'Something answered at that address, but it is not a Recued server, or it is too old to pair like this. Check the address.',
   payload_too_large:
-    'The server rejected the request as too large. Re-check the fields (a pasted recovery key should be 24 words) and try again.',
+    'Your server said that was too big. Check what you typed. A recovery key is 24 words.',
   internal_error:
     'Your server hit an internal error while pairing. Check its logs, then try again.',
 } as const satisfies Readonly<Record<string, string>>;

@@ -1,6 +1,17 @@
 import type { RuntimeConfigStore } from '@recued/config';
+import { buildQuietHoursReleaseHandler } from '../quiet-hours-release-handler.js';
 import { zoneByLabel, type ConnectionHealth, type LifecycleStatus } from '@recued/contracts';
-import type { NotificationBlock } from '@recued/notification';
+import type { NotificationBlock, NotificationMessage } from '@recued/notification';
+import {
+  createMissedRunAsk,
+  hasMissedRunAskSurface,
+} from '../missed-run-ask.js';
+import { answerMissed } from '../schedule-handler.js';
+/** D-266 — where the ask's link lands: the Automation Schedules section,
+ *  which is the only surface offering a PER-RECIPE answer. The ask's own
+ *  two options are all-or-nothing by design (a chat card with one button
+ *  per recipe is unreadable past three). */
+const MISSED_RUNS_ASK_LINK = '#automation/schedules';
 
 import type { BackgroundServiceRegistry } from '../composition/bin/wire-background-services.js';
 import {
@@ -11,6 +22,7 @@ import type { SchedulersBundle } from '../composition/bin/wire-schedulers.js';
 import type { EventTriggerDispatcher } from '../triggers/dispatcher.js';
 import type { PollManagerHandle } from '../watch/poll-manager.js';
 import type { MessengerIngressSupervisor } from '../messenger-ingress/supervisor.js';
+import { renderQuietHoursDigest, resolveServerTimeZone } from '@recued/contracts';
 import type { UpstreamMergeRegistry } from '../data/vendor-boot-registry.js';
 import type { EvictionCascade } from '../eviction-cascade.js';
 import { composeProCertEnrollment } from '../composition/bin/wire-pro-cert-enrollment.js';
@@ -184,7 +196,11 @@ export interface StartPostListenerRuntimeOptions {
   readonly lifecycle: Pick<Lifecycle, 'install' | 'markBooted'> | undefined;
   readonly cascade: Pick<EvictionCascade, 'close'> | undefined;
   /** D-157 N.8 — threaded to the stale-checkpoint retention sweep
-   *  (`startPostHousekeepingTail` → `startRetentionPruners`). */
+   *  (`startPostHousekeepingTail` → `startRetentionPruners`).
+   *
+   *  D-266 widens it with `ask` / `listOpenAsks` / `registerAskHandler`
+   *  for the missed-run ask. The Pick is the honest declaration of what
+   *  this file reaches for — widening it is the point, not a formality. */
   readonly notificationBlock:
     | Pick<
         NotificationBlock,
@@ -194,6 +210,9 @@ export interface StartPostListenerRuntimeOptions {
         | 'recoverPendingAsks'
         | 'pruneHandledAsks'
         | 'notify'
+        | 'ask'
+        | 'listOpenAsks'
+        | 'registerAskHandler'
       >
     | undefined;
   /** D-178 slice 4b — on-boot update reconcile; the tail runs it after
@@ -314,7 +333,60 @@ export const startPostListenerRuntime = async (
     };
   }
 
+  // D-266 — `Ask me` raised through the notification block, so it
+  // reaches an owner who is not looking at the Automation page. Built
+  // here because this is the one place that holds BOTH the notification
+  // block and the schedule store. Absent block (dbless / delegated boot)
+  // ⇒ no seam, and `Ask me` falls back to the Automation card alone.
+  //
+  // ⛔ THE `hasAskSurface` PROBE IS NOT TYPE-APPEASEMENT. `register()` is
+  // the first EAGER call this boot makes on the block — everything else
+  // it holds is invoked later, if at all — so a supplier that is missing
+  // a method no longer fails at that method, it fails at STARTUP and
+  // takes the whole runtime with it. That blast radius is wrong by any
+  // measure: missed-run asks are a feature, the server booting is not.
+  // A block without the surface degrades exactly as an absent block
+  // does, and says so once rather than silently.
+  if (options.notificationBlock && options.scheduleStore
+    && !hasMissedRunAskSurface(options.notificationBlock)) {
+    console.warn(
+      '[d-266] notification block has no ask surface — `Ask me` schedules '
+      + 'will wait for the Automation card instead of raising an ask.',
+    );
+  }
+  const missedRunAsk = hasMissedRunAskSurface(options.notificationBlock) && options.scheduleStore
+    ? createMissedRunAsk({
+      notifier: options.notificationBlock,
+      answer: ({ answer, recipe_ids }) => {
+        answerMissed(
+          {
+            store: options.scheduleStore!,
+            ...(options.executeDeps.eventBus
+              ? { eventBus: options.executeDeps.eventBus }
+              : {}),
+          },
+          { answer, recipe_ids },
+        );
+      },
+      recipeName: (recipe_id) =>
+        options.storage.recipeStore.get(recipe_id)?.metadata?.name,
+      link: MISSED_RUNS_ASK_LINK,
+      onError: (message, error) => { console.warn(`[d-266] ${message}`, error); },
+    })
+    : undefined;
+  // Registered BEFORE the scheduler starts: an ask that survived a
+  // restart is answerable only once its kind is back in the registry,
+  // and the first tick can land within the same second as the start.
+  missedRunAsk?.register();
+
   const schedulersBundle = startSchedulers({
+    // D-269 — the declared server zone for cron schedules that carry none, so
+    // `0 9 * * *` means 9am to the OWNER rather than 9am wherever this process
+    // runs. Read PER TICK: under `follows_host` the answer is the host clock.
+    serverTimeZone: (): string => resolveServerTimeZone(
+      options.storage.serverTimeZoneStore.read(),
+      Intl.DateTimeFormat().resolvedOptions().timeZone,
+    ),
     registry: options.backgroundServices,
     db: options.storage.db,
     scheduleStore: options.scheduleStore,
@@ -324,6 +396,30 @@ export const startPostListenerRuntime = async (
     autoRunSettingsStore: options.autoRunSettingsStore,
     // R21.1 — cron + auto-run ticks no-op while the vault is sealed.
     isVaultUnlocked: options.app.isVaultUnlocked,
+    ...(missedRunAsk ? { onMissedRuns: missedRunAsk.project } : {}),
+    // D-268 — the one genuinely new surface in the entry: a failed unattended
+    // run finally reaches the owner. This is the only place that holds BOTH the
+    // notification block and the scheduler wiring, which is why it binds here
+    // and not inside the scheduler (which stays ignorant of the block, exactly
+    // as it does for `onMissedRuns` above).
+    //
+    // ⛔ NOT AN ASK. The failure already happened and there is nothing to
+    // approve — and `core.notification.send` is `read`-tier on the standing
+    // ruling that the owner must never be made to authorize an act whose only
+    // subject is themselves.
+    //
+    // ⚠ The promise is deliberately dropped: a slow or dead owner channel must
+    // not delay a scheduler tick, and a rejected notify must not surface as an
+    // unhandled rejection on a background timer.
+    ...(options.notificationBlock
+      ? {
+        onAutomationFailure: (notice: NotificationMessage): void => {
+          void options.notificationBlock!.notify(notice).catch((err: unknown) => {
+            console.warn('[d-268] automation failure notice not delivered', err);
+          });
+        },
+      }
+      : {}),
   });
   options.publishSchedulersBundle(schedulersBundle);
 
@@ -512,6 +608,40 @@ export const startPostListenerRuntime = async (
 
   let vendorRefs: VendorSubstratePublishedRefs | undefined;
   await startHousekeepingStartup({
+    // ⛔ D-269 — booking / calendar reminders deliver through `notify`, so the
+    // per-kind policy and quiet hours gate a DELIVERY rather than an event that
+    // might drive work. That is the shape the due-status sweep should migrate
+    // to; it is not an exception to it.
+    ...(options.notificationBlock
+      ? {
+          notifyReminder: (message): void => {
+            void options.notificationBlock!.notify(message).catch(() => {
+              // Best-effort, same contract as every other `notify`: a reminder
+              // that cannot be delivered must not take the cycle with it.
+            });
+          },
+        }
+      : {}),
+    // ⛔⛔ D-269 step 4 — ONE CARD WHEN THE WINDOW ENDS, and `notify` is the
+    // right vehicle precisely BECAUSE it is fire-and-forget with no store: the
+    // digest was recomputed from anchor rows a moment ago, so there is nothing
+    // to make durable. A held queue would have delivered a reminder for a
+    // commitment cancelled at 03:00.
+    //
+    // ⚠ Absent notification block (db-less / pre-D-163 boot) ⇒ the edge is
+    // still tracked and no card is sent, rather than the sweep failing.
+    ...(options.notificationBlock
+      ? {
+          // D-269 REV 20 — the body lives in `quiet-hours-release-handler.ts`
+          // so it can be driven without booting a server. See that file: an
+          // audit mutation no-opped this entire callback and 150 tests stayed
+          // green, because an inline closure in the boot path is unreachable.
+          onQuietHoursReleased: buildQuietHoursReleaseHandler({
+            recoverPendingAsks: () => options.notificationBlock!.recoverPendingAsks(),
+            notify: (m) => options.notificationBlock!.notify(m),
+          }),
+        }
+      : {}),
     storage: options.storage,
     app: options.app,
     collection: options.collection,
@@ -563,6 +693,13 @@ export const startPostListenerRuntime = async (
     engagementStore: options.app.engagementStoreRef,
     lookupConnection: vendorRefs?.apiConnectionLookup,
     contactStore: options.app.contactStoreRef,
+    // D-269 step 1 — D-139 § A.3.7's third fallback step. ⚠ Read PER CALL, not
+    // captured: under `follows_host` the answer is the host clock, and a
+    // reconciliation cycle outlives any single reading of it.
+    prefsTimezone: (): string | null => resolveServerTimeZone(
+      options.storage.serverTimeZoneStore.read(),
+      Intl.DateTimeFormat().resolvedOptions().timeZone,
+    ),
   });
 
   // D-192 P3b — one housekeeping sync task per registered

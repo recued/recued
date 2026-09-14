@@ -37,6 +37,7 @@ export {
 export { addReReplyPrefix, deriveReplyValues } from './reply-context.js';
 
 export type {
+  ComposeDispatchMode,
   ComposeDispatchResult,
   ComposeMailSendPayload,
   ComposeDispatchHooks,
@@ -50,6 +51,7 @@ export {
 export {
   composeStateToSendPayload,
   composePayloadToSendRecipeConfig,
+  SAVE_COMPOSED_DRAFT_TO_MAILBOX_RECIPE_ID,
   SEND_COMPOSED_MAIL_RECIPE_ID,
 } from './dispatch.js';
 export { normalizeMailSend, type NormalizedMailSend } from './normalize.js';

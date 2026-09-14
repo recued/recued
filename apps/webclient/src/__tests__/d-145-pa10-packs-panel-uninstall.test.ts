@@ -562,7 +562,7 @@ describe('D-145 PA10 follow-on Slice B — uninstall rpc', () => {
     expect(mount.getConfirmingDeleteFor()).toBe('test-pack');
     const errChip = findByAttr(host, PACKS_ROW_DELETE_ERROR_ATTR);
     expect(errChip).not.toBeNull();
-    expect(errChip!.textContent).toContain('could not find');
+    expect(errChip!.textContent).toContain('cannot find it');
   });
 
   it('explains that operation-bound cleanup authority prevents uninstall', async () => {
@@ -578,8 +578,8 @@ describe('D-145 PA10 follow-on Slice B — uninstall rpc', () => {
     mount.clickDelete('test-pack');
     await mount.clickConfirmDelete();
     const errChip = findByAttr(host, PACKS_ROW_DELETE_ERROR_ATTR);
-    expect(errChip?.textContent).toContain('must remain installed');
-    expect(errChip?.textContent).toContain('no cleanup-completion proof');
+    expect(errChip?.textContent).toContain('has to stay so it can tidy up');
+    expect(errChip?.textContent).toContain('no proof that has happened');
   });
 
   it('ok=false with unknown failure code surfaces raw code (server version skew)', async () => {

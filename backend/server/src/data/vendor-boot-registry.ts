@@ -65,6 +65,18 @@ export type UpstreamMergeRegistry = Map<UpstreamMergeObjectType, VendorMergeClie
 export interface VendorBootDeps {
   connectionStore: ConnectionStoreSqlite;
   engagementStore: EngagementStore | undefined;
+  /** D-269 step 1 — the owner's declared server zone, for D-139 § A.3.7's
+   *  engagement timezone fallback (`vendor → calendar adapter → prefs.timezone
+   *  → UTC`).
+   *
+   *  ⛔⛔ THAT THIRD STEP HAS NEVER FIRED. Eleven reconcilers/leaves declared a
+   *  `prefsTimezone` reader for it and NO composition root supplied one — the
+   *  only mention in composition was the comment "`prefsTimezone` stays
+   *  default" — and `INSTANCE_PREFS` had no `timezone` key for it to read. So
+   *  every engagement whose vendor stamped no zone landed on the UTC sentinel
+   *  with `event_at_tz_inferred: true`. A slot sized for this value existed and
+   *  was empty; this fills it. */
+  prefsTimezone?: () => string | null | undefined;
   enrichmentStore: EnrichmentStore | undefined;
   /** D-190 — the dedicated CRM record mirror. A vendor that builds an in-process
    *  webhook funnel (Salesforce CometD) threads it into the funnel so accelerated

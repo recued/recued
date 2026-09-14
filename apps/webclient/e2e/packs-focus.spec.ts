@@ -421,7 +421,7 @@ test('Packs restores Confirm focus when deleting fails', async ({ page }) => {
   await expect(confirmButton).toHaveText('Confirm delete');
   await expect(confirmButton).not.toHaveAttribute('aria-disabled', 'true');
   await expect(confirmButton).toBeFocused();
-  await expect(page.getByRole('alert')).toContainText('could not find');
+  await expect(page.getByRole('alert')).toContainText('cannot find it');
 });
 
 test('Packs moves focus into Install consent and restores its opener on Cancel', async ({ page }) => {
@@ -524,5 +524,5 @@ test('Packs restores Install focus when submission fails', async ({ page }) => {
   await expect(submitButton).toHaveText('Install');
   await expect(submitButton).not.toHaveAttribute('aria-disabled', 'true');
   await expect(submitButton).toBeFocused();
-  await expect(page.getByRole('alert')).toContainText('required permission');
+  await expect(page.getByRole('alert')).toContainText('you did not allow something it needs');
 });

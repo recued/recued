@@ -228,6 +228,36 @@ describe('handleSharedList', () => {
       handleSharedList(deps, { prefix: 'shared.foo' }),
     ).rejects.toBeInstanceOf(RpcError);
   });
+
+  // ⛔ THE EXACT PREFIX THE WEBCLIENT'S Data → Storage TAB SENDS. Nothing
+  // covered it, and it threw `shared_key_invalid: key must be a non-empty
+  // string` on every load — the root prefix strips to `''` here. Spell the
+  // literal the caller spells, not a representative one.
+  it('lists the whole durable tier at the root prefix', async () => {
+    const res = await handleSharedList(deps, { prefix: 'data.shared.' });
+    expect(res.entries.map((e) => e.key).sort()).toEqual([
+      'data.shared.contact.1',
+      'data.shared.deal.1',
+      'data.shared.deal.2',
+    ]);
+  });
+
+  it('answers the root prefix with an empty list when nothing is stored', async () => {
+    await handleSharedDeletePrefix(deps, { prefix: 'data.shared.deal' });
+    await handleSharedDeletePrefix(deps, { prefix: 'data.shared.contact' });
+    await expect(handleSharedList(deps, { prefix: 'data.shared.' }))
+      .resolves.toEqual({ entries: [] });
+  });
+
+  // The root prefix is a READ widening only. `deleteByPrefix` still routes
+  // through the strict validator, so a root prefix cannot wipe the tier.
+  it('does NOT extend the root prefix to delete-prefix', async () => {
+    await expect(
+      handleSharedDeletePrefix(deps, { prefix: 'data.shared.' }),
+    ).rejects.toMatchObject({ code: 'bad_request' });
+    const res = await handleSharedList(deps, { prefix: 'data.shared.' });
+    expect(res.entries).toHaveLength(3);
+  });
 });
 
 describe('handleSharedRead', () => {

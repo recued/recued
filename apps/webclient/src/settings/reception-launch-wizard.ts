@@ -171,39 +171,39 @@ export const LAUNCH_WIZARD_STEP_COPY: Readonly<
   Record<LaunchWizardStepId, { title: string; summary: string }>
 > = {
   profile_check: {
-    title: 'Check exposure profile',
+    title: 'Check who can reach your server',
     summary:
-      'Reception serves anonymous visitors, so your server must be publicly reachable. The wizard checks your exposure profile and prompts a switch if it is not the one Reception needs.',
+      'Reception is for people who have no account, so your server has to be reachable from the internet. Recued checks this, and offers to change it if it is not.',
   },
   reception_page: {
     title: 'Set up your Reception page',
     summary:
-      'Your public front door at /reception/ — a contact card, preferred contact methods, and a response-time estimate. Pre-filled from your profile; add a tagline and tune the details.',
+      'Your front door at /reception/. It shows who you are, how to reach you, and how soon you usually answer. Recued fills it in from your profile. Add a tagline and change anything you like.',
   },
   scheduling_link: {
     title: 'Add a scheduling link',
     summary:
-      'Anonymous visitors pick a slot from your free calendar windows. Starts at a 30-minute slot — set the windows you are available in.',
+      'People pick a time from when you are free. It starts at 30 minutes. Set the times you are around.',
   },
   intake_form: {
     title: 'Add an intake form',
     summary:
-      'Starts from the Client inquiry Foundation-pack template — a structured form that routes each submission to a commitment. Customise the fields before continuing.',
+      'This starts from the ready-made Client inquiry form. Each answer becomes a promise you have made. Change the boxes before you carry on.',
   },
   drop_link: {
     title: 'Add a drop link',
     summary:
-      'A "send me a file" link — visitors upload directly to your server within a closed file-type allowlist. This step is optional; skip it if you do not need file uploads yet.',
+      'A “send me a file” link. Files go straight to your server, and only the kinds you allow. You can skip this if you do not need it yet.',
   },
   view_as_visitor: {
     title: 'Review as a visitor',
     summary:
-      'Before anything goes live, see exactly what an anonymous visitor would see for each endpoint — the visible fields, what is stripped at the boundary, and the privacy-invariant checklist.',
+      'Before anything goes live, see exactly what a visitor would see for each link: what shows, what Recued strips out, and the privacy checks.',
   },
   share: {
-    title: 'Share your endpoints',
+    title: 'Share your links',
     summary:
-      'Each enabled endpoint gets copy-paste share cards for email, SMS, and Slack. Send the links and your Reception is live.',
+      'Every link you switched on gets a card you can copy into email, a text, or Slack. Send them, and your Reception is live.',
   },
 };
 
@@ -217,15 +217,15 @@ export const LAUNCH_WIZARD_VALIDATION_COPY: Readonly<
   Record<LaunchWizardValidationCode, string>
 > = {
   input_shape_invalid:
-    'The wizard form is incomplete — fill in every required step before finishing setup.',
+    'Something is missing. Finish every step before you finish setting up.',
   reception_page_invalid:
-    'Your Reception page configuration has a problem. Open step 2 and check the contact card, section toggles, and links.',
+    'Something is wrong with your Reception page. Open step 2 and check your details, the sections, and the links.',
   scheduling_link_invalid:
-    'The scheduling link configuration has a problem. Open step 3 and check the slot duration and availability windows.',
+    'Something is wrong with your booking link. Open step 3 and check the meeting length and when you are free.',
   intake_form_invalid:
-    'The intake form configuration has a problem. Open step 4 and check the form fields and the processing rule.',
+    'Something is wrong with your form. Open step 4 and check the boxes, and what happens when someone sends it.',
   drop_link_invalid:
-    'The drop link configuration has a problem. Open step 5 and check the file-type allowlist, size cap, and expiry.',
+    'Something is wrong with your file-drop link. Open step 5 and check which file kinds you allow, the size limit, and the end date.',
 };
 
 // ════════════════════════════════════════════════════════════════
@@ -559,11 +559,11 @@ export const buildLaunchWizardPlanModel = (args: {
     current_exposure_profile: plan.current_exposure_profile,
     recommended_exposure_profile: plan.recommended_exposure_profile,
     headline: plan.profile_switch_needed
-      ? 'Switch your exposure profile'
-      : 'Exposure profile ready',
+      ? 'Change who can reach your server'
+      : 'Your server can be reached',
     detail: plan.profile_switch_needed
-      ? `Reception serves anonymous visitors, so your server must be publicly reachable. Your exposure profile is currently “${plan.current_exposure_profile}” — switch it to “${plan.recommended_exposure_profile}” before you finish setup.`
-      : `Your exposure profile (“${plan.recommended_exposure_profile}”) already lets Reception serve anonymous visitors — no change needed.`,
+      ? `Reception is for people who have no account, so your server has to be reachable from the internet. Right now it is set to “${plan.current_exposure_profile}” — switch it to “${plan.recommended_exposure_profile}” before you finish setup.`
+      : `Your setting (“${plan.recommended_exposure_profile}”) already lets Reception serve anonymous visitors — no change needed.`,
   };
 
   const endpoint_drafts = plan.endpoint_drafts

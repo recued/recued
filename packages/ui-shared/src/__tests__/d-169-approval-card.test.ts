@@ -331,6 +331,100 @@ describe('D-169 P2 Slice 3 — renderAskCard', () => {
     expect(allText.has('Approve sending the email?')).toBe(true);
   });
 
+  // ── D-270 ───────────────────────────────────────────────────────────────
+  /** Depth-first concatenation of every rendered text node. Local, because the
+   *  file's existing assertions each inline their own walker. */
+  const allTextOf = (root: FakeEl): string => {
+    const acc: string[] = [];
+    const walk = (el: FakeEl): void => {
+      if (el.textContent) acc.push(el.textContent);
+      el.children.forEach(walk);
+    };
+    walk(root);
+    return acc.join(' | ');
+  };
+
+  const projectedText = [
+    'Recipe send-email wants to run mail-send on primary-mail (step send).',
+    'Write actions change data outside Recued, so Recued held it for you.',
+    '',
+    '  to: sam@example.test',
+    '  subject: Renewal update',
+    '  body: The revised proposal is ready.',
+    '  slot_at: whatever the prose said',
+  ].join('\n');
+
+  it('D-270 — server-resolved rows REPLACE the prose scrape, never sit beside it', () => {
+    // ⛔ The card has always shown values, derived by REGEX over its own prose,
+    // capped at three and chosen from a hardcoded key list. Two summary blocks
+    // on one card is strictly worse than either alone: the reader cannot tell
+    // which is authoritative.
+    const card = render(model({
+      title: 'Approve mail-send (write)',
+      text: projectedText,
+      details: [
+        { label: 'To', value: 'sam@example.test' },
+        { label: 'Subject', value: 'Renewal update' },
+        { label: 'Body', value: 'The revised proposal is ready.' },
+        { label: 'Slot at', value: '14 Apr 2026, 09:00 (Europe/Lisbon)' },
+      ],
+    }), vi.fn());
+
+    const summaries = collectByAttr(card, ASK_CARD_SUMMARY_ATTR);
+    expect(summaries).toHaveLength(1);
+    const summary = allTextOf(summaries[0]!);
+    // The server's rows, INCLUDING the fourth — the prose scrape stops at three.
+    expect(summary).toContain('Slot at');
+    expect(summary).toContain('14 Apr 2026, 09:00 (Europe/Lisbon)');
+    // ⛔ And the scrape's rendering of the same field is NOT in the summary:
+    // one block, one derivation.
+    expect(summary).not.toContain('whatever the prose said');
+    // ⚠ It DOES survive in "The technical bits", and that is deliberate — see
+    // the note on `AskCardModel.details`. Asserted so the trade-off is pinned
+    // rather than rediscovered as a bug.
+    expect(allTextOf(card)).toContain('whatever the prose said');
+  });
+
+  it('D-270 — an UNLABELLED field humanizes, and a declared label is left alone', () => {
+    // The regression the replacement would otherwise introduce: the scrape it
+    // replaces always humanized, while the server falls back to the raw arg key
+    // for a field whose pack declared no label.
+    const card = render(model({
+      title: 'Approve mail-send (write)',
+      text: projectedText,
+      details: [
+        { label: 'top_tier_kind', value: 'booking' },
+        { label: 'metadata.budget_range', value: 'under_10k' },
+        { label: 'Send to e-mail', value: 'sam@example.test' },
+      ],
+    }), vi.fn());
+    const summary = allTextOf(collectByAttr(card, ASK_CARD_SUMMARY_ATTR)[0]!);
+    expect(summary).toContain('Top tier kind');
+    expect(summary).not.toContain('top_tier_kind');
+    expect(summary).toContain('Budget range');
+    // ⛔ A declared label survives verbatim — humanizing it would mangle the
+    // hyphen into a space.
+    expect(summary).toContain('Send to e-mail');
+  });
+
+  it('D-270 — no details ⇒ the scraped highlights, exactly as before', () => {
+    // The owner ruling: an unresolvable case is just an ordinary card. This is
+    // the regression guard for every ask the server cannot resolve.
+    const card = render(model({
+      title: 'Approve mail-send (write)', text: projectedText,
+    }), vi.fn());
+    const text = allTextOf(card);
+    expect(text).toContain('sam@example.test');
+    expect(collectByAttr(card, ASK_CARD_SUMMARY_ATTR)).toHaveLength(1);
+  });
+
+  it('D-270 — an EMPTY details array is not "details" and falls back too', () => {
+    const card = render(model({
+      title: 'Approve mail-send (write)', text: projectedText, details: [],
+    }), vi.fn());
+    expect(allTextOf(card)).toContain('sam@example.test');
+  });
+
   it('projects generated write asks into a concise summary with collapsed technical details', () => {
     const card = render(model({
       title: 'Approve mail-send (write)',
@@ -358,7 +452,7 @@ describe('D-169 P2 Slice 3 — renderAskCard', () => {
     const details = collectByAttr(card, ASK_CARD_DETAILS_ATTR);
     expect(details).toHaveLength(1);
     expect(details[0]?.children[0]?.getAttribute('aria-label')).toBe(
-      'Technical details for Approve mail-send (write) (7)',
+      'The technical bits for Approve mail-send (write) (7)',
     );
     const renderedText: string[] = [];
     const walk = (el: FakeEl): void => {
@@ -725,12 +819,12 @@ describe('D-174 — renderApprovalCard', () => {
     const onResolve = vi.fn();
     const card = renderApproval(approvalModel(), onResolve, {
       disabled: true,
-      disabledReason: 'Timed out - refresh queue.',
+      disabledReason: 'That took too long. Load the list again.',
     });
 
     expect(approvalButtons(card).every((b) => b.disabled)).toBe(true);
     expect(collectByAttr(card, APPROVAL_CARD_STATUS_ATTR)[0]?.textContent)
-      .toBe('Timed out - refresh queue.');
+      .toBe('That took too long. Load the list again.');
     approvalButton(card, 'approve')!.click();
     expect(onResolve).not.toHaveBeenCalled();
   });

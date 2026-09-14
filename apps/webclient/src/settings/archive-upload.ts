@@ -102,20 +102,20 @@ const messageForUploadReason = (reason: string): string => {
       return 'the file is too large.';
     case 'too_many_sessions':
     case 'pending_bytes_exceeded':
-      return 'the server is busy — try again in a moment.';
+      return 'your server is busy. Try again in a moment.';
     case 'insufficient_disk':
       // M5 S3 — the restore upload's statfs pre-flight (`server.archive.upload.
       // create`) refused because the declared archive plus headroom won't fit
       // the server's free disk. Now reachable (the create `reason` union gained
       // it), so map it to plain copy rather than echoing the raw token.
-      return "there isn't enough free space on your server for this backup.";
+      return "there is not enough room on your server for this backup.";
     case 'not_found':
     case 'expired':
-      return 'the upload session expired — try again.';
+      return 'it took too long. Try again.';
     case 'checksum_mismatch':
-      return 'the upload was corrupted in transit — try again.';
+      return 'it got damaged on the way. Try again.';
     case 'incomplete':
-      return 'the upload did not complete — try again.';
+      return 'it did not finish. Try again.';
     case 'invalid_declared_size':
       return 'that file could not be read.';
     default:

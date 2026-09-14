@@ -1527,26 +1527,50 @@ export interface ChatMainTurnPromptParts {
  *  webclient reads `Intl…resolvedOptions().timeZone`) so a VPS user's
  *  "3pm" resolves in THEIR zone, not the datacenter's. Exported for the
  *  prompt-assembly tests. */
-/** Resolve a VALID IANA zone: the caller's when it's a real zone, else the
- *  server-local default. The `timeZone` is user-supplied (webclient / bot),
- *  so it's untrusted — a bad value (`Intl.DateTimeFormat` throws `RangeError`
- *  on an unknown zone) must degrade to server-local, never crash the turn. */
-const resolveChatTimeZone = (timeZone?: string): string => {
-  const fallback = Intl.DateTimeFormat().resolvedOptions().timeZone;
-  if (!timeZone) return fallback;
-  try {
-    new Intl.DateTimeFormat('en-US', { timeZone });
-    return timeZone;
-  } catch {
-    return fallback;
-  }
+/** Resolve a VALID IANA zone. D-269 step 1 makes this a THREE-step precedence
+ *  where it used to be two:
+ *
+ *    live client zone  →  the SERVER's declared zone  →  host OS zone
+ *
+ *  🔑 THE MIDDLE STEP IS THE FIX, AND IT IS NOT A TIE-BREAK. The first answers
+ *  *"what time is it where I am"* — a connected surface's zone is live evidence
+ *  of the owner's whereabouts, so it still wins. The new middle step answers
+ *  *"what clock does this server keep"*, which is the only question available on
+ *  every OTHER entry: Slack, Telegram and anything sweep-initiated supply no
+ *  zone and were therefore stamped with the HOST's — correct on a laptop,
+ *  a datacenter's on a VPS, and silent either way.
+ *
+ *  ⚠ The host reading survives as the LAST resort and must: a turn that renders
+ *  no clock is worse than one that renders an imperfect clock (observed live, a
+ *  model with no date refuses or burns tool-loop rounds guessing).
+ *
+ *  ⛔ `timeZone` is user-supplied (webclient / bot) and untrusted — a bad value
+ *  makes `Intl.DateTimeFormat` throw `RangeError`, which must degrade, never
+ *  crash the turn. Same for `serverZone`: a zone stored before a tz-database
+ *  rename can stop validating years later. */
+const resolveChatTimeZone = (timeZone?: string, serverZone?: string): string => {
+  const valid = (zone: string | undefined): string | undefined => {
+    if (!zone) return undefined;
+    try {
+      new Intl.DateTimeFormat('en-US', { timeZone: zone });
+      return zone;
+    } catch {
+      return undefined;
+    }
+  };
+  return valid(timeZone)
+    ?? valid(serverZone)
+    ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
 };
 
 export const formatChatCurrentDate = (
   epochMs: number,
   timeZone?: string,
+  /** D-269 — the server's own declared/followed zone, resolved by the caller
+   *  (`resolveServerTimeZone`). Used only when no live surface supplied one. */
+  serverZone?: string,
 ): string => {
-  const zone = resolveChatTimeZone(timeZone);
+  const zone = resolveChatTimeZone(timeZone, serverZone);
   const date = new Date(epochMs);
   const weekday = new Intl.DateTimeFormat('en-US', {
     weekday: 'long',
@@ -1955,6 +1979,16 @@ export interface RunChatTurnDeps {
    *
    *  Absent → falls back to env alone, so a harness that does not wire it keeps
    *  today's behaviour. */
+  /** D-269 step 1 — the SERVER's own resolved IANA zone, for the `current_date`
+   *  anchor when no live surface supplied one.
+   *
+   *  ⚠ A THUNK, NOT A VALUE, because under `follows_host` it is the host clock
+   *  read afresh: a laptop that flew overnight must anchor on where it woke up,
+   *  and a value captured at wire time would pin the zone it took off from.
+   *
+   *  Absent (db-less harness / pre-D-269 wire) ⇒ the host reading, exactly as
+   *  before. */
+  readonly serverTimeZone?: () => string | undefined;
   readonly rollingBriefEnabled?: () => boolean;
   /** DURABLE home for the carried brief. Bound by the composition root to the
    *  chat store's encrypted `chat_briefs` rows.
@@ -2124,7 +2158,14 @@ export const runChatTurn = async (
   // Current-instant date+time anchor, computed ONCE per turn (stable
   // across tool-loop rounds) from the injected clock, in the USER's
   // timezone when the surface supplied one (else server-local).
-  const currentDate = formatChatCurrentDate(now(), inputs.time_zone);
+  const currentDate = formatChatCurrentDate(
+    now(),
+    inputs.time_zone,
+    // D-269 — the server's declared zone, so a Slack / Telegram / sweep-initiated
+    // turn anchors on the owner's clock instead of the host's. Absent (db-less
+    // harness, pre-D-269 wire) ⇒ unchanged behaviour.
+    deps.serverTimeZone?.(),
+  );
 
   // Inline AI-packet composer. Per D-164 P6.0 (b) the chat
   // orchestrator owns the packet shape directly + calls

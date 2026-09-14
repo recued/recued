@@ -61,6 +61,22 @@ export const ASK_NOTE_MAX = 600;
 export interface AskExtras {
   /** Invite a written reason with the answer. */
   note_prompt?: AskNotePrompt;
+  /** D-269 step 5 — when the WORK behind this ask stops being doable.
+   *
+   *  ⛔⛔ DECLARED BY THE RAISER, NEVER INFERRED, and the block cannot fall back:
+   *  `PendingAsk` carries no deadline and `handler_payload` is opaque. It exists
+   *  for exactly one decision — whether quiet hours may hold this ask's DELIVERY
+   *  — and the rule is that an ask expiring inside the window is delivered
+   *  anyway. An ask is durable before any delivery (D-158 I-2), so holding the
+   *  ping normally loses nothing; **it loses something only when the work
+   *  expires before the owner wakes**, and then the hold is a deletion wearing a
+   *  deferral's clothes.
+   *
+   *  ⚠ ABSENT MEANS "DOES NOT EXPIRE", so a caller whose work DOES expire has to
+   *  say so. That default is the conservative one for silence and the risky one
+   *  for work, which is precisely why the setting that consumes it is opt-in and
+   *  not recommended. */
+  expires_at?: number;
   /** D-234 § 234.4f — the document the answerer opens to READ before deciding.
    *  Bounded at {@link ASK_BODY_MAX} on entry; the far side may have written it. */
   body?: string;

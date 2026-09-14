@@ -28,7 +28,7 @@ describe('D-148 P8 — passport profile picker', () => {
 
   it('migration_full names handle history in its exposure list', () => {
     const opt = findPassportProfileOption('migration_full');
-    expect(opt?.exposes.some((e) => e.toLowerCase().includes('handle history'))).toBe(true);
+    expect(opt?.exposes.some((e) => e.toLowerCase().includes('name you have held'))).toBe(true);
   });
 });
 

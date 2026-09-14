@@ -372,7 +372,7 @@ export const CONTRACT_GRANTS_CELL_TOGGLE_ATTR = 'data-recued-contract-grants-cel
 export const CONTRACT_GRANTS_RISK_ATTR = 'data-recued-contract-grants-risk';
 /** Retired compatibility hook. Contract rows render Access only. */
 export const CONTRACT_GRANTS_ASKS_ATTR = 'data-recued-contract-grants-asks';
-/** The "also reads: <container>" transitive-admission disclosure on an op that
+/** The "also looks at: <container>" transitive-admission disclosure on an op that
  *  binds a `source_dependency` (D-192 Slice 7). Carries `data-reads` = the
  *  comma-joined container refs. */
 /** Access note above the OPS list (never the entities list). */
@@ -382,13 +382,13 @@ export const CONTRACT_GRANTS_AXIS_NOTE_ATTR = 'data-recued-contract-grants-axis-
  *  one — calling the toggle "visibility" would undersell it in the opposite
  *  direction from the error it exists to correct. */
 export const CONTRACT_GRANTS_AXIS_NOTE =
-  'Access decides which operations this contract can reach. Risk and approval '
-  + 'defaults are global pack settings and do not vary by contract.';
+  'What it may reach decides which operations this contract can use. How risky they are, and when you get asked, '
+  + 'come from the Pack and are the same for every contract.';
 
 export const CONTRACT_GRANTS_ALSO_READS_ATTR = 'data-recued-contract-grants-also-reads';
 /** The explicit-vs-default source marker on a cell. Carries `data-source`. */
 export const CONTRACT_GRANTS_SOURCE_ATTR = 'data-recued-contract-grants-source';
-/** D-247 D11 — the "Direct calls off — still used by … · ran N×" line on an op
+/** D-247 D11 — the "The AI cannot call this itself — still used by … · ran N×" line on an op
  *  row whose grant is off. Carries `data-could` (the static list) and `data-ran`
  *  (the count), so a test can assert BOTH halves rather than a rendered string. */
 export const CONTRACT_GRANTS_STILL_USED_ATTR = 'data-recued-contract-grants-still-used';
@@ -619,8 +619,8 @@ export const mountContractGrantsPanel = (
   opsToolbar.className = 'cg-filter-bar';
   const operationFilterInput = doc.createElement('input');
   operationFilterInput.setAttribute('type', 'search');
-  operationFilterInput.setAttribute('placeholder', 'Filter operations…');
-  operationFilterInput.setAttribute('aria-label', 'Filter operations');
+  operationFilterInput.setAttribute('placeholder', 'Find an operation…');
+  operationFilterInput.setAttribute('aria-label', 'Find an operation');
   operationFilterInput.setAttribute(CONTRACT_GRANTS_OP_FILTER_ATTR, '');
   operationFilterInput.className = 'cg-filter-input';
   opsToolbar.appendChild(operationFilterInput);
@@ -769,10 +769,10 @@ export const mountContractGrantsPanel = (
       alsoReads.setAttribute(CONTRACT_GRANTS_ALSO_READS_ATTR, '');
       alsoReads.setAttribute('data-reads', refs.join(','));
       alsoReads.className = 'cg-also-reads';
-      alsoReads.textContent = `also reads: ${refs.join(', ')}`;
+      alsoReads.textContent = `also looks at: ${refs.join(', ')}`;
       alsoReads.title =
-        `Granting this also lets it read ${entry.also_reads.map((r) => r.list_op).join(', ')} ` +
-        `to resolve the target — no separate grant needed.`;
+        `Saying yes to this also lets it read ${entry.also_reads.map((r) => r.list_op).join(', ')} ` +
+        `so it can find the right thing. You do not have to say yes twice.`;
       rowLabel.appendChild(alsoReads);
     }
 
@@ -804,14 +804,14 @@ export const mountContractGrantsPanel = (
           usage.count > 0
             ? `ran ${usage.count}× in the last ${recipeOpUsageWindowDays ?? 30} days`
               + (usage.recipes.length > 0 ? `, via ${usage.recipes.join(', ')}` : '')
-            : `no runs in the last ${recipeOpUsageWindowDays ?? 30} days`,
+            : `not run in the last ${recipeOpUsageWindowDays ?? 30} days`,
         );
-        used.textContent = `Direct calls off — ${parts.join(' · ')}`;
+        used.textContent = `The AI cannot call this itself — ${parts.join(' · ')}`;
         used.title =
-          'Turning an operation off stops the AI calling it DIRECTLY. Recipes you '
-          + 'granted may still use it, and each of those calls still asks. '
-          + `Run counts cover the last ${recipeOpUsageWindowDays ?? 30} days only — `
-          + 'older activity is evicted, so "no runs" is not "never used".';
+          'Switching an operation off stops the AI calling it ITSELF. Recipes you '
+          + 'said yes to may still use it, and each of those still asks you. '
+          + `The counts cover the last ${recipeOpUsageWindowDays ?? 30} days only — `
+          + 'older runs are thrown away, so "not run" does not mean "never used".';
         rowLabel.appendChild(used);
       }
     }
@@ -886,12 +886,12 @@ export const mountContractGrantsPanel = (
         root,
         CONTRACT_GRANTS_ERROR_ATTR,
         'cg-error',
-        `Could not load grants: ${state.error}`,
+        `Recued could not load what you have said yes to: ${state.error}`,
       );
     }
 
     if (state.phase === 'loading' && state.universe.length === 0) {
-      appendLine(root, CONTRACT_GRANTS_LOADING_ATTR, 'cg-loading', 'Loading grants…');
+      appendLine(root, CONTRACT_GRANTS_LOADING_ATTR, 'cg-loading', 'Loading what you have said yes to…');
       return;
     }
 
@@ -952,7 +952,7 @@ export const mountContractGrantsPanel = (
     renderInto(
       opsResults,
       OPS_KINDS,
-      'No operations are available on this server yet.',
+      'This server has no operations yet.',
       CONTRACT_GRANTS_AXIS_NOTE,
       true,
     );
@@ -964,7 +964,7 @@ export const mountContractGrantsPanel = (
       labelInput.setAttribute(CONTRACT_GRANTS_PEER_LABEL_INPUT_ATTR, '');
       labelInput.setAttribute('maxlength', String(PEER_ASK_LABEL_MAX));
       labelInput.setAttribute('placeholder', 'Question label');
-      labelInput.setAttribute('aria-label', 'Question label this peer may use');
+      labelInput.setAttribute('aria-label', 'What this peer may call its question');
       labelInput.value = peerLabelDraft;
       labelInput.addEventListener('input', () => {
         peerLabelDraft = labelInput.value;
@@ -991,17 +991,17 @@ export const mountContractGrantsPanel = (
     renderInto(
       entitiesRoot,
       ENTITIES_KINDS,
-      'No collections or topics are available on this server yet.',
+      'This server has no collections or topics yet.',
     );
     renderInto(
       recipesRoot,
       RECIPE_KINDS,
-      'No recipes are installed yet. Install a pack, or write one in Kitchen.',
+      'You have no Recipes yet. Install a Pack, or write one in the Kitchen.',
       // ⚠ The two-axis note, because the row is otherwise read as approval.
       // A recipe grant makes the recipe REACHABLE; every write inside it still
       // asks, and turning one off does not turn its operations off (D3/D4).
-      'Turning a recipe on lets the AI find and call it. Each write inside it '
-      + 'still asks. Turning it off does not turn its operations off — those are '
+      'Switching a Recipe on lets the AI find it and run it. Anything inside it that changes something '
+      + 'still asks you. Switching it off does not switch its operations off — those live in '
       + 'the Ops tab.',
     );
     if (focusedEntry !== null) {
@@ -1149,7 +1149,7 @@ export const mountContractGrantsPanel = (
     if (peerLabelAdding) return;
     const label = rawLabel.trim();
     if (label === '' || label.length > PEER_ASK_LABEL_MAX) {
-      peerLabelError = `Enter a label between 1 and ${PEER_ASK_LABEL_MAX} characters.`;
+      peerLabelError = `Give it a name between 1 and ${PEER_ASK_LABEL_MAX} letters long.`;
       render();
       return;
     }

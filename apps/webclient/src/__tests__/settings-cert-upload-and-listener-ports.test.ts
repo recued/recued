@@ -300,9 +300,9 @@ describe('Hostnames — listener ports control', () => {
     await mount.submitAdd();
 
     expect(runAdd).not.toHaveBeenCalled();
-    expect(mount.getState().add.error).toBe('Select at least one listener port.');
+    expect(mount.getState().add.error).toBe('Pick at least one port.');
     const err = findByAttrValue(host, HOSTNAMES_PANEL_ERROR_ATTR);
-    expect(err?.textContent).toBe('Select at least one listener port.');
+    expect(err?.textContent).toBe('Pick at least one port.');
     // Still open, so the user can fix it rather than losing the form.
     expect(mount.getState().add.open).toBe(true);
   });
@@ -518,7 +518,7 @@ describe('Certificates — BYO upload panel', () => {
     await mount.submitUpload();
 
     expect(runUpload).not.toHaveBeenCalled();
-    expect(mount.getState().upload.error).toBe('Hostname is required.');
+    expect(mount.getState().upload.error).toBe('You need to give a name.');
   });
 
   it('surfaces the server\'s closed-list issues inline, one node per code', async () => {

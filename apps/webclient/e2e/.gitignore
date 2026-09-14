@@ -7,3 +7,8 @@ harness/tokens.css
 
 # Playwright run outputs (screenshots, traces, error contexts)
 .playwright-artifacts/
+
+# Built from the D-265 two-client browser harness.
+harness/chat-queue-harness.js
+harness/file-lifecycle-harness.js
+harness/existing-files-harness.js

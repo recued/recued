@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
   "source": {
-    "commit": "a60fbe3db0fe197cd02ce27e0476d71f80753fa7",
-    "tree": "688caa51db9dd845230dc84c5611f450f4746409",
-    "committed_at": "2026-09-10T17:55:06-07:00"
+    "commit": "dfa901b7aab67aaf94f8d7bb8412638175e9d260",
+    "tree": "8d134b8193c5af31343b02df016b88719a387d4d",
+    "committed_at": "2026-09-14T05:15:24-07:00"
   },
-  "export_manifest_sha256": "a91bf476b3f76675cbe4d197f379959add7c654f580796b51cb2e30eac124509",
-  "version": "26.9.10",
+  "export_manifest_sha256": "e8712d3b58bd828647877b856c3d31dbea7a7cb2d3f251241830f86bb965c32c",
+  "version": "26.9.14",
   "license": "AGPL-3.0-only",
   "entrypoints": [
     "backend/server",
@@ -137,6 +137,7 @@
       "backend/server/src/__tests__/d-222-reception-manage-config-declared.test.ts",
       "backend/server/src/__tests__/d-223-corpus-connection-hints.test.ts",
       "backend/server/src/__tests__/d-234-peer-ask-delivery.test.ts",
+      "backend/server/src/__tests__/d-250-submitter-cloud-join.test.ts",
       "backend/server/src/__tests__/d-252-first-run-flow.test.ts",
       "backend/server/src/__tests__/d-259-installed-manifest-boot-check.test.ts",
       "backend/server/src/__tests__/d-259-pack-reconciliation.test.ts",
@@ -573,7 +574,7 @@
       "packages/recipes/src/__tests__/zendesk-ticket-count-truth-pack-audit.test.ts",
       "packages/recipes/src/__tests__/zendesk-ticket-reply-closure-loop.test.ts"
     ],
-    "sha256": "fdd3bcf512f51bab5226037be2d1a2ae9ce66f4b7cba5f1f0544a1228fd7dcaf",
+    "sha256": "66e8f5c0d0dfa4b59c4ea3401caa44bace7c774a066a6407cf214732ee40fe30",
     "roots": [
       "apps/auth-worker",
       "backend/api",
@@ -585,15 +586,15 @@
     ]
   },
   "internal_reference_scrub": {
-    "files_changed": 1053,
+    "files_changed": 1065,
     "rules": [
       {
         "id": "internal-spec-reference",
-        "comments_rewritten": 1008
+        "comments_rewritten": 1012
       },
       {
         "id": "internal-design-document",
-        "comments_rewritten": 96
+        "comments_rewritten": 105
       },
       {
         "id": "internal-handover-note",
@@ -618,8 +619,8 @@
       "id": "foundation-packs",
       "root": "community",
       "derivation": "foundation_pack_closure",
-      "file_count": 21,
-      "sha256": "3e3376cb56c34132c556d73750053a9956737d925253e898675da23ba4d6c1b0",
+      "file_count": 22,
+      "sha256": "e30b471873f84a66120d1fdb3affb42092d94fce47de56c336ec1846398ccd61",
       "paths": [
         "community/packs/personal-organizer-foundation.json",
         "community/packs/recued-core/mail-compose-foundation.json",
@@ -637,6 +638,7 @@
         "community/recipes/reschedule-booking.json",
         "community/recipes/reschedule-calendar-event.json",
         "community/recipes/rewrite-composed-mail.json",
+        "community/recipes/save-composed-draft-to-mailbox.json",
         "community/recipes/schedule-recipe.json",
         "community/recipes/send-composed-mail.json",
         "community/recipes/stalled-projects.json",
@@ -682,7 +684,7 @@
     "packages/warehouse-events"
   ],
   "payload": {
-    "file_count": 5860,
-    "sha256": "faec9aecb2c3ec273d913c828019fd0a11b76f413c91660f503c1a8a3b921f4c"
+    "file_count": 6017,
+    "sha256": "1df622518118c4984c1e6ed496dcd58f723b0d5c7c41b66803f6c7725ac35f42"
   }
 }

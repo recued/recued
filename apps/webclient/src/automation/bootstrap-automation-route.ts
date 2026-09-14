@@ -34,6 +34,8 @@ import type {
   EventTrigger,
   ServerRecipeListEntry,
   ServerSchedule,
+  ServerMissedRunReport,
+  MissedSchedulePolicy,
   WatchSourceStatusEntry,
   WatchStatusEntry,
   PreapprovalExecutionStatus,
@@ -50,10 +52,16 @@ import {
 
 import {
   formatClientDateTime,
+  formatLateness,
+  scheduleLatenessMs,
+  MISSED_RUNS_ACTION_ATTR,
+  parseMissedRunsAction,
   RefPicker,
+  renderMissedRunsCard,
   RunModal,
   wireConfigEditorOverlay,
   type ConfigEditorOverlayHandle,
+  type MissedRunsAnswer,
 } from '@recued/ui-shared';
 
 import type { BroadcastSubscriber } from '../realtime/subscriber.js';
@@ -70,8 +78,8 @@ import { humanizeRpcError } from '../shell/rpc-error-copy.js';
 const RECIPE_PICKER_CONFIG: RefPicker.RefPickerRenderConfig = {
   pickerId: 'automation-recipe-filter',
   placeholder: 'All recipes',
-  ariaLabel: 'Filter automation by recipe',
-  emptyText: 'No automated recipes match.',
+  ariaLabel: 'Show only one Recipe',
+  emptyText: 'No automatic Recipes match.',
 };
 
 /** R21 create path — the "Add" recipe picker (which recipe to schedule /
@@ -81,7 +89,7 @@ const ADD_PICKER_CONFIG: RefPicker.RefPickerRenderConfig = {
   pickerId: 'automation-add-recipe',
   placeholder: 'Choose a recipe…',
   ariaLabel: 'Choose a recipe to automate',
-  emptyText: 'No installed recipes match.',
+  emptyText: 'No installed Recipes match.',
 };
 
 export const AUTOMATION_ROUTE_STYLES_MARKER = 'data-recued-automation-route-styles';
@@ -141,7 +149,20 @@ export const AUTOMATION_ROUTE_ORIGIN_FILTER_ATTR =
  *  armed, 'off' = paused, 'tripped' = auto-disabled). Pack filter is
  *  DEFERRED: rule rows carry no pack provenance today (recipe.list
  *  entries would need the install's pack id threaded through). */
-export type AutomationStatusFilter = 'all' | 'on' | 'off' | 'tripped';
+export const AUTOMATION_STATUS_FILTERS = [
+  'all', 'on', 'off', 'tripped', 'waiting',
+] as const;
+export type AutomationStatusFilter = (typeof AUTOMATION_STATUS_FILTERS)[number];
+
+/** ⛔ DERIVED FROM THE TUPLE, NOT HAND-WRITTEN BESIDE IT. The input
+ *  handler used to read `v === 'on' || v === 'off' || v === 'tripped'`,
+ *  a closed list sitting next to the union with nothing tying them
+ *  together — so adding `'waiting'` rendered the option, typechecked,
+ *  and SILENTLY fell through to `'all'` when anyone picked it. */
+const asStatusFilter = (value: unknown): AutomationStatusFilter =>
+  (AUTOMATION_STATUS_FILTERS as readonly unknown[]).includes(value)
+    ? value as AutomationStatusFilter
+    : 'all';
 export type AutomationOriginFilter = 'all' | 'user' | 'recipe';
 
 const ACTION_ATTR = 'data-recued-automation-action';
@@ -207,10 +228,25 @@ export type SchedulesUpdateCaller = (args: {
    *  dissolves the prior), because `dishes.update` on a managed dish is
    *  refused by the slice-0 guard. */
   config_overlay?: Record<string, unknown>;
+  /** D-266 — the owner's missed-run policy. Declared rather than left
+   *  to ride the passthrough: the bootstrap forwards `args` whole, so
+   *  this already REACHED the rpc while the type said it could not —
+   *  and the first refactor that destructured `args` would have
+   *  dropped it silently, with nothing red. Accept and advertise. */
+  missed_policy?: MissedSchedulePolicy;
 }) => Promise<{ schedule: ServerSchedule }>;
 export type SchedulesDeleteCaller = (args: {
   schedule_id: string;
 }) => Promise<{ deleted: true }>;
+/** D-266 — reads the one-per-wake missed-run card. Recomputed server-side
+ *  on every call; there is no stored ask behind it. */
+export type SchedulesMissedCaller = () => Promise<ServerMissedRunReport>;
+/** D-266 — answers the card. Omitting `recipe_ids` answers every entry,
+ *  which is what [Run them] / [Skip them] send. */
+export type SchedulesAnswerMissedCaller = (args: {
+  answer: MissedRunsAnswer;
+  recipe_ids?: string[];
+}) => Promise<{ ran: string[]; skipped: string[] }>;
 export type TriggersListCaller = () => Promise<{ triggers: EventTrigger[] }>;
 export type TriggersUpdateCaller = (args: {
   trigger_id: string;
@@ -263,6 +299,10 @@ export interface BootstrapAutomationRouteOptions {
   schedulesListCaller?: SchedulesListCaller;
   schedulesUpdateCaller?: SchedulesUpdateCaller;
   schedulesDeleteCaller?: SchedulesDeleteCaller;
+  /** D-266 — soft enhancement. Absent ⇒ no missed-run card, and no load
+   *  error: a host that has not opted in is not a failure. */
+  schedulesMissedCaller?: SchedulesMissedCaller;
+  schedulesAnswerMissedCaller?: SchedulesAnswerMissedCaller;
   triggersListCaller?: TriggersListCaller;
   triggersUpdateCaller?: TriggersUpdateCaller;
   triggersDeleteCaller?: TriggersDeleteCaller;
@@ -484,6 +524,11 @@ const AUTOMATION_ROUTE_STYLES = `
 [${AUTOMATION_ROUTE_ROW_ATTR}][data-armed="tripped"] {
   border-left-color: var(--danger);
 }
+/* D-266 — waiting on the owner. Accent rather than danger: nothing has
+   failed, the schedule is holding for an answer it was told to ask for. */
+[${AUTOMATION_ROUTE_ROW_ATTR}][data-armed="waiting"] {
+  border-left-color: var(--accent);
+}
 [${AUTOMATION_ROUTE_HOST_ATTR}] .automation-row-title {
   margin: 0;
   font-size: 14px;
@@ -539,6 +584,10 @@ const AUTOMATION_ROUTE_STYLES = `
 [${AUTOMATION_ROUTE_STATE_ATTR}][data-armed="tripped"],
 [${AUTOMATION_ROUTE_HOST_ATTR}] .automation-row-error {
   color: var(--danger);
+}
+[${AUTOMATION_ROUTE_STATE_ATTR}][data-armed="waiting"] {
+  color: var(--accent);
+  font-weight: 650;
 }
 [${AUTOMATION_ROUTE_HOST_ATTR}] .automation-row-error {
   overflow-wrap: anywhere;
@@ -859,7 +908,16 @@ const SECTION_LABEL: Record<AutomationSectionToken, string> = {
   dishes: 'Dishes',
 };
 
-type ArmedState = 'on' | 'off' | 'tripped';
+/** D-266 adds `'waiting'`: armed, not paused, and holding for an answer
+ *  about a run it missed.
+ *
+ *  ⛔ IT NEEDED ITS OWN STATE RATHER THAN A STATUS STRING. Such a
+ *  schedule has `enabled: true`, so it rendered "On" — indistinguishable
+ *  from one running fine, in a list where the whole question is WHICH
+ *  row wants you. The card says something is waiting; only the row says
+ *  which. `matchesStatus` compares against this union, so the filter
+ *  picks it up with one added option. */
+type ArmedState = 'on' | 'off' | 'tripped' | 'waiting';
 
 /** D-261 — the list-row pre-approval marker.
  *
@@ -877,7 +935,7 @@ type ArmedState = 'on' | 'off' | 'tripped';
  *  is owed, which is exactly the state a list marker should surface. */
 const preapprovalBadge = (status: PreapprovalExecutionStatus): string => {
   const [label, attention]: [string, boolean] = status === 'held'
-    ? ['Pre-approved · needs you', true]
+    ? ['Already said yes · still needs you', true]
     : status === 'in_doubt'
       ? ['Pre-approved · unconfirmed', true]
       : status === 'running'
@@ -1082,6 +1140,12 @@ export const bootstrapAutomationRoute = (
   opts.root.appendChild(routeRoot);
 
   let schedules: ReadonlyArray<ServerSchedule> = [];
+  // D-266 — the missed-run card. Null until read (or when the host has
+  // not wired the caller); the report itself is recomputed server-side,
+  // so this is a cache of a read and never a source of truth.
+  let missedRuns: ServerMissedRunReport | null = null;
+  let missedRunsBusy = false;
+  let missedRunsError: string | null = null;
   let triggers: ReadonlyArray<EventTrigger> = [];
   let watches: ReadonlyArray<WatchStatusEntry> = [];
   let autoRun: ReadonlyArray<AutoRunStatusEntry> = [];
@@ -1277,7 +1341,7 @@ export const bootstrapAutomationRoute = (
     rule_id: string,
     proposal_id: string,
   ): string =>
-    `<a class="automation-button" href="${e(preapprovalHref(proposal_id))}">Review approval</a>`
+    `<a class="automation-button" href="${e(preapprovalHref(proposal_id))}">Look at this run</a>`
     // The other half of the same rule: a rule-delete confirmation hides this
     // destructive control, leaving the review LINK (navigation, not a mutation).
     + (opts.preapprovalRemoveCaller === undefined || confirmingDeleteFor(section, rule_id)
@@ -1287,7 +1351,7 @@ export const bootstrapAutomationRoute = (
             aria-label="Confirm remove pre-approval"
             ${ACTION_ATTR}="preapproval-remove-confirm:${e(section)}"
             ${ROW_ID_ATTR}="${e(rule_id)}"${mutationBusyAttrs(section, rule_id, 'preapproval-remove-confirm')}>${
-          busyVerbFor(section, rule_id) === 'preapproval-remove-confirm' ? 'Removing…' : 'Confirm remove approval'}</button>
+          busyVerbFor(section, rule_id) === 'preapproval-remove-confirm' ? 'Removing…' : 'Yes, take back this approval'}</button>
           <button type="button" class="automation-button"
             aria-label="Keep pre-approval"
             ${ACTION_ATTR}="preapproval-remove-cancel:${e(section)}"
@@ -1672,6 +1736,21 @@ export const bootstrapAutomationRoute = (
     }
   };
 
+  /** D-266 — the detail view's own copies of the row's two derived
+   *  facts, so the panel and the list cannot drift apart. */
+  const detailLateness = (s: ServerSchedule): number | null =>
+    scheduleLatenessMs(s.next_run_at, opts.now?.() ?? Date.now(), s.enabled);
+  const detailStateLabel = (s: ServerSchedule): string =>
+    waitingScheduleIds().has(s.schedule_id)
+      ? 'Waiting on you'
+      : s.enabled ? 'On' : 'Paused';
+
+  /** D-266 — which schedules are holding for an answer. Derived from the
+   *  missed-run report the route already fetches for the card, so the row
+   *  mark and the card can never disagree about what is waiting. */
+  const waitingScheduleIds = (): ReadonlySet<string> =>
+    new Set((missedRuns?.entries ?? []).flatMap((entry) => entry.schedule_ids));
+
   const isPrimaryManagedOneShot = (s: ServerSchedule): boolean =>
     s.mode === 'one_shot'
     && s.dish_id !== undefined
@@ -1691,17 +1770,41 @@ export const bootstrapAutomationRoute = (
           && !isPrimaryManagedOneShot(s),
       )
       .map((s) => {
-      const armed: ArmedState = s.enabled ? 'on' : 'off';
+      const isWaiting = waitingScheduleIds().has(s.schedule_id);
+      // D-268 — a schedule the SERVER stopped is not a schedule the owner
+      // paused, and they rendered identically: `off` / "Paused" for both, so
+      // the one needing action was the one that looked handled. An owner
+      // arm/disarm clears `consecutive_failures` in both directions, so a
+      // non-zero counter on a disabled row means exactly one thing.
+      // `ArmedState` already carried `'tripped'` for the trigger rows; only
+      // this derivation was missing it.
+      const selfStopped = !s.enabled && (s.consecutive_failures ?? 0) > 0;
+      const armed: ArmedState = isWaiting
+        ? 'waiting'
+        : s.enabled ? 'on' : selfStopped ? 'tripped' : 'off';
+      // D-266 — `next_run_at` is the EXPECTED slot (the server sets it at
+      // every fire and touches it nowhere else), so a slot in the past is
+      // exactly how late this occurrence is. Nothing is computed from an
+      // interval: there is no honest single one for a weekday or
+      // alternating cron.
+      const lateBy = scheduleLatenessMs(s.next_run_at, opts.now?.() ?? Date.now(), s.enabled);
       return renderRow({
         section: 'schedule',
         rule_id: s.schedule_id,
         title: nameFor(s.recipe_id),
         titleHref: recipeHref(s.recipe_id),
         armed,
-        stateLabel: s.enabled ? 'On' : 'Paused',
+        stateLabel: isWaiting
+          ? 'Waiting on you'
+          : s.enabled ? 'On' : selfStopped ? 'Auto-disabled' : 'Paused',
         detail: `<span>${scheduleCadence(s)}</span>`,
         meta: [
-          `next ${s.enabled ? formatDateTime(s.next_run_at) : '—'}`,
+          // When a run is overdue, "next <future date>" is the one thing
+          // the row must NOT say — it reads as healthy. Say what was due
+          // and how late it is instead.
+          lateBy === null
+            ? `next ${s.enabled ? formatDateTime(s.next_run_at) : '—'}`
+            : `due ${formatDateTime(s.next_run_at)} · ${formatLateness(lateBy)}`,
           `last ${formatDateTime(s.last_run_at)}${s.last_status ? ` (${s.last_status})` : ''}`,
         ],
         error: s.last_error,
@@ -2212,7 +2315,7 @@ export const bootstrapAutomationRoute = (
     <div class="automation-filter"${busy.size > 0
       ? ' inert aria-disabled="true"'
       : ''}>
-      <span class="automation-filter-label">Filter by recipe</span>
+      <span class="automation-filter-label">Show only one Recipe</span>
       ${RefPicker.renderRefPicker(
         RefPicker.initialRefPickerState(resolveRecipeSelection()),
         RECIPE_PICKER_CONFIG,
@@ -2224,6 +2327,7 @@ export const bootstrapAutomationRoute = (
         <option value="on"${statusFilter === 'on' ? ' selected' : ''}>Armed</option>
         <option value="off"${statusFilter === 'off' ? ' selected' : ''}>Paused</option>
         <option value="tripped"${statusFilter === 'tripped' ? ' selected' : ''}>Tripped</option>
+        <option value="waiting"${statusFilter === 'waiting' ? ' selected' : ''}>Waiting on you</option>
       </select>
       ${activeSection === 'triggers'
         ? `<label class="automation-filter-label" for="automation-origin-filter">Origin</label>
@@ -2366,14 +2470,14 @@ export const bootstrapAutomationRoute = (
           retryToken: 'auto-run',
           retryable: opts.autoRunListCaller !== undefined,
           title: 'Auto-run',
-          hint: 'Reactive recipes that tick on their own interval and decide each time whether to act.',
+          hint: 'Recipes that wake up on their own every so often and decide whether to do anything.',
           rows: autoRunRows(),
           loading,
           error: errors.auto_run,
           mutationError: mutationErrors.auto_run,
           emptyText: filtered
-            ? 'This recipe has no auto-run ticker.'
-            : 'No auto-run recipes installed.',
+            ? 'This Recipe does not run on its own.'
+            : 'You have no Recipes that run on their own.',
         });
       case 'dishes':
         return renderSection({
@@ -2381,19 +2485,19 @@ export const bootstrapAutomationRoute = (
           retryToken: 'dishes',
           retryable: opts.dishesListCaller !== undefined,
           title: 'Dishes',
-          hint: 'Every standing instance of a recipe — what is queued, what config it '
-            + 'carries, and when it last ran. A dish minted BY a schedule / trigger / '
-            + 'auto-run is badged with its owner; change it on that row, not here.',
+          hint: 'Every set-up copy of a Recipe: what is waiting, what settings it '
+            + 'has, and when it last ran. If a schedule, a trigger, or an '
+            + 'on-its-own Recipe made it, it says so. Change it on that row, not here.',
           rows: dishRows(),
           actions: sectionActions('dishes'),
           loading,
           error: errors.dishes,
           mutationError: mutationErrors.dishes,
           emptyText: !dishesWired
-            ? 'Dishes are not available on this server yet.'
+            ? 'This server does not do dishes yet.'
             : filtered
-              ? 'This recipe has no dishes yet.'
-              : 'No dishes yet — assigning a recipe to a schedule or trigger mints one.',
+              ? 'This Recipe has no dishes yet.'
+              : 'No dishes yet. Putting a Recipe on a schedule or a trigger makes one.',
         });
       case 'triggers':
         return renderSection({
@@ -2403,9 +2507,9 @@ export const bootstrapAutomationRoute = (
             ? opts.triggersListCaller !== undefined
             : opts.watchListCaller !== undefined,
           title: 'Triggers',
-          hint: 'Recipes that fire when warehouse data changes (mail, calendar, files, '
-            + 'contacts). Each row carries the poll loop feeding it, when one does — '
-            + 'vendors with a built-in sync are covered by it instead.',
+          hint: 'Recipes that run when your things change: mail, calendar, files, '
+            + 'contacts. Each row shows what checks for changes, if anything does. '
+            + 'Some services tell Recued themselves, so they need no checking.',
           // R21: the residual poll loops (no rendered trigger row claims
           // them) follow the trigger rows so a tripped loop stays visible.
           rows: [...triggerRows(), ...residualWatchRows()],
@@ -2413,24 +2517,30 @@ export const bootstrapAutomationRoute = (
           error: errors.triggers ?? errors.watches,
           mutationError: mutationErrors.triggers ?? mutationErrors.watches,
           emptyText: filtered
-            ? 'No event triggers for this recipe.'
-            : 'No event triggers yet. Add one, or attach one from a recipe in the Recipes library.',
+            ? 'Nothing sets this Recipe off.'
+            : 'Nothing sets a Recipe off yet. Add one here, or from a Recipe in the library.',
           actions: sectionActions('triggers'),
         });
       case 'schedules':
-        return renderSection({
+        // D-266 — the missed-run card sits ABOVE the list, not inside a
+        // row: it is one question about the outage, not an annotation on
+        // each schedule. Empty string when nothing is waiting.
+        return renderMissedRunsCard(missedRuns, {
+          busy: missedRunsBusy,
+          error: missedRunsError,
+        }) + renderSection({
           section: 'schedule',
           retryToken: 'schedules',
           retryable: opts.schedulesListCaller !== undefined,
           title: 'Schedules',
-          hint: 'Recurring recipes and pending one-time runs.',
+          hint: 'Recipes that repeat, and one-off runs that have not happened yet.',
           rows: scheduleRows(),
           loading,
           error: errors.schedules,
           mutationError: mutationErrors.schedules,
           emptyText: filtered
-            ? 'No schedules for this recipe.'
-            : 'No schedules yet. Add one, or from a recipe in the Recipes library.',
+            ? 'This Recipe has no schedule.'
+            : 'No schedules yet. Add one here, or from a Recipe in the library.',
           actions: sectionActions('schedules'),
         });
     }
@@ -2459,9 +2569,27 @@ export const bootstrapAutomationRoute = (
           ${heading(`<a href="${e(recipeHref(s.recipe_id))}">${e(nameFor(s.recipe_id))}</a>`)}
           ${facts([
             ['Cadence', scheduleCadence(s)],
-            ['State', e(s.enabled ? 'On' : 'Paused')],
-            ['Next run', e(s.enabled ? formatDateTime(s.next_run_at) : '—')],
+            ['State', e(detailStateLabel(s))],
+            // D-266 — an overdue schedule must not show a future-looking
+            // "Next run"; say what was due and how late it is.
+            ...(detailLateness(s) === null
+              ? [['Next run', e(s.enabled ? formatDateTime(s.next_run_at) : '—')] as [string, string]]
+              : [['Due', e(`${formatDateTime(s.next_run_at)} · ${formatLateness(detailLateness(s)!)}`)] as [string, string]]),
             ['Last run', e(`${formatDateTime(s.last_run_at)}${s.last_status ? ` (${s.last_status})` : ''}`)],
+            // D-266 — the forensic pair. `Last run` says when it stopped;
+            // `Before that` says whether it was running normally before it
+            // did, which is the question you actually have in front of a
+            // stale or errored schedule. Shown as '—' rather than hidden:
+            // "it has only ever run once" is itself an answer.
+            ['Before that', e(formatDateTime(s.prev_run_at ?? null))],
+            ...(s.missed_cycles === undefined
+              ? []
+              : [[
+                'Missed since',
+                e(s.missed_cycles === 'unknown'
+                  ? 'at least one run'
+                  : `${s.missed_cycles + 1} run${s.missed_cycles === 0 ? '' : 's'}`),
+              ] as [string, string]]),
           ])}
           ${s.last_error ? `<p class="automation-row-error">${e(s.last_error)}</p>` : ''}
           <div class="automation-row-actions">
@@ -2469,7 +2597,7 @@ export const bootstrapAutomationRoute = (
             ${s.preapproval ? renderPreapprovalButtons('schedule', s.schedule_id, s.preapproval.proposal_id)
               : opts.preapprovalPrepareCaller && opts.onPreapprovalPrepared && s.lifecycle_revision !== undefined
                   && canPreapprove('next_schedule')
-                ? `<button type="button" class="automation-button" ${ACTION_ATTR}="preapprove:schedule" ${ROW_ID_ATTR}="${e(s.schedule_id)}">Review next run</button>` : ''}
+                ? `<button type="button" class="automation-button" ${ACTION_ATTR}="preapprove:schedule" ${ROW_ID_ATTR}="${e(s.schedule_id)}">Look at the next run</button>` : ''}
             ${renderDeleteButtons('schedule', s.schedule_id)}
           </div>`;
       }
@@ -2546,7 +2674,7 @@ export const bootstrapAutomationRoute = (
           ${facts([
             ['Pattern', `<code>${e(t.pattern)}</code>`],
             ['State', e(t.enabled ? 'On' : armed === 'tripped' ? 'Auto-disabled' : 'Paused')],
-            ['Origin', e(t.origin === 'recipe' ? 'From recipe (reconciler-managed)' : 'Manual')],
+            ['Origin', e(t.origin === 'recipe' ? 'From a Recipe, looked after by Recued' : 'Manual')],
             ['Last fired', e(formatDateTime(t.last_fired_at))],
             ...(t.fields && t.fields.length > 0
               ? [['Fields', e(t.fields.join(' / '))] as [string, string]]
@@ -2559,7 +2687,7 @@ export const bootstrapAutomationRoute = (
             ${t.preapproval ? renderPreapprovalButtons('event_trigger', t.trigger_id, t.preapproval.proposal_id)
               : opts.preapprovalPrepareCaller && opts.onPreapprovalPrepared && t.lifecycle_revision !== undefined
                   && canPreapprove('next_trigger')
-                ? `<button type="button" class="automation-button" ${ACTION_ATTR}="preapprove:event_trigger" ${ROW_ID_ATTR}="${e(t.trigger_id)}">Review next run</button>` : ''}
+                ? `<button type="button" class="automation-button" ${ACTION_ATTR}="preapprove:event_trigger" ${ROW_ID_ATTR}="${e(t.trigger_id)}">Look at the next run</button>` : ''}
             ${t.origin === 'recipe' ? '' : renderDeleteButtons('event_trigger', t.trigger_id)}
           </div>`;
       }
@@ -2584,7 +2712,7 @@ export const bootstrapAutomationRoute = (
             ${a.preapproval ? renderPreapprovalButtons('auto_run', a.recipe_id, a.preapproval.proposal_id)
               : opts.preapprovalPrepareCaller && opts.onPreapprovalPrepared && a.lifecycle_revision !== undefined && !a.auto_disabled
                   && canPreapprove('next_auto_run')
-                ? `<button type="button" class="automation-button" ${ACTION_ATTR}="preapprove:auto_run" ${ROW_ID_ATTR}="${e(a.recipe_id)}">Review next run</button>` : ''}
+                ? `<button type="button" class="automation-button" ${ACTION_ATTR}="preapprove:auto_run" ${ROW_ID_ATTR}="${e(a.recipe_id)}">Look at the next run</button>` : ''}
           </div>`;
       }
     }
@@ -2954,22 +3082,23 @@ export const bootstrapAutomationRoute = (
       watchesResult,
       autoRunResult,
       dishesResult,
+      missedRunsResult,
       namesResult,
       authStateResult,
       capabilitiesResult,
     ] = await Promise.allSettled([
       opts.schedulesListCaller
         ? opts.schedulesListCaller()
-        : Promise.reject(new Error('schedules.list caller is not wired in this host.')),
+        : Promise.reject(new Error('Recued cannot list schedules here.')),
       opts.triggersListCaller
         ? opts.triggersListCaller()
-        : Promise.reject(new Error('triggers.list caller is not wired in this host.')),
+        : Promise.reject(new Error('Recued cannot list triggers here.')),
       opts.watchListCaller
         ? opts.watchListCaller()
-        : Promise.reject(new Error('watch.list caller is not wired in this host.')),
+        : Promise.reject(new Error('Recued cannot list watchers here.')),
       opts.autoRunListCaller
         ? opts.autoRunListCaller()
-        : Promise.reject(new Error('auto_run.list caller is not wired in this host.')),
+        : Promise.reject(new Error('Recued cannot list Recipes that run on their own here.')),
       // D-215 slice 3 — SOFT enhancement, unlike the four core lists above.
       // An absent caller is a host that has not opted in, not a failure: it
       // must not put an error on `getLoadErrors()` (which every existing
@@ -2977,6 +3106,10 @@ export const bootstrapAutomationRoute = (
       // "no dishes yet" when the truth is "nobody asked".
       opts.dishesListCaller
         ? opts.dishesListCaller()
+        : Promise.resolve(null),
+      // D-266 soft enhancement — absent caller leaves the card off.
+      opts.schedulesMissedCaller
+        ? opts.schedulesMissedCaller()
         : Promise.resolve(null),
       // Soft enhancement — absent caller resolves to no names.
       opts.recipeNamesCaller
@@ -2995,6 +3128,14 @@ export const bootstrapAutomationRoute = (
 
     if (capabilitiesResult.status === 'fulfilled' && capabilitiesResult.value !== null) {
       preapprovalCapabilities = capabilitiesResult.value;
+    }
+    // D-266 — a failed read leaves the PRIOR card standing rather than
+    // blanking it: the misses it names are still outstanding, and
+    // dropping the card would make the question disappear without
+    // anyone answering it.
+    if (missedRunsResult.status === 'fulfilled' && missedRunsResult.value !== null) {
+      missedRuns = missedRunsResult.value;
+      missedRunsError = null;
     }
 
     const next: AutomationLoadErrors = {};
@@ -3185,7 +3326,7 @@ export const bootstrapAutomationRoute = (
     autoRunConfigHandle = wireConfigEditorOverlay({
       document: doc,
       title: entry.recipe_name ?? entry.recipe_id,
-      copy: 'These values apply to every automatic run.',
+      copy: 'These settings are used every time it runs on its own.',
       confirmLabel: mode === 'resume' ? 'Resume' : 'Save',
       variables: entry.variables ?? {},
       currentOverlay: entry.config_overlay,
@@ -3229,8 +3370,8 @@ export const bootstrapAutomationRoute = (
       document: doc,
       title: d.name !== '' ? d.name : nameFor(d.recipe_id),
       copy: target.kind === 'one_shot'
-        ? 'These values apply to this scheduled run.'
-        : 'These values apply to every run of this dish.',
+        ? 'These settings are used for this scheduled run.'
+        : 'These settings are used every time this dish runs.',
       confirmLabel: 'Save',
       variables: entry.recipe.variables ?? {},
       currentOverlay: d.config_overlay,
@@ -3446,7 +3587,58 @@ export const bootstrapAutomationRoute = (
     replacement?.focus?.({ preventScroll: true });
   };
 
+  /** D-266 — answer the missed-run card.
+   *
+   *  ⚠ RE-READS THE REPORT RATHER THAN CLEARING IT LOCALLY. The server
+   *  recomputes what is outstanding, so the authoritative answer to
+   *  "is anything still waiting?" is its next read — and a regular
+   *  cycle that fired between the render and the click has already
+   *  resolved some of what the card showed. */
+  const answerMissedRuns = async (
+    answer: MissedRunsAnswer,
+    recipe_id?: string,
+  ): Promise<void> => {
+    const call = opts.schedulesAnswerMissedCaller;
+    if (call === undefined || missedRunsBusy) return;
+    missedRunsBusy = true;
+    missedRunsError = null;
+    render();
+    try {
+      await call(recipe_id === undefined ? { answer } : { answer, recipe_ids: [recipe_id] });
+      if (disposed) return;
+      // 'run' only GRANTS the catch-up; the scheduler fires it on its
+      // next tick, so the schedule list is refreshed here for the
+      // status/timestamps and again whenever the route next loads.
+      missedRuns = opts.schedulesMissedCaller
+        ? await opts.schedulesMissedCaller()
+        : null;
+    } catch (err) {
+      if (disposed) return;
+      missedRunsError = err instanceof Error ? err.message : String(err);
+    } finally {
+      if (!disposed) {
+        missedRunsBusy = false;
+        render();
+      }
+    }
+  };
+
   const onClick = (ev: Event): void => {
+    // D-266 — the missed-run card's two buttons. Probed first because
+    // the card is outside the section's row machinery entirely.
+    const missedRunsButton = (ev.target as (Element & {
+      closest?: (selector: string) => Element | null;
+    }) | null)?.closest?.(`[${MISSED_RUNS_ACTION_ATTR}]`) as
+      | HTMLElement
+      | null
+      | undefined;
+    if (missedRunsButton) {
+      const parsed = parseMissedRunsAction(
+        missedRunsButton.getAttribute(MISSED_RUNS_ACTION_ATTR),
+      );
+      if (parsed !== null) void answerMissedRuns(parsed.answer, parsed.recipe_id);
+      return;
+    }
     const dishHistoryRetryButton = (ev.target as (Element & {
       closest?: (selector: string) => Element | null;
     }) | null)?.closest?.(`[${DISH_HISTORY_RETRY_ATTR}]`) as
@@ -3770,9 +3962,7 @@ export const bootstrapAutomationRoute = (
       return;
     }
     if (target.hasAttribute(AUTOMATION_ROUTE_STATUS_FILTER_ATTR)) {
-      const v = target.value ?? 'all';
-      statusFilter =
-        v === 'on' || v === 'off' || v === 'tripped' ? v : 'all';
+      statusFilter = asStatusFilter(target.value);
       render();
       return;
     }
@@ -3825,7 +4015,7 @@ export const bootstrapAutomationRoute = (
     hasInFlightWork: hasAutomationInFlightWork,
     inFlightWorkPrompt: () =>
       hasAutomationInFlightWork()
-        ? 'An automation action is still in progress. Leave Automation anyway?'
+        ? 'Something is still happening here. Leave anyway?'
         : null,
     dispose: () => {
       if (disposed) return;

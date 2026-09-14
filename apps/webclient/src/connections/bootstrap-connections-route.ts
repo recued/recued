@@ -797,7 +797,7 @@ export const bootstrapConnectionsRoute = (
       appendUnavailable(
         doc,
         content,
-        'Inbound webhook setup is not available on this server yet.',
+        'This server cannot set up webhooks coming in yet.',
       );
     }
   } else {
@@ -990,7 +990,7 @@ export const bootstrapConnectionsRoute = (
       appendUnavailable(
         doc,
         content,
-        'Adding connections is not available on this server yet.',
+        'This server cannot add Connections yet.',
       );
     }
 
@@ -1037,7 +1037,7 @@ export const bootstrapConnectionsRoute = (
       grantsSection.setAttribute(CONNECTIONS_ROUTE_GRANTS_SECTION_ATTR, '');
       const grantsHeading = doc.createElement('h2');
       grantsHeading.className = 'connections-route-section-title';
-      grantsHeading.textContent = 'Operation grants';
+      grantsHeading.textContent = 'What each may do';
       grantsSection.appendChild(grantsHeading);
       const grantsHost = doc.createElement('div');
       grantsSection.appendChild(grantsHost);
@@ -1131,7 +1131,7 @@ export const bootstrapConnectionsRoute = (
     hasInFlightWork,
     inFlightWorkPrompt: () =>
       hasInFlightWork()
-        ? 'A connection action is still in progress. Leave Connections anyway?'
+        ? 'Connections is still doing something. Leave anyway?'
         : null,
     dispose: () => {
       if (disposed) return;

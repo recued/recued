@@ -108,9 +108,9 @@ export const RECIPE_EDITOR_BINDINGS_ATTR = 'data-recued-recipe-editor-bindings';
 export const RECIPE_EDITOR_CONN_VAR_ROW_ATTR = 'data-recued-recipe-editor-conn-var';
 /** The per-variable Remove button — value is the variable name. */
 export const RECIPE_EDITOR_CONN_VAR_REMOVE_ATTR = 'data-recued-recipe-editor-conn-var-remove';
-/** The "new connection variable" name input. */
+/** The "new connection input" name input. */
 export const RECIPE_EDITOR_CONN_VAR_NAME_ATTR = 'data-recued-recipe-editor-conn-var-name';
-/** The "new connection variable" kind select. */
+/** The "new connection input" kind select. */
 export const RECIPE_EDITOR_CONN_VAR_KIND_ATTR = 'data-recued-recipe-editor-conn-var-kind';
 /** The "Add variable" button. */
 export const RECIPE_EDITOR_CONN_VAR_ADD_ATTR = 'data-recued-recipe-editor-conn-var-add';
@@ -300,7 +300,7 @@ const TRANSFORM_NAMES: readonly string[] = Object.keys(TRANSFORM_SCHEMAS).sort()
  *  ValueHint field accepted by design; see value-hint.ts CONTRACT_GAP). */
 const CONNECTION_KINDS = ['api', 'mcp', 'notification'] as const;
 
-const ADD_TRIGGER_KINDS = ['Accepted form response', 'Custom event pattern'] as const;
+const ADD_TRIGGER_KINDS = ['A form answer you accepted', 'Your own event pattern'] as const;
 type AddTriggerKind = (typeof ADD_TRIGGER_KINDS)[number];
 
 /** Build a `type:'connection'` recipe variable. `type` / `connection_kind` are
@@ -1350,8 +1350,8 @@ export const bootstrapRecipeEditorRoute = (
       ? { base: savedRecipe, snapshot: snapshot() } : null);
     if (recoveryFailed) {
       const status = host.querySelector?.<HTMLElement>(`[${RECIPE_EDITOR_STATUS_ATTR}]`);
-      if (status) status.textContent = 'Local recovery is unavailable. Save to keep your work.';
-      announce('Local recovery is unavailable. Save to keep your work.');
+      if (status) status.textContent = 'This browser cannot keep a backup copy. Save to keep your work.';
+      announce('This browser cannot keep a backup copy. Save to keep your work.');
     }
   };
   const queueDraft = (): void => {
@@ -1504,7 +1504,7 @@ export const bootstrapRecipeEditorRoute = (
     state.saveStage = 'idle';
     const hadIssues = state.issues.length > 0;
     state.issues = [];
-    if (!rpcInFlight && !webhookBusy) state.status = 'Edits pending — validate or save to check them.';
+    if (!rpcInFlight && !webhookBusy) state.status = 'You have changes. Check them, or save.';
     state.editEpoch += 1;
     for (const [field, key] of validationFields) {
       if (!fieldDrafts[key]) field.removeAttribute('aria-invalid');
@@ -1530,7 +1530,7 @@ export const bootstrapRecipeEditorRoute = (
     state.dirty = true;
     state.saveStage = 'idle';
     state.issues = [];
-    if (!rpcInFlight && !webhookBusy) state.status = 'Edits pending — validate or save to check them.';
+    if (!rpcInFlight && !webhookBusy) state.status = 'You have changes. Check them, or save.';
     state.editEpoch += 1;
     history.record(snapshot());
     queueDraft();
@@ -1666,10 +1666,10 @@ export const bootstrapRecipeEditorRoute = (
         state.issues = staleEdits ? [] : result.issues;
         state.saveStage = staleEdits ? 'idle' : result.ok ? 'idle' : 'error';
         state.status = staleEdits
-          ? 'Validation finished — newer edits pending'
+          ? 'Checked, but you have changed things since'
           : result.ok
             ? 'Valid'
-            : `Validation failed: ${plural(result.issues.length, 'issue')}`;
+            : `Check failed: ${plural(result.issues.length, 'issue')}`;
         // Validating never clears `dirty` — the edits are still unsaved.
         rerender();
         announce(state.status);
@@ -1690,7 +1690,7 @@ export const bootstrapRecipeEditorRoute = (
     if (disposed || rpcInFlight || webhookBusy) return;
     if (webhookStatus?.armed && state.recipe.recipe_id !== persistedRecipeId) {
       state.saveStage = 'error';
-      state.status = 'Disarm the saved webhook before forking this recipe';
+      state.status = 'Switch off the saved webhook before you copy this Recipe';
       state.issues = [{
         path: 'recipe_id',
         severity: 'error',
@@ -1706,10 +1706,10 @@ export const bootstrapRecipeEditorRoute = (
     if (declaresWebhook) {
       if (!options.webhookControl) {
         state.saveStage = 'error';
-        state.status = 'Webhook binding controls are unavailable';
+        state.status = 'You cannot change webhook settings here';
         state.issues = [{
           severity: 'error',
-          message: 'Reload on an owner Kitchen surface to select webhook ingresses.',
+          message: 'Open this in your own Kitchen to choose where webhooks come in.',
         }];
         rerender();
         return;
@@ -1719,7 +1719,7 @@ export const bootstrapRecipeEditorRoute = (
         const ingressId = webhookSelections.get(requirement.binding);
         if (!ingressId) {
           state.saveStage = 'error';
-          state.status = 'Select every webhook ingress before saving';
+          state.status = 'Choose where every webhook comes in before you save';
           state.issues = [{
             path: `webhook_requirements.${requirement.binding}`,
             severity: 'error',
@@ -1806,7 +1806,7 @@ export const bootstrapRecipeEditorRoute = (
               ...state.issues,
               {
                 severity: 'warn',
-                message: `The recipe was saved, but its editor URL could not be updated: ${errorMessage(error)}`,
+                message: `The Recipe was saved, but Recued could not update the address: ${errorMessage(error)}`,
               },
             ];
             rerender();
@@ -1891,7 +1891,7 @@ export const bootstrapRecipeEditorRoute = (
     });
     if (!local.length) return false;
     state.issues = local;
-    state.status = 'Finish the highlighted fields before validating or saving.';
+    state.status = 'Fill in the boxes marked before you check or save.';
     state.saveStage = 'error';
     rerender(); revealIssues();
     return true;
@@ -1955,11 +1955,11 @@ export const bootstrapRecipeEditorRoute = (
   };
   const renderOutline = (): HTMLElement => {
     const nav = doc.createElement('nav'); nav.className = 'recipe-editor-outline';
-    nav.setAttribute('aria-label', 'Recipe step outline');
+    nav.setAttribute('aria-label', 'The steps in this Recipe');
     const disclosure = doc.createElement('details');
     disclosure.setAttribute('data-recued-recipe-outline', '');
     const summary = appendText(doc, disclosure, 'summary', '');
-    appendText(doc, summary, 'span', 'Recipe outline');
+    appendText(doc, summary, 'span', 'The steps');
     appendText(doc, summary, 'span', plural(allStepIds(state.recipe).length, 'step')).className = 'recipe-editor-panel-hint';
     rememberPanel(disclosure, 'outline'); nav.appendChild(disclosure);
     const body = doc.createElement('div'); body.className = 'recipe-editor-panel-body'; disclosure.appendChild(body);
@@ -1986,12 +1986,12 @@ export const bootstrapRecipeEditorRoute = (
     body.appendChild(shortcuts);
     const toolbar = doc.createElement('div'); toolbar.className = 'recipe-editor-search';
     const search = makeTextInput(doc, outlineQuery, 'outline_search', next => { outlineQuery = next; paint(); });
-    search.type = 'search'; search.setAttribute('aria-label', 'Search recipe steps');
+    search.type = 'search'; search.setAttribute('aria-label', 'Search the steps');
     search.placeholder = 'Find a step…'; toolbar.appendChild(search);
     const clear = makeButton(doc, 'Clear', 'secondary', 'sm', () => {
       outlineQuery = ''; search.value = ''; paint(); search.focus();
     });
-    clear.setAttribute('aria-label', 'Clear step search'); toolbar.appendChild(clear);
+    clear.setAttribute('aria-label', 'Clear the step search'); toolbar.appendChild(clear);
     body.appendChild(toolbar);
     const countLabel = appendText(doc, body, 'span', '');
     countLabel.className = 'recipe-editor-search-count'; countLabel.setAttribute('role', 'status');
@@ -2035,7 +2035,7 @@ export const bootstrapRecipeEditorRoute = (
         if (group.children.length > 1) list.appendChild(group);
       }
       countLabel.textContent = query ? `${count} of ${plural(allStepIds(state.recipe).length, 'step')}` : '';
-      if (!count) appendText(doc, list, 'span', query ? 'No matching steps. Try a name, operation, or input.' : 'Add a step to start building.').className = 'recipe-editor-outline-empty';
+      if (!count) appendText(doc, list, 'span', query ? 'No steps match. Try a name, something it does, or an input.' : 'Add a step to begin.').className = 'recipe-editor-outline-empty';
     };
     refreshOutline = paint; paint();
     return nav;
@@ -2050,11 +2050,11 @@ export const bootstrapRecipeEditorRoute = (
   const renderRecovery = (): HTMLElement | null => {
     if (!recoveredDraft && !recoveryFailed) return null;
     const row = doc.createElement('div'); row.className = 'recipe-editor-recovery';
-    if (recoveryFailed) appendText(doc, row, 'span', 'Local recovery is unavailable. Save this draft to keep your work.');
+    if (recoveryFailed) appendText(doc, row, 'span', 'This browser cannot keep a backup copy. Save this draft to keep your work.');
     if (recoveredDraft) {
       appendText(doc, row, 'span', JSON.stringify(recoveredDraft.base) === JSON.stringify(savedRecipe)
-        ? 'Unsaved work is available from this tab.'
-        : 'Unsaved work is available. The saved recipe has changed since that draft.');
+        ? 'There is unsaved work from this tab.'
+        : 'There is unsaved work. The saved Recipe has changed since then.');
       row.appendChild(makeButton(doc, 'Restore draft', 'secondary', 'sm', () => {
         if (!recoveredDraft) return;
         fieldDrafts = recoveredDraft.snapshot.fields;
@@ -2076,10 +2076,10 @@ export const bootstrapRecipeEditorRoute = (
     appendText(doc, summary, 'span', 'Sample preview').className = 'recipe-editor-panel-hint';
     rememberPanel(section, 'test');
     const body = doc.createElement('div'); body.className = 'recipe-editor-panel-body'; section.appendChild(body);
-    appendText(doc, body, 'p', 'Run transforms and conditions with sample inputs and mocked outputs. No connected service is called.').className = 'recipe-editor-test-intro';
+    appendText(doc, body, 'p', 'Try it out with made-up inputs and pretend results. Nothing real is called.').className = 'recipe-editor-test-intro';
     const help = doc.createElement('details'); help.className = 'recipe-editor-test-help';
     appendText(doc, help, 'summary', 'How to write sample data');
-    appendText(doc, help, 'p', 'Use config to override variables, context for event data, and mocks for external step outputs, keyed by step id.');
+    appendText(doc, help, 'p', 'Use config to change settings, context for event details, and mocks to pretend what a step sent back. Key them by step id.');
     appendText(doc, help, 'pre', JSON.stringify({ config: {}, context: { event: {} }, mocks: { read: { result: [] } } }, null, 2));
     appendText(doc, help, 'p', 'For different outputs in a loop, use {"iterations": [...]}. To test a failed call, use {"error": "message"}.');
     rememberPanel(help, 'test-help'); body.appendChild(help);
@@ -2088,11 +2088,11 @@ export const bootstrapRecipeEditorRoute = (
     const sample = makeTextArea(doc, testText, 'test_sample', next => {
       testText = next; sampleEpoch += 1; testError = '';
       if (testStatusEl) {
-        testStatusEl.textContent = 'Sample changed — run the test again';
+        testStatusEl.textContent = 'You changed the sample. Run it again';
         testStatusEl.setAttribute('data-state', 'stale');
       }
     });
-    sample.setAttribute('aria-label', 'Sample config, context, data, and mock outputs (JSON)'); sample.rows = 8;
+    sample.setAttribute('aria-label', 'Sample settings, event details, data and pretend results (JSON)'); sample.rows = 8;
     body.appendChild(sample);
     const status = appendText(doc, body, 'p', testAbort ? 'Testing…' : testError || (testResult
       ? `Test ${testResult.status}${testEpoch !== state.editEpoch ? ' — recipe changed since this test' : testedSampleEpoch !== sampleEpoch ? ' — sample changed since this test' : ''}` : 'Ready to test'));
@@ -2103,7 +2103,7 @@ export const bootstrapRecipeEditorRoute = (
     const actions = doc.createElement('div'); actions.className = 'recipe-editor-actions'; body.appendChild(actions);
     const run = makeButton(doc, testAbort ? 'Testing…' : 'Test recipe', 'primary', 'sm', () => {
       if (testAbort || blockInvalidFields()) return;
-      if (!options.simulateCaller) { testError = 'Recipe tests are unavailable on this server.'; rerender(); return; }
+      if (!options.simulateCaller) { testError = 'This server cannot try Recipes out.'; rerender(); return; }
       let sampleInput: unknown;
       try {
         sampleInput = JSON.parse(testText);
@@ -2557,10 +2557,10 @@ export const bootstrapRecipeEditorRoute = (
       notice.className = 'span-full';
       notice.setAttribute(RECIPE_EDITOR_OP_NOTICE_ATTR, '');
       notice.textContent =
-        'Op-steps resolve at run through the dispatch path. A CRM op needs a '
-        + 'connection variable to fill its connection slot — '
+        'Recued works these out when it runs. Anything touching a CRM needs a '
+        + 'connection input to say which one to use. '
         + (connVars.length === 0
-          ? 'declare one under Connections & dependencies below.'
+          ? 'Add one under Connections and dependencies below.'
           : 'pick one above.');
       grid.appendChild(notice);
     }
@@ -2938,7 +2938,7 @@ export const bootstrapRecipeEditorRoute = (
         doc,
         empty,
         'span',
-        'Pick a kind above and press Add step to start building this recipe.',
+        'Pick a kind above and press Add step to start.',
       );
       section.appendChild(empty);
     } else {
@@ -3214,7 +3214,7 @@ export const bootstrapRecipeEditorRoute = (
         webhookBusy = false;
         if (disposed) return;
         webhookStatus = result.webhook;
-        state.status = armed ? 'Webhook trigger armed' : 'Webhook trigger disarmed';
+        state.status = armed ? 'Webhook trigger switched on' : 'Webhook trigger switched off';
         rerender();
         announce(state.status);
       },
@@ -3260,14 +3260,14 @@ export const bootstrapRecipeEditorRoute = (
     section.setAttribute(RECIPE_EDITOR_WEBHOOKS_ATTR, '');
     const header = doc.createElement('div');
     header.className = 'recipe-editor-section-header';
-    appendText(doc, header, 'h2', 'Inbound webhook');
+    appendText(doc, header, 'h2', 'Webhooks coming in');
     const label = state.dirty && webhookStatus?.configured
-      ? 'Binding changes pending'
+      ? 'Webhook choices not saved yet'
       : webhookStatus?.armed
-        ? 'Armed'
+        ? 'On'
         : webhookStatus?.configured
-          ? 'Disarmed'
-          : 'Not configured';
+          ? 'Off'
+          : 'Not set up';
     const meta = appendText(doc, header, 'span', label);
     meta.className = 'recipe-editor-section-meta';
     section.appendChild(header);
@@ -3275,8 +3275,8 @@ export const bootstrapRecipeEditorRoute = (
       doc,
       section,
       'p',
-      'Choose an enabled compatible ingress for every logical binding. Saving always '
-        + 'leaves this recipe disarmed; arming is a separate owner action.',
+      'Pick a switched-on way in for every webhook. Saving always '
+        + 'leaves this Recipe switched off. Turning it on is something you do separately.',
     );
     hint.className = 'recipe-editor-hint';
 
@@ -3289,17 +3289,17 @@ export const bootstrapRecipeEditorRoute = (
         doc,
         copy,
         'code',
-        'The selected ingress fixes the trusted profile and admitted event set.',
+        'The way in you pick decides who is trusted and what gets let through.',
       );
       row.appendChild(copy);
       const field = doc.createElement('label');
-      field.textContent = 'Enabled ingress';
+      field.textContent = 'Way in that is switched on';
       const select = doc.createElement('select');
       select.setAttribute(RECIPE_EDITOR_WEBHOOK_SELECT_ATTR, 'new');
       select.setAttribute(RECIPE_EDITOR_FIELD_ATTR, 'webhook_ingress:new');
       const placeholder = doc.createElement('option');
       placeholder.value = '';
-      placeholder.textContent = 'Select an enabled ingress…';
+      placeholder.textContent = 'Pick a way in that is switched on…';
       select.appendChild(placeholder);
       const candidates = options.webhookControl?.ingresses.filter(
         (ingress) => ingress.intake_state === 'enabled'
@@ -3360,7 +3360,7 @@ export const bootstrapRecipeEditorRoute = (
       if (webhookStatus?.armed) {
         const disarm = makeButton(
           doc,
-          webhookBusy ? 'Disarming…' : 'Disarm saved webhook',
+          webhookBusy ? 'Switching off…' : 'Switch off saved webhook',
           'secondary',
           'sm',
           () => {
@@ -3375,10 +3375,10 @@ export const bootstrapRecipeEditorRoute = (
       const stateLabel = doc.createElement('span');
       stateLabel.setAttribute(RECIPE_EDITOR_WEBHOOK_STATUS_ATTR, '');
       stateLabel.textContent = state.dirty && webhookStatus?.armed
-        ? 'The saved webhook remains armed until you save this removal.'
+        ? 'The saved webhook stays on until you save this change.'
         : candidates.length === 0
-          ? 'Create and enable a compatible ingress in Connections first.'
-          : 'Adding changes only this draft; save, then arm it separately.';
+          ? 'Make a way in under Connections and switch it on first.'
+          : 'This only changes your draft. Save, then switch it on separately.';
       actions.appendChild(stateLabel);
       section.appendChild(actions);
       host2.appendChild(section);
@@ -3398,30 +3398,30 @@ export const bootstrapRecipeEditorRoute = (
       block.className = 'recipe-editor-webhook-door';
       block.setAttribute(RECIPE_EDITOR_WEBHOOK_DOOR_ATTR, door.state);
       if (door.state === 'refused') {
-        const lede = appendText(doc, block, 'p', 'This recipe cannot run from a webhook:');
+        const lede = appendText(doc, block, 'p', 'A webhook cannot start this Recipe:');
         lede.className = 'recipe-editor-webhook-door-lede';
         const refusal = door.refusal;
         appendText(
           doc,
           block,
           'code',
-          refusal ? `${refusal.detail} (step ${refusal.step_id})` : 'the door mint was refused',
+          refusal ? `${refusal.detail} (step ${refusal.step_id})` : 'the door could not be made',
         );
         const help = appendText(
           doc,
           block,
           'p',
-          'Deliveries are denied. Change the refused step, then save again.',
+          'Nothing gets through. Change the step that was refused, then save again.',
         );
         help.className = 'recipe-editor-webhook-door-help';
       } else if (door.state === 'missing') {
-        const lede = appendText(doc, block, 'p', 'No door contract backs this webhook.');
+        const lede = appendText(doc, block, 'p', 'There is no door behind this webhook.');
         lede.className = 'recipe-editor-webhook-door-lede';
         const help = appendText(
           doc,
           block,
           'p',
-          'Deliveries are denied until one exists. Re-save the recipe to mint it.',
+          'Nothing gets through until there is one. Save the Recipe again to make one.',
         );
         help.className = 'recipe-editor-webhook-door-help';
       } else {
@@ -3436,10 +3436,10 @@ export const bootstrapRecipeEditorRoute = (
           block,
           'p',
           !hasOps
-            ? 'This recipe calls no gated operations — the door grants nothing.'
+            ? 'This Recipe does nothing that needs asking, so the door gives nothing away.'
             : armedNow
-              ? 'An admitted delivery may:'
-              : 'Once armed, an admitted delivery may:',
+              ? 'Anything let through may:'
+              : 'Once this is on, anything let through may:',
         );
         lede.className = 'recipe-editor-webhook-door-lede';
         if (hasOps) {
@@ -3455,10 +3455,10 @@ export const bootstrapRecipeEditorRoute = (
             block,
             'p',
             armedNow
-              ? 'These run without a per-delivery approval — arming was that approval. '
-                + 'Disarm to revoke it.'
-              : 'These run without a per-delivery approval — arming is that approval. '
-                + 'Disarm to revoke it.',
+              ? 'These run without asking you each time. Switching it on was your yes. '
+                + 'Switch it off to take that back.'
+              : 'These run without asking you each time. Switching it on is your yes. '
+                + 'Switch it off to take that back.',
           );
           help.className = 'recipe-editor-webhook-door-help';
         }
@@ -3469,7 +3469,7 @@ export const bootstrapRecipeEditorRoute = (
         const added = door.added ?? [];
         const removed = door.removed ?? [];
         if (!state.dirty && (added.length > 0 || removed.length > 0)) {
-          const diffLede = appendText(doc, block, 'p', 'This save changed the webhook’s authority:');
+          const diffLede = appendText(doc, block, 'p', 'Saving changed what this webhook may do:');
           diffLede.className = 'recipe-editor-webhook-door-lede';
           const diff = doc.createElement('ul');
           for (const op of added) {
@@ -3494,13 +3494,13 @@ export const bootstrapRecipeEditorRoute = (
       const identity = doc.createElement('div');
       appendText(doc, identity, 'strong', requirement.binding);
       const eventLabel = (requirement.required_event_types ?? []).join(', ')
-        || 'declared events';
+        || 'the events it named';
       const payloadLabel = requirement.decoded_payload_access === 'scoped_read'
-        ? 'decoded payload access'
-        : 'metadata only';
+        ? 'can read what was sent'
+        : 'only the labels around it';
       const truthLabel = requirement.source_truth_policy === 'provider_readback_required'
-        ? 'provider read-back required'
-        : 'delivery payload allowed';
+        ? 'has to check back with the service'
+        : 'can trust what was sent';
       appendText(
         doc,
         identity,
@@ -3510,7 +3510,7 @@ export const bootstrapRecipeEditorRoute = (
       row.appendChild(identity);
 
       const field = doc.createElement('label');
-      field.textContent = 'Owner-selected ingress';
+      field.textContent = 'The way in you picked';
       const select = doc.createElement('select');
       select.setAttribute(RECIPE_EDITOR_WEBHOOK_SELECT_ATTR, requirement.binding);
       select.setAttribute(
@@ -3521,8 +3521,8 @@ export const bootstrapRecipeEditorRoute = (
       const placeholder = doc.createElement('option');
       placeholder.value = '';
       placeholder.textContent = options.webhookControl
-        ? 'Select an enabled ingress…'
-        : 'Webhook controls unavailable';
+        ? 'Pick a way in that is switched on…'
+        : 'You cannot change webhooks here';
       select.appendChild(placeholder);
       const triggerEventTypes = triggers
         .filter((trigger) => trigger.binding === requirement.binding)
@@ -3544,7 +3544,7 @@ export const bootstrapRecipeEditorRoute = (
         && !compatible.some((ingress) => ingress.ingress_id === selected)) {
         const unavailable = doc.createElement('option');
         unavailable.value = selected;
-        unavailable.textContent = `Current selection is unavailable · ${selected}`;
+        unavailable.textContent = `What you picked is not there any more · ${selected}`;
         select.appendChild(unavailable);
       }
       select.value = selected;
@@ -3563,7 +3563,7 @@ export const bootstrapRecipeEditorRoute = (
     actions.className = 'recipe-editor-webhook-actions';
     if (requirements.length === 1
       && triggers.every((trigger) => trigger.binding === requirements[0]!.binding)) {
-      const remove = makeButton(doc, 'Remove webhook declaration', 'secondary', 'sm', () => {
+      const remove = makeButton(doc, 'Remove this webhook', 'secondary', 'sm', () => {
         webhookSelections.clear();
         const next = { ...state.recipe };
         delete next.webhook_requirements;
@@ -3578,7 +3578,7 @@ export const bootstrapRecipeEditorRoute = (
     if (webhookStatus?.armed) {
       const disarm = makeButton(
         doc,
-        webhookBusy ? 'Disarming…' : 'Disarm webhook',
+        webhookBusy ? 'Switching off…' : 'Switch off webhook',
         'secondary',
         'sm',
         () => {
@@ -3592,7 +3592,7 @@ export const bootstrapRecipeEditorRoute = (
     } else {
       const arm = makeButton(
         doc,
-        webhookBusy ? 'Arming…' : 'Arm webhook',
+        webhookBusy ? 'Switching on…' : 'Switch on webhook',
         'primary',
         'sm',
         () => {
@@ -3615,19 +3615,19 @@ export const bootstrapRecipeEditorRoute = (
     const status = doc.createElement('span');
     status.setAttribute(RECIPE_EDITOR_WEBHOOK_STATUS_ATTR, '');
     status.textContent = webhookError
-      ?? (webhookBusy ? 'Updating webhook authority…'
-        : state.dirty ? 'Save binding changes before arming.'
-          : triggers.length === 0 ? 'Add a webhook trigger before arming.'
+      ?? (webhookBusy ? 'Changing what the webhook may do…'
+        : state.dirty ? 'Save your webhook choices before switching it on.'
+          : triggers.length === 0 ? 'Add a webhook trigger before switching it on.'
           : door?.state === 'missing'
-            ? 'Webhook door contract missing — re-save the recipe to mint it.'
+            ? 'The webhook door is missing. Save the Recipe again to make one.'
           : door?.state === 'refused'
-            ? 'This recipe cannot back a webhook door; change the refused step and save.'
-          : webhookStatus?.armed ? 'Future admitted deliveries can start this recipe.'
-            : 'No webhook delivery can start this recipe yet.');
+            ? 'This Recipe cannot have a webhook door. Change the step that was refused, then save.'
+          : webhookStatus?.armed ? 'Anything let through from now on can start this Recipe.'
+            : 'No webhook can start this Recipe yet.');
     actions.appendChild(status);
     const settings = doc.createElement('a');
     settings.setAttribute('href', '#connections/webhooks');
-    settings.textContent = 'Manage webhook ingresses';
+    settings.textContent = 'Manage ways in for webhooks';
     actions.appendChild(settings);
     section.appendChild(actions);
     host2.appendChild(section);
@@ -3650,8 +3650,8 @@ export const bootstrapRecipeEditorRoute = (
       doc,
       section,
       'p',
-      'Start from an event. New triggers stay paused until you enable them in Automation. '
-        + 'Form responses fire after owner review; add a response reader to use the submitted answers.',
+      'Start when something happens. New triggers stay asleep until you switch them on in Automation. '
+        + 'Form answers only start this after you have looked at them. Add a reader to use what people wrote.',
     );
     hint.className = 'recipe-editor-hint';
 
@@ -3659,9 +3659,9 @@ export const bootstrapRecipeEditorRoute = (
       const empty = doc.createElement('div');
       empty.className = 'recipe-editor-empty recipe-editor-trigger-empty';
       appendText(doc, empty, 'strong', state.recipe.auto_run
-        ? `Runs every ${state.recipe.auto_run.interval_ms} ms${state.recipe.auto_run.default_enabled === false ? ' (initially paused)' : ''}`
+        ? `Runs every ${state.recipe.auto_run.interval_ms} ms${state.recipe.auto_run.default_enabled === false ? ' (asleep at first)' : ''}`
         : 'Runs manually');
-      appendText(doc, empty, 'span', 'Add a trigger to start this recipe from an event.');
+      appendText(doc, empty, 'span', 'Add a trigger so something can set this Recipe off.');
       section.appendChild(empty);
     }
 
@@ -3682,7 +3682,7 @@ export const bootstrapRecipeEditorRoute = (
       let triggerFocusTarget: HTMLElement | null = null;
 
       if (trigger.on === FORM_RESPONSE_ON_SHORTHAND) {
-        appendText(doc, title, 'span', 'Accepted form response');
+        appendText(doc, title, 'span', 'A form answer you accepted');
         const code = appendText(doc, title, 'code', FORM_RESPONSE_ON_SHORTHAND);
         code.className = 'recipe-editor-trigger-code';
 
@@ -3704,9 +3704,9 @@ export const bootstrapRecipeEditorRoute = (
           },
         );
         input.setAttribute(RECIPE_EDITOR_TRIGGER_FORM_ID_ATTR, String(index));
-        input.setAttribute('placeholder', 'No form-definition filter');
+        input.setAttribute('placeholder', 'Any form');
         triggerFocusTarget = input;
-        addField(doc, fields, 'Form definition ID', input);
+        addField(doc, fields, 'Form ID', input);
 
         const otherWhere = Object.fromEntries(
           Object.entries(trigger.where ?? {}).filter(([key]) => key !== 'form_definition_id'),
@@ -3719,12 +3719,12 @@ export const bootstrapRecipeEditorRoute = (
           doc,
           body,
           'span',
-          'Leave this field empty to avoid form-definition narrowing; other filters shown '
-            + 'still apply. The response reader below fetches the full owner-approved record.',
+          'Leave this empty to take answers from every form. The other filters shown '
+            + 'still apply. The reader below gets the whole answer once you have said yes to it.',
         );
         readerHint.className = 'recipe-editor-hint';
       } else if (typeof trigger.event === 'string') {
-        appendText(doc, title, 'span', 'Custom event pattern');
+        appendText(doc, title, 'span', 'Your own event pattern');
         const code = appendText(doc, title, 'code', 'event');
         code.className = 'recipe-editor-trigger-code';
 
@@ -3737,9 +3737,9 @@ export const bootstrapRecipeEditorRoute = (
         input.setAttribute(RECIPE_EDITOR_TRIGGER_EVENT_ATTR, String(index));
         input.setAttribute('placeholder', 'data.platform.slug.entity.created or run.recipe.*.completed');
         triggerFocusTarget = input;
-        addField(doc, fields, 'Warehouse event pattern', input, true);
+        addField(doc, fields, 'Event name pattern', input, true);
         if (trigger.filter !== undefined) {
-          addReadonlyField(doc, fields, 'Dispatch filter', JSON.stringify(trigger.filter));
+          addReadonlyField(doc, fields, 'Only when', JSON.stringify(trigger.filter));
         }
       } else {
         appendText(doc, title, 'span', 'Advanced trigger');
@@ -3750,7 +3750,7 @@ export const bootstrapRecipeEditorRoute = (
           doc,
           body,
           'span',
-          'This trigger uses advanced authoring fields. It is preserved unchanged here.',
+          'This trigger uses advanced settings. Recued keeps them exactly as they are.',
         );
         advancedHint.className = 'recipe-editor-hint';
       }
@@ -3781,31 +3781,31 @@ export const bootstrapRecipeEditorRoute = (
       const copy = doc.createElement('div');
       copy.className = 'recipe-editor-trigger-bridge-copy';
       if (ready !== undefined) {
-        appendText(doc, copy, 'strong', 'Response reader ready');
+        appendText(doc, copy, 'strong', 'Answer reader ready');
         const detail = doc.createElement('span');
-        detail.textContent = 'Full answers are available to downstream steps at ';
+        detail.textContent = 'Later steps can read the whole answer at ';
         const ref = doc.createElement('code');
         ref.textContent = `{{step.${ready.id}.record}}`;
         detail.appendChild(ref);
         appendText(doc, detail, 'span', '.');
         copy.appendChild(detail);
       } else if (repair !== undefined) {
-        appendText(doc, copy, 'strong', 'Keep or connect the existing response reader');
+        appendText(doc, copy, 'strong', 'Keep the reader you have, or hook it up');
         appendText(
           doc,
           copy,
           'span',
-          `Step ${repair.id} reads a fixed submission. Keep it and add an event reader, or `
-            + `explicitly bind it to this trigger's record id.`,
+          `Step ${repair.id} always reads the same answer. Keep it and add a reader for the event, or `
+            + `point it at the answer this trigger brings in.`,
         );
       } else {
-        appendText(doc, copy, 'strong', 'Read the submitted answers');
+        appendText(doc, copy, 'strong', 'Read what people wrote');
         appendText(
           doc,
           copy,
           'span',
-          'The event carries routing data only. Add the owner-only prefetch reader before '
-            + 'building the workflow steps.',
+          'The event only says where to look. Add the owner-only reader before '
+            + 'building the steps.',
         );
       }
       bridge.appendChild(copy);
@@ -3813,7 +3813,7 @@ export const bootstrapRecipeEditorRoute = (
       if (ready === undefined) {
         const addAction = makeButton(
           doc,
-          repair !== undefined ? 'Add separate event reader' : 'Add response reader',
+          repair !== undefined ? 'Add a separate reader for the event' : 'Add an answer reader',
           'secondary',
           'sm',
           addFormResponseReader,
@@ -3823,7 +3823,7 @@ export const bootstrapRecipeEditorRoute = (
         if (repair !== undefined) {
           const bindAction = makeButton(
             doc,
-            'Bind existing reader',
+            'Point the reader you have at it',
             'secondary',
             'sm',
             () => bindFormResponseReader(repair),
@@ -3875,14 +3875,14 @@ export const bootstrapRecipeEditorRoute = (
     };
     const syncAddTrigger = (): void => {
       if (addTrigger === undefined) return;
-      addTrigger.disabled = draft.kind === 'Custom event pattern'
+      addTrigger.disabled = draft.kind === 'Your own event pattern'
         && !canAddCustomEvent();
     };
     const rebuildEventControl = (): void => {
       while (eventField.children.length > 1) {
         eventField.removeChild(eventField.children[eventField.children.length - 1]!);
       }
-      if (draft.kind === 'Custom event pattern') {
+      if (draft.kind === 'Your own event pattern') {
         const input = makeTextInput(doc, draft.event, 'event_trigger_add_event', (value) => {
           draft.event = value;
           syncAddTrigger();
@@ -3895,24 +3895,24 @@ export const bootstrapRecipeEditorRoute = (
           doc,
           eventField,
           'span',
-          "Warehouse events begin with 'data.' or 'run.'; '*' matches one segment and '**' spans segments.",
+          "Events about your own records start with 'data.' or 'run.'. Use '*' for one part of the name, and '**' for any number of parts.",
         );
         patternHint.className = 'recipe-editor-hint';
       } else {
         const fixed = doc.createElement('code');
         fixed.className = 'recipe-editor-readonly';
-        fixed.textContent = 'After owner acceptance';
+        fixed.textContent = 'After you accept it';
         eventField.appendChild(fixed);
       }
     };
     rebuildEventControl();
 
     addTrigger = makeButton(doc, 'Add trigger', 'secondary', 'sm', () => {
-      const nextTrigger: RecipeEventTrigger = draft.kind === 'Accepted form response'
+      const nextTrigger: RecipeEventTrigger = draft.kind === 'A form answer you accepted'
         ? { on: FORM_RESPONSE_ON_SHORTHAND }
         : { event: draft.event.trim() };
       if (
-        draft.kind === 'Custom event pattern'
+        draft.kind === 'Your own event pattern'
           ? !canAddCustomEvent()
           : validateRecipeEventTriggerEntry(nextTrigger).length > 0
       ) return;
@@ -3950,7 +3950,7 @@ export const bootstrapRecipeEditorRoute = (
       doc,
       section,
       'p',
-      'One connection variable per CRM / Tier-P op-step slot, referenced as '
+      'One connection input for each CRM step that needs one, written as '
         + '{{config.<name>}} — a CRM op-step without one is rejected at save.',
     );
     hint.className = 'recipe-editor-hint';
@@ -3969,7 +3969,7 @@ export const bootstrapRecipeEditorRoute = (
       const grid = doc.createElement('div');
       grid.className = 'recipe-editor-field-grid';
 
-      addReadonlyField(doc, grid, 'Variable', `{{config.${name}}}`);
+      addReadonlyField(doc, grid, 'Write it like this', `{{config.${name}}}`);
       addField(
         doc,
         grid,
@@ -4018,7 +4018,7 @@ export const bootstrapRecipeEditorRoute = (
         mutateAndRerender({ ...state.recipe, variables: nextVars });
       });
       remove.setAttribute(RECIPE_EDITOR_CONN_VAR_REMOVE_ATTR, name);
-      remove.setAttribute('aria-label', `Remove connection variable ${name}`);
+      remove.setAttribute('aria-label', `Remove connection input ${name}`);
       removeWrap.appendChild(remove);
       grid.appendChild(removeWrap);
 
@@ -4033,12 +4033,12 @@ export const bootstrapRecipeEditorRoute = (
 
     const nameField = doc.createElement('div');
     nameField.className = 'recipe-editor-field';
-    appendText(doc, nameField, 'label', 'New variable');
+    appendText(doc, nameField, 'label', 'New connection input');
     const nameInput = makeTextInput(doc, '', 'conn_var_new_name', (next) => {
       draft.name = next;
     });
     nameInput.setAttribute(RECIPE_EDITOR_CONN_VAR_NAME_ATTR, '');
-    nameInput.setAttribute('aria-label', 'New connection variable');
+    nameInput.setAttribute('aria-label', 'New connection input');
     nameInput.setAttribute('placeholder', 'crm');
     nameField.appendChild(nameInput);
     addWrap.appendChild(nameField);
@@ -4054,7 +4054,7 @@ export const bootstrapRecipeEditorRoute = (
     kindField.appendChild(kindSelect);
     addWrap.appendChild(kindField);
 
-    const addVar = makeButton(doc, 'Add variable', 'secondary', 'sm', () => {
+    const addVar = makeButton(doc, 'Add connection input', 'secondary', 'sm', () => {
       const name = draft.name.trim();
       if (name === '') return;
       if (name in state.recipe.variables) return; // dup any variable — ignore
@@ -4099,13 +4099,13 @@ export const bootstrapRecipeEditorRoute = (
       },
     );
     depInput.setAttribute('placeholder', 'recued-core.hubspot, recued-core.salesforce');
-    addField(doc, depGrid, 'Tier-P packs', depInput, true);
+    addField(doc, depGrid, 'Packs it needs', depInput, true);
     const depHint = appendText(
       doc,
       depGrid,
       'span',
-      'Comma-separated <publisher>.<pack> ids whose ops this recipe uses. '
-        + 'Tier-K core.* ops need none.',
+      'The <publisher>.<pack> ids this Recipe uses, separated by commas. '
+        + 'Steps that only use core.* need none.',
     );
     depHint.className = 'recipe-editor-hint span-full';
     section.appendChild(depGrid);
@@ -4216,7 +4216,7 @@ export const bootstrapRecipeEditorRoute = (
     // Slim sticky header.
     const topbar = doc.createElement('section');
     topbar.className = 'recipe-editor-topbar';
-    topbar.setAttribute('aria-label', 'Recipe editor controls');
+    topbar.setAttribute('aria-label', 'Recipe editor buttons');
 
     const header = doc.createElement('div');
     header.className = 'recipe-editor-header';
@@ -4232,7 +4232,7 @@ export const bootstrapRecipeEditorRoute = (
       doc,
       heading,
       'span',
-      'Build, validate, and save this automation.',
+      'Build it, check it, and save it.',
     );
     subtitle.className = 'recipe-editor-subtitle';
     header.appendChild(heading);
@@ -4283,12 +4283,12 @@ export const bootstrapRecipeEditorRoute = (
 
     validateBtn = makeButton(doc, 'Validate', 'secondary', 'sm', runValidate);
     validateBtn.setAttribute(RECIPE_EDITOR_VALIDATE_ATTR, '');
-    validateBtn.setAttribute('title', 'Check this recipe without saving');
+    validateBtn.setAttribute('title', 'Check this Recipe without saving');
     actions.appendChild(validateBtn);
 
     saveBtn = makeButton(doc, saveLabel(), 'primary', 'sm', runSave);
     saveBtn.setAttribute(RECIPE_EDITOR_SAVE_ATTR, '');
-    saveBtn.setAttribute('title', 'Save recipe (⌘S or Ctrl+S)');
+    saveBtn.setAttribute('title', 'Save Recipe (⌘S or Ctrl+S)');
     actions.appendChild(saveBtn);
 
     topbar.appendChild(actions);

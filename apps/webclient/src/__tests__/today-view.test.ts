@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { CollectionRecord, SourceRegistration, WorkEntity } from '@recued/contracts';
-import { loadToday, renderToday, todayWindow } from '../data/today-view.js';
+import { loadToday, renderToday, TODAY_CREATE_ACTION, todayWindow } from '../data/today-view.js';
+import type { TodaySnapshot } from '../data/today-view.js';
 import type { BootstrapDataRouteOptions } from '../data/bootstrap-data-route.js';
 
 const now = new Date(2026, 8, 8, 12).getTime();
@@ -95,8 +96,8 @@ describe('Today projection', () => {
     expect(snapshot.issues).toHaveLength(2);
     const html = renderToday(snapshot, false, 'data-action');
     expect(html).toContain('Results below may be incomplete');
-    expect(html).toContain('No items found in the available data');
-    expect(html).not.toContain('No overdue tasks or commitments.');
+    expect(html).toContain('Recued found nothing');
+    expect(html).not.toContain('Nothing is late.');
   });
 
   it('exposes unknown, stale, partial, empty, and read-on-demand source coverage', async () => {
@@ -111,7 +112,7 @@ describe('Today projection', () => {
     });
     opts.collectionListCaller = async () => ({ records: [] });
     const snapshot = await loadToday(opts, now);
-    expect(snapshot.sources.map((item) => item.freshness.label)).toEqual(expect.arrayContaining(['Sync stale · Partial sync', 'Not included', 'Freshness unknown']));
+    expect(snapshot.sources.map((item) => item.freshness.label)).toEqual(expect.arrayContaining(['Out of date · Partial sync', 'Not included', 'Recued does not know how old this is']));
     expect(renderToday(snapshot, false, 'data-action')).toContain('Results below may be incomplete');
   });
 
@@ -123,7 +124,7 @@ describe('Today projection', () => {
     const snapshot = await loadToday({ ...opts, collectionListCaller: list }, now);
     expect(list).toHaveBeenCalledTimes(2);
     expect(snapshot.items).toHaveLength(100);
-    expect(snapshot.issues[0]).toContain('did not advance');
+    expect(snapshot.issues[0]).toContain('got stuck reading your calendar');
     const html = renderToday(snapshot, false, 'data-action');
     expect(html).toContain('All day · In progress');
     expect(html).toContain('&lt;script&gt;');
@@ -165,7 +166,7 @@ describe('Today projection', () => {
       : { entities: rows.slice(offset, offset + 100), total: offset === 0 ? 102 : 101 };
     const snapshot = await loadToday(opts, now);
     expect(snapshot.items).toHaveLength(101);
-    expect(snapshot.issues).toEqual([expect.stringContaining('list changed while loading')]);
+    expect(snapshot.issues).toEqual([expect.stringContaining('changed while it was loading')]);
   });
 
   it('reports partially repeated pages even when they also contain new records', async () => {
@@ -179,7 +180,7 @@ describe('Today projection', () => {
     const snapshot = await loadToday(opts, now);
     expect(snapshot.items).toHaveLength(104);
     expect(snapshot.issues).toEqual([
-      expect.stringContaining('list changed while loading'), expect.stringContaining('did not advance consistently'),
+      expect.stringContaining('changed while it was loading'), expect.stringContaining('got stuck reading your calendar'),
     ]);
   });
 });
@@ -199,5 +200,108 @@ describe('Today local calendar boundaries', () => {
       if (previous === undefined) delete process.env.TZ;
       else process.env.TZ = previous;
     }
+  });
+});
+
+describe('D-267 — the Today zero-state', () => {
+  it('⛔ offers a capture only when a host wired one, and never a dead button', async () => {
+    const snapshot = await loadToday(readers(), now);
+    expect(snapshot.items).toHaveLength(0);
+
+    const wired = renderToday(snapshot, false, 'data-action', undefined, true);
+    expect(wired).toContain('data-today-empty');
+    expect(wired).toContain(`data-action="${TODAY_CREATE_ACTION}"`);
+    expect(wired).toContain('Nothing is due in the next seven days.');
+    // Bare `#data` now lands here, so this is a fresh install's first look at
+    // its own warehouse — it says what it can do, not just that it is empty.
+    expect(wired).toContain('No setup needed');
+
+    // ⛔ A host with no opener renders NONE of it. Three empty group headings
+    // is a worse first screen than one button, and a button that does nothing
+    // is worse than either.
+    const unwired = renderToday(snapshot, false, 'data-action');
+    expect(unwired).not.toContain('data-today-empty');
+    expect(unwired).not.toContain(`data-action="${TODAY_CREATE_ACTION}"`);
+    // The honest per-group copy still stands in both.
+    expect(unwired).toContain('Nothing is late.');
+  });
+
+  it('⛔ does NOT claim "nothing due" when a source failed to answer', async () => {
+    const opts = readers();
+    opts.collectionListCaller = async () => { throw new Error('Source unavailable'); };
+    const snapshot = await loadToday(opts, now);
+    expect(snapshot.items).toHaveLength(0);
+    expect(snapshot.issues.length).toBeGreaterThan(0);
+
+    const html = renderToday(snapshot, false, 'data-action', undefined, true);
+    // The capture offer still stands — capturing is exactly what still works
+    // when a source is down. The CLAIM is what changes: "nothing due" and
+    // "nothing answered" are different facts and the owner is owed the second.
+    expect(html).toContain(`data-action="${TODAY_CREATE_ACTION}"`);
+    expect(html).toContain('The sources that answered had nothing to show.');
+    expect(html).not.toContain('Nothing is due in the next seven days.');
+  });
+
+  it('leaves the zero-state out entirely once anything is due', async () => {
+    const snapshot = await loadToday(readers([task('ship it', now + hour)]), now);
+    expect(snapshot.items).toHaveLength(1);
+    expect(renderToday(snapshot, false, 'data-action', undefined, true))
+      .not.toContain('data-today-empty');
+  });
+});
+
+describe('D-267 follow-on — a slow source may not erase the ones that answered', () => {
+  /** One reader that never settles, standing in for a source that is slow
+   *  rather than broken. ⛔ The distinction is the whole point: an ERRORING
+   *  source was already handled (its issue is recorded and the rest render);
+   *  a SLOW one used to hold the entire view. */
+  const neverSettles = <T,>(): Promise<T> => new Promise<T>(() => {});
+
+  it('⛔ emits what has landed while a source is still outstanding', async () => {
+    const opts = readers([task('ship it', now + hour)]);
+    opts.collectionListCaller = () => neverSettles();
+    const partials: TodaySnapshot[] = [];
+    let settled = false;
+    void loadToday(opts, now, () => true, (snapshot) => partials.push(snapshot))
+      .then(() => { settled = true; });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    // The load is still running — the calendar read never answers.
+    expect(settled).toBe(false);
+    // ...and the task that DID answer has already been handed to the caller.
+    expect(partials.length).toBeGreaterThan(0);
+    const latest = partials[partials.length - 1]!;
+    expect(latest.items.map((item) => item.title)).toContain('ship it');
+    // ⛔ AND IT SAYS IT IS NOT FINISHED. Every "nothing due" claim the view can
+    // make is gated on this; a partial that reported `complete` would tell a
+    // fresh install its warehouse is empty while three sources are still out.
+    expect(latest.complete).toBe(false);
+  });
+
+  it('renders the landed rows instead of a bare loading line, and claims nothing', async () => {
+    const opts = readers([task('ship it', now + hour)]);
+    opts.collectionListCaller = () => neverSettles();
+    const partials: TodaySnapshot[] = [];
+    void loadToday(opts, now, () => true, (snapshot) => partials.push(snapshot));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const html = renderToday(partials[partials.length - 1]!, true, 'data-action', undefined, true);
+    expect(html).toContain('ship it');
+    expect(html).toContain('Still reading your sources');
+    // An empty GROUP is a statement about a finished read, and so is the
+    // capture offer. Neither may appear yet.
+    expect(html).toContain('Still loading…');
+    expect(html).not.toContain('Nothing is late.');
+    expect(html).not.toContain('Nothing is due in the next seven days.');
+    expect(html).not.toContain('data-today-empty');
+  });
+
+  it('the settled snapshot is complete and makes its claims normally', async () => {
+    const snapshot = await loadToday(readers(), now);
+    expect(snapshot.complete).toBe(true);
+    const html = renderToday(snapshot, false, 'data-action', undefined, true);
+    expect(html).toContain('Nothing is due in the next seven days.');
+    expect(html).toContain('data-today-empty');
+    expect(html).not.toContain('Still reading your sources');
   });
 });

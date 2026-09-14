@@ -224,6 +224,7 @@ export interface ComposeExecutorConfigDeps {
    *  the door refuses rather than raising nothing silently. */
   getExecuteDeps?: () => { preflightNotifier?: unknown; auditLog?: unknown;
     mailDraft?: import('../../execute-handler.js').ExecuteHandlerDeps['mailDraft'];
+    mailDraftSaveToMailbox?: import('../../execute-handler.js').ExecuteHandlerDeps['mailDraftSaveToMailbox'];
     preapprovalRequest?: import('../../execute-handler.js').ExecuteHandlerDeps['preapprovalRequest'] } | undefined;
   auditLog: AuditLogStore | undefined;
   keys: KeyManager | undefined;
@@ -1721,6 +1722,14 @@ export const composeExecutorConfig = async (
         const draft = deps.getExecuteDeps?.()?.mailDraft;
         if (!draft) throw new Error('Saved drafts are unavailable until the owner service is ready.');
         return draft(method, input, meta);
+      },
+      // D-264 — same late-bound shape as `mailDraft` above: the owner service
+      // composes the export dispatcher after this config is built, so the
+      // lookup happens per call rather than at wiring time.
+      mailDraftSaveToMailbox: async (input, meta) => {
+        const exporter = deps.getExecuteDeps?.()?.mailDraftSaveToMailbox;
+        if (!exporter) throw new Error('Exporting a draft to the mailbox is unavailable on this server.');
+        return exporter(input, meta);
       },
       preapprovalRequest: async (input, meta) => {
         const request = deps.getExecuteDeps?.()?.preapprovalRequest;

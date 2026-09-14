@@ -209,7 +209,7 @@ describe('buildReachabilityRenderModel', () => {
   });
 
   it('REMEDIATION_COPY carries tls_chain_invalid_for_domain copy', () => {
-    expect(REMEDIATION_COPY.tls_chain_invalid_for_domain).toMatch(/intermediate chain/);
+    expect(REMEDIATION_COPY.tls_chain_invalid_for_domain).toMatch(/the chain from whoever issued it/);
   });
 });
 
@@ -294,7 +294,7 @@ describe('Reachability external diagnostics', () => {
       runExternalProbe,
     });
 
-    expect(host.innerHTML).toContain('Run external probe');
+    expect(host.innerHTML).toContain('Check from the outside');
     await mount.runExternalProbe();
 
     expect(runExternalProbe).toHaveBeenCalledTimes(1);

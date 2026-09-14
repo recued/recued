@@ -23,7 +23,7 @@ test('edits invalidate visible validation feedback without moving focus', async 
   await name.fill('Changed recipe');
   await expect(name).toBeFocused();
   await expect(page.locator('[data-recued-recipe-editor-valid]')).toHaveCount(0);
-  await expect(page.locator('[data-recued-recipe-editor-status]')).toHaveText('Edits pending — validate or save to check them.');
+  await expect(page.locator('[data-recued-recipe-editor-status]')).toHaveText('You have changes. Check them, or save.');
   const array = page.locator('[data-recued-recipe-editor-step="filter"] [data-recued-recipe-editor-field="param:array"]');
   await array.fill('[1,');
   await page.locator('[data-recued-recipe-editor-validate]').click();
@@ -125,7 +125,7 @@ for (const kind of ['operations', 'fields'] as const) {
   test(`adding pack ${kind} while searching reveals the new row`, async ({ page }) => {
     await page.goto('http://127.0.0.1:4319/kitchen-harness.html?surface=pack&fixture=largest');
     await page.locator(`[data-recued-ingredient-builder-section-nav="${kind === 'operations' ? 'operations' : 'data'}"]`).click();
-    const search = page.getByRole('searchbox', { name: kind === 'operations' ? 'Search pack operations' : 'Search pack data fields' });
+    const search = page.getByRole('searchbox', { name: kind === 'operations' ? 'Search the operations' : 'Search the data fields' });
     await search.fill('no-match-xyz');
     await page.getByRole('button', { name: kind === 'operations' ? 'Add operation' : 'Add field', exact: true }).click();
     await expect(search).toHaveValue('');

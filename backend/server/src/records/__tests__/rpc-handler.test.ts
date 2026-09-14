@@ -8,6 +8,7 @@ import type {
 import { makeRecordsRpcHandlers } from '../../records-rpc-handler.js';
 import type { WsClient } from '../../ws-server.js';
 import { createRecordsStore } from '../store.js';
+import { createSavedDataViewStore } from '../../saved-data-view-store.js';
 
 const owner: RecordsPackRef = { publisher: 'publisher.example', pack_slug: 'board' };
 const schema: RecordsSchemaSnapshot = {
@@ -62,6 +63,51 @@ describe('D-221 Records owner rpc', () => {
   const dbs: Database.Database[] = [];
   afterEach(() => {
     for (const db of dbs.splice(0)) db.close();
+  });
+
+  it('reopens saved filters against current data and binds both page directions to their query', async () => {
+    const db = new Database(':memory:'); dbs.push(db);
+    const store = createRecordsStore(db);
+    store.installNamespace({ owner, version: 1, storage_schema_hash: 'a'.repeat(64),
+      declaration_hash: 'b'.repeat(64), artifact_digest: 'artifact-1',
+      schema: { ...schema, entities: { job: { ...schema.entities.job!, fields: [
+        ...schema.entities.job!.fields,
+        { key: 'amount', slot: 'dec1', kind: 'decimal', required: true },
+        { key: 'paid', slot: 'b1', kind: 'boolean', required: true },
+      ] } } }, bindings: { create: binding('create'), search: binding('search') } });
+    const create = (id: number) => store.execute({ binding: binding('create'), principal: 'user_self',
+      args: { id: `job-${id}`, values: { title: `Job ${id}`, status: id % 2 === 0 ? 'open' : 'closed', amount: `${id}.0000`, paid: false } } });
+    for (let i = 0; i < 8; i++) create(i);
+    const views = createSavedDataViewStore(db);
+    const saved = views.create({ name: 'Open jobs', definition: { tab: 'records', owner, entity: 'job',
+      filters: { amount: { op: 'gte', value: '2.0000' }, paid: { op: 'eq', value: false }, status: { op: 'eq', value: 'open' } }, sort: '-amount' } });
+    const query = () => {
+      const definition = views.get(saved.id)!.definition;
+      if (definition.tab !== 'records' || !definition.owner || !definition.entity) throw new Error('Expected Records view');
+      return { ...definition, owner: definition.owner, entity: definition.entity, limit: 2 };
+    };
+    const handlers = makeRecordsRpcHandlers({ store })!.handlers;
+    // A saved null comparison must not silently become IS NOT NULL and turn an
+    // empty SQL result into every populated row.
+    expect((await handlers['records.search']({ ...query(), filters: { amount: { op: 'ne', value: null } } }, paired)).records).toEqual([]);
+    expect(() => views.create({ name: 'Null comparison',
+      // @ts-expect-error Runtime input can contain a null comparison.
+      definition: { tab: 'records', owner, entity: 'job', filters: { amount: { op: 'ne', value: null } } },
+    })).toThrow(/Invalid saved view settings/);
+    const first = await handlers['records.search'](query(), paired);
+    expect(first.records.map(row => row.id)).toEqual(['job-6', 'job-4']);
+    expect(first.next_cursor).toBeTruthy();
+    const second = await handlers['records.search']({ ...query(), cursor: first.next_cursor }, paired);
+    expect(second.records.map(row => row.id)).toEqual(['job-2']);
+    expect(second.prev_cursor).toBeTruthy();
+    const back = await handlers['records.search']({ ...query(), cursor: second.prev_cursor }, paired);
+    expect(back.records.map(row => row.id)).toEqual(['job-6', 'job-4']);
+    await expect(handlers['records.search']({ ...query(), sort: 'amount', cursor: first.next_cursor }, paired))
+      .rejects.toMatchObject({ code: 'records_cursor_invalid' });
+    create(8);
+    expect((await handlers['records.search'](query(), paired)).records.map(row => row.id)).toEqual(['job-8', 'job-6']);
+    expect(views.get(saved.id)).toEqual(saved);
+    expect(saved.definition).not.toHaveProperty('cursor');
   });
 
   it('is registered-pair only and lists full-ref namespaces without a data.* resolver', async () => {

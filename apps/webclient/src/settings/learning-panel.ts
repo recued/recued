@@ -187,12 +187,12 @@ export interface LearningPanelMount {
 
 const OFFER_PREF = 'chat.execution_case_offer' as const;
 
-const OFFER_LABEL = 'Ask how a multi-step turn turned out';
+const OFFER_LABEL = 'Ask how it went when Recued did several things';
 const DRAFT_HANDOFF_ERROR =
-  'Your AI finished the recipe, but this browser could not hand it to the '
-  + 'Kitchen (storage is unavailable or full). The finished draft is still '
-  + 'in this page. Free up space, then choose Open finished draft. That '
-  + 'retries only the hand-off — it does not ask your AI or spend model quota '
+  'Your AI finished the Recipe, but this browser could not pass it to the '
+  + 'Kitchen, because there is no room to save it. The finished draft is still '
+  + 'on this page. Make some room, then choose Open finished draft. That '
+  + 'only passes it over again. It does not ask your AI, and it does not cost you anything '
   + 'again.';
 /** ⛔ "the only thing it learns from" WAS NOT TRUE, and this is owner-facing
  *  PRIVACY copy, which is the worst place to overclaim. A Codex audit on
@@ -205,10 +205,10 @@ const DRAFT_HANDOFF_ERROR =
  *  how a turn went. Say that, and name the other source instead of implying
  *  there is none. */
 const OFFER_DETAIL =
-  'After Recued works through several steps to answer you, it asks whether '
-  + 'the result was right. It never counts its own account of a turn — only '
-  + 'your answer, or a check that can be verified independently. Applies to '
-  + 'every device: the question is asked once per turn, not once per screen.';
+  'When Recued takes several steps to answer you, it asks whether '
+  + 'it got it right. It never takes its own word for it. It only counts '
+  + 'what you say, or something it can check for itself. This is the same on '
+  + 'every device. You are asked once, not once per screen.';
 
 export const mountLearningPanel = (
   opts: MountLearningPanelOptions,
@@ -486,11 +486,11 @@ export const mountLearningPanel = (
             // 2026-07-29 when a second press produced "Your AI's draft was not
             // a valid recipe: A draft for this turn is already being written."
             message: result.reason === 'already_running'
-              ? result.issues[0] ?? 'A draft for this turn is already being '
+              ? result.issues[0] ?? 'A draft for this is already being '
                 + 'written. Wait for it to finish.'
               : result.issues.length > 0
-                ? `Your AI's draft was not a valid recipe: ${result.issues[0]}`
-                : 'Your AI did not return a recipe. Try again, or say more '
+                ? `What your AI wrote was not a working Recipe: ${result.issues[0]}`
+                : 'Your AI did not give back a Recipe. Try again, or say more '
                   + 'about what you want it to do.',
           },
         });
@@ -576,7 +576,7 @@ export const mountLearningPanel = (
     if (state.phase === 'loading') {
       const loading = doc.createElement('div');
       loading.className = 'learning-muted';
-      loading.textContent = 'Loading learning settings...';
+      loading.textContent = 'Loading…';
       opts.host.appendChild(loading);
       return;
     }
@@ -584,7 +584,7 @@ export const mountLearningPanel = (
       const error = doc.createElement('div');
       error.setAttribute(LEARNING_PANEL_ERROR_ATTR, '');
       error.textContent =
-        `Could not load learning settings: ${state.error ?? 'unknown error'}`;
+        `Recued could not load these settings: ${state.error ?? 'unknown error'}`;
       opts.host.appendChild(error);
       return;
     }
@@ -636,16 +636,16 @@ export const mountLearningPanel = (
       // because verification is strong evidence that does not run through the
       // ask. Past answers being kept is the reassuring half.
       hint.textContent =
-        'Recued will not ask, so it will not learn these turns from you. '
-        + 'An outcome it can verify independently may still count. '
-        + 'Answers you have already given are kept.';
+        'Recued will not ask, so it will not learn from these. '
+        + 'Anything it can check for itself may still count. '
+        + 'What you have already told it is kept.';
       opts.host.appendChild(hint);
     }
 
     if (state.error !== null) {
       const error = doc.createElement('div');
       error.setAttribute(LEARNING_PANEL_ERROR_ATTR, '');
-      error.textContent = `Could not save: ${state.error}`;
+      error.textContent = `Recued could not save it: ${state.error}`;
       opts.host.appendChild(error);
     }
 
@@ -683,7 +683,7 @@ export const mountLearningPanel = (
       error.setAttribute(LEARNING_PANEL_CASES_ERROR_ATTR, '');
       error.setAttribute('tabindex', '-1');
       error.textContent =
-        `Could not load what Recued has learned: ${state.casesError}`;
+        `Recued could not load what it has learned: ${state.casesError}`;
       block.appendChild(error);
       opts.host.appendChild(block);
       return;
@@ -704,8 +704,8 @@ export const mountLearningPanel = (
       // Names the ONE way anything gets here, so an empty list reads as a
       // stage rather than as a failure.
       empty.textContent =
-        'Nothing yet. Recued learns only from turns you answer, so this fills '
-        + 'in as you tell it how a multi-step result turned out.';
+        'Nothing yet. Recued only learns from the ones you answer, so this fills '
+        + 'up as you tell it how things went.';
       block.appendChild(empty);
       opts.host.appendChild(block);
       return;
@@ -720,10 +720,10 @@ export const mountLearningPanel = (
   const caseRequestLabel = (entry: ExecutionCaseLearnedEntry): string =>
     entry.request.length > 0
       ? entry.request.join(' · ')
-      : 'A request Recued could not summarise';
+      : 'Something Recued could not sum up';
 
   const caseAccessibleLabel = (entry: ExecutionCaseLearnedEntry): string =>
-    `learned case: ${caseRequestLabel(entry)} (${entry.case_id})`;
+    `what it learned: ${caseRequestLabel(entry)} (${entry.case_id})`;
 
   const renderCase = (entry: ExecutionCaseLearnedEntry): HTMLElement => {
     const item = doc.createElement('div');
@@ -773,7 +773,7 @@ export const mountLearningPanel = (
       inert.setAttribute(LEARNING_PANEL_CASE_INERT_ATTR, '');
       inert.className = 'learning-muted';
       inert.textContent =
-        'Stored, but not currently used — it refers to steps that are no '
+        'Kept, but not used, because it points at steps that are no '
         + 'longer available.';
       item.appendChild(inert);
     }
@@ -820,7 +820,7 @@ export const mountLearningPanel = (
         const error = doc.createElement('div');
         error.setAttribute(LEARNING_PANEL_FORGET_ERROR_ATTR, entry.case_id);
         error.setAttribute('role', 'alert');
-        error.textContent = `Could not forget: ${state.forgetError.message}`;
+        error.textContent = `Recued could not forget it: ${state.forgetError.message}`;
         item.appendChild(error);
       }
     }
@@ -854,7 +854,7 @@ export const mountLearningPanel = (
 
       const prompt = doc.createElement('textarea');
       prompt.setAttribute(LEARNING_PANEL_DRAFT_PROMPT_ATTR, entry.case_id);
-      prompt.setAttribute('aria-label', `Recipe instructions for ${caseLabel}`);
+      prompt.setAttribute('aria-label', `What the Recipe should do, for ${caseLabel}`);
       prompt.setAttribute(
         'placeholder',
         // ⚠ Invites BOTH readings on purpose. This asked only "what should this
@@ -865,8 +865,8 @@ export const mountLearningPanel = (
         // the verdict: the polarity is only available as rendered prose, and
         // matching on prose to pick a placeholder would break the moment the
         // wording changed.
-        'Optional: what should this recipe do, or what should be different '
-        + 'from last time? (e.g. run it every Monday)',
+        'You can say what this Recipe should do, or what should be different '
+        + 'from last time. For example: run it every Monday.',
       );
       (prompt as HTMLTextAreaElement).value = promptFor(entry.case_id);
       prompt.addEventListener('input', () => {
@@ -884,19 +884,19 @@ export const mountLearningPanel = (
     button.textContent = retained
       ? 'Open finished draft'
       : busy
-        ? 'Asking your AI...'
+        ? 'Asking your AI…'
         : armed
           ? 'Yes, write the draft'
-          : 'Make a recipe...';
+          : 'Make a Recipe…';
     button.setAttribute(
       'aria-label',
       retained
         ? `Open finished draft from ${caseLabel}`
         : busy
-          ? `Asking your AI to draft a recipe from ${caseLabel}`
+          ? `Asking your AI to write a Recipe from ${caseLabel}`
           : armed
-            ? `Confirm recipe draft from ${caseLabel}`
-            : `Make a recipe from ${caseLabel}`,
+            ? `Say yes to the Recipe from ${caseLabel}`
+            : `Make a Recipe from ${caseLabel}`,
     );
     if (actionsLocked) {
       button.setAttribute('aria-disabled', 'true');

@@ -249,7 +249,7 @@ describe('D-151 P2 — mountTemplatesBrowser: intent-first', () => {
       onClose: vi.fn(),
     });
     expect(getHtml()).toContain('data-recued-intent-input');
-    expect(getHtml()).toContain('Draft it with AI');
+    expect(getHtml()).toContain('Let AI write it');
     mount.dispose();
   });
 
@@ -276,7 +276,7 @@ describe('D-151 P2 — mountTemplatesBrowser: intent-first', () => {
     expect(onUseProposed).toHaveBeenCalledTimes(1);
     expect(onUseProposed).toHaveBeenCalledWith('intake_form', config);
     expect(onClose).toHaveBeenCalledTimes(1);
-    expect(status.textContent).toContain('AI suggested a intake_form');
+    expect(status.textContent).toContain('AI thinks you want a intake_form');
     expect(status.textContent).toContain('detected a form');
     mount.dispose();
   });
@@ -320,7 +320,7 @@ describe('D-151 P2 — mountTemplatesBrowser: intent-first', () => {
     });
     click({ action: 'reception-template-propose' });
     expect(onProposeIntent).not.toHaveBeenCalled();
-    expect(status.textContent).toContain('Describe what you need first');
+    expect(status.textContent).toContain('Say what you need first');
     mount.dispose();
   });
 });

@@ -370,12 +370,12 @@ describe('durable tool calls in the live bubble', () => {
     reconnect();
     await h.mount.whenLoaded();
     const row = collectByAttr(h.host, LIVE_CONTROL_BUBBLE_TOOL_ROW_ATTR)[0]!;
-    expect(row.children.some(child => child.textContent.includes('Interrupted — outcome unconfirmed'))).toBe(true);
+    expect(row.children.some(child => child.textContent.includes('Stopped part-way. Recued does not know what happened'))).toBe(true);
     expect(collectByAttr(h.host, LIVE_CONTROL_BUBBLE_RUN_CONTROL_ATTR)).toHaveLength(0);
     const controls = row.children.find(child => child.className === 'lc-row-controls')!;
     expect(controls.children.find(child => child.textContent === 'Open chat')?.getAttribute('href'))
       .toBe('#chat/session/chat-one');
-    expect(controls.children.find(child => child.textContent === 'Mark reviewed')).toBeDefined();
+    expect(controls.children.find(child => child.textContent === 'Mark as looked at')).toBeDefined();
     h.mount.dispose();
     expect(unsubscribe).toHaveBeenCalledOnce();
   });

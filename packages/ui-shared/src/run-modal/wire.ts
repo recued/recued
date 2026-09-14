@@ -12,8 +12,11 @@
 import {
   buildTargetRequiredMessage,
   CRON_PRESETS,
+  DEFAULT_MISSED_SCHEDULE_POLICY,
+  isMissedSchedulePolicy,
   parsePreparePreapproval,
   PREAPPROVAL_LIMITS,
+  type MissedSchedulePolicy,
   type PreparePreapproval,
 } from '@recued/contracts';
 
@@ -34,6 +37,7 @@ import {
   type RefPickerHandle,
 } from '../ref-picker/index.js';
 import { wireRecordRefVariables } from '../record-ref-variable.js';
+import { stampZone } from '../two-clock.js';
 import {
   wireConfigEditorOverlay,
   type ConfigEditorOverlayHandle,
@@ -52,6 +56,8 @@ import {
   RUN_MODAL_CONFIG_ATTR,
   RUN_MODAL_PATTERN_ATTR,
   RUN_MODAL_PRESET_ATTR,
+  RUN_MODAL_MISSED_POLICY_ATTR,
+  RUN_MODAL_NEW_MISSED_POLICY_ATTR,
   RUN_MODAL_REPEAT_ATTR,
   RUN_MODAL_RUN_AT_ATTR,
   RUN_MODAL_RULE_ID_ATTR,
@@ -125,6 +131,12 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
     opts.initialTab ?? 'run',
     firstPreset,
   );
+  // D-269 — resolved once at open. The server's zone does not change mid-dialog,
+  // and re-reading per keystroke would be a thunk call inside a render loop.
+  {
+    const zone = opts.serverTimeZone?.();
+    if (zone !== undefined && zone.length > 0) state = { ...state, server_time_zone: zone };
+  }
   let destroyed = false;
   // Assigned after the first paint (the panel must exist to focus into); the
   // trap traps Tab within the overlay + restores focus to the opener on detach.
@@ -286,7 +298,7 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
         warning.textContent =
           buildTargetRequiredMessage(opts.recipe.recipe_id, gate.assessment.missing)
           + (pageMissing
-            ? ' You can also run it from chat — the AI resolves the record for you.'
+            ? ' You can also run it from Chat, and the AI will find the right one for you.'
             : '');
       }
     }
@@ -473,6 +485,13 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
           // caller never supplies one for a one-shot.
           : { mode: 'one_shot' as const, run_at: runAt! }),
         ...(Object.keys(overlay).length > 0 ? { config_overlay: overlay } : {}),
+        // D-266 — omitted at the default, not sent as 'auto': the contract
+        // reads absent as 'auto', so every pre-D-266 host and payload stays
+        // byte-identical (same discipline as `mode` above). One-shots have no
+        // missed CYCLE, so the field is scoped to the recurring arm.
+        ...(state.repeat && state.missed_policy !== DEFAULT_MISSED_SCHEDULE_POLICY
+          ? { missed_policy: state.missed_policy }
+          : {}),
       }),
     );
   };
@@ -484,14 +503,17 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
     if (destroyed || state.mutating || !opts.preapprovalPrepare) return;
     const focus = captureFocusIdentity();
     try {
-      if (state.repeat) throw new Error('Choose Run once to review this new scheduled execution.');
+      if (state.repeat) throw new Error('Choose Run once to look at this before it is scheduled.');
       const runAt = parseLocalDateTime(state.run_at_local);
       if (runAt === null || runAt <= Date.now()) throw new Error('Pick a future date and time to run once.');
       const config = parseRunConfig(state.config_text);
       const subject = { kind: 'recipe', recipe_id: opts.recipe.recipe_id,
         publisher_id: opts.publisherId ?? opts.recipe.publisher_id, config };
       const activation = { kind: 'one_shot', run_at: runAt,
-        time_zone: Intl.DateTimeFormat().resolvedOptions().timeZone };
+        // D-269 — the SERVER's zone: this activation is evaluated server-side.
+        // Was the composing browser's, re-stamped on EVERY schedule, so
+        // scheduling from a laptop abroad wrote the travel zone into the row.
+        time_zone: stampZone(opts.serverTimeZone) };
       const material = JSON.stringify({ subject, activation });
       if (pendingPreparation?.material !== material) {
         pendingPreparation = { material, request: parsePreparePreapproval({
@@ -512,10 +534,33 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
     }
   };
 
+  /** D-266 — the policy the next Add arms the schedule with. Local
+   *  state only; it reaches the server as part of `schedules.create`. */
+  const setNewMissedPolicy = (policy: MissedSchedulePolicy): void => {
+    state = { ...state, missed_policy: policy, schedule_error: null };
+    paint(captureFocusIdentity());
+  };
+
   const toggleSchedule = (ruleId: string, to: boolean): Promise<void> => {
     const update = opts.schedulesUpdate;
     if (update === undefined) return scheduleNotWired();
     return runScheduleMutation(() => update({ schedule_id: ruleId, enabled: to }));
+  };
+
+  /** D-266 — persist the owner's missed-run policy for one schedule.
+   *  Same mutation path as pause/resume: the change lands on the
+   *  server row, and the repaint comes from the reloaded list rather
+   *  than from local state, so a rejected change never leaves the
+   *  select showing a value the server does not hold. */
+  const setMissedPolicy = (
+    ruleId: string,
+    policy: MissedSchedulePolicy,
+  ): Promise<void> => {
+    const update = opts.schedulesUpdate;
+    if (update === undefined) return scheduleNotWired();
+    return runScheduleMutation(
+      () => update({ schedule_id: ruleId, missed_policy: policy }),
+    );
   };
 
   const removeSchedule = (ruleId: string): Promise<void> => {
@@ -584,7 +629,7 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
     const unavailableFocus = captureFocusIdentity();
     state = {
       ...state,
-      trigger_error: 'Event triggers are not available on this server yet.',
+      trigger_error: 'This server cannot set things off from events yet.',
     };
     paint(unavailableFocus);
     return Promise.resolve();
@@ -788,6 +833,22 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
     if (target === null || typeof target.hasAttribute !== 'function') return;
     // Schedule preset — captured in state (not read at Add-click time) so a
     // re-paint mid-choice can't reset it. Selects emit input + change.
+    // D-266 — the per-schedule missed-run policy. Selects emit input +
+    // change; the mutation is idempotent so the double event is safe.
+    // D-266 — the Add-schedule form's policy (no schedule id yet).
+    if (target.hasAttribute(RUN_MODAL_NEW_MISSED_POLICY_ATTR)) {
+      const value = target.value ?? '';
+      if (isMissedSchedulePolicy(value)) setNewMissedPolicy(value);
+      return;
+    }
+    if (target.hasAttribute(RUN_MODAL_MISSED_POLICY_ATTR)) {
+      const ruleId = target.getAttribute?.(RUN_MODAL_RULE_ID_ATTR) ?? '';
+      const value = target.value ?? '';
+      if (ruleId !== '' && isMissedSchedulePolicy(value)) {
+        void setMissedPolicy(ruleId, value);
+      }
+      return;
+    }
     if (target.hasAttribute(RUN_MODAL_PRESET_ATTR)) {
       state = {
         ...state,
@@ -1084,6 +1145,8 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
     addSchedule,
     reviewSchedule,
     toggleSchedule,
+    setMissedPolicy,
+    setNewMissedPolicy,
     removeSchedule,
     setPatternText,
     addTrigger,

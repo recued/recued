@@ -152,7 +152,7 @@ export const recipeBadges = (r: CatalogRecipeRow): DiscoverBadge[] => {
   // the column was dropped in migration 002, so `r.type` is always `''` — the
   // badge could never render (removed with the dead facet).
   if (r.publisher_certified === true) {
-    out.push({ label: '✓ Certified', tone: 'accent', title: 'Published by a certified publisher' });
+    out.push({ label: '✓ Certified', tone: 'accent', title: 'From a checked publisher' });
   }
   for (const p of r.platforms.slice(0, 3)) out.push({ label: p, tone: 'muted' });
   return out;
@@ -336,7 +336,7 @@ export const mountRecipeDiscovery = (
       }
       return {
         ok: false,
-        message: 'This recipe must be installed through its bundled pack, but that pack is unavailable or out of date.',
+        message: 'This Recipe comes as part of a Pack, and that Pack is missing or out of date.',
       };
     }
     // Deps box: when wired, resolve the recipe's `depends_on` and — if any pack
@@ -412,7 +412,7 @@ export const mountRecipeDiscovery = (
       run: runRecipeInstall,
     },
     // Standalone upgrade re-installs by slug; bundled update reopens its pack.
-    copy: { searchPlaceholder: 'Search recipes…', kindPlural: 'recipes' },
+    copy: { searchPlaceholder: 'Search Recipes…', kindPlural: 'recipes' },
   });
   panelRef = panel;
 

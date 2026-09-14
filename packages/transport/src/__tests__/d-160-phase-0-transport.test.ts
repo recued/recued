@@ -519,7 +519,7 @@ describe('D-172 P4.1 transport fetchMedia', () => {
         'xoxb-test-token',
       );
 
-      expect(media.filename).toBe('voice_note.ogg');
+      expect(media.filename).toBe('voice note.ogg');
       expect(media.mime_type).toBe('audio/ogg');
       // D-172 streaming: the body lands in a temp file, never an in-memory Buffer.
       expect(media.temp_path.startsWith(downloadDir)).toBe(true);

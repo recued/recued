@@ -141,8 +141,8 @@ const readErrorMessage = (
     return message;
   }
   return source === 'recued.com'
-    ? 'Couldn’t reach recued.com. Your local Recued server is still connected.'
-    : 'Couldn’t load account status from your Recued server. Try again.';
+    ? 'Recued could not reach recued.com. Your own server is still connected.'
+    : 'Recued could not read your account from your server. Try again.';
 };
 
 const clearChildren = (el: HTMLElement): void => {
@@ -191,7 +191,7 @@ const entitlementLabel = (value: ProConvenienceStatusResponse['entitlement']): s
     case 'not_entitled':
       return 'Free';
     case 'unbound':
-      return 'Awaiting server';
+      return 'Waiting for your server';
     case 'pending':
       return 'Pending';
     case 'unavailable':
@@ -212,9 +212,9 @@ const lifecycleLabel = (value: ProConvenienceStatusResponse['entitlement']): str
     case 'unbound':
       return 'No account connected';
     case 'pending':
-      return 'Checking subscription…';
+      return 'Checking what you pay for…';
     case 'unavailable':
-      return 'Status unavailable';
+      return 'Recued cannot tell';
   }
 };
 
@@ -225,9 +225,9 @@ const itemStateLabel = (state: ProConvenienceItem['state']): string => {
     case 'error':
       return 'Error';
     case 'awaiting-server':
-      return 'Awaiting server';
+      return 'Waiting for your server';
     case 'awaiting-reachability':
-      return 'Awaiting reachability';
+      return 'Waiting until your server can be reached';
     case 'inactive-free':
       return 'Free account';
     case 'pending':
@@ -241,13 +241,13 @@ const itemStateLabel = (state: ProConvenienceItem['state']): string => {
 const proDetailCopy = (detail: NonNullable<ProConvenienceItem['detail']>): string => {
   switch (detail) {
     case 'entitlement_endpoint_pending':
-      return 'Subscription check coming soon';
+      return 'Recued cannot check this yet';
     case 'entitlement_unavailable':
-      return "Couldn't verify subscription";
+      return "Recued could not check what you pay for";
     case 'no_binding':
       return 'Connect your account first';
     case 'not_reachable':
-      return 'Waiting for your server to be reachable';
+      return 'Waiting until your server can be reached';
     case 'free_account':
       return 'Included with Pro';
     case 'cert_expired':
@@ -380,12 +380,12 @@ export const mountAccountBindingPanel = (
     const summary = append(doc, parent, 'div', 'account-bind-summary');
     summary.setAttribute(ACCOUNT_BINDING_SUMMARY_ATTR, '');
     renderLabelValue(doc, summary, 'Account', accountLabel(binding));
-    renderLabelValue(doc, summary, 'Bound at', formatTimestamp(binding.bound_at));
+    renderLabelValue(doc, summary, 'Connected on', formatTimestamp(binding.bound_at));
     if (binding.rebound_at !== undefined) {
-      renderLabelValue(doc, summary, 'Rebound at', formatTimestamp(binding.rebound_at));
+      renderLabelValue(doc, summary, 'Reconnected on', formatTimestamp(binding.rebound_at));
     }
     if (binding.credential_expires_at !== undefined) {
-      renderLabelValue(doc, summary, 'Credential expires', formatTimestamp(binding.credential_expires_at));
+      renderLabelValue(doc, summary, 'The key runs out', formatTimestamp(binding.credential_expires_at));
     }
   };
 
@@ -405,7 +405,7 @@ export const mountAccountBindingPanel = (
       connect.textContent = connecting
         ? 'Connecting…'
         : state.bindingStatus.status === 'bound'
-          ? 'Refresh binding'
+          ? 'Check the connection again'
           : 'Connect your recued.com account';
       if (isBusy()) connect.setAttribute('aria-disabled', 'true');
       if (connecting) connect.setAttribute('aria-busy', 'true');
@@ -461,8 +461,8 @@ export const mountAccountBindingPanel = (
     retry.setAttribute('type', 'button');
     retry.setAttribute(ACCOUNT_BINDING_RETRY_ATTR, '');
     retry.textContent = refreshing
-      ? 'Retrying account status…'
-      : 'Retry account status';
+      ? 'Checking your account again…'
+      : 'Check your account again';
     if (refreshing) {
       retry.setAttribute('aria-disabled', 'true');
       retry.setAttribute('aria-busy', 'true');
@@ -479,15 +479,15 @@ export const mountAccountBindingPanel = (
     box.setAttribute('aria-labelledby', 'account-binding-conflict-title');
     const title = append(doc, box, 'h4');
     title.setAttribute('id', 'account-binding-conflict-title');
-    title.textContent = 'Binding conflict';
+    title.textContent = 'Two accounts want this server';
     renderLabelValue(doc, box, 'Current owner', accountLabel(state.conflict.current_owner));
-    renderLabelValue(doc, box, 'Incoming account', accountLabel(state.conflict.incoming));
+    renderLabelValue(doc, box, 'The account asking', accountLabel(state.conflict.incoming));
     const actions = append(doc, box, 'div', 'account-bind-actions');
     const confirm = append(doc, actions, 'button', 'rx-btn rx-btn-primary');
     confirm.setAttribute('type', 'button');
     confirm.setAttribute(ACCOUNT_BINDING_CONFIRM_REBIND_ATTR, '');
     const confirming = state.action === 'confirming';
-    confirm.textContent = confirming ? 'Rebinding…' : 'Confirm rebind';
+    confirm.textContent = confirming ? 'Rebinding…' : 'Yes, move it';
     if (isBusy()) confirm.setAttribute('aria-disabled', 'true');
     if (confirming) confirm.setAttribute('aria-busy', 'true');
     confirm.addEventListener('click', () => {
@@ -514,7 +514,7 @@ export const mountAccountBindingPanel = (
     const description = append(doc, box, 'p', 'account-bind-message');
     description.setAttribute('id', 'account-binding-unbind-description');
     description.textContent =
-      'This removes the server’s recued.com binding. Your browser stays signed in, and you can reconnect the server later.';
+      'This unhooks your server from recued.com. This browser stays signed in, and you can hook the server back up later.';
     const actions = append(doc, box, 'div', 'account-bind-actions');
     const confirm = append(doc, actions, 'button', 'rx-btn rx-btn-danger');
     confirm.setAttribute('type', 'button');
@@ -547,14 +547,14 @@ export const mountAccountBindingPanel = (
         chip.textContent = 'Bound';
         break;
       case 'connected-no-server':
-        chip.textContent = 'Connected, server not bound';
+        chip.textContent = 'Signed in, but your server is not hooked up';
         break;
       case 'conflict':
         chip.textContent = 'Conflict';
         break;
       case 'not-connected':
         chip.textContent = state.errors.bindingStatus && state.bindingStatus === null
-          ? 'Status unavailable'
+          ? 'Recued cannot tell'
           : 'Not connected';
         break;
     }
@@ -627,7 +627,7 @@ export const mountAccountBindingPanel = (
 
     const blurb = append(doc, card, 'p', 'account-bind-message');
     blurb.textContent =
-      'Your recued.com account is free. It reserves a marketplace publisher handle so you can share recipes and packs.';
+      'Your recued.com account is free. It saves you a name in the Marketplace, so you can share Recipes and Packs.';
 
     if (state.errors.proStatus !== null) {
       renderError(doc, card, 'proStatus', state.errors.proStatus);
@@ -639,7 +639,7 @@ export const mountAccountBindingPanel = (
       const handleRow = append(doc, card, 'div', 'account-bind-kv');
       handleRow.setAttribute(ACCOUNT_BINDING_FREE_HANDLE_ATTR, '');
       const handleKey = append(doc, handleRow, 'span', 'account-bind-k');
-      handleKey.textContent = 'Marketplace handle';
+      handleKey.textContent = 'Your Marketplace name';
       const handleValue = append(doc, handleRow, 'span', 'account-bind-v');
       handleValue.textContent = '@' + handle;
 
@@ -662,7 +662,7 @@ export const mountAccountBindingPanel = (
     } else {
       const claim = append(doc, card, 'p', 'account-bind-message');
       claim.setAttribute(ACCOUNT_BINDING_FREE_CLAIM_ATTR, '');
-      claim.textContent = 'No marketplace handle reserved yet.';
+      claim.textContent = 'You have not picked a Marketplace name yet.';
       const link = append(
         doc,
         card,
@@ -673,7 +673,7 @@ export const mountAccountBindingPanel = (
       link.setAttribute('target', '_blank');
       link.setAttribute('rel', 'noopener noreferrer');
       link.setAttribute(ACCOUNT_BINDING_PUBLISHING_LINK_ATTR, '');
-      link.textContent = 'Claim your handle in the dashboard';
+      link.textContent = 'Pick your name in the dashboard';
     }
   };
 
@@ -681,7 +681,7 @@ export const mountAccountBindingPanel = (
     const card = append(doc, parent, 'section', 'account-bind-card');
     const header = append(doc, card, 'div', 'account-bind-card-head');
     const title = append(doc, header, 'h3');
-    title.textContent = 'Pro conveniences';
+    title.textContent = 'What Pro saves you';
     if (state.proStatus !== null) {
       const chip = append(doc, header, 'span', 'account-bind-chip');
       chip.textContent = entitlementLabel(state.proStatus.entitlement);
@@ -866,7 +866,7 @@ export const mountAccountBindingPanel = (
         setState({
           action: 'idle',
           conflict: result,
-          actionMessage: 'Confirm before this server is rebound.',
+          actionMessage: 'Say yes before this server moves.',
         });
         if (returnToConflict) {
           focusControl(confirm_rebind
@@ -881,8 +881,8 @@ export const mountAccountBindingPanel = (
         conflict: null,
         actionMessage:
           result.outcome === 'rebound'
-            ? 'Server rebound to this recued.com account.'
-            : 'Server bound to this recued.com account.',
+            ? 'Your server now belongs to this recued.com account.'
+            : 'Your server is hooked up to this recued.com account.',
       });
       const refreshPromise = refreshAndTrack();
       if (returnToConnect) focusControl(ACCOUNT_BINDING_CONNECT_ATTR);
@@ -905,7 +905,7 @@ export const mountAccountBindingPanel = (
       && controlHasFocus(ACCOUNT_BINDING_CANCEL_REBIND_ATTR);
     setState({
       conflict: null,
-      actionMessage: 'Rebind cancelled.',
+      actionMessage: 'Nothing was moved.',
       errors: { ...state.errors, action: null },
     });
     if (returnToConnect) focusControl(ACCOUNT_BINDING_CONNECT_ATTR);
@@ -947,8 +947,8 @@ export const mountAccountBindingPanel = (
         action: 'idle',
         conflict: null,
         actionMessage: result.outcome === 'not_bound'
-          ? 'No binding was stored on this server.'
-          : 'Server disconnected from recued.com.',
+          ? 'This server was not hooked up to anything.'
+          : 'Your server is no longer hooked up to recued.com.',
       });
       const refreshPromise = refreshAndTrack();
       if (advanceToConnect) focusControl(ACCOUNT_BINDING_CONNECT_ATTR);
@@ -998,7 +998,7 @@ export const mountAccountBindingPanel = (
         action: 'idle',
         session: null,
         actionMessage:
-          'Signed out of recued.com on this browser. Your server pairing is unchanged.',
+          'Signed out of recued.com in this browser. Your server is still paired.',
       });
       const refreshPromise = refreshAndTrack();
       if (advanceToConnect) focusControl(ACCOUNT_BINDING_CONNECT_ATTR);

@@ -25,7 +25,7 @@ const GOOGLE_FIELDS: readonly ConnectionField[] = [
     key: 'name',
     label: 'Name',
     type: 'identifier',
-    help: 'Lowercase identifier used in recipes (e.g. `google`, `gdrive`).',
+    help: 'A short lower-case name you use in Recipes, such as `google`, `gdrive`).',
     placeholder: 'google',
   },
   {
@@ -39,7 +39,7 @@ const GOOGLE_FIELDS: readonly ConnectionField[] = [
     key: 'config.vendor',
     label: 'Vendor',
     type: 'text',
-    help: 'Google vendor identifier — locked at enrollment.',
+    help: 'Google sets this when you connect. You cannot change it.',
     placeholder: 'google',
     hidden: true,
   },
@@ -57,7 +57,7 @@ const GOOGLE_FIELDS: readonly ConnectionField[] = [
     label: 'Auth Type',
     type: 'select',
     options: ['oauth2_refresh'],
-    help: 'Google Drive uses OAuth 2.0 with refresh tokens.',
+    help: 'Google Drive asks you to sign in, and Recued stays signed in for you.',
     hidden: true,
   },
   {
@@ -82,8 +82,8 @@ const GOOGLE_FIELDS: readonly ConnectionField[] = [
     type: 'text',
     optional: true,
     help:
-      'OAuth scopes requested at authorization. Pre-filled from Google\'s '
-      + 'defaults plus the scopes your installed packs need — edit to add or trim.',
+      'What Recued asks permission for. Filled in from Google\'s '
+      + 'own defaults, plus whatever your installed Packs need. You can add or remove.',
   },
   {
     key: 'auth.token_endpoint',

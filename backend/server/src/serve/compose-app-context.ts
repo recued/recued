@@ -187,6 +187,8 @@ import { createMailUnionTwinResolver } from '../collections/mail/mail-union-twin
 import type { ContactEngagementsResolveDeps } from '../contact-engagements-rpc-handler.js';
 import { createSharedStore, type SharedStore } from '../storage/shared-store.js';
 import type { WorkEntityStore } from '../storage/work-entity-store.js';
+import type { WorkEntityCrudRpcDeps } from '../work-entity-crud-handler.js';
+import type { CalendarWriteDeps } from '../chat-tool-handlers.js';
 import {
   createWorkEntitySourceMirrorStore,
   createWorkEntitySourceSyncStateStore,
@@ -412,6 +414,16 @@ export interface AppContext extends LlmSubstrate {
    *  without a work-entity store. */
   workEntitySourceMirrorRef: WorkEntitySourceMirrorStore | undefined;
   workEntitySourceSyncStateRef: WorkEntitySourceSyncStateStore | undefined;
+  /** Slice 1 (`work.create`) — the LOCAL work-entity write deps the chat tool
+   *  dispatches through. Assembled in `compose-listeners` (it owns the
+   *  bus-wired dispatchers) and set back onto this ref, so the chat handler
+   *  deps built HERE can reach it late. Null until that wiring runs; the tool
+   *  then reports `execution_error` rather than silently doing nothing. */
+  workEntityCrudDepsRef: { current: WorkEntityCrudRpcDeps | null };
+  /** Slice 2 — the calendar write dispatchers behind `calendar.create` /
+   *  `calendar.update`. Same late-bound shape and same reason: the stack is
+   *  composed after this context is built. */
+  calendarWriteDepsRef: { current: CalendarWriteDeps | null };
   /** D-192 P5 — the `work_entity_edge` store (work-graph relationship
    *  edges). Consumed by the post-listener sync wire (fold-time edge
    *  reconciliation) + the crud handler's `get` decoration. Undefined
@@ -622,6 +634,8 @@ export const composeAppContext = (
   // store below) + the targeted-read spine (populated alongside the
   // write executor once the gateway fetch deps exist).
   let workEntityChatResolverRef: WorkEntityResolver | undefined;
+  const workEntityCrudDepsRef: { current: WorkEntityCrudRpcDeps | null } = { current: null };
+  const calendarWriteDepsRef: { current: CalendarWriteDeps | null } = { current: null };
   const workEntityTargetedReadDepsRef: { current: WorkEntityTargetedReadDeps | null } =
     { current: null };
   let enrichmentCascadeRef: CascadeEngine | undefined;
@@ -918,6 +932,8 @@ export const composeAppContext = (
       // gateway fetch deps), hence late-bound.
       getWorkEntityResolver: () => workEntityChatResolverRef,
       getWorkEntityTargetedReadDeps: () => workEntityTargetedReadDepsRef.current ?? undefined,
+      getWorkEntityCrudDeps: () => workEntityCrudDepsRef.current ?? undefined,
+      getCalendarWriteDeps: () => calendarWriteDepsRef.current ?? undefined,
       // D-192 P5 edges — `work.read`'s `include_related`. Late-bound for the
       // same reason as the resolver: the store is constructed further down,
       // once `db` has the edge schema.
@@ -1665,6 +1681,8 @@ export const composeAppContext = (
     contactSourceSyncStateRef,
     workEntitySourceMirrorRef,
     workEntitySourceSyncStateRef,
+    workEntityCrudDepsRef,
+    calendarWriteDepsRef,
     workEntityEdgeStoreRef,
     workEntitySourceDependencyStoreRef,
     workEntityWriteExecutorRef,

@@ -188,22 +188,22 @@ export const pendingChatPlanResolutionCopy = (
     return {
       title: `Approved ${resolution.tool}`,
       detail:
-        'Approved once for these exact details. The action has not run. Continue in Chat when you are ready.',
-      linkLabel: 'Continue in Chat',
+        'You said yes to exactly these details. Nothing has run yet. Carry on in Chat when you are ready.',
+      linkLabel: 'Carry on in Chat',
     };
   }
   if (resolution.outcome === 'cancelled') {
     return {
       title: `Rejected ${resolution.tool}`,
       detail:
-        'The action will not run. Return to Chat if you want to adjust the request.',
+        'This will not run. Go back to Chat if you want to change it.',
       linkLabel: 'Return to Chat',
     };
   }
   return {
     title: `Approval updated: ${resolution.tool}`,
     detail:
-      'This action is no longer waiting for your decision. Open Chat to see its current state.',
+      'This is not waiting for you any more. Open Chat to see where it got to.',
     linkLabel: 'Open Chat',
   };
 };

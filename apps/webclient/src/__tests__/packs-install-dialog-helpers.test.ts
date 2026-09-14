@@ -15,31 +15,31 @@ import type { InstallGrantPickerModel } from '../settings/install-grant-picker.j
 describe('installFailureCopy', () => {
   it('maps every known engine failure code to its copy', () => {
     expect(installFailureCopy('permission_denied')).toBe(
-      'Install rejected: a required permission was not granted.',
+      'Recued did not install it: you did not allow something it needs.',
     );
     expect(installFailureCopy('version_mismatch')).toBe(
-      'Install rejected: the server runs a different pack manifest version.',
+      'Recued did not install it: your server expects a different version.',
     );
     expect(installFailureCopy('validator_rejected')).toBe(
-      'Install rejected: the manifest failed substrate validation.',
+      'Recued did not install it: the Pack did not pass its checks.',
     );
     expect(installFailureCopy('unresolved')).toBe(
-      'Install rejected: one or more recipes in the pack could not be resolved.',
+      'Recued did not install it: it could not find one or more of the Recipes.',
     );
     expect(installFailureCopy('unexpected')).toBe(
-      'Install rejected: an unexpected substrate error occurred.',
+      'Recued did not install it: something went wrong.',
     );
   });
 
   it('surfaces an unknown code raw (server/webclient version skew)', () => {
     expect(installFailureCopy('quota_exceeded')).toBe(
-      'Install rejected: quota_exceeded.',
+      'Recued did not install it: quota_exceeded.',
     );
   });
 
   it('falls back on a missing code', () => {
     expect(installFailureCopy(undefined)).toBe(
-      'Install rejected: unknown failure.',
+      'Recued did not install it, and does not know why.',
     );
   });
 });
@@ -74,7 +74,7 @@ describe('installFailureCopy — the engine reason survives', () => {
       + "'recued-core.billable-hours.entry.get' (step 'entry') names pack "
       + "'recued-core.billable-hours', which has no resolved catalog binding",
     );
-    expect(copy).toContain('failed substrate validation');
+    expect(copy).toContain('the Pack did not pass its checks');
     expect(copy).toContain("recipe 'delete-billable-item'");
     expect(copy).toContain('no resolved catalog binding');
     expect(copy).not.toContain('packs.install:');
@@ -83,9 +83,9 @@ describe('installFailureCopy — the engine reason survives', () => {
   it('is unchanged when the engine sends no message', () => {
     // Negative control — every existing caller and copy string must be intact.
     expect(installFailureCopy('validator_rejected'))
-      .toBe('Install rejected: the manifest failed substrate validation.');
+      .toBe('Recued did not install it: the Pack did not pass its checks.');
     expect(installFailureCopy('validator_rejected', '   '))
-      .toBe('Install rejected: the manifest failed substrate validation.');
-    expect(installFailureCopy(undefined)).toBe('Install rejected: unknown failure.');
+      .toBe('Recued did not install it: the Pack did not pass its checks.');
+    expect(installFailureCopy(undefined)).toBe('Recued did not install it, and does not know why.');
   });
 });

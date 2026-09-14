@@ -31,6 +31,8 @@
 
 import { randomUUID } from 'node:crypto';
 import { parseBrief } from './chat-rolling-brief.js';
+import { parseChatSearchCursor, searchChatHistory } from './chat-history-search.js';
+import { parseChatDeliveryListRequest } from './chat-delivery-read.js';
 import {
   CHAT_MODEL_ROUTING_LAYER_SET,
   CHAT_MODEL_SOURCE_ID_SET,
@@ -54,6 +56,8 @@ import {
   validateInboundTokenChatModeUpdate,
   validateMcpInboundTokenInput,
   type ChatEgressPacket,
+  type ChatTurnAcceptance,
+  type ChatMessengerReceiveState,
   type ChatDataDiagnosisContext,
   type ChatDataDiagnosisRequest,
   type ChatDataDiagnosisResolution,
@@ -67,7 +71,9 @@ import {
   type ChatSession,
   type ChatSessionChangedField,
   CHAT_HISTORY_WINDOW_MAX,
+  CHAT_HISTORY_WINDOW,
   type ChatHistoryCursor,
+  type ChatSessionGetRequest,
   type ChatSessionSummary,
   type ChatToolCatalogScopeState,
   type ConnectionMcpAnnotationState,
@@ -108,6 +114,8 @@ import type {
 
 export interface ChatRpcDeps {
   store: ChatStore;
+  /** Late-bound to the actual receive supervisor; never inferred from sends. */
+  messengerReceiveStatus?: (vendor: string) => ChatMessengerReceiveState;
   /** D-137 W2.2 § A.1.1 — Mary's per-kind catalog scope store. When
    *  absent (dbless test harness, store unavailable), the tool-catalog
    *  rpcs throw `not_configured` (501) so callers see a stable refusal
@@ -272,12 +280,21 @@ export interface ChatRpcDeps {
 
 type ChatMethods =
   | 'chat.sessions.list'
+  | 'chat.messages.search'
   | 'chat.session.get'
   | 'chat.session.create'
   | 'chat.session.delete'
   | 'chat.session.mark_seen'
   | 'chat.session.export'
   | 'chat.egress.get'
+  | 'chat.deliveries.list'
+  | 'chat.delivery.retry'
+  | 'chat.delivery.skip'
+  | 'chat.messenger.connect'
+  | 'chat.turns.list'
+  | 'chat.turn.withdraw'
+  | 'chat.turn.cancel'
+  | 'chat.turn.retry'
   | 'chat.send'
   | 'chat.data_diagnosis.resolve'
   | 'chat.plans.pending.list'
@@ -483,21 +500,36 @@ const ensurePeerPickerTargetIsLive = (
 
 export const handleSessionsList = (
   deps: ChatRpcDeps,
-): { sessions: ChatSessionSummary[]; busy_session_ids?: string[] } => {
-  const sessions = deps.store.listSessions();
+): { sessions: ChatSessionSummary[]; busy_session_ids?: string[]; messenger_status_available?: boolean; history_filters_available: true } => {
+  let sessions = deps.store.listSessions();
+  const bridge = deps.orchestrator.messengerBridge;
+  let messengerStatus: { messenger_status_available?: boolean } = {};
+  if (bridge) {
+    try {
+      const statuses = bridge.sessionStatuses(sessions.map(session => session.id), deps.messengerReceiveStatus);
+      sessions = sessions.map(session => {
+        const messenger = statuses.get(session.id);
+        return messenger ? { ...session, messenger } : session;
+      });
+      messengerStatus = { messenger_status_available: true };
+    } catch { messengerStatus = { messenger_status_available: false }; }
+  }
   // ⛔ PRESENT-BUT-EMPTY AND ABSENT MEAN DIFFERENT THINGS, and the client
   // depends on the difference. `[]` is the complete answer "nothing is running
   // a turn"; the field missing entirely is "this server cannot tell you",
   // which is what an older one says by saying nothing. Collapsing them would
   // put the client back to inferring, which is the whole reason this exists.
   return deps.sessionBusy === undefined
-    ? { sessions }
-    : { sessions, busy_session_ids: deps.sessionBusy.busySessionIds() };
+    ? { sessions, ...messengerStatus, history_filters_available: true }
+    : { sessions, busy_session_ids: deps.sessionBusy.busySessionIds(), ...messengerStatus, history_filters_available: true };
 };
+
+export const handleMessagesSearch = (deps: ChatRpcDeps, args: unknown) =>
+  searchChatHistory(deps.store, args, undefined, () => handleSessionsList(deps));
 
 export const handleSessionGet = async (
   deps: ChatRpcDeps,
-  args: { session_id: string },
+  args: ChatSessionGetRequest,
 ): Promise<
   ChatSession & {
     messages: ChatMessage[];
@@ -507,6 +539,9 @@ export const handleSessionGet = async (
     has_more?: boolean;
     /** Where an older page resumes. Present only alongside `has_more`. */
     oldest_cursor?: ChatHistoryCursor;
+    has_more_after?: boolean;
+    newest_cursor?: ChatHistoryCursor;
+    quoted_replies_available?: boolean;
   }
 > => {
   const safe = ensureRecordArgs('chat.session.get', args);
@@ -522,7 +557,16 @@ export const handleSessionGet = async (
   // windowed by default, that client would show a silently truncated history
   // with no way to reach the rest and nothing on screen admitting it. The
   // caller opts IN to a window, and only a caller that can page should.
-  const requestedLimit = safe.limit;
+  const around = safe.around_message_id === undefined ? undefined
+    : ensureNonEmptyString('chat.session.get', 'around_message_id', safe.around_message_id);
+  if ((around?.length ?? 0) > 512
+    || [safe.before, safe.after, around].filter((value) => value !== undefined).length > 1) {
+    throw new RpcError('bad_request', 'chat.session.get: invalid window position', 400);
+  }
+  const after = safe.after === undefined ? undefined : parseChatSearchCursor(safe.after);
+  const requestedLimit = safe.limit === undefined
+    ? around !== undefined || after !== undefined ? CHAT_HISTORY_WINDOW : undefined
+    : safe.limit;
   const limit = requestedLimit === undefined
     ? null
     : Math.max(
@@ -535,7 +579,10 @@ export const handleSessionGet = async (
   const before = parseHistoryCursor(safe.before);
   const page = limit === null
     ? null
-    : await deps.store.listMessagePage(session_id, limit, before ?? undefined);
+    : await deps.store.listMessagePage(session_id, limit, before ?? undefined, {
+        ...(after ? { after } : {}),
+        ...(around !== undefined ? { around_message_id: around } : {}),
+      });
   const messages = page === null
     ? await deps.store.listMessages(session_id)
     : page.messages;
@@ -556,13 +603,16 @@ export const handleSessionGet = async (
   // absence means the server cannot answer, and the difference is worth
   // stating: here the un-windowed read IS the complete answer.
   return page === null
-    ? { ...session, messages, plans }
+    ? { ...session, messages, plans, quoted_replies_available: true }
     : {
         ...session,
         messages,
         plans,
+        quoted_replies_available: true,
         has_more: page.has_more,
         ...(page.oldest ? { oldest_cursor: page.oldest } : {}),
+        ...(page.has_more_after !== undefined ? { has_more_after: page.has_more_after } : {}),
+        ...(page.newest ? { newest_cursor: page.newest } : {}),
       };
 };
 
@@ -660,14 +710,20 @@ export const handleEgressGet = async (
 
 export const handleSessionCreate = async (
   deps: ChatRpcDeps,
-  args: { title?: string } | void,
+  args: { title?: string; creation_id?: string } | void,
 ): Promise<{ session_id: string }> => {
   const now = deps.now ?? Date.now;
   const mintId = deps.mintId ?? randomUUID;
-  const session_id = mintId();
   // void args is the sidebar-create-no-title path; otherwise validate
   // shape per the Codex P2 fold + extract title.
   const safe = args === undefined ? {} : ensureRecordArgs('chat.session.create', args);
+  const creation = safe.creation_id;
+  if (creation !== undefined && (typeof creation !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(creation))) {
+    throw new RpcError('bad_request', 'Invalid conversation creation ID.', 400);
+  }
+  const session_id = typeof creation === 'string' ? creation : mintId();
+  if (typeof creation === 'string' && deps.store.getSession(session_id)) return { session_id };
+
   const title =
     typeof safe.title === 'string' && safe.title.trim().length > 0
       ? safe.title
@@ -769,6 +825,12 @@ export const handleSend = async (
   args: {
     session_id: string;
     message: string;
+    /** Finalized file references, matching the existing chat.send RPC shape. */
+    attachments?: Array<{ file_id: string; media_class: string; selection_revision?: string }>;
+    submission_id?: string;
+    queue_generation?: string;
+    repeat?: boolean;
+    reply_to_message_id?: string;
     picker_state: { current: string };
     model_pref?: { current: string; model_hint?: string; source_id?: string };
     /** D-193 — requesting user's IANA timezone (webclient-supplied). */
@@ -782,7 +844,7 @@ export const handleSend = async (
     /** Evidence-only grounding for a guided Data explanation or safe check. */
     data_diagnosis?: ChatDataDiagnosisRequest;
   },
-): Promise<{
+): Promise<ChatTurnAcceptance & {
   turn_id: string;
   data_diagnosis?: ChatDataDiagnosisContext;
 }> => {
@@ -793,6 +855,28 @@ export const handleSend = async (
     safe.session_id,
   );
   ensureSession(deps, session_id);
+  const submission_id = safe.submission_id === undefined ? undefined
+    : ensureNonEmptyString('chat.send', 'submission_id', safe.submission_id);
+  if ((submission_id?.length ?? 0) > 128 || (safe.repeat !== undefined && typeof safe.repeat !== 'boolean')) {
+    throw new RpcError('bad_request', 'Invalid conversation submission.', 400);
+  }
+  const queue_generation = safe.queue_generation === undefined ? undefined
+    : ensureNonEmptyString('chat.send', 'queue_generation', safe.queue_generation);
+  if ((queue_generation?.length ?? 0) > 128) throw new RpcError('bad_request', 'Invalid conversation generation.', 400);
+  const reply_to_message_id = safe.reply_to_message_id === undefined ? undefined
+    : ensureNonEmptyString('chat.send', 'reply_to_message_id', safe.reply_to_message_id);
+  if (reply_to_message_id !== undefined) {
+    if (reply_to_message_id.length > 512) throw new RpcError('bad_request', 'Invalid reply target.', 400);
+  }
+  // The durable queue checks new targets atomically after receipt replay and
+  // deduplication. A lost acknowledgement remains recoverable after retention.
+  if (reply_to_message_id !== undefined && !deps.orchestrator.turnQueue) {
+    const target = await deps.store.listMessagePage(session_id, 1, undefined, { around_message_id: reply_to_message_id });
+    if (!target.messages.some((message) => message.id === reply_to_message_id
+      && (message.role === 'user' || message.role === 'assistant'))) {
+      throw new RpcError('not_found', 'The reply target is no longer available in this conversation. Clear the reply or choose another message.', 404);
+    }
+  }
   // D-172 P2 — a turn may be a wordless FILE DROP, mirroring messenger. The
   // message is still required to be a string, and still required to be
   // non-empty when nothing is attached: an empty turn with no file is a
@@ -806,14 +890,22 @@ export const handleSend = async (
   // marker refuses. A bad entry is DROPPED rather than rejecting the turn: the
   // person's message is the thing that matters, and failing their whole send
   // over a mangled ref would be the worse trade.
+  // A guarded library selection is stricter: never silently drop its version
+  // check or the file the owner explicitly chose.
   const attachments = Array.isArray(safe.attachments)
     ? safe.attachments.flatMap((raw) => {
       if (raw === null || typeof raw !== 'object') return [];
       const file_id = (raw as { file_id?: unknown }).file_id;
       const media_class = (raw as { media_class?: unknown }).media_class;
+      const selection_revision = (raw as { selection_revision?: unknown }).selection_revision;
+      if (selection_revision !== undefined && (typeof selection_revision !== 'string' || !/^[0-9a-f]{64}$/.test(selection_revision)
+        || typeof file_id !== 'string' || !/^file:[0-9a-f]{32}$/.test(file_id))) {
+        throw new RpcError('bad_request', 'Invalid file selection. Remove it and choose it again.', 400);
+      }
       if (typeof file_id !== 'string' || file_id.length === 0) return [];
       return [{
         file_id,
+        ...(selection_revision !== undefined ? { selection_revision } : {}),
         media_class: typeof media_class === 'string' && media_class.length > 0
           ? media_class
           : 'other',
@@ -1074,13 +1166,17 @@ export const handleSend = async (
   // (the event payload is deliberately bare — error text can carry
   // user content). An orchestrator that never fires the seam (a
   // stub / fake in tests) degenerates to the old ack-after-run shape.
-  return new Promise<{
+  return new Promise<ChatTurnAcceptance & {
     turn_id: string;
     data_diagnosis?: ChatDataDiagnosisContext;
   }>((resolve, reject) => {
     let acceptedTurnId: string | null = null;
     deps.orchestrator
       .runTurn({
+        ...(submission_id ? { submission_id } : {}),
+        ...(queue_generation ? { queue_generation } : {}),
+        ...(safe.repeat === true ? { repeat: true } : {}),
+        ...(reply_to_message_id ? { reply_to_message_id } : {}),
         session_id,
         message,
         ...(attachments.length > 0 ? { attachments } : {}),
@@ -1097,6 +1193,7 @@ export const handleSend = async (
         on_accepted: (ack) => {
           acceptedTurnId = ack.turn_id;
           resolve({
+            ...ack,
             turn_id: ack.turn_id,
             ...(data_diagnosis ? { data_diagnosis } : {}),
           });
@@ -2851,6 +2948,44 @@ export const handleInboundTokenToolCatalog = (
   return { catalog: deps.catalogProvider() };
 };
 
+export const handleChatDelivery = async (deps: ChatRpcDeps, action: 'list' | 'retry' | 'skip' | 'connect', args: unknown):
+  Promise<import('@recued/contracts').ChatDeliverySnapshot | { ok: true } | { session_id: string }> => {
+  const safe = ensureRecordArgs('chat.delivery', args);
+  const session = ensureNonEmptyString('chat.delivery', 'session_id', safe.session_id);
+  ensureSession(deps, session);
+  const bridge = deps.orchestrator.messengerBridge;
+  if (!bridge) throw new RpcError('not_configured', 'Messenger delivery is unavailable.', 501);
+  if (action === 'list') return bridge.snapshot(session, parseChatDeliveryListRequest(session, safe));
+  if (action === 'connect') {
+    const vendor = ensureNonEmptyString('chat.messenger.connect', 'vendor', safe.vendor);
+    return { session_id: await bridge.connect(session, vendor) };
+  }
+  const delivery = ensureNonEmptyString('chat.delivery', 'delivery_id', safe.delivery_id);
+  const submission = ensureNonEmptyString('chat.delivery', 'submission_id', safe.submission_id);
+  if (submission.length > 128 || (safe.accept_unknown !== undefined && typeof safe.accept_unknown !== 'boolean')) {
+    throw new RpcError('bad_request', 'Invalid delivery retry request.', 400);
+  }
+  bridge.act(session, delivery, submission, action, safe.accept_unknown === true); bridge.kick();
+  return { ok: true };
+};
+
+export const handleChatQueue = async (
+  deps: ChatRpcDeps, action: 'list' | 'cancel' | 'retry' | 'withdraw', args: unknown,
+): Promise<import('@recued/contracts').ChatWithdrawnDraft | import('@recued/contracts').ChatTurnQueueSnapshot | ChatTurnAcceptance | { ok: true }> => {
+  const safe = ensureRecordArgs('chat.turn', args);
+  const session = ensureNonEmptyString('chat.turn', 'session_id', safe.session_id);
+  ensureSession(deps, session);
+  const queue = deps.orchestrator.turnQueue;
+  if (!queue) throw new RpcError('not_configured', 'Conversation queue is unavailable.', 501);
+  if (action === 'list') return queue.snapshot(session);
+  const turn = ensureNonEmptyString('chat.turn', 'turn_id', safe.turn_id);
+  if (action === 'withdraw') return queue.withdraw(session, turn);
+  if (action === 'cancel') { await queue.cancel(session, turn); return { ok: true }; }
+  const submission = ensureNonEmptyString('chat.turn', 'submission_id', safe.submission_id);
+  if (submission.length > 128) throw new RpcError('bad_request', 'Invalid submission ID.', 400);
+  return queue.retry(session, turn, submission);
+};
+
 export const makeChatHandlers = (
   deps: ChatRpcDeps | undefined,
 ): HandlerSlice<ServerRpcRegistry, ChatMethods, WsClient> | undefined => {
@@ -2858,11 +2993,17 @@ export const makeChatHandlers = (
   return {
     methods: [
       'chat.sessions.list',
+      'chat.messages.search',
       'chat.session.get',
       'chat.session.create',
       'chat.session.delete',
       'chat.session.export',
       'chat.egress.get',
+      'chat.deliveries.list', 'chat.delivery.retry', 'chat.delivery.skip', 'chat.messenger.connect',
+      'chat.turns.list',
+      'chat.turn.withdraw',
+      'chat.turn.cancel',
+      'chat.turn.retry',
       'chat.send',
       'chat.data_diagnosis.resolve',
       'chat.plans.pending.list',
@@ -2900,10 +3041,16 @@ export const makeChatHandlers = (
     ],
     handlers: {
       'chat.sessions.list': async () => handleSessionsList(deps),
+      'chat.messages.search': async (args, client) => {
+        if (!client?.instance_id) {
+          throw new RpcError('unauthorized', 'Message search requires a paired client', 401);
+        }
+        return handleMessagesSearch(deps, args);
+      },
       'chat.session.mark_seen': async (args: unknown) =>
         handleSessionMarkSeen(deps, args as { session_id: string }),
       'chat.session.get': async (args) =>
-        handleSessionGet(deps, args as { session_id: string }),
+        handleSessionGet(deps, args),
       'chat.session.create': async (args) =>
         handleSessionCreate(deps, args as { title?: string } | void),
       'chat.session.delete': async (args) =>
@@ -2912,6 +3059,38 @@ export const makeChatHandlers = (
         handleSessionExport(deps, args as { session_id: string }),
       'chat.egress.get': async (args) =>
         handleEgressGet(deps, args as { session_id: string; message_id: string }),
+      'chat.deliveries.list': async (args, client) => {
+        if (!client?.instance_id) throw new RpcError('unauthorized', 'Delivery status requires a paired client.', 401);
+        return handleChatDelivery(deps, 'list', args) as Promise<import('@recued/contracts').ChatDeliverySnapshot>;
+      },
+      'chat.delivery.retry': async (args, client) => {
+        if (!client?.instance_id) throw new RpcError('unauthorized', 'Delivery retry requires a paired client.', 401);
+        return handleChatDelivery(deps, 'retry', args) as Promise<{ ok: true }>;
+      },
+      'chat.delivery.skip': async (args, client) => {
+        if (!client?.instance_id) throw new RpcError('unauthorized', 'Skipping a delivery requires a paired client.', 401);
+        return handleChatDelivery(deps, 'skip', args) as Promise<{ ok: true }>;
+      },
+      'chat.messenger.connect': async (args, client) => {
+        if (!client?.instance_id) throw new RpcError('unauthorized', 'Linking Messenger requires a paired client.', 401);
+        return handleChatDelivery(deps, 'connect', args) as Promise<{ session_id: string }>;
+      },
+      'chat.turns.list': async (args, client) => {
+        if (!client?.instance_id) throw new RpcError('unauthorized', 'Conversation queue requires a paired client.', 401);
+        return handleChatQueue(deps, 'list', args) as Promise<import('@recued/contracts').ChatTurnQueueSnapshot>;
+      },
+      'chat.turn.withdraw': async (args, client) => {
+        if (!client?.instance_id) throw new RpcError('unauthorized', 'Withdrawal requires a paired client.', 401);
+        return handleChatQueue(deps, 'withdraw', args) as Promise<import('@recued/contracts').ChatWithdrawnDraft>;
+      },
+      'chat.turn.cancel': async (args, client) => {
+        if (!client?.instance_id) throw new RpcError('unauthorized', 'Conversation queue requires a paired client.', 401);
+        return handleChatQueue(deps, 'cancel', args) as Promise<{ ok: true }>;
+      },
+      'chat.turn.retry': async (args, client) => {
+        if (!client?.instance_id) throw new RpcError('unauthorized', 'Conversation queue requires a paired client.', 401);
+        return handleChatQueue(deps, 'retry', args) as Promise<ChatTurnAcceptance>;
+      },
       'chat.send': async (args) =>
         handleSend(
           deps,

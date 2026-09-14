@@ -162,6 +162,7 @@ describe('D-172 P2 — the dialog owns attachments, so the generic form must not
       label: 'alice@example.com (IMAP)',
       account_email: 'alice@example.com',
       send_capable: true,
+      draft_capable: false,
       mail_instance_slug: 'work',
     },
   ];

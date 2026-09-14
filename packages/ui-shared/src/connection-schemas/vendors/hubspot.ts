@@ -58,7 +58,7 @@ const HUBSPOT_FIELDS: readonly ConnectionField[] = [
     key: 'name',
     label: 'Name',
     type: 'identifier',
-    help: 'Lowercase identifier used in recipes (e.g. `hubspot`, `hubspot-sandbox`).',
+    help: 'A short lower-case name you use in Recipes, such as `hubspot`, `hubspot-sandbox`).',
     placeholder: 'hubspot',
   },
   {
@@ -74,7 +74,7 @@ const HUBSPOT_FIELDS: readonly ConnectionField[] = [
     key: 'config.vendor',
     label: 'Vendor',
     type: 'text',
-    help: 'HubSpot vendor identifier — locked at enrollment.',
+    help: 'HubSpot sets this when you connect. You cannot change it.',
     placeholder: 'hubspot',
     hidden: true,
   },
@@ -136,8 +136,8 @@ const HUBSPOT_FIELDS: readonly ConnectionField[] = [
     optional: true,
     showWhen: ifAuth('oauth2_refresh'),
     help:
-      'OAuth scopes requested at authorization. Pre-filled from HubSpot\'s '
-      + 'defaults plus the scopes your installed packs need — edit to add or trim.',
+      'What Recued asks permission for. Filled in from HubSpot\'s '
+      + 'own defaults, plus whatever your installed Packs need. You can add or remove.',
   },
   {
     key: 'auth.token_endpoint',

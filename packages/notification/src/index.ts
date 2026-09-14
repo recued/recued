@@ -254,6 +254,19 @@ export interface NotificationBlockDeps {
    *  (the default, and the case on any non-public deployment) → asks stay
    *  text-only, exactly as they were. */
   askAnswerLink?: (ask_id: string) => string;
+  /** D-269 step 5 — may this ask's DELIVERY be held until quiet hours ends?
+   *
+   *  ⛔ INJECTED, because the block is a LEAF and must not learn about
+   *  timezones, windows or policy stores. It is handed the one fact it owns (the
+   *  raiser's declared `expires_at`) and answers with a boolean; the server
+   *  composes `mayHoldAskForQuietHours` behind it.
+   *
+   *  ⚠ HOLDING CHANGES NOTHING ABOUT THE ASK ITSELF. It is already persisted
+   *  `open` with its `fanout_channels` before any delivery (I-2), so a held ask
+   *  is indistinguishable from one whose channel was briefly unreachable —
+   *  which is TR-10, the case the boot sweep already re-delivers. **Quiet hours
+   *  on an approval is TR-10 with a clock.** Absent ⇒ nothing is ever held. */
+  shouldHoldAsk?: (expires_at: number | undefined) => boolean;
 }
 
 /** The notification block's public operations. */
@@ -539,18 +552,38 @@ export const createNotificationBlock = (
       // routed by the channel-level capability split (double-delivery).
       if (usePerBridge && channel.name === 'bridge') continue;
       // R31 — split by capability, gating each on the RIGHT axis. A
-      // notify-only channel can't carry an ask, so it receives a passive
-      // notify (that an approval is pending) IFF its NOTIFICATION axis is
-      // on; an inline / landing-page channel receives the ask itself IFF
-      // its APPROVAL axis is on. (The pre-R31 single `enabled[name]` flag
-      // gated both — a dynamic-index truthiness read that would SILENTLY
-      // pass every channel now that the value is a two-axis object.)
-      if (channel.capability === 'notify-only') {
-        if (channelNotifyEnabled(enabled, channel.name)) {
-          passiveNotify.push(channel);
-        }
-      } else if (channelApprovalEnabled(enabled, channel.name)) {
+      // channel that can carry an ask AND whose APPROVAL axis is on
+      // receives the ask; anything else falls back to a passive notify
+      // (that an approval is pending) IFF its NOTIFICATION axis is on.
+      // (The pre-R31 single `enabled[name]` flag gated both — a
+      // dynamic-index truthiness read that would SILENTLY pass every
+      // channel now that the value is a two-axis object.)
+      //
+      // ⛔ THE FALLBACK IS AN `else`, NOT A SECOND `if` — exactly one
+      // message per channel per ask. On a chat transport the ask and the
+      // notice would land in the SAME conversation, so sending both is a
+      // duplicate the owner reads as a bug. `ui` and `bridge` still both
+      // fire, and that is not the same thing: an in-app card and an OS
+      // notification are different places to look.
+      //
+      // ⚠ AND THE FALLBACK IS NOT ONLY FOR notify-only CHANNELS. It used
+      // to be (`if (capability === 'notify-only')` first), which left an
+      // ask-CAPABLE channel whose owner had turned APPROVAL OFF and
+      // NOTIFICATION ON receiving **nothing at all** — measured, not
+      // inferred: telegram in `{notification: true, approval: false}` got
+      // `ask=0 notify=0` while the bridge in the equivalent state got its
+      // ping. That is I-3's own named failure ("a silent ask on a user
+      // surface = lost approval") reached through the SETTINGS door
+      // instead of the capability door, and the spec only ever reasoned
+      // about the capability one. "Don't ask me here" is not "don't tell
+      // me anything here".
+      if (
+        channel.capability !== 'notify-only'
+        && channelApprovalEnabled(enabled, channel.name)
+      ) {
         deliver.push(channel);
+      } else if (channelNotifyEnabled(enabled, channel.name)) {
+        passiveNotify.push(channel);
       }
     }
     let bridgeAsk = 0;
@@ -816,9 +849,25 @@ export const createNotificationBlock = (
         }
         const resolved = await resolveAskChannels(channels);
         const deliver = eligibleChannels(resolved.deliver);
-        const { passiveNotify, bridgePassiveNotify } = resolved;
-        const bridgeAsk = protectedAuthority && bridgeChannel && !protectedAuthority.canDeliverTo(bridgeChannel)
-          ? 0 : resolved.bridgeAsk;
+        // ⛔ THE PASSIVE NOTICE IS AUTHORITY-GATED TOO, AND IT WAS NOT.
+        // `composePassiveAskBody` carries the ask's own TITLE AND TEXT, so
+        // an unfiltered `passiveNotify` puts a protected review's content
+        // on channels its authority named as ineligible — a D-261
+        // preapproval says `canDeliverTo: ui` and the body still landed on
+        // the bridge. That hole predates the settings-door fix; the fix
+        // WIDENED it from "the bridge" to "every ask-capable channel whose
+        // approval axis is off", which is what made it visible.
+        //
+        // 🔑 `canDeliverTo` restricts DELIVERY OF THIS ASK, not answering.
+        // A module that wants awareness elsewhere while the answer stays
+        // in one place has to say so; inferring that permission from
+        // "it is only a notice" is the authority deciding itself.
+        const passiveNotify = eligibleChannels(resolved.passiveNotify);
+        const bridgeIneligible = protectedAuthority !== undefined
+          && bridgeChannel !== undefined
+          && !protectedAuthority.canDeliverTo(bridgeChannel);
+        const bridgePassiveNotify = bridgeIneligible ? 0 : resolved.bridgePassiveNotify;
+        const bridgeAsk = bridgeIneligible ? 0 : resolved.bridgeAsk;
         const fresh: NewPendingAsk = {
           ask_id,
           message,
@@ -844,10 +893,17 @@ export const createNotificationBlock = (
         // read-modify-write to race a fast inbound reply.
         //
         // D-163 N.3 — `passiveNotify` channels are NOT in the fanout
-        // set. They have no inbound-reply path (capability is
-        // `'notify-only'`); the close-broadcast must never target them,
-        // and the boot re-delivery sweep must never re-route an ask
-        // through `deliverAsk` on them.
+        // set: the close-broadcast must never target them, and the boot
+        // re-delivery sweep must never re-route an ask through
+        // `deliverAsk` on them.
+        //
+        // ⚠ THE REASON IS "WE NEVER SENT IT THE ASK", NOT "IT CANNOT
+        // REPLY". That set used to hold only `'notify-only'` channels, for
+        // which the two readings coincide. It now also holds ask-CAPABLE
+        // channels whose owner turned APPROVAL off — those CAN reply, and
+        // must still be excluded, because there is no card on that surface
+        // to close. Deriving the set from `deliver` rather than from
+        // capability is what keeps that true without a second rule.
           fanout_channels: deliver.map((c) => c.name),
           created_at: now(),
         };
@@ -857,13 +913,40 @@ export const createNotificationBlock = (
       // `firePassiveNotify`) does not.
         await store.create(fresh);
         await extras?.on_persisted?.(ask_id);
-        await fanOutAsk(deliver, ask_id, message, options, extras, isProtectedAskKind(handler.kind));
-      // D-163 N.3 / I-3 — passive notify to notify-only channels so
-      // the user learns approval is pending on those surfaces (e.g.
-      // OS notification via Bridge). Best-effort per channel; a
-      // failure leaves the ask durably `open` for normal answer paths.
+        // ⛔⛔ D-269 step 5 — QUIET HOURS HOLDS THE DELIVERY, NEVER THE ASK. The
+        // row above is already persisted `open` with its `fanout_channels`, so a
+        // held ask is indistinguishable from one whose channel was briefly
+        // unreachable — TR-10, the case `recoverPendingAsks` already
+        // re-delivers. **Quiet hours on an approval is TR-10 with a clock**, and
+        // that is why this needs no queue: skipping the fan-out IS the hold.
+        //
+        // ⚠ The predicate owns the expiry rule: an ask whose work expires inside
+        // the window answers false and is delivered anyway, because holding it
+        // would be a deletion wearing a deferral's clothes.
+        const held = deps.shouldHoldAsk?.(extras?.expires_at) ?? false;
+        if (!held) {
+          await fanOutAsk(deliver, ask_id, message, options, extras, isProtectedAskKind(handler.kind));
+        }
+      // D-163 N.3 / I-3 — passive notify to every channel that did not
+      // get the ask but is enabled for notifications, so the owner learns
+      // an approval is pending on those surfaces (an OS ping via Bridge;
+      // a line in the chat for a transport they read but do not answer
+      // on). Best-effort per channel; a failure leaves the ask durably
+      // `open` for normal answer paths.
+        // ⛔⛔ THE PASSIVE PING IS HELD TOO, OR THE HOLD DOES NOTHING. This is an
+        // OS notification via the Bridge and a line in the chat — exactly the
+        // interruption quiet hours exists to stop. Holding only the ask fan-out
+        // above would silence the answerable prompt and still wake the owner.
+        //
+        // ⚠ AND IT IS DROPPED, NOT DEFERRED, WHICH IS CORRECT HERE. Passive
+        // notify is not in `fanout_channels`, so `recoverPendingAsks` never
+        // replays it — and it should not: it is a POINTER to durable state ("an
+        // approval is pending"), and the ask itself is re-delivered at release
+        // and listed in `pending_asks` throughout. `durable-outbox`'s test —
+        // *"would the receiver be unable to RECONSTRUCT it"* — says a pointer
+        // needs no durability.
         const passiveBody = composePassiveAskBody(message);
-        await firePassiveNotify(passiveNotify, passiveBody);
+        if (!held) await firePassiveNotify(passiveNotify, passiveBody);
       // D-169 Slice 4 — per-bridge bridge fan-out over the single bridge
       // adapter: one `deliverAsk` per approval-mode-ON paired bridge, one
       // passive `deliverNotify` per notification-only bridge (both-off
@@ -874,7 +957,7 @@ export const createNotificationBlock = (
       // deliberately NOT in `fanout_channels` (above) — its close + boot
       // re-delivery ride the `ui`/bus path, and its adapter `closeAsk` /
       // re-`deliverAsk` are no-ops.
-        if (bridgeChannel) {
+        if (bridgeChannel && !held) {
           for (let i = 0; i < bridgeAsk; i += 1) {
             try {
               await bridgeChannel.deliverAsk(

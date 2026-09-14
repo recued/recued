@@ -1,3 +1,7 @@
+import { openFilePreview, type FilePreviewCallers } from '../files/file-preview.js';
+import { openFileChatPicker, type FileChatCallers } from '../chat/existing-file-picker.js';
+import { cloudFileInstance, cloudFileRecord, cloudFileSourceId, cloudFileSourceSlug } from './cloud-file-explorer.js';
+import type { CloudFileSource } from '@recued/contracts';
 /** D-174 P5 - top-level Data route.
  *
  *  Back-office warehouse surface: contacts + the four local work
@@ -5,7 +9,10 @@
  *  drill-downs through data.timeline().
  */
 
+import { renderFileLifecyclePanel, type FileLifecyclePanelState } from './file-lifecycle-panel.js';
 import type {
+  FileLifecycleMutation,
+  FileLifecyclePreview,
   SavedDataView,
   SavedDataViewDefinition,
   TaskViewFilters,
@@ -104,7 +111,7 @@ import type {
 } from '@recued/contracts';
 import {
   sameSavedDataViewDefinition, DEFAULT_TASK_VIEW_FILTERS, parseTaskViewFilters,
-  resolveTaskListFilter,
+  resolveTaskListFilter, RECORDS_MAX_PREDICATES,
 } from '@recued/contracts';
 import { rankSearchable } from '@recued/contracts';
 import {
@@ -194,7 +201,7 @@ import {
   type SourceRecordDataTab,
 } from '../shell/route.js';
 import { humanizeRpcError } from '../shell/rpc-error-copy.js';
-import { loadToday, renderToday, TODAY_VIEW_STYLES, type TodaySnapshot } from './today-view.js';
+import { loadToday, renderToday, TODAY_CREATE_ACTION, TODAY_VIEW_STYLES, type TodaySnapshot } from './today-view.js';
 import { fileRefOptionsFromMirrorResults } from '../recipes/file-ref-picker.js';
 import {
   MEMORY_ADD_ACTION,
@@ -300,6 +307,10 @@ import {
   renderRecordsExplorer,
   type RecordsExplorerState,
 } from './records-explorer.js';
+import {
+  initialRecordsBrowseState, parseRecordsViewDraft, recordsFilterOperators,
+  recordsViewDraft, recordsViewHasDraft,
+} from './records-view-controls.js';
 import type {
   Annotation,
   CanonicalCollectionName,
@@ -938,15 +949,24 @@ export interface BootstrapDataRouteOptions {
   uploadFinalizeCaller?: DataUploadFinalizeCaller;
   uploadDeleteCaller?: DataUploadDeleteCaller;
   uploadConnectFactory?: Upload.UploadConnectFactory;
+  filePreviewCallers?: FilePreviewCallers;
   /** D-172 Half-A "open" — file-content read for the Files tab download. Absent
    *  → no download button (metadata-only drill-down). */
   fileReadCaller?: DataFileReadCaller;
+  fileChatCallers?: FileChatCallers;
+  onUseFileInChat?: (target: { file: import('@recued/contracts').FileAttachmentSelection; sessionId: string | null }) => void;
+  fileUsageCaller?: (args: { record_id: string }) => Promise<FileLifecyclePreview>;
+  fileMutateCaller?: (args: FileLifecycleMutation) => Promise<FileLifecyclePreview>;
   subscribe?: BroadcastSubscriber['on'];
+  /** D-267 — the shell's shared Create opener, the same modal the chat composer
+   *  chip and the drawer seat open. Wired → Today's zero-state offers a capture
+   *  button; absent → it renders nothing at all rather than a dead control. */
+  openCreateOverlay?: () => void;
   /** Keep the shell router's cached hash aligned with successful in-page
    *  history writes, which do not emit hashchange. */
   onHashSync?: (hash: string) => void;
   /** R18 — deep-link hydration (`#data/<tab>/<entity_id>`, R16). `initialTab`
-   *  is validated against the known tabs (invalid → the default Contacts tab);
+   *  is validated against the known tabs (invalid → the default Today tab, D-267);
    *  `initialEntityId` opens that entity's timeline detail on the contact +
    *  mirror tabs (work-entity tabs hydrate the tab only — their detail is a
    *  modal edit, not a timeline view yet). */
@@ -2109,27 +2129,27 @@ const dataVerificationGuidance = (
   switch (relationship) {
     case 'derived':
       return {
-        title: 'Confirm the created or changed record',
+        title: 'Check the record that was made or changed',
         detail:
-          'This record was written by the run. Check that the values shown here match what you expected.',
+          'The run wrote this. Check the values here are what you wanted.',
       };
     case 'involved':
       return {
-        title: 'Check the item involved in the change',
+        title: 'Check the item that was touched',
         detail:
-          'This item was involved in a side-effecting step. Compare the state shown here with what you intended; the recorded link alone does not prove it changed.',
+          'A step that changes things touched this item. Compare what you see here with what you wanted. The link on its own does not prove anything changed.',
       };
     case 'action':
       return {
-        title: 'Review the record used by the action',
+        title: 'Look at the record that was used',
         detail:
-          'This record was used by an external action. It can explain the action, but it cannot confirm that the destination changed.',
+          'Something outside Recued used this record. It explains what happened, but it does not prove the other side changed.',
       };
     default:
       return {
-        title: 'Review this recorded item',
+        title: 'Look at this item',
         detail:
-          'Check what Data currently shows before deciding whether the action needs another step.',
+          'Look at what Data shows now, then decide whether anything else is needed.',
       };
   }
 };
@@ -2462,7 +2482,7 @@ const projectWorkEntityUpsert = (
   definition: FormDefinition,
 ): WorkEntityUpsertRpcRequest => {
   if (state.dialog === null) {
-    throw new Error('No work entity dialog is open.');
+    throw new Error('No item is open.');
   }
   const values = state.dialog.values;
   const update = state.dialog.mode === 'edit';
@@ -2573,7 +2593,7 @@ const validateContactDialog = (
   if (email.length === 0) {
     errors.email = 'Email is required.';
   } else if (!email.includes('@')) {
-    errors.email = 'Email must include @.';
+    errors.email = 'An email address needs an @ in it.';
   }
   return errors;
 };
@@ -2940,11 +2960,11 @@ const describeProvenance = (p: ContactProvenanceLike): string => {
     case 'contact_book':
       return who !== null ? `from ${who}` : 'from a contact book';
     case 'derived':
-      return 'derived from your mail and calendar';
+      return 'worked out from your mail and calendar';
     case 'ai_inferred':
-      return who !== null ? `inferred by AI, from ${who}` : 'inferred by AI';
+      return who !== null ? `guessed by AI, from ${who}` : 'guessed by AI';
     case 'domain_inferred':
-      return 'guessed from the email domain';
+      return 'guessed from the email address';
     default:
       // A rung this build has never heard of. Say the raw value rather than
       // dropping the row — an unknown provenance is still provenance.
@@ -3145,7 +3165,7 @@ const renderContactLinks = (links: readonly PlatformIdEntry[]): string => {
           <li class="data-contact-link" data-link-vendor="${e(link.vendor)}">
             <span class="data-contact-link-vendor">${e(vendorLabel(link.vendor))}</span>
             <code class="data-contact-link-id">${e(link.platform_id)}</code>
-            <span class="data-row-subtle">${link.state === 'confirmed' ? 'confirmed by you' : 'linked automatically'}</span>
+            <span class="data-row-subtle">${link.state === 'confirmed' ? 'confirmed by you' : 'linked by Recued'}</span>
           </li>
         `).join('')}
       </ul>
@@ -3255,10 +3275,10 @@ const renderLoadMoreFooter = (footerOpts: {
 
 /** Relative "2h ago" for a sync timestamp. Null → "never". */
 const relativeSyncTime = (at: number | null, now: number): string => {
-  if (at === null) return 'never synced';
+  if (at === null) return 'never brought in';
   const ms = Math.max(0, now - at);
   const minutes = Math.round(ms / 60_000);
-  if (minutes < 1) return 'synced just now';
+  if (minutes < 1) return 'brought in just now';
   if (minutes < 60) return `synced ${minutes}m ago`;
   const hours = Math.round(minutes / 60);
   if (hours < 24) return `synced ${hours}h ago`;
@@ -3269,7 +3289,7 @@ const relativeSyncTime = (at: number | null, now: number): string => {
  *  user can act on — what came in, and what broke — not all twelve. The rest are
  *  in the expandable detail. */
 const cycleSummary = (counts: ContactSourceHealth['last_cycle']): string => {
-  if (counts === null) return 'no cycle has completed yet';
+  if (counts === null) return 'no check has finished yet';
   const parts: string[] = [`${counts.hydrated.toLocaleString()} hydrated`];
   if (counts.linked > 0) parts.push(`${counts.linked.toLocaleString()} linked`);
   if (counts.skipped > 0) parts.push(`${counts.skipped.toLocaleString()} not matched`);
@@ -3285,22 +3305,22 @@ const cycleFailures = (counts: ContactSourceHealth['last_cycle']): string[] => {
   if (counts === null) return [];
   const out: string[] = [];
   if (counts.failed_rows > 0) {
-    out.push(`${counts.failed_rows.toLocaleString()} records failed to import`);
+    out.push(`${counts.failed_rows.toLocaleString()} records could not be brought in`);
   }
   if (counts.mirror_failed > 0) {
-    out.push(`${counts.mirror_failed.toLocaleString()} records could not be mirrored`);
+    out.push(`${counts.mirror_failed.toLocaleString()} records could not be copied over`);
   }
   if (counts.unkeyable > 0) {
     // Worth its own line: an unkeyable record also POISONS the delete proof, so the
     // Source silently stops reconciling deletions.
     out.push(
-      `${counts.unkeyable.toLocaleString()} records had no usable id (deletions paused)`,
+      `${counts.unkeyable.toLocaleString()} records had no id Recued could use, so deleting is paused`,
     );
   }
   // NOT a failure, but the user should see it: a walk that could not prove it saw
   // everything disconnects nothing, by design (fail-closed).
   if (!counts.complete) {
-    out.push('the last walk could not confirm it saw every record');
+    out.push('the last check could not be sure it saw every record');
   }
   return out;
 };
@@ -3447,21 +3467,21 @@ const renderImportOverviewRow = (s: ContactSourceHealth): string => {
       ${pickable
         ? `<span class="data-row-subtle">${e(
             cycle === null
-              ? 'Enriches contacts you already know. Not synced yet.'
+              ? 'Adds detail to contacts you already have. Nothing brought in yet.'
               // 🔑 THE CLIFF, IN WORDS. `hydrated` is who it enriched; `skipped` is
               // everyone else — and `skipped` is exactly the stranger count, straight
               // off the runner's own per-cycle counters. Nothing new is computed here.
-              : `${cycle.hydrated} of your contacts enriched · ${cycle.skipped} ${
+              : `${cycle.hydrated} of your contacts now have more detail · ${cycle.skipped} ${
                   cycle.skipped === 1 ? 'person' : 'people'
-                } you have not corresponded with`,
+                } you have never written to`,
           )}</span>
           <button type="button" class="data-button"
             ${DATA_ROUTE_ACTION_ATTR}="contact-import-browse"
             ${DATA_ROUTE_IMPORT_SOURCE_ATTR}="${e(s.source_id)}">Browse &amp; add</button>`
         : `<span class="data-row-subtle">${e(
             cycle === null
-              ? 'Imports everyone. Not synced yet.'
-              : `${cycle.hydrated + cycle.created} contacts imported · nothing to choose`,
+              ? 'Brings in everyone. Nothing brought in yet.'
+              : `${cycle.hydrated + cycle.created} contacts brought in · nothing to choose`,
           )}</span>`}
     </li>
   `;
@@ -3615,7 +3635,7 @@ const renderContactImportView = (
       // know them. You do.
       `${state.mirrored} record${state.mirrored === 1 ? '' : 's'} in this CRM · ${state.total} ${
         state.total === 1 ? 'person' : 'people'
-      } you have not corresponded with`,
+      } you have never written to`,
     )}</p>
 
     <div class="data-contact-toolbar">
@@ -3657,10 +3677,10 @@ const renderContactImportView = (
       : state.candidates.length === 0
         ? `<p ${DATA_ROUTE_UNAVAILABLE_ATTR}>${e(
             state.query.trim().length > 0
-              ? 'Nobody in this CRM matches your search.'
+              ? 'Nobody in this CRM matches what you typed.'
               : // Not "no contacts" — the honest statement is that there is nobody
                 // LEFT to add, which is a different and much better thing.
-                'Everyone in this CRM is already one of your contacts.',
+                'You already have everyone from this CRM.',
           )}</p>`
         : `<ul class="data-list" role="list">
              ${state.candidates
@@ -3871,7 +3891,7 @@ const renderContactScanView = (
         state.last_resolution === 'confirm'
           ? 'Contacts merged'
           : 'Marked as different'
-      } · ${state.loading ? 'Refreshing review queue…' : 'Review queue refreshed.'}</p>`;
+      } · ${state.loading ? 'Getting the list again…' : 'The list is up to date.'}</p>`;
   return `
     <section ${DATA_ROUTE_CONTACT_SCAN_ATTR}>
       <div class="data-contact-toolbar">
@@ -4179,7 +4199,7 @@ const renderFormResponseAutomationPicker = (
               </div>
               <span class="data-pill">${e(scope)}</span>
               <button type="button" class="data-button data-button--primary"
-                aria-label="${e(`Review and run ${name} (${match.entry.recipe_id})`)}"
+                aria-label="${e(`Look at it and run ${name} (${match.entry.recipe_id})`)}"
                 ${DATA_ROUTE_ACTION_ATTR}="review-form-response-automation"
                 ${DATA_ROUTE_FORM_RESPONSE_RUN_RECIPE_ATTR}="${e(match.entry.recipe_id)}">Review and run</button>
             </li>`;
@@ -4326,7 +4346,7 @@ const renderFormResponseDetail = (
                 ${DATA_ROUTE_FORM_RESPONSE_RUN_ATTR}${discoveringAutomation
                   ? ' aria-disabled="true" aria-busy="true"'
                   : ''}>${discoveringAutomation
-                  ? 'Finding automations…'
+                  ? 'Looking for things that can run…'
                   : 'Run this response'}</button>`
             : ''}
         </div>
@@ -4405,8 +4425,8 @@ const renderFormResponseSurface = (
           <button type="button" class="data-button"
             ${DATA_ROUTE_ACTION_ATTR}="close-form-response">← Back to form responses</button>
           <p ${DATA_ROUTE_UNAVAILABLE_ATTR}>${detailError === null
-            ? 'This form response was not found.'
-            : 'Could not load this form response. Return to the list and try again.'}</p>
+            ? 'Recued could not find this answer.'
+            : 'Recued could not open this answer. Go back to the list and try again.'}</p>
         </section>`
       : renderFormResponseDetail(
           detail,
@@ -4695,10 +4715,15 @@ const renderWorkEntitySurface = (
   manageLinkBusy: boolean,
   manageLinkNotice: { kind: 'ok' | 'error'; text: string } | null,
   discardGuardOpen: boolean,
+  /** D-267 — the open edit dialog's provenance feed, ALREADY RENDERED and
+   *  already matched to this dialog by the caller. Empty string means nothing
+   *  to show (no feed yet, a stale one, or a genuinely empty history) and the
+   *  section is then omitted rather than asserting an empty past. */
+  historyHtml: string,
 ): string => {
   const options = [...sourceOptionsForKind(sources, state.kind)];
   if (state.selected_source_id !== null && !options.some((option) => option.id === state.selected_source_id)) {
-    options.push({ id: state.selected_source_id, label: 'Unavailable source', source_kind: 'sentinel', write_capable: false });
+    options.push({ id: state.selected_source_id, label: 'This source is not available', source_kind: 'sentinel', write_capable: false });
   }
   const activeSourceId = state.dialog?.source_id ?? state.selected_source_id;
   const activeSource = activeSourceId === null
@@ -4707,6 +4732,7 @@ const renderWorkEntitySurface = (
         (source) => source.id === activeSourceId,
       );
   const definition = formDefinitionForKind(state.kind, activeSource);
+  const workEntityHistoryHtml = historyHtml;
   if (state.kind === 'booking' && bookingDetailId !== null) {
     const dialogHtml = state.dialog === null
       ? ''
@@ -4717,6 +4743,7 @@ const renderWorkEntitySurface = (
           sources: options,
           ref_picker: true,
           discard_guard: discardGuardOpen,
+          ...(workEntityHistoryHtml !== '' ? { history_html: workEntityHistoryHtml } : {}),
         });
     if (loadingBookingDetail) {
       return `<section class="work-entity-booking-detail" aria-busy="true">
@@ -4793,6 +4820,7 @@ const renderWorkEntitySurface = (
       ? { opening_entity_id: openingEntityId }
       : {}),
     discard_guard: discardGuardOpen,
+    ...(workEntityHistoryHtml !== '' ? { history_html: workEntityHistoryHtml } : {}),
     ...(footerHtml !== '' ? { footer_html: footerHtml } : {}),
   });
 };
@@ -4897,6 +4925,10 @@ export const bootstrapDataRoute = (
   opts.root.appendChild(routeRoot);
 
   let disposed = false;
+  let filePreviewAbort: AbortController | null = null;
+  let filePreviewRecord: { id: string; slug: string | null } | null = null;
+  let fileChatAbort: AbortController | null = null;
+  let fileChatRecord: { id: string; slug: string | null } | null = null;
   let todaySnapshot: TodaySnapshot | null = null;
   let todayRefreshing = false;
   let todayLiveRefreshQueued = false;
@@ -4959,10 +4991,16 @@ export const bootstrapDataRoute = (
     && opts.memoryUpdateCaller !== undefined
     && opts.memoryDeleteCaller !== undefined
     && opts.memoryGetCaller !== undefined;
+  // D-267 — bare `#data` (the drawer seat, and every link that names no tab)
+  // resolves to Today, not Contacts. `today` already leads `DATA_TABS` and owns
+  // the `Overview` group, but the fallback pointed at `contact`, so the one tab
+  // that composes across kinds — and the only one that reads as somebody's day
+  // — was never the one an owner arrived at. A fresh install got an empty
+  // contact table as its first look at its own warehouse.
   let activeTab: DataTabId =
     opts.initialTab !== undefined && isDataTab(opts.initialTab)
       ? opts.initialTab
-      : 'contact';
+      : 'today';
   // Identifies the tab represented by the current DOM. State changes before a
   // repaint, so comparing this with `activeTab` prevents a focused source chip
   // from one collection from claiming a same-named chip on another tab.
@@ -4971,6 +5009,22 @@ export const bootstrapDataRoute = (
   // destination through that first paint so the old focused tab cannot reclaim
   // focus before the new collection's async load settles.
   let pendingCollectionTabFocus: DataTabId | null = null;
+  /** D-267 — ARRIVING at Search claims the box, so the Ctrl/Cmd+/ chord, the
+   *  chat Find chip and the drawer seat all land the owner typing.
+   *
+   *  ⛔ Set on ARRIVAL only — never on a repaint, or every result set would yank
+   *  focus back to the input from whatever row the owner had tabbed to.
+   *  ⛔ And never when the TABLIST is moving its own roving focus
+   *  (`selectTab(tab, true)` — arrow keys / Home / End): a keyboard user
+   *  arrowing across the tabs must stay in the tablist, not be ejected into a
+   *  text box at one particular tab. */
+  let pendingUniversalSearchFocus = activeTab === 'search';
+  /** D-267 — the open edit dialog's provenance feed, keyed so a stale arrival
+   *  from a previous dialog cannot paint into the current one. ⛔ `null` while
+   *  the read is in flight, and the section is omitted entirely then: an empty
+   *  feed rendered early would assert "nothing has touched this" about an
+   *  entity whose history has not arrived. */
+  let workEntityTimeline: { kind: WorkEntityKind; id: string; entries: TimelineEntry[] } | null = null;
   // A run-verification handoff belongs to the exact item that was addressed.
   // Retire it as soon as the owner navigates away so an in-memory route cannot
   // accidentally carry "reviewed" choices onto a different tab or item after
@@ -5159,6 +5213,10 @@ export const bootstrapDataRoute = (
   // D-172 Half-A "open" — a file download (data.file.read → browser save) is in
   // flight; disables the button + shows a spinner label.
   let downloadingFile = false;
+  let fileLifecycle: FileLifecyclePanelState | undefined;
+  let fileLifecycleGeneration = 0;
+  let fileLifecycleNotice = "";
+  let showArchivedFiles = false;
   let errors: DataLoadErrors = {};
   let loadGeneration = 0;
   let navigationGeneration = 0;
@@ -5239,6 +5297,12 @@ export const bootstrapDataRoute = (
   // responses against rapid instance/record clicks (stale-drop).
   let explorerCollection: CanonicalCollectionName | null = null;
   let explorerInstances: CollectionInstanceRow[] = [];
+  let cloudSources: CloudFileSource[] = [];
+  let cloudSourcesError = '';
+  let cloudFileQuery = ''; let cloudFileQueryInput = '';
+  let cloudFileCursor: string | undefined;
+  let cloudFilePage = 1;
+  let cloudLoadingMore = false; let cloudBrowseError = '';
   let explorerSelectedSlug: string | null = null;
   // Keep intended source identity separately from the latest available roster.
   // A disconnected selection must survive repeated refreshes and tab returns.
@@ -5325,6 +5389,9 @@ export const bootstrapDataRoute = (
       : null;
 
   const resetExplorerState = (): void => {
+    cloudSources = []; cloudSourcesError = ''; cloudFileCursor = undefined;
+    cloudFileQuery = cloudFileQueryInput = ''; cloudLoadingMore = false; cloudBrowseError = '';
+    cloudFilePage = 1;
     explorerCollection = null;
     explorerInstances = [];
     explorerSelectedSlug = null;
@@ -5354,6 +5421,10 @@ export const bootstrapDataRoute = (
     ? { owner: opts.savedView.definition.owner, entity: opts.savedView.definition.entity }
     : null;
   let recordsState: RecordsExplorerState = {
+    ...initialRecordsBrowseState(opts.savedView?.definition.tab === 'records' ? {
+      ...(opts.savedView.definition.filters ? { filters: opts.savedView.definition.filters } : {}),
+      ...(opts.savedView.definition.sort ? { sort: opts.savedView.definition.sort } : {}),
+    } : {}),
     namespaces: [],
     globalQuota: null,
     selectedNamespace: null,
@@ -5388,6 +5459,7 @@ export const bootstrapDataRoute = (
   const resetRecordsState = (): void => {
     recordsSeq += 1;
     recordsState = {
+      ...initialRecordsBrowseState(),
       namespaces: [],
       globalQuota: null,
       selectedNamespace: null,
@@ -5429,6 +5501,7 @@ export const bootstrapDataRoute = (
     kind: string | null;
     namespace: string | null;
     eventId: string | null;
+    filterIndex: string | null;
   }
   const activeRecordsFocusIdentity = (): RecordsFocusIdentity | null => {
     const active = doc.activeElement as HTMLElement | null | undefined;
@@ -5443,6 +5516,7 @@ export const bootstrapDataRoute = (
       kind: active.getAttribute(RECORDS_KIND_ATTR),
       namespace: active.getAttribute(RECORDS_NAMESPACE_ATTR),
       eventId: active.getAttribute(RECORDS_EVENT_ID_ATTR),
+      filterIndex: active.getAttribute('data-records-filter-index'),
     };
   };
   const focusRecordsIdentity = (identity: RecordsFocusIdentity | null): boolean => {
@@ -5459,7 +5533,9 @@ export const bootstrapDataRoute = (
       && (identity.namespace === null
         || candidate.getAttribute(RECORDS_NAMESPACE_ATTR) === identity.namespace)
       && (identity.eventId === null
-        || candidate.getAttribute(RECORDS_EVENT_ID_ATTR) === identity.eventId));
+        || candidate.getAttribute(RECORDS_EVENT_ID_ATTR) === identity.eventId)
+      && (identity.filterIndex === null
+        || candidate.getAttribute('data-records-filter-index') === identity.filterIndex));
     target?.focus?.({ preventScroll: true });
     target?.scrollIntoView?.({ block: 'nearest' });
     return target !== undefined;
@@ -5764,10 +5840,23 @@ export const bootstrapDataRoute = (
       && opts.recipeExecuteCaller !== undefined
         ? renderRescheduleControl(rescheduleForm)
         : '';
-    const detailActions = downloadControl !== '' ? downloadControl : rescheduleControl;
+    const lifecycleControl = tab === 'files' && detail && /^file:[0-9a-f]{32}$/.test(detail.record_id)
+      && opts.fileUsageCaller && opts.fileMutateCaller
+      ? `<button type="button" class="data-button" ${DATA_ROUTE_ACTION_ATTR}="file-usage">File usage and deletion</button>`
+        + (fileLifecycle?.fileId === detail.record_id ? renderFileLifecyclePanel(fileLifecycle, DATA_ROUTE_ACTION_ATTR) : '') : '';
+    const remoteChatFile = detail?.record_id.startsWith('file:remote:') && opts.fileChatCallers?.cloud;
+    const useInChat = tab === 'files' && detail?.record != null && (/^file:[0-9a-f]{32}$/.test(detail.record_id) || remoteChatFile)
+      && opts.fileChatCallers && opts.onUseFileInChat
+      ? `<button type="button" class="data-button" ${DATA_ROUTE_ACTION_ATTR}="file-use-in-chat">${remoteChatFile ? 'Import and use in Chat' : 'Use in Chat'}</button>` : '';
+    const previewControl = tab === 'files' && detail?.record != null && opts.filePreviewCallers
+      ? `<button type="button" class="data-button" ${DATA_ROUTE_ACTION_ATTR}="file-preview">Preview file</button>` : '';
+    const detailActions = previewControl + (downloadControl !== '' ? downloadControl + lifecycleControl : rescheduleControl + lifecycleControl) + useInChat;
     const explorer = renderCollectionExplorer({
       collection: collectionName,
       instances: explorerInstances,
+      ...(tab === 'files' ? { instanceLabels: new Map([
+        ['received', 'Saved files'], ...cloudSources.map(source => [cloudFileSourceSlug(source.source_id), source.label] as const),
+      ]) } : {}),
       selectedSlug: explorerSelectedSlug,
       records: explorerRecords,
       detail,
@@ -5789,10 +5878,26 @@ export const bootstrapDataRoute = (
     const uploadShell = uploadDepsReady()
       ? Upload.renderUploadWidget({ widgetId: UPLOAD_WIDGET_ID })
       : '';
+    const cloudSource = cloudSources.find(source => cloudFileSourceSlug(source.source_id) === explorerSelectedSlug);
+    const cloudBrowse = cloudSource ? `<p role="status">${cloudSource.last_synced_at === null
+      ? 'This source has not finished syncing yet.'
+      : `Last synced ${e(new Date(cloudSource.last_synced_at).toLocaleString())}.${cloudSource.stale ? ' This file list may be out of date.' : ''}`}</p>
+      <p>These files stay in the connected source. Import saves a separate copy in Files.</p>
+      ${!detail ? `<label>Search file names and paths <input class="data-input" type="search" maxlength="200"
+        aria-label="Search cloud files" ${DATA_ROUTE_ACTION_ATTR}="file-cloud-query" value="${e(cloudFileQueryInput)}" /></label>
+        <button type="button" class="data-button" ${DATA_ROUTE_ACTION_ATTR}="file-cloud-search"${explorerLoading ? ' disabled' : ''}>Search files</button>` : ''}` : '';
     return `<section ${DATA_ROUTE_MIRROR_ATTR}="files">
+      ${cloudSourcesError ? `<p role="alert">${e(cloudSourcesError)}
+        <button type="button" class="data-button" ${DATA_ROUTE_ACTION_ATTR}="file-cloud-refresh">Reload file sources</button></p>` : ''}
+      ${opts.fileUsageCaller && explorerSelectedSlug === 'received' ? `<button type="button" class="data-button" ${DATA_ROUTE_ACTION_ATTR}="file-toggle-archived" aria-pressed="${showArchivedFiles}">${showArchivedFiles ? 'Show current files' : 'Show archived files'}</button>` : ''}
+      ${fileLifecycleNotice ? `<p role="status">${e(fileLifecycleNotice)}</p>` : ''}
       ${uploadShell}
       ${renderFileSourceCta()}
+      ${cloudBrowse}
       ${explorer}
+      ${cloudBrowseError ? `<p role="alert">${e(cloudBrowseError)}</p>` : ''}
+      ${cloudSource && !detail && cloudFileCursor ? `<button type="button" class="data-button"
+        ${DATA_ROUTE_ACTION_ATTR}="file-cloud-more"${cloudLoadingMore || explorerLoading ? ' disabled' : ''}>${cloudLoadingMore ? 'Loading…' : 'Load more files'}</button>` : ''}
     </section>`;
   };
 
@@ -5810,8 +5915,8 @@ export const bootstrapDataRoute = (
         <p class="data-verification-detail">${e(guidance.detail)}</p>
         <p class="data-verification-boundary">${
           returnToChat === undefined
-            ? 'Review what Data shows below. Nothing can retry from this page.'
-            : 'Review what Data shows below. Safe next steps appear after the item; nothing retries from this page.'
+            ? 'Look at what Data shows below. You cannot run anything again from this page.'
+            : 'Look at what Data shows below. Safe next steps appear under the item. You cannot run anything again from this page.'
         }</p>
       </div>
       <div class="data-verification-actions" aria-label="Run navigation">
@@ -5881,6 +5986,8 @@ export const bootstrapDataRoute = (
 
   /** Capture only the active list's settings; edit drafts and result bodies never enter a view. */
   const currentView = (): SavedDataViewDefinition | null => {
+    // Archived-file browsing is transient and has no saved-view representation.
+    if (activeLens === 'data' && activeTab === 'files' && showArchivedFiles) return null;
     if (activeLens === 'memory') {
       if (memoryDetail !== null || memoryCompose.open || memoryImport.open) return null;
       return { tab: 'memory', origin: memoryOriginFilter };
@@ -5902,15 +6009,22 @@ export const bootstrapDataRoute = (
         ?? savedExplorerScopes.get(activeTab) ?? null };
     }
     if (activeTab === 'records') {
-      if (recordsState.detail !== null || recordsState.purgePending || recordsState.outboxOpen) return null;
+      if (recordsState.detail !== null || recordsState.purgePending || recordsState.outboxOpen
+        || recordsViewHasDraft(recordsState)) return null;
       return { tab: activeTab, owner: recordsState.selectedNamespace?.owner ?? savedRecordsSelection?.owner ?? null,
-        entity: recordsState.selectedKind ?? savedRecordsSelection?.entity ?? null };
+        entity: recordsState.selectedKind ?? savedRecordsSelection?.entity ?? null, ...recordsState.view };
     }
     if (activeTab === 'form_response' || activeTab === 'annotation' || activeTab === 'link' || activeTab === 'shared') return { tab: activeTab };
     return null;
   };
 
   const render = (): void => {
+    if (filePreviewRecord && (activeLens !== 'data' || activeTab !== 'files' || explorerDetail?.record_id !== filePreviewRecord.id
+      || explorerSelectedSlug !== filePreviewRecord.slug)) { filePreviewAbort?.abort(); filePreviewRecord = null; }
+    if (fileChatRecord && (activeLens !== 'data' || activeTab !== 'files' || explorerDetail?.record_id !== fileChatRecord.id
+      || explorerSelectedSlug !== fileChatRecord.slug)) {
+      fileChatAbort?.abort(); fileChatRecord = null;
+    }
     if (disposed) return;
     // This route repaints with `innerHTML` as reads settle. Preserve ownership
     // when a collection tab/source, work-entity source/search, response editor
@@ -5925,8 +6039,14 @@ export const bootstrapDataRoute = (
     const focusedTodayHref = focusedTodayControl?.getAttribute('href');
     const focusedTodayRefresh = focusedTodayControl?.getAttribute(DATA_ROUTE_ACTION_ATTR) === 'refresh-today';
     const focusedTodaySources = focusedTodayControl?.tagName === 'SUMMARY';
+    // ⚠ OPTIONAL CALL. D-267 made Today the default tab, so this probe now runs
+    // on the FIRST render of every bare `#data` mount — including the fake-DOM
+    // hosts whose `routeRoot` has no `querySelector`. It was previously reached
+    // only by a host that had already navigated to Today, which is why an
+    // unguarded call survived here: five unhandled rejections, and the suite
+    // still reported 224 passed.
     const todaySourcesOpen = activeLens === 'data' && activeTab === 'today'
-      ? routeRoot.querySelector<HTMLDetailsElement>('.today-sources')?.open : undefined;
+      ? routeRoot.querySelector?.<HTMLDetailsElement>('.today-sources')?.open : undefined;
     const focusedContactScanOwnerKind: 'action' | 'result' | null = contactScan === null
       ? null
       : activeElement?.getAttribute?.(DATA_ROUTE_ACTION_ATTR) === 'run-merge-scan'
@@ -6297,6 +6417,24 @@ export const bootstrapDataRoute = (
                 selectionEnd: activeSearch.selectionEnd,
                 selectionDirection: activeSearch.selectionDirection,
               }
+            // D-267 — the universal-search box was NOT in this list, so every
+            // arriving result set replaced the input the owner was typing into
+            // and dropped the caret. The keystroke handler deliberately does not
+            // render, which hid it until the debounce fired; the repaint that
+            // paints results is the one that steals focus. A fast path into a
+            // box that loses your caret on the third character is not a fast
+            // path, so this is part of making the chord worth having.
+            : activeLens === 'data'
+              && renderedActiveTab === activeTab
+              && activeTab === 'search'
+              && activeSearch?.hasAttribute?.(SEARCH_INPUT_ATTR) === true
+              ? {
+                  tab: activeTab,
+                  kind: 'universal' as const,
+                  selectionStart: activeSearch.selectionStart,
+                  selectionEnd: activeSearch.selectionEnd,
+                  selectionDirection: activeSearch.selectionDirection,
+                }
             : null;
     const focusedTabRaw = activeElement?.getAttribute?.(DATA_ROUTE_TAB_ATTR);
     const focusedTab = focusedTabRaw !== null
@@ -6371,7 +6509,7 @@ export const bootstrapDataRoute = (
       }
     }
     const body = activeTab === 'today'
-      ? renderToday(todaySnapshot, loading || todayRefreshing, DATA_ROUTE_ACTION_ATTR, todaySourcesOpen)
+      ? renderToday(todaySnapshot, loading || todayRefreshing, DATA_ROUTE_ACTION_ATTR, todaySourcesOpen, opts.openCreateOverlay !== undefined)
       : activeTab === 'contact'
       ? renderContactSurface(
           contacts,
@@ -6435,6 +6573,28 @@ export const bootstrapDataRoute = (
             bookingManageLinkBusy,
             bookingManageLinkNotice,
             workEntityDiscardGuardOpen,
+            // ⛔ Matched to the dialog on screen HERE, not inside the renderer:
+            // a feed from a previously-open entity would attribute one row's
+            // history to another. Empty when the read has not landed, so the
+            // section is omitted rather than asserting an empty past.
+            (() => {
+              const dialog = workEntityState.dialog;
+              if (dialog === null || dialog.mode !== 'edit') return '';
+              if (workEntityTimeline === null) return '';
+              if (workEntityTimeline.kind !== workEntityState.kind) return '';
+              if (workEntityTimeline.id !== dialog.entity_id) return '';
+              if (workEntityTimeline.entries.length === 0) return '';
+              
+              return renderTimelineSection(
+                workEntityTimeline.entries,
+                (opts.now ?? Date.now)(),
+                (entry) => {
+                  const runId = runIdFromTimelinePayload(entry.payload);
+                  return runId !== null ? runHref(runId) : null;
+                },
+                (entry) => summarizePayload(entry.payload),
+              );
+            })(),
           )
         : activeTab === 'search'
           ? renderUniversalSearch({
@@ -6702,6 +6862,19 @@ export const bootstrapDataRoute = (
         ?.focus?.({ preventScroll: true });
     }
     if (
+      pendingUniversalSearchFocus
+      && activeLens === 'data'
+      && activeTab === 'search'
+    ) {
+      const box = routeRoot.querySelector?.<HTMLInputElement>(
+        `[${SEARCH_INPUT_ATTR}]`,
+      );
+      box?.focus?.({ preventScroll: true });
+      // Cleared only once the box actually existed to take it: the first paint
+      // after `selectTab` can precede the search body.
+      if (box !== null && box !== undefined) pendingUniversalSearchFocus = false;
+    }
+    if (
       focusedSearch !== null
       && activeLens === 'data'
       && activeTab === focusedSearch.tab
@@ -6710,6 +6883,8 @@ export const bootstrapDataRoute = (
         ? routeRoot.querySelector<HTMLInputElement>(
             `[${DATA_ROUTE_CONTACT_SEARCH_ATTR}]`,
           )
+        : focusedSearch.kind === 'universal'
+        ? routeRoot.querySelector?.<HTMLInputElement>(`[${SEARCH_INPUT_ATTR}]`) ?? null
         : routeRoot.querySelector<HTMLInputElement>(
             `input[${SHARED_ACTION_ATTR}="search-work-entities"]`
             + `[data-kind="${focusedSearch.tab}"]`,
@@ -7271,7 +7446,7 @@ export const bootstrapDataRoute = (
     if (opts.workEntitySourceListCaller === undefined) {
       sources = [];
       defaultsByKind = {};
-      nextErrors.sources = 'work_entity.source.list caller is not wired in this host.';
+      nextErrors.sources = 'Recued cannot list sources here.';
       return;
     }
     try {
@@ -7322,13 +7497,13 @@ export const bootstrapDataRoute = (
     if (opts.savedView !== undefined && selectedSource !== null && !sourceOptionsForKind(sources, workEntityState.kind).some((source) => source.id === selectedSource)) {
       workEntities = [];
       workEntityTotal = 0;
-      nextErrors.work_entities = 'The source selected for this view is no longer available. Choose a source to continue.';
+      nextErrors.work_entities = 'The source you picked is gone. Choose another one to carry on.';
       return;
     }
     if (opts.workEntityListCaller === undefined) {
       workEntities = [];
       workEntityTotal = 0;
-      nextErrors.work_entities = 'work_entity.list caller is not wired in this host.';
+      nextErrors.work_entities = 'Recued cannot list items here.';
       return;
     }
     try {
@@ -7407,7 +7582,7 @@ export const bootstrapDataRoute = (
     if (opts.contactListCaller === undefined) {
       contacts = [];
       contactTotal = 0;
-      nextErrors.contacts = 'contact.list caller is not wired in this host.';
+      nextErrors.contacts = 'Recued cannot list contacts here.';
       return;
     }
     try {
@@ -7496,7 +7671,7 @@ export const bootstrapDataRoute = (
     if (opts.formResponseListCaller === undefined) {
       formResponses = [];
       formResponseNextCursor = null;
-      nextErrors.form_responses = 'form_response.list caller is not wired in this host.';
+      nextErrors.form_responses = 'Recued cannot list answers here.';
       return;
     }
     try {
@@ -7598,7 +7773,7 @@ export const bootstrapDataRoute = (
   const refreshMemory = async (generation: number): Promise<void> => {
     if (opts.memoryListCaller === undefined) {
       memoryEntries = [];
-      memoryError = 'memory.list caller is not wired in this host.';
+      memoryError = 'Recued cannot list memories here.';
       return;
     }
     try {
@@ -7630,15 +7805,22 @@ export const bootstrapDataRoute = (
     slug: string,
     seq: number,
   ): Promise<void> => {
+    const sourceId = platform === 'file' ? cloudFileSourceId(slug) : undefined;
     const caller = opts.collectionListCaller;
-    if (caller === undefined) {
+    cloudFileCursor = undefined; cloudBrowseError = ''; cloudLoadingMore = false;
+    cloudFilePage = 1;
+    if (caller === undefined && !(sourceId && opts.fileChatCallers?.cloud)) {
       explorerRecords = [];
       return;
     }
     try {
-      const { records } = await caller({ platform, slug, limit: DEFAULT_LIMIT });
+      const response = sourceId && opts.fileChatCallers?.cloud
+        ? await opts.fileChatCallers.cloud.list({ source_id: sourceId, query: cloudFileQuery, limit: 30 })
+        : await caller!({ platform, slug, limit: DEFAULT_LIMIT,
+          ...(platform === 'file' && slug === 'received' && showArchivedFiles ? { filters: { archived: 1 } } : {}) });
       if (disposed || seq !== explorerSeq) return;
-      explorerRecords = records;
+      explorerRecords = 'files' in response ? response.files.map(file => cloudFileRecord(file, sourceId!)) : response.records;
+      cloudFileCursor = 'next_cursor' in response ? response.next_cursor : undefined;
       explorerError = undefined;
       explorerErrorRetryable = false;
     } catch (err) {
@@ -7646,6 +7828,49 @@ export const bootstrapDataRoute = (
       explorerRecords = [];
       explorerError = humanizeRpcError(err);
       explorerErrorRetryable = true;
+    }
+  };
+
+  /** Keep the explorer over one file family without claiming remote pointers
+   * are retained collection records. Exact reads use the same selection service
+   * as the Chat picker and never fetch bytes. */
+  const getExplorerRecord: DataCollectionGetCaller = async args => {
+    const sourceId = args.platform === 'file' ? cloudFileSourceId(args.slug) : undefined;
+    if (sourceId) {
+      if (!args.record_id.startsWith('file:remote:')) return { record: null };
+      const cloud = opts.fileChatCallers?.cloud;
+      if (!cloud) throw new Error('This server cannot reach files you have connected.');
+      const file = await cloud.get({ record_id: args.record_id });
+      return { record: file.source_id === sourceId ? cloudFileRecord(file, sourceId) : null };
+    }
+    if (args.platform === 'file' && args.record_id.startsWith('file:remote:')) return { record: null };
+    if (!opts.collectionGetCaller) throw new Error('Recued cannot open records here.');
+    return opts.collectionGetCaller(args);
+  };
+
+  const browseCloudFiles = async (append: boolean): Promise<void> => {
+    const slug = explorerSelectedSlug;
+    const sourceId = slug ? cloudFileSourceId(slug) : undefined;
+    const cloud = opts.fileChatCallers?.cloud;
+    if (activeTab !== 'files' || !sourceId || !cloud || explorerLoading || cloudLoadingMore) return;
+    if (!append) cloudFileQuery = cloudFileQueryInput.trim();
+    if (append && !cloudFileCursor) return;
+    const seq = ++explorerSeq;
+    if (!append) { explorerLoading = true; explorerDetail = null; }
+    else cloudLoadingMore = true;
+    cloudBrowseError = ''; render();
+    try {
+      if (!append) { await fetchExplorerRecords('file', slug!, seq); return; }
+      const result = await cloud.list({ source_id: sourceId, query: cloudFileQuery, limit: 30, cursor: cloudFileCursor });
+      if (disposed || seq !== explorerSeq) return;
+      const seen = new Set(explorerRecords.map(file => file.record_id));
+      explorerRecords.push(...result.files.filter(file => !seen.has(file.record_id)).map(file => cloudFileRecord(file, sourceId)));
+      cloudFileCursor = result.next_cursor;
+      cloudFilePage++;
+    } catch (error) {
+      if (!disposed && seq === explorerSeq) cloudBrowseError = humanizeRpcError(error);
+    } finally {
+      if (!disposed && seq === explorerSeq) { explorerLoading = false; cloudLoadingMore = false; render(); }
     }
   };
 
@@ -7683,7 +7908,7 @@ export const bootstrapDataRoute = (
       if (disposed || seq !== explorerSeq) return;
       if (records === null) {
         explorerRecords = [];
-        explorerError = 'This collection is not wired in this host.';
+        explorerError = 'Recued cannot show this here.';
         explorerErrorRetryable = false;
       } else {
         explorerRecords = records;
@@ -7714,12 +7939,12 @@ export const bootstrapDataRoute = (
     instances: ReadonlyArray<CollectionInstanceRow>,
     recordId: string,
   ): Promise<ExplorerVerificationResolution> => {
-    const caller = opts.collectionGetCaller;
+    const caller = opts.collectionGetCaller || opts.fileChatCallers?.cloud ? getExplorerRecord : undefined;
     if (caller === undefined) {
       return {
         kind: 'choose',
         message:
-          'Choose the connected source that may contain this item to verify it.',
+          'Pick the connected source that might have this item, so Recued can check it.',
       };
     }
     const probes = await Promise.all(instances.map(async (instance) => {
@@ -7751,20 +7976,20 @@ export const bootstrapDataRoute = (
       return {
         kind: 'choose',
         message:
-          'This record id appears in more than one connected source. Choose the source you want to verify.',
+          'More than one connected source has this id. Pick the one you want Recued to check.',
       };
     }
     if (hasFailure) {
       return {
         kind: 'choose',
         message:
-          'Recued could not check every connected source. Choose a source to verify this item.',
+          'Recued could not check every connected source. Pick one for it to check.',
       };
     }
     return {
       kind: 'missing',
       message:
-        'This affected item is not currently in connected Data. It may have been deleted or not synced yet.',
+        'Recued cannot find this item in your Data. It may have been deleted, or it may not have been brought in yet.',
     };
   };
 
@@ -7799,13 +8024,28 @@ export const bootstrapDataRoute = (
       explorerRecords = [];
       explorerLoading = false;
       if (caller === undefined) {
-        explorerError = 'The collection explorer is not wired in this host.';
+        explorerError = 'Recued cannot browse this here.';
         explorerErrorRetryable = false;
       }
       return;
     }
     try {
-      const { instances } = await caller();
+      let instances: CollectionInstanceRow[];
+      if (tab === 'files' && opts.fileChatCallers?.cloud) {
+        const [local, remote] = await Promise.allSettled([caller(), opts.fileChatCallers.cloud.sources().then(result => {
+          if (!Array.isArray(result.sources)) throw new Error('This server cannot reach files you have connected.');
+          return result.sources;
+        })]);
+        if (disposed || seq !== explorerSeq) return;
+        cloudSources = remote.status === 'fulfilled' ? remote.value : [];
+        cloudSourcesError = [
+          ...(local.status === 'rejected' ? [`Could not load saved files. ${humanizeRpcError(local.reason)}`] : []),
+          ...(remote.status === 'rejected' ? [`Could not load connected file sources. ${humanizeRpcError(remote.reason)}`] : []),
+        ].join(' ');
+        instances = [...(local.status === 'fulfilled' ? local.value.instances : []), ...cloudSources.map(cloudFileInstance)];
+      } else {
+        instances = (await caller()).instances;
+      }
       if (disposed || seq !== explorerSeq) return;
       explorerInstances = instances.filter((i) => i.platform === platform);
       const preferredSlug = requestedSlug ?? previouslySelectedSlug;
@@ -7845,8 +8085,8 @@ export const bootstrapDataRoute = (
       if (requestedSlug !== null && explorerSelectedSlug === null) {
         explorerError =
           opts.savedView === undefined
-            ? 'The connected source for this cited record is no longer available.'
-            : 'The connected source for this view is no longer available. Choose a source to continue.';
+            ? 'The source this record came from is gone.'
+            : 'The source for this view is gone. Pick another one to carry on.';
         explorerErrorRetryable = false;
       }
       if (explorerSelectedSlug !== null) {
@@ -7868,6 +8108,7 @@ export const bootstrapDataRoute = (
   const selectExplorerInstance = async (slug: string): Promise<void> => {
     const platform = EXPLORER_TAB_PLATFORM[activeTab];
     if (platform === undefined || slug === explorerSelectedSlug) return;
+    cloudFileQuery = cloudFileQueryInput = ''; cloudFileCursor = undefined; cloudBrowseError = '';
     explorerSelectedSlug = slug;
     if (opts.savedView !== undefined) savedExplorerScopes.set(activeTab, slug);
     explorerRecords = [];
@@ -7998,6 +8239,7 @@ export const bootstrapDataRoute = (
 
   /** Open one record's detail (lazy `collection.get`). */
   const openExplorerRecord = async (record_id: string): Promise<void> => {
+    fileLifecycle = undefined; fileLifecycleGeneration++; fileLifecycleNotice = '';
     retireRunVerificationForDifferentItem(activeTab, record_id);
     pendingRescheduleOpenFocusId = null;
     explorerDetailRetryable = false;
@@ -8022,7 +8264,7 @@ export const bootstrapDataRoute = (
     }
     const tab = activeTab;
     const platform = EXPLORER_TAB_PLATFORM[tab];
-    const caller = opts.collectionGetCaller;
+    const caller = opts.collectionGetCaller || opts.fileChatCallers?.cloud ? getExplorerRecord : undefined;
     if (platform === undefined || explorerSelectedSlug === null) return;
     const slug = explorerSelectedSlug;
     explorerDetail = { record_id, loading: true };
@@ -8032,7 +8274,7 @@ export const bootstrapDataRoute = (
       explorerDetail = {
         record_id,
         loading: false,
-        error: 'Record detail is not wired in this host.',
+        error: 'Recued cannot open records here.',
       };
       render();
       return;
@@ -8050,7 +8292,7 @@ export const bootstrapDataRoute = (
     const detail = explorerDetail;
     const tab = activeTab;
     const platform = EXPLORER_TAB_PLATFORM[tab];
-    const caller = opts.collectionGetCaller;
+    const caller = opts.collectionGetCaller || opts.fileChatCallers?.cloud ? getExplorerRecord : undefined;
     if (
       explorerDetailRetrying
       || !explorerDetailRetryable
@@ -8128,6 +8370,103 @@ export const bootstrapDataRoute = (
     syncDataHash(); // back to the list → `#data/<tab>`
   };
 
+  const validatedRecordsView = (namespace: RecordsNamespaceView, kind: string) => {
+    const entity = namespace.schema.entities[kind];
+    if (entity === undefined) throw new Error('That kind of record is gone.');
+    parseRecordsViewDraft(recordsViewDraft(recordsState.view), entity);
+    return recordsState.view;
+  };
+
+  const loadRecordsPage = async (cursor?: string, page = 1): Promise<void> => {
+    const namespace = recordsState.selectedNamespace;
+    const kind = recordsState.selectedKind;
+    const caller = opts.recordsSearchCaller;
+    if (!namespace || !kind || !caller || recordsState.loading || hasRecordsInFlightWork()) return;
+    const seq = ++recordsSeq;
+    const focus = activeRecordsFocusIdentity();
+    recordsState = { ...recordsState, loading: true, error: undefined,
+      ...(cursor === undefined ? { records: [], nextCursor: null, prevCursor: null, page: 1 } : {}) };
+    render();
+    focusRecordsIdentity(focus);
+    try {
+      const response = await caller({ owner: namespace.owner, entity: kind,
+        ...validatedRecordsView(namespace, kind), include_orphaned: true, limit: DEFAULT_LIMIT,
+        ...(cursor === undefined ? {} : { cursor }) });
+      if (disposed || seq !== recordsSeq) return;
+      recordsState = { ...recordsState, records: response.records, page, loading: false,
+        nextCursor: response.next_cursor ?? null, prevCursor: response.prev_cursor ?? null };
+    } catch (error) {
+      if (disposed || seq !== recordsSeq) return;
+      // Keep the last successful page and its handles for retry. Refresh results
+      // starts a new query if the server expired or invalidated a page handle.
+      recordsState = { ...recordsState, loading: false, error: humanizeRpcError(error) };
+    }
+    const settledFocus = activeRecordsFocusIdentity();
+    render();
+    focusRecordsIdentity(settledFocus);
+    syncDataHash();
+  };
+
+  const applyRecordsView = (reset = false): void => {
+    if (activeTab !== 'records' || recordsState.loading || hasRecordsInFlightWork()) return;
+    const entity = recordsState.selectedNamespace?.schema.entities[recordsState.selectedKind ?? ''];
+    if (!entity) return;
+    try {
+      const view = reset ? {} : parseRecordsViewDraft(recordsState.viewDraft, entity);
+      if (activeRecordsAction()?.startsWith('records-filter-')) focusRecordsAction('records-apply-view');
+      recordsState = { ...recordsState, view, viewDraft: recordsViewDraft(view) };
+      pendingLoadPromise = loadRecordsPage();
+    } catch (error) {
+      const focus = activeRecordsFocusIdentity();
+      recordsState = { ...recordsState, error: humanizeRpcError(error) };
+      render();
+      focusRecordsIdentity(focus);
+    }
+  };
+
+  const changeRecordsViewDraft = (target: HTMLInputElement | HTMLSelectElement): boolean => {
+    const action = target.getAttribute('data-action');
+    if (activeTab !== 'records' || !['records-filter-field', 'records-filter-op', 'records-filter-value', 'records-view-sort'].includes(action ?? '')) return false;
+    if (recordsState.loading || hasRecordsInFlightWork()) return true;
+    const draft = recordsState.viewDraft;
+    if (action === 'records-view-sort') recordsState = { ...recordsState, viewDraft: { ...draft, sort: target.value } };
+    else {
+      const index = Number(target.getAttribute('data-records-filter-index'));
+      const row = draft.filters[index];
+      if (!row) return true;
+      let changed = { ...row, [action === 'records-filter-field' ? 'field' : action === 'records-filter-op' ? 'op' : 'value']: target.value };
+      if (action === 'records-filter-field') {
+        const field = recordsState.selectedNamespace?.schema.entities[recordsState.selectedKind ?? '']?.fields.find(field => field.key === target.value);
+        if (!field) return true;
+        changed = { field: field.key, op: recordsFilterOperators(field)[0] ?? 'is_null', value: '' };
+      }
+      if (action === 'records-filter-op') changed.value = '';
+      recordsState = { ...recordsState, viewDraft: { ...draft, filters: draft.filters.map((entry, i) => i === index ? changed : entry) } };
+    }
+    if (action === 'records-filter-value') {
+      // Keep the input and caret mounted while reflecting draft availability.
+      const pending = recordsViewHasDraft(recordsState);
+      const status = routeRoot.querySelector<HTMLElement>('[data-records-draft-status]');
+      if (status) status.hidden = !pending;
+      for (const [action, available] of [
+        ['records-next-page', recordsState.nextCursor !== null],
+        ['records-prev-page', recordsState.prevCursor !== null],
+        ['records-first-page', true],
+      ] as const) {
+        const button = routeRoot.querySelector(`[data-action="${action}"]`);
+        if (pending || !available) button?.setAttribute('aria-disabled', 'true');
+        else button?.removeAttribute('aria-disabled');
+      }
+      opts.onViewChange?.(currentView());
+    }
+    else {
+      const focus = activeRecordsFocusIdentity();
+      render();
+      focusRecordsIdentity(focus);
+    }
+    return true;
+  };
+
   const loadRecordsNamespace = async (
     namespace: RecordsNamespaceView,
     preferredKind?: string,
@@ -8141,6 +8480,7 @@ export const bootstrapDataRoute = (
     }
     recordsState = {
       ...recordsState,
+      ...(preferredKind === undefined ? initialRecordsBrowseState() : { nextCursor: null, prevCursor: null, page: 1 }),
       selectedNamespace: namespace,
       selectedKind: null,
       kinds: [],
@@ -8169,7 +8509,7 @@ export const bootstrapDataRoute = (
       recordsState = {
         ...recordsState,
         loading: false,
-        error: 'The Records owner control plane is not wired in this host.',
+        error: 'Recued cannot manage Records here.',
       };
       return;
     }
@@ -8188,7 +8528,7 @@ export const bootstrapDataRoute = (
       const kinds = Object.keys(namespace.schema.entities).sort().map((kind) =>
         counts.get(kind) ?? { kind, rows: 0, payload_bytes: 0 });
       if (opts.savedView !== undefined && preferredKind !== undefined && !kinds.some((kind) => kind.kind === preferredKind)) {
-        recordsState = { ...recordsState, kinds, loading: false, error: 'The record kind selected for this view is no longer available. Choose a kind to continue.' };
+        recordsState = { ...recordsState, kinds, loading: false, error: 'The kind you picked is gone. Choose another one to carry on.' };
         return;
       }
       const selectedKind = preferredKind && kinds.some((kind) => kind.kind === preferredKind)
@@ -8197,6 +8537,7 @@ export const bootstrapDataRoute = (
       if (opts.savedView !== undefined) savedRecordsSelection = { owner: namespace.owner, entity: selectedKind };
       recordsState = {
         ...recordsState,
+        ...(preferredKind !== undefined && selectedKind !== preferredKind ? initialRecordsBrowseState() : {}),
         kinds,
         selectedKind,
         retention: retentionResponse.policies,
@@ -8209,11 +8550,13 @@ export const bootstrapDataRoute = (
       const result = await searchCaller({
         owner: namespace.owner,
         entity: selectedKind,
+        ...validatedRecordsView(namespace, selectedKind),
         include_orphaned: true,
         limit: DEFAULT_LIMIT,
       });
       if (disposed || seq !== recordsSeq) return;
-      recordsState = { ...recordsState, records: result.records, loading: false };
+      recordsState = { ...recordsState, records: result.records, loading: false,
+        nextCursor: result.next_cursor ?? null, prevCursor: result.prev_cursor ?? null };
     } catch (error) {
       if (disposed || seq !== recordsSeq) return;
       recordsState = {
@@ -8238,7 +8581,7 @@ export const bootstrapDataRoute = (
         globalQuota: null,
         selectedNamespace: null,
         loading: false,
-        error: 'The Records owner control plane is not wired in this host.',
+        error: 'Recued cannot manage Records here.',
       };
       return;
     }
@@ -8261,12 +8604,13 @@ export const bootstrapDataRoute = (
       if (selected === null) {
         recordsState = { ...recordsState, records: [], kinds: [], selectedKind: null, detail: null,
           diagnostics: null, outbox: null, outboxOpen: false, retention: {}, loading: false,
-          ...(previous === undefined ? {} : { error: 'The pack selected for this view is no longer available. Choose a pack to continue.' }) };
+          ...(previous === undefined ? {} : { error: 'The Pack you picked is gone. Choose another one to carry on.' }) };
         return;
       }
       await loadRecordsNamespace(
         selected,
-        recordsState.selectedKind ?? savedRecordsSelection?.entity ?? undefined,
+        previous !== undefined && recordsOwnerKey(previous) === recordsOwnerKey(selected.owner)
+          ? recordsState.selectedKind ?? savedRecordsSelection?.entity ?? undefined : undefined,
         returnFocusId,
       );
     } catch (error) {
@@ -8304,7 +8648,8 @@ export const bootstrapDataRoute = (
       loadingKind: null,
       error: undefined,
     };
-    await loadRecordsNamespace(selected);
+    await loadRecordsNamespace(selected, selectedKey === key
+      ? recordsState.selectedKind ?? savedRecordsSelection?.entity ?? undefined : undefined);
     if (
       disposed
       || activeTab !== 'records'
@@ -8333,6 +8678,7 @@ export const bootstrapDataRoute = (
     const focusedControl = activeRecordsFocusIdentity();
     recordsState = {
       ...recordsState,
+      ...(recordsState.selectedKind === kind ? { nextCursor: null, prevCursor: null, page: 1 } : initialRecordsBrowseState()),
       selectedKind: kind,
       records: [],
       detail: null,
@@ -8348,11 +8694,13 @@ export const bootstrapDataRoute = (
       const result = await caller({
         owner: namespace.owner,
         entity: kind,
+        ...validatedRecordsView(namespace, kind),
         include_orphaned: true,
         limit: DEFAULT_LIMIT,
       });
       if (disposed || seq !== recordsSeq) return;
-      recordsState = { ...recordsState, records: result.records, loading: false };
+      recordsState = { ...recordsState, records: result.records, loading: false,
+        nextCursor: result.next_cursor ?? null, prevCursor: result.prev_cursor ?? null };
     } catch (error) {
       if (disposed || seq !== recordsSeq) return;
       recordsState = {
@@ -8491,7 +8839,7 @@ export const bootstrapDataRoute = (
     }
     const view = doc.defaultView;
     if (view === null || view === undefined || typeof view.URL?.createObjectURL !== 'function') {
-      throw new Error('This host cannot download files.');
+      throw new Error('You cannot download files here.');
     }
     const blob = new view.Blob([JSON.stringify(envelope, null, 2)], { type: 'application/json' });
     const url = view.URL.createObjectURL(blob);
@@ -8518,7 +8866,7 @@ export const bootstrapDataRoute = (
     }
     const view = doc.defaultView;
     if (view === null || view === undefined || typeof view.URL?.createObjectURL !== 'function') {
-      throw new Error('This host cannot download files.');
+      throw new Error('You cannot download files here.');
     }
     const blob = new view.Blob([envelope.csv], { type: 'text/csv;charset=utf-8' });
     const url = view.URL.createObjectURL(blob);
@@ -8560,10 +8908,10 @@ export const bootstrapDataRoute = (
       const safe = `${namespace.owner.publisher}-${namespace.owner.pack_slug}${entity ? `-${entity}` : ''}`
         .replace(/[^a-zA-Z0-9._-]+/g, '-');
       if (format === 'csv') {
-        if (envelope.format !== 'recued.records.csv.v1') throw new Error('Server returned the wrong Records export format.');
+        if (envelope.format !== 'recued.records.csv.v1') throw new Error('Your server sent back the wrong kind of file.');
         downloadRecordsCsv(`${safe}-records.csv`, envelope);
       } else {
-        if (envelope.format !== 'recued.records.v1') throw new Error('Server returned the wrong Records export format.');
+        if (envelope.format !== 'recued.records.v1') throw new Error('Your server sent back the wrong kind of file.');
         downloadRecordsExport(`${safe}-records.json`, envelope);
       }
     } catch (error) {
@@ -8801,7 +9149,39 @@ export const bootstrapDataRoute = (
     if (activeTab === 'today') {
       todayRefreshing = true;
       todayLiveRefreshQueued = false;
-      const snapshot = await loadToday(opts, (opts.now ?? Date.now)(), () => !disposed && generation === loadGeneration);
+      const stillCurrent = (): boolean => !disposed && generation === loadGeneration;
+      // ⛔⛔ PARTIAL PAINTS ON THE FIRST LOAD ONLY — never on a refresh, and the
+      // reason is focus. Each paint replaces the view's DOM, and the route
+      // recaptures the focused control from `doc.activeElement` at the START of
+      // every render: the first partial that does not yet contain the focused
+      // row drops focus to <body>, and every later paint then reads "nothing
+      // was focused" and has nothing to restore. Caught by the e2e that focuses
+      // a row and advances the clock, not by any unit test.
+      //
+      // ⚖ And it costs nothing: a refresh already has the previous snapshot on
+      // screen under "Loading again. These are the old results." Painting partials
+      // over results that are already there buys no earlier information — the
+      // problem partials exist to solve is the FIRST paint withholding
+      // everything while three of four reads have answered.
+      const paintPartials = todaySnapshot === null;
+      const snapshot = await loadToday(
+        opts,
+        (opts.now ?? Date.now)(),
+        stillCurrent,
+        // ⛔ Guarded by the SAME generation check as the final assignment: a
+        // partial from a retired load must not overwrite a newer one, and
+        // unlike the final assignment this callback can fire many times while a
+        // newer refresh is already running. ⚠ `loading` stays true throughout
+        // and the snapshot carries `complete: false`, so no partial paint
+        // claims a finished read.
+        paintPartials
+          ? (partial) => {
+              if (!stillCurrent()) return;
+              todaySnapshot = partial;
+              render();
+            }
+          : undefined,
+      );
       if (disposed || generation !== loadGeneration) return;
       todaySnapshot = snapshot;
       todayRefreshing = false;
@@ -8940,7 +9320,7 @@ export const bootstrapDataRoute = (
       // broken search, and the one state where saying so matters most. Caught
       // by the route test, not by any unit test on either side of the seam.
       universalSearchGroups = undefined;
-      universalSearchError = 'Search is not wired on this server.';
+      universalSearchError = 'This server cannot search.';
       universalSearchLoading = false;
       render();
       return;
@@ -9312,6 +9692,12 @@ export const bootstrapDataRoute = (
     if (isWorkEntityTab(tab)) {
       workEntityState = selectKindTransition(workEntityState, tab);
     }
+    // ⛔ NOT WHEN THE CALLER IS CLAIMING THE TAB ITSELF. `focusActivatedTab` is
+    // the ARIA tablist's roving-focus path (arrow keys / Home / End), which
+    // must leave focus ON the tab so the owner can keep arrowing. Claiming the
+    // box there ejected a keyboard user out of the tablist at this one tab and
+    // stranded them — caught only by the e2e that drives real arrow keys.
+    if (tab === 'search' && !focusActivatedTab) pendingUniversalSearchFocus = true;
     syncDataHash();
     pendingLoadPromise = refreshActive();
     await pendingLoadPromise;
@@ -9609,7 +9995,7 @@ export const bootstrapDataRoute = (
         memoryEditOpeningId = null;
         memoryEditError = {
           memoryId: memory_id,
-          message: 'Only your own memories can be edited.',
+          message: 'You can only edit your own memories.',
         };
         render();
         focusMemoryEditAction(memory_id);
@@ -9662,7 +10048,7 @@ export const bootstrapDataRoute = (
     const updateCaller = opts.memoryUpdateCaller;
     const isEdit = memoryCompose.mode === 'edit' && memoryCompose.editId !== undefined;
     if (isEdit ? updateCaller === undefined : createCaller === undefined) {
-      memoryCompose = { ...memoryCompose, error: 'Memory writes are not wired in this host.' };
+      memoryCompose = { ...memoryCompose, error: 'You cannot save memories here.' };
       render();
       return;
     }
@@ -10032,7 +10418,7 @@ export const bootstrapDataRoute = (
     syncMemoryImportFromDom();
     const importCaller = opts.memoryImportCaller;
     if (importCaller === undefined) {
-      memoryImport = { ...memoryImport, error: 'Memory import is not wired in this host.' };
+      memoryImport = { ...memoryImport, error: 'You cannot bring memories in here.' };
       render();
       focusMemoryImportSubmit();
       return;
@@ -10047,13 +10433,13 @@ export const bootstrapDataRoute = (
           ? (parsed as { entries?: unknown }).entries
           : undefined;
     } catch {
-      memoryImport = { ...memoryImport, error: 'Could not parse JSON — paste a valid export.' };
+      memoryImport = { ...memoryImport, error: 'Recued could not read that. Paste a file it can understand.' };
       render();
       focusMemoryImportSubmit();
       return;
     }
     if (!Array.isArray(entries)) {
-      memoryImport = { ...memoryImport, error: 'Expected an "entries" array (or a bare array).' };
+      memoryImport = { ...memoryImport, error: 'Recued expected a list of entries.' };
       render();
       focusMemoryImportSubmit();
       return;
@@ -10501,6 +10887,24 @@ export const bootstrapDataRoute = (
     render();
     captureWorkEntityDialogBaseline();
     focusWorkEntityDialog();
+    // D-267 — the provenance feed, fetched AFTER the dialog is up and never
+    // awaited by the open path: the editor is the point and must not wait on a
+    // history read. ⚠ Guarded by the same `seq` as the open, so a feed arriving
+    // for a dialog the owner already closed or replaced paints nothing.
+    workEntityTimeline = null;
+    if (opts.timelineCaller !== undefined) {
+      void (async () => {
+        try {
+          const response = await opts.timelineCaller!({ entity_id: `${kind}:${id}` });
+          if (disposed || seq !== workEntityDialogOpenSeq) return;
+          workEntityTimeline = { kind, id, entries: response.entries };
+          render();
+        } catch {
+          // A history that cannot be read is not an error the editor owes the
+          // owner — the section stays absent rather than claiming an empty past.
+        }
+      })();
+    }
   };
 
   const openBookingDetail = async (id: string): Promise<void> => {
@@ -10589,7 +10993,7 @@ export const bootstrapDataRoute = (
     ) {
       bookingManageLinkNotice = {
         kind: 'error',
-        text: 'This booking cannot produce a visitor reschedule link.',
+        text: 'Recued cannot make a link for changing this booking.',
       };
       render();
       return;
@@ -10628,7 +11032,7 @@ export const bootstrapDataRoute = (
       bookingManageLinkNotice = copied
         ? {
             kind: 'ok',
-            text: 'Reschedule link copied — it is single-use and expires soon.',
+            text: 'Link copied. It works once, and only for a short while.',
           }
         : { kind: 'ok', text: `Reschedule link: ${url}` };
       render();
@@ -10753,7 +11157,7 @@ export const bootstrapDataRoute = (
     if (opts.workEntityUpsertCaller === undefined) {
       workEntityState = setDialogSubmitErrorTransition(
         workEntityState,
-        'work_entity.upsert caller is not wired in this host.',
+        'You cannot save items here.',
       );
       render();
       return;
@@ -10823,7 +11227,7 @@ export const bootstrapDataRoute = (
     id: string,
   ): Promise<void> => {
     if (opts.workEntityDeleteCaller === undefined) {
-      errors = { ...errors, work_entities: 'work_entity.delete caller is not wired in this host.' };
+      errors = { ...errors, work_entities: 'You cannot delete items here.' };
       render();
       return;
     }
@@ -11132,7 +11536,7 @@ export const bootstrapDataRoute = (
     if (opts.contactUpsertCaller === undefined) {
       contactDialog = {
         ...contactDialog,
-        submit_error: 'contact.upsert caller is not wired in this host.',
+        submit_error: 'You cannot save contacts here.',
       };
       render();
       return;
@@ -11184,7 +11588,7 @@ export const bootstrapDataRoute = (
 
   const deleteContact = async (email: string): Promise<void> => {
     if (opts.contactDeleteCaller === undefined) {
-      errors = { ...errors, contacts: 'contact.delete caller is not wired in this host.' };
+      errors = { ...errors, contacts: 'You cannot delete contacts here.' };
       render();
       return;
     }
@@ -11259,7 +11663,7 @@ export const bootstrapDataRoute = (
       }
       formResponseAutomationState = {
         status: 'error',
-        message: `Couldn’t load saved automations: ${humanizeRpcError(error)}`,
+        message: `Recued could not load your saved automations: ${humanizeRpcError(error)}`,
       };
     }
     render();
@@ -11304,7 +11708,7 @@ export const bootstrapDataRoute = (
       formResponseRunModal = null;
       formResponseAutomationState = {
         status: 'error',
-        message: `Couldn’t open run review: ${humanizeRpcError(error)}`,
+        message: `Recued could not open the run: ${humanizeRpcError(error)}`,
       };
       render();
     }
@@ -11487,7 +11891,7 @@ export const bootstrapDataRoute = (
     render();
     try {
       if (opts.formResponseGetCaller === undefined) {
-        throw new Error('form_response.get caller is not wired in this host.');
+        throw new Error('Recued cannot open answers here.');
       }
       const result = await opts.formResponseGetCaller({ submission_id });
       if (
@@ -11599,13 +12003,13 @@ export const bootstrapDataRoute = (
     try {
       const parsed = JSON.parse(valuesControl.value) as unknown;
       if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-        throw new Error('Answers must be a JSON object.');
+        throw new Error('Answers have to be a JSON object.');
       }
       values = parsed as Record<string, unknown>;
     } catch (error) {
       formResponseSaveError = error instanceof Error
         ? error.message
-        : 'Answers must be valid JSON.';
+        : 'Recued could not read those answers. Check the JSON.';
       pendingFormResponseEditorFocus = {
         submissionId: anchor.submission_id,
         control: 'values',
@@ -11614,7 +12018,7 @@ export const bootstrapDataRoute = (
       return;
     }
     if (!FORM_RESPONSE_LIFECYCLE_STATES.includes(stateControl.value as FormResponseLifecycleState)) {
-      formResponseSaveError = 'Choose a valid lifecycle state.';
+      formResponseSaveError = 'Pick one of the states offered.';
       pendingFormResponseEditorFocus = {
         submissionId: anchor.submission_id,
         control: 'state',
@@ -11648,7 +12052,7 @@ export const bootstrapDataRoute = (
         ? null
         : formResponseEditorDraftFrom(response);
       captureFormResponseEditorBaseline();
-      if (response === null) formResponseSaveError = 'This form response no longer exists.';
+      if (response === null) formResponseSaveError = 'That answer is gone.';
       pendingLoadPromise = refreshActive(true);
       await pendingLoadPromise;
     } catch (error) {
@@ -11677,7 +12081,7 @@ export const bootstrapDataRoute = (
     }
     const view = doc.defaultView;
     if (view === null || view === undefined || typeof view.URL?.createObjectURL !== 'function') {
-      throw new Error('This host cannot download files.');
+      throw new Error('You cannot download files here.');
     }
     const blob = new view.Blob([file.content], { type: file.mime_type });
     const url = view.URL.createObjectURL(blob);
@@ -11726,7 +12130,7 @@ export const bootstrapDataRoute = (
         if (guard >= MAX_CHUNKS) {
           throw new Error(
             `Export is larger than ${MAX_CHUNKS} chunks (${records} records so far). `
-            + 'Nothing was downloaded — narrow the range and try again.',
+            + 'Nothing was downloaded. Pick a smaller range and try again.',
           );
         }
         file = await opts.formResponseExportCaller({
@@ -11772,7 +12176,7 @@ export const bootstrapDataRoute = (
     syncDataHash();
     if (opts.timelineCaller === undefined) {
       loadingTimeline = false;
-      errors = { ...errors, timeline: 'data.timeline caller is not wired in this host.' };
+      errors = { ...errors, timeline: 'Recued cannot show a timeline here.' };
       render();
       return;
     }
@@ -11895,7 +12299,7 @@ export const bootstrapDataRoute = (
       { ok: true; response: TimelineResponse | null } | { ok: false; message: string }
     > => {
       if (opts.timelineCaller === undefined) {
-        return { ok: false, message: 'data.timeline caller is not wired in this host.' };
+        return { ok: false, message: 'Recued cannot show a timeline here.' };
       }
       try {
         const response = await opts.timelineCaller({
@@ -11979,6 +12383,45 @@ export const bootstrapDataRoute = (
     view.URL.revokeObjectURL(url);
   };
 
+  const loadFileUsage = async (error?: string): Promise<void> => {
+    const fileId = explorerDetail?.record_id;
+    if (!fileId || !opts.fileUsageCaller || activeTab !== 'files') return;
+    const generation = ++fileLifecycleGeneration;
+    fileLifecycle = { fileId, busy: true, ...(error ? { error } : {}) }; render();
+    try {
+      const preview = await opts.fileUsageCaller({ record_id: fileId });
+      if (disposed || generation !== fileLifecycleGeneration || activeTab !== 'files' || explorerDetail?.record_id !== fileId) return;
+      fileLifecycle = { fileId, preview, busy: false, ...(error ? { error } : {}) };
+    } catch (failure) {
+      if (disposed || generation !== fileLifecycleGeneration || activeTab !== 'files' || explorerDetail?.record_id !== fileId) return;
+      fileLifecycle = { fileId, busy: false, error: errMessage(failure) };
+    }
+    render();
+    routeRoot.querySelector<HTMLElement>('[data-file-lifecycle]')?.focus();
+  };
+  const mutateFile = async (action: 'archive' | 'delete'): Promise<void> => {
+    const current = fileLifecycle;
+    if (!current?.preview || current.busy || (action === 'delete' && current.preview.in_use) || !opts.fileMutateCaller
+      || activeTab !== 'files' || explorerDetail?.record_id !== current.fileId
+      || (action === 'delete' && !current.confirmDelete)) return;
+    const generation = ++fileLifecycleGeneration;
+    fileLifecycle = { ...current, busy: true }; render();
+    try {
+      await opts.fileMutateCaller({ record_id: current.preview.record_id, action, revision: current.preview.revision });
+      if (disposed || generation !== fileLifecycleGeneration || activeTab !== 'files' || explorerDetail?.record_id !== current.fileId) return;
+      fileLifecycle = undefined; explorerDetail = null;
+      fileLifecycleNotice = action === 'archive' ? 'File put away. You can still find it under archived files, and in your conversations.'
+        : 'File deleted for good. The messages about it are still there.';
+      await loadExplorer('files');
+      if (!disposed) render();
+    } catch (error) {
+      if (disposed || generation !== fileLifecycleGeneration || activeTab !== 'files' || explorerDetail?.record_id !== current.fileId) return;
+      // Never retry a destructive action automatically. Refresh its complete
+      // impact and require a fresh confirmation after a race or lost response.
+      await loadFileUsage(errMessage(error));
+    }
+  };
+
   const downloadFile = async (): Promise<void> => {
     if (opts.fileReadCaller === undefined || downloadingFile) return;
     // D-198 Slice 5 Phase 1c — the Files tab browses via the explorer, so the
@@ -12034,14 +12477,14 @@ export const bootstrapDataRoute = (
     const sourceId =
       record !== null && typeof record.source_id === 'string' ? record.source_id : '';
     if (record === null || slug === null || sourceId.length === 0) {
-      rescheduleForm = { ...rescheduleForm, error: 'This event cannot be rescheduled.' };
+      rescheduleForm = { ...rescheduleForm, error: 'You cannot move this event.' };
       render();
       focusRescheduleAction('reschedule-input');
       return;
     }
     const newStart = new Date(rescheduleForm.value).getTime();
     if (!Number.isFinite(newStart)) {
-      rescheduleForm = { ...rescheduleForm, error: 'Pick a valid new start time.' };
+      rescheduleForm = { ...rescheduleForm, error: 'Pick a new start time.' };
       render();
       focusRescheduleAction('reschedule-input');
       return;
@@ -12075,7 +12518,7 @@ export const bootstrapDataRoute = (
       });
       if (disposed || seq !== explorerSeq) return;
       if (res.awaiting_approval === true) {
-        rescheduleForm = { value: keepValue, submitting: false, error: 'This move is waiting for your approval.' };
+        rescheduleForm = { value: keepValue, submitting: false, error: 'This move needs you to say yes.' };
         render();
         return;
       }
@@ -12086,7 +12529,7 @@ export const bootstrapDataRoute = (
         void refresh;
         return;
       }
-      rescheduleForm = { value: keepValue, submitting: false, error: 'Reschedule failed. Please try again.' };
+      rescheduleForm = { value: keepValue, submitting: false, error: 'Recued could not move it. Try again.' };
       render();
     } catch (err) {
       if (disposed || seq !== explorerSeq) return;
@@ -12740,6 +13183,14 @@ export const bootstrapDataRoute = (
       if (!loading && !todayRefreshing) startRefresh();
       return;
     }
+    // D-267 — Today's zero-state opens the SAME shared Create overlay as the
+    // chat composer chip and the drawer seat. Not a fourth capture form: one
+    // modal, one commit path, so a capture made from Today is indistinguishable
+    // from one made anywhere else. The button only renders when this is wired.
+    if (action === TODAY_CREATE_ACTION) {
+      opts.openCreateOverlay?.();
+      return;
+    }
     // D-198 Slice 1b — Data | Memory lens switch + Memory origin filter.
     if (action === MEMORY_LENS_SELECT_ACTION) {
       const lens = target.getAttribute(MEMORY_LENS_VALUE_ATTR);
@@ -12836,6 +13287,31 @@ export const bootstrapDataRoute = (
       || recordsState.purging
       || recordsState.loadingNamespaceKey !== null
       || recordsState.loadingKind !== null;
+    if (action === 'records-add-filter' || action === 'records-remove-filter') {
+      if (recordsNavigationLocked || recordsState.loading || hasRecordsInFlightWork()) return;
+      const filters = recordsState.viewDraft.filters;
+      const fields = recordsState.selectedNamespace?.schema.entities[recordsState.selectedKind ?? '']?.fields ?? [];
+      const field = fields.find(field => field.kind !== 'id' && !filters.some(row => row.field === field.key));
+      if (action === 'records-add-filter' && (!field || filters.length >= RECORDS_MAX_PREDICATES)) return;
+      recordsState = { ...recordsState, viewDraft: { ...recordsState.viewDraft, filters: action === 'records-add-filter'
+        ? [...filters, { field: field!.key, op: recordsFilterOperators(field!)[0]!, value: '' }]
+        : filters.filter((_, i) => i !== Number(target.getAttribute('data-records-filter-index'))) } };
+      render();
+      focusRecordsAction('records-add-filter');
+      return;
+    }
+    if (action === 'records-reset-view' || action === 'records-apply-view') {
+      ev.preventDefault();
+      if (!recordsNavigationLocked) applyRecordsView(action === 'records-reset-view');
+      return;
+    }
+    if (action === 'records-next-page' || action === 'records-prev-page' || action === 'records-first-page') {
+      if (recordsNavigationLocked || recordsState.loading || recordsViewHasDraft(recordsState)) return;
+      const cursor = action === 'records-next-page' ? recordsState.nextCursor : recordsState.prevCursor;
+      if (action === 'records-first-page') pendingLoadPromise = loadRecordsPage();
+      else if (cursor) pendingLoadPromise = loadRecordsPage(cursor, Math.max(1, recordsState.page + (action === 'records-next-page' ? 1 : -1)));
+      return;
+    }
     if (action === RECORDS_SELECT_NAMESPACE_ACTION) {
       if (recordsNavigationLocked) return;
       const key = target.getAttribute(RECORDS_NAMESPACE_ATTR);
@@ -13369,6 +13845,44 @@ export const bootstrapDataRoute = (
       }
       return;
     }
+    if (action === 'file-cloud-search' || action === 'file-cloud-more') {
+      void browseCloudFiles(action === 'file-cloud-more'); return;
+    }
+    if (action === 'file-cloud-refresh') { if (activeTab === 'files') startRefresh(); return; }
+    if (action === 'file-preview') {
+      const fileId = explorerDetail?.record_id;
+      if (!fileId || activeTab !== 'files' || !opts.filePreviewCallers) return;
+      filePreviewAbort?.abort(); const abort = new AbortController(); filePreviewAbort = abort;
+      filePreviewRecord = { id: fileId, slug: explorerSelectedSlug };
+      void openFilePreview(doc, { record_id: fileId }, opts.filePreviewCallers, abort.signal).finally(() => {
+        if (filePreviewAbort === abort) { filePreviewAbort = null; filePreviewRecord = null; }
+      }); return;
+    }
+    if (action === 'file-use-in-chat') {
+      const fileId = explorerDetail?.record_id;
+      if (!fileId || activeTab !== 'files' || !opts.fileChatCallers || !opts.onUseFileInChat) return;
+      fileChatAbort?.abort(); const abort = new AbortController(); fileChatAbort = abort;
+      fileChatRecord = { id: fileId, slug: explorerSelectedSlug };
+      void openFileChatPicker(doc, fileId, opts.fileChatCallers, abort.signal).then(target => {
+        if (target && !disposed && !abort.signal.aborted && activeLens === 'data' && activeTab === 'files' && explorerDetail?.record_id === fileId) opts.onUseFileInChat!(target);
+      }).finally(() => {
+        if (fileChatAbort === abort) { fileChatAbort = null; fileChatRecord = null; }
+      });
+      return;
+    }
+    if (action === 'file-usage') { if (!fileLifecycle?.busy) pendingLoadPromise = loadFileUsage(); return; }
+    if (action === 'file-toggle-archived') {
+      showArchivedFiles = !showArchivedFiles; fileLifecycle = undefined; fileLifecycleGeneration++;
+      pendingLoadPromise = loadExplorer('files').then(() => { if (!disposed) render(); }); return;
+    }
+    if (action === 'file-delete' || action === 'file-delete-cancel') {
+      if (fileLifecycle && !fileLifecycle.busy) { fileLifecycle = { ...fileLifecycle, confirmDelete: action === 'file-delete' }; render();
+        routeRoot.querySelector<HTMLElement>('[data-file-lifecycle]')?.focus(); }
+      return;
+    }
+    if (action === 'file-archive' || action === 'file-delete-confirm') {
+      pendingLoadPromise = mutateFile(action === 'file-archive' ? 'archive' : 'delete'); return;
+    }
     if (action === 'download-file') {
       // Begin synchronously so the state guard owns a second click/Enter before
       // it can queue behind the first request and become a second download.
@@ -13457,6 +13971,8 @@ export const bootstrapDataRoute = (
   const onInput = (ev: Event): void => {
     const target = ev.target as HTMLInputElement | HTMLTextAreaElement | null;
     if (target === null) return;
+    if (typeof target.getAttribute === 'function' && target.getAttribute('data-action') === 'records-filter-value'
+      && changeRecordsViewDraft(target as HTMLInputElement)) return;
     if (workEntityState.dialog !== null && !workEntityState.dialog.submitting && !workEntityDiscardGuardOpen
       && target.closest?.('.work-entity-dialog-form') != null) {
       // The form renderer owns its inputs. Keep the draft in route state too,
@@ -13614,6 +14130,9 @@ export const bootstrapDataRoute = (
         };
         return;
       }
+      if (target.getAttribute(DATA_ROUTE_ACTION_ATTR) === 'file-cloud-query') {
+        cloudFileQueryInput = target.value; return;
+      }
       if (target.hasAttribute(DATA_ROUTE_TIMELINE_ENTITY_ATTR)) {
         const changed = timelineEntityId !== target.value;
         timelineEntityId = target.value;
@@ -13632,6 +14151,7 @@ export const bootstrapDataRoute = (
   const onChange = (ev: Event): void => {
     const target = ev.target as HTMLSelectElement | null;
     if (target === null || typeof target.getAttribute !== 'function') return;
+    if (changeRecordsViewDraft(target)) return;
     if (workEntityState.dialog !== null && !workEntityState.dialog.submitting && !workEntityDiscardGuardOpen
       && target.closest?.('.work-entity-dialog-form') != null) {
       syncWorkEntityDialogFromDom();
@@ -13695,6 +14215,9 @@ export const bootstrapDataRoute = (
   };
 
   const onKeyDown = (ev: KeyboardEvent): void => {
+    if (ev.key === 'Enter' && targetWithAttr(ev, DATA_ROUTE_ACTION_ATTR)?.getAttribute(DATA_ROUTE_ACTION_ATTR) === 'file-cloud-query') {
+      ev.preventDefault(); void browseCloudFiles(false); return;
+    }
     const collectionTab = targetWithAttr(ev, DATA_ROUTE_TAB_ATTR);
     if (
       collectionTab !== null
@@ -13846,6 +14369,12 @@ export const bootstrapDataRoute = (
 
   routeRoot.addEventListener('click', onClick);
   routeRoot.addEventListener('input', onInput);
+  const onRecordsViewSubmit = (event: Event): void => {
+    if (!(event.target as HTMLElement | null)?.hasAttribute?.('data-records-view-form')) return;
+    event.preventDefault();
+    applyRecordsView();
+  };
+  routeRoot.addEventListener('submit', onRecordsViewSubmit);
   routeRoot.addEventListener('change', onChange);
   routeRoot.addEventListener('keydown', onKeyDown);
 
@@ -13927,6 +14456,20 @@ export const bootstrapDataRoute = (
   let liveRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   const runLiveRefresh = (): void => {
     if (disposed) return;
+    // Import publishes a warehouse event before its receipt reaches this UI.
+    // Keep that event (and unrelated writes) from retiring the active handoff.
+    // A remote page walk or search also stays stable until an explicit refresh.
+    if (activeLens === 'data' && activeTab === 'files'
+      && (filePreviewRecord !== null || fileChatRecord !== null || (explorerSelectedSlug !== null && cloudFileSourceId(explorerSelectedSlug)
+        && (explorerLoading || cloudLoadingMore || cloudFilePage > 1 || cloudFileQuery.length > 0
+          || (doc.activeElement as HTMLElement | null)?.getAttribute?.(DATA_ROUTE_ACTION_ATTR) === 'file-cloud-query')))) return;
+    // Broadcasts must not replace a page walk or an editor the owner is using.
+    // Refresh results explicitly starts a fresh read; idle first pages stay live.
+    if (activeLens === 'data' && activeTab === 'records'
+      && (recordsState.loading || recordsState.page > 1 || recordsViewHasDraft(recordsState)
+        || recordsState.detail !== null || recordsState.purgePending || recordsState.outboxOpen
+        || hasRecordsInFlightWork()
+        || (doc.activeElement as HTMLElement | null)?.closest?.('.records-view-controls, .records-pagination') != null)) return;
     // A calendar sync can keep emitting warehouse changes while Today pages
     // through its sources. Finish and paint this read before one follow-up.
     if (activeLens === 'data' && activeTab === 'today' && todayRefreshing) {
@@ -14076,9 +14619,9 @@ export const bootstrapDataRoute = (
     getLoadErrors: () => errors,
     hasInFlightWork: hasDataInFlightWork,
     inFlightWorkPrompt: () => hasRecordsInFlightWork()
-      ? 'A Records action is still in progress. Leave Data anyway?'
+      ? 'Something is still happening in Records. Leave Data anyway?'
       : hasDataInFlightWork()
-        ? 'A Data action is still in progress. Leave Data anyway?'
+        ? 'Something is still happening. Leave Data anyway?'
         : null,
     refresh: startRefresh,
     whenLoaded: () => pendingLoadPromise,
@@ -14136,6 +14679,7 @@ export const bootstrapDataRoute = (
     dispose: () => {
       if (disposed) return;
       disposed = true;
+      fileChatAbort?.abort(); filePreviewAbort?.abort();
       if (todayClock !== undefined) doc.defaultView?.clearInterval(todayClock);
       doc.removeEventListener?.('visibilitychange', onTodayVisible);
       contactSearchRefresh.cancel();
@@ -14157,6 +14701,7 @@ export const bootstrapDataRoute = (
         universalSearchTimer = null;
       }
       routeRoot.removeEventListener('change', onChange);
+      routeRoot.removeEventListener('submit', onRecordsViewSubmit);
       routeRoot.removeEventListener('keydown', onKeyDown);
       try {
         opts.root.removeChild(routeRoot);

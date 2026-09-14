@@ -264,15 +264,15 @@ export const RECEPTION_VISITOR_FIELD_REQUIREMENT_COPY: Readonly<
 > = {
   required: {
     label: 'Required',
-    help: 'The visitor must fill this in — the submission is rejected without it.',
+    help: 'Visitors have to fill this in. Without it, Recued turns the form away.',
   },
   optional: {
     label: 'Optional',
-    help: 'The field is shown but the visitor may leave it blank.',
+    help: 'Visitors see this box, but may leave it empty.',
   },
   omit: {
     label: 'Hidden',
-    help: 'The field is not rendered at all — the visitor never sees it.',
+    help: 'Visitors never see this box at all.',
   },
 };
 
@@ -443,42 +443,42 @@ export const buildEndpointCreateDispatch = (args: {
 export const RECEPTION_PAGE_CONFIG_ERROR_COPY: Readonly<
   Record<ReceptionPageConfigValidationCode, string>
 > = {
-  display_name_empty: 'Enter a display name — it is the visitor-facing heading on your Reception page.',
+  display_name_empty: 'Type a name. It is the heading visitors see on your Reception page.',
   display_name_too_long: `Display name is too long (max ${RECEPTION_PAGE_DISPLAY_NAME_MAX} characters).`,
   tagline_too_long: `Tagline is too long (max ${RECEPTION_PAGE_TAGLINE_MAX} characters).`,
-  tz_label_empty: 'Enter a timezone label — visitors use it to read your availability hints.',
+  tz_label_empty: 'Type a time zone. Visitors use it to work out when you are free.',
   tz_label_too_long: `Timezone label is too long (max ${RECEPTION_PAGE_TZ_LABEL_MAX} characters).`,
   response_time_estimate_too_long: `Response-time estimate is too long (max ${RECEPTION_PAGE_RESPONSE_TIME_ESTIMATE_MAX} characters).`,
   avatar_url_too_long: `Avatar URL is too long (max ${RECEPTION_PAGE_AVATAR_URL_MAX} characters).`,
   avatar_url_invalid:
-    'Avatar URL must be an http(s) link or a path under /reception/_static/ — javascript:/data:/file: URLs are rejected.',
+    'The picture link must start with http or https, or be a path under /reception/_static/. Recued turns away javascript:, data: and file: links.',
   preferred_contact_method_unknown:
-    'Pick contact methods from the closed list (email / phone / Slack / Telegram).',
+    'Pick how people can reach you: email, phone, Slack or Telegram.',
   sections_enabled_unknown_key:
-    'A page section toggle is malformed. Refresh the page + try again.',
+    'Recued could not read one of the switches. Load the page again and try once more.',
   linked_endpoints_unknown_key:
-    'A linked-endpoint reference is malformed. Refresh the page + try again.',
+    'Recued could not read one of the links. Load the page again and try once more.',
   custom_link_url_invalid:
-    'Each custom link URL must be an http(s) link or a path under /reception/_static/.',
-  custom_link_label_empty: 'Every custom link needs a non-empty label.',
+    'Each link must start with http or https, or be a path under /reception/_static/.',
+  custom_link_label_empty: 'Every link needs a name.',
   custom_link_label_too_long: `Custom link labels are too long (max ${RECEPTION_PAGE_CUSTOM_LINK_LABEL_MAX} characters).`,
   custom_links_count_exceeded: `Too many custom links (max ${RECEPTION_PAGE_CUSTOM_LINKS_MAX}).`,
-  link_button_invalid: `Each link button needs a label, an absolute HTTPS URL, and an optional text description up to ${RECEPTION_LINK_BUTTON_DESCRIPTION_MAX} characters.`,
+  link_button_invalid: `Each button needs a name and a full https address. You can add a short description, up to ${RECEPTION_LINK_BUTTON_DESCRIPTION_MAX} characters.`,
   link_buttons_count_exceeded: `Too many link buttons (max ${RECEPTION_PAGE_LINK_BUTTONS_MAX}).`,
   trust_footer_enabled_invalid:
-    'The trust-footer toggle is malformed. Refresh the page + try again.',
+    'Recued could not read that switch. Load the page again and try once more.',
   inbox_fanout_mode_invalid:
-    'The inbox notification setting is malformed. Refresh the page + try again.',
+    'Recued could not read that setting. Load the page again and try once more.',
 };
 
 /** § A.5.1 — per-`ReceptionPagePreferredContactMethod` chip copy. */
 export const RECEPTION_PAGE_PREFERRED_CONTACT_METHOD_COPY: Readonly<
   Record<ReceptionPagePreferredContactMethod, { label: string; help: string }>
 > = {
-  email: { label: 'Email', help: 'Surface email as a preferred way to reach you.' },
-  phone: { label: 'Phone', help: 'Surface phone as a preferred way to reach you.' },
-  slack: { label: 'Slack', help: 'Surface Slack as a preferred way to reach you.' },
-  telegram: { label: 'Telegram', help: 'Surface Telegram as a preferred way to reach you.' },
+  email: { label: 'Email', help: 'Show email as a good way to reach you.' },
+  phone: { label: 'Phone', help: 'Show your phone as a good way to reach you.' },
+  slack: { label: 'Slack', help: 'Show Slack as a good way to reach you.' },
+  telegram: { label: 'Telegram', help: 'Show Telegram as a good way to reach you.' },
 };
 
 /** § A.5.1 — page-section toggle keys + copy. Each maps a
@@ -500,31 +500,31 @@ export const RECEPTION_PAGE_SECTION_COPY: Readonly<
 > = {
   contact_card: {
     label: 'Contact card',
-    help: 'Your display name, tagline, avatar, and timezone — the visitor-facing identity block.',
+    help: 'Your name, your tagline, your picture and your time zone. This is what visitors see first.',
   },
   contact_methods: {
     label: 'Contact methods',
-    help: 'The preferred-contact-method chips you selected above.',
+    help: 'The ways to reach you that you picked above.',
   },
   availability_cta: {
-    label: 'Scheduling call-to-action',
-    help: 'A button linking to a scheduling link — populate the scheduling link reference below.',
+    label: 'A button for booking time',
+    help: 'A button that opens your booking link. Choose which one below.',
   },
   intake_cta: {
-    label: 'Intake call-to-action',
-    help: 'A button linking to an intake form — populate the intake form reference below.',
+    label: 'A button for a form',
+    help: 'A button that opens one of your forms. Choose which one below.',
   },
   drop_cta: {
-    label: 'Drop call-to-action',
-    help: 'A button linking to a drop link — populate the drop link reference below.',
+    label: 'A button for sending you files',
+    help: 'A button that opens one of your file-drop links. Choose which one below.',
   },
   custom_links: {
     label: 'Custom links',
-    help: 'The legacy free-form custom links you add below.',
+    help: 'The plain links you add below.',
   },
   link_buttons: {
     label: 'Link buttons',
-    help: 'Plain HTTPS navigation buttons with optional descriptions.',
+    help: 'Simple buttons that open a web address. You can add a short description.',
   },
 };
 
@@ -546,16 +546,16 @@ const RECEPTION_PAGE_LINKED_ENDPOINT_COPY: Readonly<
   Record<ReceptionPageLinkedEndpointKey, { label: string; help: string }>
 > = {
   scheduling_link_endpoint_id: {
-    label: 'Scheduling link — endpoint id',
-    help: 'The endpoint id of a scheduling link to drive the availability call-to-action.',
+    label: 'Which booking link to use',
+    help: 'The booking link the button should open.',
   },
   intake_form_endpoint_id: {
-    label: 'Intake form — endpoint id',
-    help: 'The endpoint id of an intake form to drive the intake call-to-action.',
+    label: 'Which form to use',
+    help: 'The form the button should open.',
   },
   drop_link_endpoint_id: {
-    label: 'Drop link — endpoint id',
-    help: 'The endpoint id of a drop link to drive the drop call-to-action.',
+    label: 'Which file-drop link to use',
+    help: 'The file-drop link the button should open.',
   },
   scheduling_link_share_url: {
     label: 'Scheduling link — share URL',
@@ -649,7 +649,7 @@ export const buildReceptionPageFormModel = (
       control: 'text',
       key: 'display_name',
       label: 'Display name',
-      help: 'The visitor-facing heading on your Reception page — typically your name or handle.',
+      help: 'The heading people see on your Reception page. Usually your name.',
       value: d?.display_name ?? '',
       max_length: RECEPTION_PAGE_DISPLAY_NAME_MAX,
       required: true,
@@ -679,7 +679,7 @@ export const buildReceptionPageFormModel = (
       control: 'text',
       key: 'avatar_url',
       label: 'Avatar URL',
-      help: 'An http(s) image URL, or a path under /reception/_static/. Leave blank for no avatar.',
+      help: 'A picture link starting with http or https, or a path under /reception/_static/. Leave it empty for no picture.',
       value: d?.avatar_url ?? '',
       max_length: RECEPTION_PAGE_AVATAR_URL_MAX,
       required: false,
@@ -689,7 +689,7 @@ export const buildReceptionPageFormModel = (
       control: 'text',
       key: 'response_time_estimate',
       label: 'Response-time estimate',
-      help: 'An optional expectation-setting line, e.g. "Usually replies within a day".',
+      help: 'A line telling people when to expect an answer, like “Usually replies within a day”. You can leave it out.',
       value: d?.response_time_estimate ?? '',
       max_length: RECEPTION_PAGE_RESPONSE_TIME_ESTIMATE_MAX,
       required: false,
@@ -699,7 +699,7 @@ export const buildReceptionPageFormModel = (
       control: 'multiselect',
       key: 'preferred_contact_methods',
       label: 'Preferred contact methods',
-      help: 'Which contact-method chips to surface on the page.',
+      help: 'Which ways of reaching you to show on the page.',
       value: d?.preferred_contact_methods ?? [],
       options: RECEPTION_PAGE_PREFERRED_CONTACT_METHODS.map((m) => ({
         value: m,
@@ -734,7 +734,7 @@ export const buildReceptionPageFormModel = (
       control: 'repeater',
       key: 'custom_links',
       label: 'Custom links',
-      help: `Legacy free-form links shown on the page. Up to ${RECEPTION_PAGE_CUSTOM_LINKS_MAX}; URLs may be http(s) or under /reception/_static/.`,
+      help: `Plain links shown on the page. Up to ${RECEPTION_PAGE_CUSTOM_LINKS_MAX}; URLs may be http(s) or under /reception/_static/.`,
       rows: (config?.custom_links ?? []).map((link) => ({
         label: link.label,
         url: link.url,
@@ -746,7 +746,7 @@ export const buildReceptionPageFormModel = (
       control: 'repeater',
       key: 'link_buttons',
       label: 'Link buttons',
-      help: `Plain navigation shown on the page. Up to ${RECEPTION_PAGE_LINK_BUTTONS_MAX}; each destination must be an absolute HTTPS URL.`,
+      help: `Simple buttons shown on the page. Up to ${RECEPTION_PAGE_LINK_BUTTONS_MAX}; each destination must be an absolute HTTPS URL.`,
       rows: (config?.link_buttons ?? []).map((link) => ({
         label: link.label,
         url: link.url,
@@ -759,25 +759,25 @@ export const buildReceptionPageFormModel = (
       control: 'toggle',
       key: 'trust_footer_enabled',
       label: 'Show the public trust footer',
-      help: 'The substrate-rendered "what Recued does / does not do with your data" footer. Default on; disabling it does not change behaviour, only visibility.',
+      help: 'The footer explaining what Recued does and does not do with people’s information. It is on to start with. Turning it off only hides it. Nothing else changes.',
       value: config?.trust_footer_enabled ?? true,
     },
     inbox_fanout_mode: {
       control: 'select',
       key: 'inbox_fanout_mode',
-      label: 'How new reception items reach your devices',
-      help: 'Everything a visitor submits waits in your inbox either way — this only picks which surface pings you.',
+      label: 'How new items reach your devices',
+      help: 'Everything people send waits in your inbox either way. This only chooses how you are told.',
       value: resolveReceptionInboxFanoutMode(config?.inbox_fanout_mode),
       options: [
         {
           value: 'approval',
           label: 'Approve from the notification',
-          help: 'Each held item raises an approve/deny card on every device you have enabled, so you can answer without opening the inbox.',
+          help: 'Each item shows a yes-or-no card on every device you have switched on, so you can answer without opening your inbox.',
         },
         {
           value: 'notify',
-          label: 'Just tell me, I will review in the inbox',
-          help: 'Each held item fires a passive heads-up instead. Nothing is approved until you open the inbox and approve it there.',
+          label: 'Just tell me. I will look in my inbox',
+          help: 'Each item just gives you a quiet nudge. Nothing happens until you open your inbox and say yes there.',
         },
       ],
     },
@@ -818,42 +818,42 @@ export const buildReceptionPageUpsertDispatch = (
 export const SCHEDULING_LINK_CONFIG_ERROR_COPY: Readonly<
   Record<SchedulingLinkConfigValidationCode, string>
 > = {
-  display_name_empty: 'Enter a display name — it is the visitor-facing heading on the slot picker.',
+  display_name_empty: 'Type a name. It is the heading people see when they pick a time.',
   display_name_too_long: `Display name is too long (max ${SCHEDULING_LINK_DISPLAY_NAME_MAX} characters).`,
   instructions_too_long: `Instructions are too long (max ${SCHEDULING_LINK_INSTRUCTIONS_MAX} characters).`,
   success_message_too_long: `Success message is too long (max ${SCHEDULING_LINK_SUCCESS_MESSAGE_MAX} characters).`,
-  tz_empty: 'Enter a timezone — the slot picker needs it to render your free windows.',
+  tz_empty: 'Type a time zone. Recued needs it to show when you are free.',
   tz_too_long: `Timezone is too long (max ${SCHEDULING_LINK_TZ_MAX} characters).`,
-  duration_options_empty: 'Pick at least one slot duration.',
-  duration_option_invalid: 'A slot duration is not in the allowed list (15 / 30 / 45 / 60 / 90 / 120 minutes).',
-  duration_option_too_many: 'Too many slot durations — pick at most four so the picker stays usable.',
+  duration_options_empty: 'Pick at least one length of meeting.',
+  duration_option_invalid: 'That length is not one you can pick. Choose 15, 30, 45, 60, 90 or 120 minutes.',
+  duration_option_too_many: 'That is too many lengths. Pick four at most, so the page stays simple.',
   // R19 Slice 2 — the SI-reference path is gone from the form (D-186
   // deleted Standing Instructions), so the only authorable availability is
   // explicit windows. The contract still ACCEPTS an SI ref for the
   // substrate, hence the *_ref_invalid codes below stay mapped.
   window_definition_empty:
-    'Define availability — add at least one explicit window.',
+    'Say when you are free. Add at least one time.',
   explicit_window_invalid:
-    'An availability window is malformed — check the day of week and that the start is before the end.',
+    'Recued could not read one of your free times. Check the day, and check the start comes before the end.',
   visitor_fields_invalid:
-    'The visitor-field requirements are malformed — name must be Required; phone and notes cannot be Required.',
-  min_advance_notice_out_of_range: `Advance notice must be 0–${SCHEDULING_LINK_MIN_ADVANCE_NOTICE_HOURS_MAX} hours.`,
-  max_lead_time_out_of_range: `Lead time must be 1–${SCHEDULING_LINK_MAX_LEAD_TIME_DAYS_MAX} days.`,
-  max_bookings_per_day_out_of_range: `Per-day booking cap must be 0–${SCHEDULING_LINK_MAX_BOOKINGS_PER_DAY_MAX} (0 = no cap).`,
-  notification_target_unknown: 'Pick a notification target from the closed list.',
-  on_booking_flag_invalid: 'An on-booking option is malformed. Refresh the page + try again.',
-  auto_confirm_ref_invalid: 'The auto-confirm Standing Instruction reference must be a non-empty string.',
-  standing_instructions_ref_invalid: 'The Standing Instruction reference must be a non-empty string.',
-  visitor_receipt_invalid: 'The visitor-receipt configuration is malformed. Check the receipt delivery setting.',
+    'Those settings do not work. A name is always needed. A phone number and notes can never be made compulsory.',
+  min_advance_notice_out_of_range: `Notice has to be between 0 and ${SCHEDULING_LINK_MIN_ADVANCE_NOTICE_HOURS_MAX} hours.`,
+  max_lead_time_out_of_range: `How far ahead has to be between 1 and ${SCHEDULING_LINK_MAX_LEAD_TIME_DAYS_MAX} days.`,
+  max_bookings_per_day_out_of_range: `The daily limit has to be between 0 and ${SCHEDULING_LINK_MAX_BOOKINGS_PER_DAY_MAX}. Use 0 for no limit.`,
+  notification_target_unknown: 'Pick where to send the message.',
+  on_booking_flag_invalid: 'Recued could not read one of these settings. Load the page again and try once more.',
+  auto_confirm_ref_invalid: 'The standing instruction needs a name.',
+  standing_instructions_ref_invalid: 'The standing instruction needs a name.',
+  visitor_receipt_invalid: 'Recued could not read the receipt settings. Check how the receipt is sent.',
   // ⚠ PRE-EXISTING BUILD BREAK, not part of the standing-closure work: `7f0c46d24`
   // widened `SchedulingLinkConfigValidationCode` with this code and updated the
   // INTAKE map only, so `tsc -b` has been failing on this file since. Copy mirrors
   // the intake one, retargeted at the slot picker.
   visitor_lookup_invalid:
-    'The submitter-viewback configuration is not usable. Check that the visitor receipt '
-    + 'is switched on (the receipt is what hands the visitor their link) and that the '
-    + 'expiry window is set.',
-  config_shape_invalid: 'The scheduling link configuration is malformed. Refresh the page + try again.',
+    'People cannot check back on what they sent. Make sure the receipt '
+    + 'is switched on, because that is what gives them their link, and that the '
+    + 'time limit is set.',
+  config_shape_invalid: 'Recued could not read the booking settings. Load the page again and try once more.',
 };
 
 /** The five visitor fields a scheduling link can collect, with their
@@ -884,11 +884,11 @@ const SCHEDULING_LINK_VISITOR_FIELD_ALLOWED: Readonly<
 const SCHEDULING_LINK_VISITOR_FIELD_COPY: Readonly<
   Record<SchedulingLinkVisitorFieldKey, { label: string; help: string }>
 > = {
-  name: { label: 'Visitor name', help: 'Always required — the booking has to be attributable to someone.' },
-  email: { label: 'Visitor email', help: 'How you reach the visitor to confirm the booking.' },
-  topic: { label: 'Topic', help: 'A short "what is this about" line the visitor supplies.' },
-  phone: { label: 'Visitor phone', help: 'Optional contact number — cannot be made required.' },
-  notes: { label: 'Notes', help: 'A free-text notes field — cannot be made required.' },
+  name: { label: 'Visitor name', help: 'Always needed. A booking has to belong to somebody.' },
+  email: { label: 'Visitor email', help: 'How you tell them the booking is confirmed.' },
+  topic: { label: 'Topic', help: 'A short line about what it is for.' },
+  phone: { label: 'Visitor phone', help: 'A phone number, if they want to give one. You cannot make this compulsory.' },
+  notes: { label: 'Notes', help: 'A box for anything else. You cannot make this compulsory.' },
 };
 
 /** Full scheduling_link authoring form model. */
@@ -930,7 +930,7 @@ export const buildSchedulingLinkFormModel = (
       control: 'text',
       key: 'display_name',
       label: 'Display name',
-      help: 'The visitor-facing heading on the slot picker — typically your name or handle.',
+      help: 'The heading people see when they pick a time. Usually your name.',
       value: config?.display_name ?? '',
       max_length: SCHEDULING_LINK_DISPLAY_NAME_MAX,
       required: true,
@@ -940,7 +940,7 @@ export const buildSchedulingLinkFormModel = (
       control: 'text',
       key: 'instructions',
       label: 'Instructions',
-      help: 'An optional paragraph shown above the slot picker.',
+      help: 'A paragraph shown above the times. You can leave it out.',
       value: config?.instructions ?? '',
       max_length: SCHEDULING_LINK_INSTRUCTIONS_MAX,
       required: false,
@@ -950,7 +950,7 @@ export const buildSchedulingLinkFormModel = (
       control: 'text',
       key: 'success_message',
       label: 'Success message',
-      help: 'Confirmation-page copy. Leave blank for the substrate default ("Booking received").',
+      help: 'What the thank-you page says. Leave it empty and Recued says “Booking received”.',
       value: config?.success_message ?? '',
       max_length: SCHEDULING_LINK_SUCCESS_MESSAGE_MAX,
       required: false,
@@ -960,7 +960,7 @@ export const buildSchedulingLinkFormModel = (
       control: 'multiselect',
       key: 'duration_options_minutes',
       label: 'Slot durations',
-      help: 'Which slot lengths the visitor can pick. At least one, at most four.',
+      help: 'How long a meeting can be. Pick at least one, and no more than four.',
       value: config?.duration_options_minutes ?? [30],
       options: SCHEDULING_LINK_DURATION_OPTION_MINUTES_ALLOWED.map((m) => ({
         value: m,
@@ -974,7 +974,7 @@ export const buildSchedulingLinkFormModel = (
       control: 'text',
       key: 'available_window_definition.tz',
       label: 'Timezone',
-      help: 'IANA timezone id (e.g. "America/New_York") your availability is defined in.',
+      help: 'The time zone your free times are in, like America/New_York.',
       value: w?.tz ?? '',
       max_length: SCHEDULING_LINK_TZ_MAX,
       required: true,
@@ -984,7 +984,7 @@ export const buildSchedulingLinkFormModel = (
       control: 'repeater',
       key: 'available_window_definition.explicit_windows',
       label: 'Availability windows',
-      help: 'Recurring weekly windows (day of week + start/end minute of day).',
+      help: 'The same times every week: a day, a start and an end.',
       rows: (w?.explicit_windows ?? []).map((ew) => ({
         day_of_week: ew.day_of_week,
         start_minute: ew.start_minute,
@@ -1007,8 +1007,8 @@ export const buildSchedulingLinkFormModel = (
     min_advance_notice_hours: {
       control: 'number',
       key: 'min_advance_notice_hours',
-      label: 'Minimum advance notice (hours)',
-      help: 'The earliest a visitor can book — measured forward from now.',
+      label: 'How much notice you need, in hours',
+      help: 'The soonest anyone can book, counting from now.',
       value: config?.min_advance_notice_hours ?? 24,
       min: 0,
       max: SCHEDULING_LINK_MIN_ADVANCE_NOTICE_HOURS_MAX,
@@ -1016,8 +1016,8 @@ export const buildSchedulingLinkFormModel = (
     max_lead_time_days: {
       control: 'number',
       key: 'max_lead_time_days',
-      label: 'Maximum lead time (days)',
-      help: 'How far into the future the slot picker exposes.',
+      label: 'How far ahead people can book, in days',
+      help: 'How far ahead Recued shows times.',
       value: config?.max_lead_time_days ?? 30,
       min: 1,
       max: SCHEDULING_LINK_MAX_LEAD_TIME_DAYS_MAX,
@@ -1025,8 +1025,8 @@ export const buildSchedulingLinkFormModel = (
     max_bookings_per_day: {
       control: 'number',
       key: 'max_bookings_per_day',
-      label: 'Per-day booking cap',
-      help: 'Maximum bookings accepted per day. 0 means no cap.',
+      label: 'Most bookings in one day',
+      help: 'How many bookings you will take in a day. Use 0 for no limit.',
       value: config?.max_bookings_per_day ?? 0,
       min: 0,
       max: SCHEDULING_LINK_MAX_BOOKINGS_PER_DAY_MAX,
@@ -1034,9 +1034,9 @@ export const buildSchedulingLinkFormModel = (
     notify_visitor_sender: {
       control: 'text',
       key: 'on_booking.notify_visitor_sender',
-      label: 'Visitor notification sender',
+      label: 'Which mailbox tells them',
       help:
-        'Optional send-capable mail instance. Set it before using “Notify visitor” on approval.',
+        'A mailbox that can send. Set this before you use “Tell them” when you say yes.',
       value: ob?.notify_visitor_sender ?? '',
       max_length: SCHEDULING_LINK_NOTIFY_VISITOR_SENDER_MAX,
       required: false,
@@ -1062,70 +1062,70 @@ export const validateSchedulingLinkFormConfig = (
 export const INTAKE_FORM_CONFIG_ERROR_COPY: Readonly<
   Record<IntakeFormConfigValidationCode, string>
 > = {
-  display_name_empty: 'Enter a display name — it is the visitor-facing heading on the form.',
+  display_name_empty: 'Type a name. It is the heading people see on the form.',
   display_name_too_long: `Display name is too long (max ${INTAKE_FORM_DISPLAY_NAME_MAX} characters).`,
   instructions_too_long: `Instructions are too long (max ${INTAKE_FORM_INSTRUCTIONS_MAX} characters).`,
   success_message_too_long: `Success message is too long (max ${INTAKE_FORM_SUCCESS_MESSAGE_MAX} characters).`,
   submit_button_label_too_long: `Submit-button label is too long (max ${INTAKE_FORM_SUBMIT_BUTTON_LABEL_MAX} characters).`,
-  template_ref_invalid: 'The template reference must be a non-empty string when present.',
-  template_version_invalid: 'The template version is malformed. Refresh the page + try again.',
-  form_definition_invalid: 'The form definition is malformed. Refresh the page + try again.',
-  form_definition_id_empty: 'The form needs a non-empty form-definition id.',
-  fields_empty: 'Add at least one field to the form.',
+  template_ref_invalid: 'If you use a template, it needs a name.',
+  template_version_invalid: 'Recued could not read the template version. Load the page again and try once more.',
+  form_definition_invalid: 'Recued could not read the form. Load the page again and try once more.',
+  form_definition_id_empty: 'The form needs an id.',
+  fields_empty: 'Add at least one box to the form.',
   fields_too_many: `Too many fields (max ${INTAKE_FORM_FIELDS_COUNT_MAX}).`,
-  field_name_invalid: 'Each field name must be lowercase and start with a letter (a–z, 0–9, underscore).',
-  field_name_reserved: 'A field name collides with a substrate-reserved key (form_nonce / visitor_email / t). Rename it.',
-  field_name_duplicate: 'Two fields share the same name — field names must be unique.',
-  field_label_too_long: 'A field label is too long.',
-  field_type_unknown: 'A field type is not in the allowed list.',
-  field_enum_values_empty: 'An enum field has no values — add at least one choice.',
-  field_enum_values_too_many: 'An enum field has too many values.',
-  field_enum_value_too_long: 'An enum value is too long or empty.',
-  user_only_field_unknown: 'A user-only field name is malformed.',
-  user_only_field_overlaps_visible: 'A user-only field name is also a visitor-visible field — names must not overlap.',
-  submission_processing_rule_invalid: 'The submission-processing rule is malformed. Refresh the page + try again.',
+  field_name_invalid: 'Each box name must be lower case and start with a letter. You can use a to z, 0 to 9, and underscores.',
+  field_name_reserved: 'Recued keeps that name for itself: form_nonce, visitor_email and t. Pick another.',
+  field_name_duplicate: 'Two boxes have the same name. Every box needs its own.',
+  field_label_too_long: 'One box name is too long.',
+  field_type_unknown: 'That kind of box is not one you can use.',
+  field_enum_values_empty: 'A choice box has no choices. Add at least one.',
+  field_enum_values_too_many: 'A choice box has too many choices.',
+  field_enum_value_too_long: 'One choice is empty, or too long.',
+  user_only_field_unknown: 'Recued could not read one of your own box names.',
+  user_only_field_overlaps_visible: 'One of your own boxes has the same name as a box visitors see. They have to be different.',
+  submission_processing_rule_invalid: 'Recued could not read that rule. Load the page again and try once more.',
   auto_accept_invalid:
-    'Auto-accept has been retired — every submission is held for review in your inbox. '
-    + 'Remove the auto_accept field from this endpoint.',
+    'Recued no longer accepts things by itself. Everything waits in your inbox. '
+    + 'Remove the auto_accept setting from this link.',
   // D-210 A.8 slice 2b step 3 — "you did not choose" reads differently from
   // "you chose something that is not real"; keep them apart for the author.
   target_kind_missing:
-    'Pick what approval creates from the submission. If the answers themselves are the record, '
+    'Pick what saying yes should make. If the answers themselves are what you want to keep, '
     + 'choose Response list.',
-  target_kind_unknown: 'Pick a submission target kind from the closed list.',
-  fields_to_include_unknown: 'A field routed into the target entity is not one of the form fields.',
-  fields_to_attach_unknown: 'A field attached as metadata is not one of the form fields.',
-  fields_include_attach_overlap: 'A field is both routed into the target and attached as metadata — pick one.',
+  target_kind_unknown: 'Pick what it should make.',
+  fields_to_include_unknown: 'One of the boxes you are saving is not on the form.',
+  fields_to_attach_unknown: 'One of the boxes you are attaching is not on the form.',
+  fields_include_attach_overlap: 'One box is both saved and attached. Pick one.',
   // D-210 A.8 slice 2b — say what is LOST, not just what is missing. "Place
   // every field" reads like paperwork; "the answer is discarded" is the reason.
   field_not_placed:
-    'A form field is neither routed into the target nor attached as metadata, so what the '
-    + 'visitor typed there would be discarded. Put it in one of the two, or mark it a honeypot.',
+    'One box is neither saved nor attached, so whatever people type in it '
+    + 'would be thrown away. Save it, attach it, or mark it as a spam trap.',
   triggered_recipe_id_invalid:
-    'Triggered recipes have been retired here — watch the destination entity instead. '
-    + 'Remove the field.',
-  calendar_mapping_invalid: 'The calendar mapping is incomplete — pick which field carries the start.',
-  calendar_mapping_field_unknown: 'A field named in the calendar mapping is not one of the form fields.',
-  calendar_mapping_field_type_invalid: 'A field named in the calendar mapping is the wrong type — start and end must be date or date & time fields, and a duration must be a number field.',
-  calendar_mapping_end_spec_invalid: 'Pick exactly one way to end the event: a second date field, a duration the visitor enters, or a fixed length.',
-  contact_mapping_invalid: 'The contact name field is not one of the form fields.',
-  notification_target_unknown: 'Pick a notification target from the closed list.',
-  anti_spam_invalid: 'The anti-spam configuration is malformed. Refresh the page + try again.',
-  honeypot_unknown_field: 'A honeypot field name is not one of the form fields.',
-  honeypot_too_many: `Too many honeypot fields (max ${INTAKE_FORM_HONEYPOT_FIELDS_MAX}).`,
-  rate_limit_out_of_range: `The per-IP rate limit must be ${INTAKE_FORM_RATE_LIMIT_PER_IP_MIN}–${INTAKE_FORM_RATE_LIMIT_PER_IP_MAX} submissions per hour.`,
-  domain_allowlist_too_many: `Too many allowlisted domains (max ${INTAKE_FORM_DOMAIN_ALLOWLIST_MAX}).`,
-  domain_allowlist_entry_too_long: 'An allowlisted domain entry is too long or empty.',
-  visitor_fields_invalid: 'The visitor-email requirement must be Required, Optional, or Hidden.',
-  visitor_receipt_invalid: 'The visitor-receipt configuration is malformed. Check the receipt delivery setting.',
+    'Recipes no longer start from here. Watch what the form creates instead. '
+    + 'Remove this setting.',
+  calendar_mapping_invalid: 'Say which box holds the start time.',
+  calendar_mapping_field_unknown: 'One of the boxes you picked for the calendar is not on the form.',
+  calendar_mapping_field_type_invalid: 'One of the boxes you picked for the calendar is the wrong kind. A start and an end have to be a date, or a date and time. A length has to be a number.',
+  calendar_mapping_end_spec_invalid: 'Pick one way for the event to end: a second date box, a length people type in, or the same length every time.',
+  contact_mapping_invalid: 'The box you picked for the name is not on the form.',
+  notification_target_unknown: 'Pick where to send the message.',
+  anti_spam_invalid: 'Recued could not read the spam settings. Load the page again and try once more.',
+  honeypot_unknown_field: 'One of your spam traps is not on the form.',
+  honeypot_too_many: `Too many spam traps (most you can have: ${INTAKE_FORM_HONEYPOT_FIELDS_MAX}).`,
+  rate_limit_out_of_range: `The limit for one place has to be ${INTAKE_FORM_RATE_LIMIT_PER_IP_MIN}–${INTAKE_FORM_RATE_LIMIT_PER_IP_MAX} an hour.`,
+  domain_allowlist_too_many: `Too many allowed email domains (most you can have: ${INTAKE_FORM_DOMAIN_ALLOWLIST_MAX}).`,
+  domain_allowlist_entry_too_long: 'One allowed email domain is empty, or too long.',
+  visitor_fields_invalid: 'The email setting has to be Needed, Optional or Hidden.',
+  visitor_receipt_invalid: 'Recued could not read the receipt settings. Check how the receipt is sent.',
   // D-240 — the viewback config failed its own validator. The detail the
   // parent forwards names WHICH rule, so the copy points at the two an owner
   // can actually act on rather than restating the code.
   visitor_lookup_invalid:
-    'The submitter-viewback configuration is not usable. Check that the visitor receipt '
-    + 'is switched on (the receipt is what hands the submitter their link) and that the '
-    + 'expiry window is set.',
-  config_shape_invalid: 'The intake form configuration is malformed. Refresh the page + try again.',
+    'People cannot check back on what they sent. Make sure the receipt '
+    + 'is switched on, because that is what gives them their link, and that the '
+    + 'time limit is set.',
+  config_shape_invalid: 'Recued could not read the form settings. Load the page again and try once more.',
 };
 
 // D-210 A.8 slice 2b step 3 — `INTAKE_FORM_LOG_ONLY_TARGET_VALUE` (`''`) and
@@ -1141,30 +1141,30 @@ export const INTAKE_FORM_CONFIG_ERROR_COPY: Readonly<
 export const INTAKE_FORM_TARGET_KIND_COPY: Readonly<
   Record<IntakeFormTargetKind, { label: string; help: string }>
 > = {
-  task: { label: 'Task', help: 'Each submission becomes a task work-entity.' },
-  note: { label: 'Note', help: 'Each submission becomes a note work-entity.' },
+  task: { label: 'Task', help: 'Each one becomes a task.' },
+  note: { label: 'Note', help: 'Each one becomes a note.' },
   // D-210 A.7 — `commitment` and `inbox_item` left this list with the intake
   // vocabulary: nothing in reception mints a commitment, and `inbox_item` was
   // only ever an alias for `task`.
   booking: {
     label: 'Booking',
-    help: 'Each approved submission becomes a booking you can mark completed, cancelled, or a no-show.',
+    help: 'Each one you say yes to becomes a booking. You can mark it done, cancelled, or a no-show.',
   },
   // D-210 A.4 — the generic destination: the answers ARE the record. For an
   // event roster or an application list, where you work the responses
   // themselves rather than spawning something else from them.
   form_response: {
     label: 'Response list',
-    help: 'Keep the responses as your working list and move each one through received, in review, accepted, declined, or no-show.',
+    help: 'Keep the answers as your list, and move each one along: arrived, being looked at, accepted, turned down, or no-show.',
   },
   // D-210 WS3 — the two destinations that are not work entities.
   calendar: {
     label: 'Calendar event',
-    help: 'Each approved submission becomes an event on your calendar. You choose which field carries the start and how the end is worked out.',
+    help: 'Each one you say yes to becomes a calendar event. You choose which box holds the start, and how the end is worked out.',
   },
   contact: {
     label: 'Contact',
-    help: 'Each approved submission adds or updates a contact, keyed on the visitor’s email address.',
+    help: 'Each one you say yes to adds or updates a contact, matched on their email address.',
   },
 };
 
@@ -1197,15 +1197,15 @@ export const INTAKE_FORM_CALENDAR_END_MODE_COPY: Readonly<
 > = {
   default_duration_minutes: {
     label: 'A fixed length',
-    help: 'Every booking runs the same length — a 90-minute sitting, say. The visitor never sees it.',
+    help: 'Every booking is the same length, say 90 minutes. People never see this.',
   },
   duration_field: {
-    label: 'A duration the visitor enters',
-    help: 'The visitor says how long, in hours, in one of your number fields.',
+    label: 'A length they type in',
+    help: 'They say how many hours, in one of your number boxes.',
   },
   end_field: {
-    label: 'A second date field',
-    help: 'The visitor picks an end as well as a start — a check-out date, a return time. For whole days the end date is the day they leave.',
+    label: 'A second date box',
+    help: 'They pick an end as well as a start, like a check-out date or a return time. For whole days, the end is the day they leave.',
   },
 };
 
@@ -1225,18 +1225,18 @@ export const intakeFormCalendarEndMode = (
 export const INTAKE_FORM_FIELD_TYPE_COPY: Readonly<
   Record<IntakeFormVisitorFieldType, { label: string; help: string }>
 > = {
-  text: { label: 'Short text', help: 'A single-line text input.' },
-  textarea: { label: 'Long text', help: 'A multi-line text area.' },
-  number: { label: 'Number', help: 'A numeric input.' },
-  boolean: { label: 'Yes / no', help: 'A checkbox or toggle.' },
-  date: { label: 'Date', help: 'A date picker — a day, with no time of day.' },
+  text: { label: 'Short text', help: 'One line of writing.' },
+  textarea: { label: 'Long text', help: 'A bigger box for several lines.' },
+  number: { label: 'Number', help: 'A number.' },
+  boolean: { label: 'Yes / no', help: 'A yes-or-no box.' },
+  date: { label: 'Date', help: 'A day, with no time.' },
   datetime: {
     label: 'Date & time',
-    help: 'A date and time-of-day picker. Use it when a calendar destination needs a start time rather than a whole day.',
+    help: 'A day and a time. Use this when a calendar event needs a start time, not a whole day.',
   },
-  enum: { label: 'Choice', help: 'A single choice from a closed list of values you define.' },
-  'array<text>': { label: 'Text list', help: 'A repeatable list of short text entries.' },
-  file: { label: 'File', help: 'A file upload — requires a companion drop link; opt-in.' },
+  enum: { label: 'Choice', help: 'One choice from a list you write.' },
+  'array<text>': { label: 'Text list', help: 'A list they can keep adding short lines to.' },
+  file: { label: 'File', help: 'A file. This needs a file-drop link as well, and you have to turn it on.' },
 };
 
 /** Full intake_form authoring form model. */
@@ -1318,7 +1318,7 @@ const withEmptyOption = (
   options: ReadonlyArray<AuthoringOption<string>>,
   label: string,
 ): ReadonlyArray<AuthoringOption<string>> => [
-  { value: '', label, help: 'No field is mapped to this slot.' },
+  { value: '', label, help: 'No box is set for this.' },
   ...options,
 ];
 
@@ -1366,7 +1366,7 @@ export const buildIntakeFormFormModel = (
       control: 'text',
       key: 'display_name',
       label: 'Display name',
-      help: 'The visitor-facing heading on the form — typically your name or the form purpose.',
+      help: 'The heading people see on the form. Usually your name, or what the form is for.',
       value: config?.display_name ?? '',
       max_length: INTAKE_FORM_DISPLAY_NAME_MAX,
       required: true,
@@ -1376,7 +1376,7 @@ export const buildIntakeFormFormModel = (
       control: 'text',
       key: 'instructions',
       label: 'Instructions',
-      help: 'An optional paragraph shown above the form fields.',
+      help: 'A paragraph shown above the boxes. You can leave it out.',
       value: config?.instructions ?? '',
       max_length: INTAKE_FORM_INSTRUCTIONS_MAX,
       required: false,
@@ -1386,7 +1386,7 @@ export const buildIntakeFormFormModel = (
       control: 'text',
       key: 'success_message',
       label: 'Success message',
-      help: 'Confirmation-page copy. Leave blank for the substrate default ("Submission received").',
+      help: 'What the thank-you page says. Leave it empty and Recued says “Submission received”.',
       value: config?.success_message ?? '',
       max_length: INTAKE_FORM_SUCCESS_MESSAGE_MAX,
       required: false,
@@ -1396,7 +1396,7 @@ export const buildIntakeFormFormModel = (
       control: 'text',
       key: 'submit_button_label',
       label: 'Submit button label',
-      help: 'Leave blank for the substrate default ("Submit").',
+      help: 'Leave it empty and the button says “Submit”.',
       value: config?.submit_button_label ?? '',
       max_length: INTAKE_FORM_SUBMIT_BUTTON_LABEL_MAX,
       required: false,
@@ -1406,7 +1406,7 @@ export const buildIntakeFormFormModel = (
       control: 'text',
       key: 'template_ref',
       label: 'Template reference',
-      help: 'Set automatically when you start from a Foundation-pack template. Leave blank for a hand-built form.',
+      help: 'Filled in for you when you start from a ready-made template. Leave it empty if you built the form yourself.',
       value: config?.template_ref ?? '',
       max_length: 100,
       required: false,
@@ -1416,7 +1416,7 @@ export const buildIntakeFormFormModel = (
       control: 'text',
       key: 'form_definition.form_definition_id',
       label: 'Form definition id',
-      help: 'A stable id for this form definition — used to correlate submissions.',
+      help: 'A name for this form that never changes. Recued uses it to tie answers together.',
       value: fd?.form_definition_id ?? '',
       max_length: 100,
       required: true,
@@ -1426,7 +1426,7 @@ export const buildIntakeFormFormModel = (
       control: 'repeater',
       key: 'form_definition.fields',
       label: 'Form fields',
-      help: `The fields the visitor fills in. Up to ${INTAKE_FORM_FIELDS_COUNT_MAX}; each name must be lowercase and unique.`,
+      help: `The boxes people fill in. Up to ${INTAKE_FORM_FIELDS_COUNT_MAX}; each name must be lowercase and unique.`,
       rows: (fd?.fields ?? []).map((f) => ({
         name: f.name,
         type: f.type,
@@ -1444,7 +1444,7 @@ export const buildIntakeFormFormModel = (
       control: 'repeater',
       key: 'form_definition.user_only_field_names',
       label: 'Owner-only fields',
-      help: 'Optional — field names you fill in after a submission (lowercase, unique, not a visitor field). Never shown to visitors; a recipe reading the form treats them as absent from the visitor side.',
+      help: 'Boxes only you fill in, after something arrives. Lower case, each one different, and not the same as a box people see. Visitors never see these, and a Recipe reading the form treats them as not there.',
       rows: fd?.user_only_field_names ?? [],
       min_rows: 0,
       max_rows: INTAKE_FORM_FIELDS_COUNT_MAX,
@@ -1456,7 +1456,7 @@ export const buildIntakeFormFormModel = (
       // ⚠ Was "The response itself is always recorded" — that stopped being
       // true in 2b. A response row is written only when `form_response` IS the
       // destination; otherwise the record is the entity this creates.
-      help: 'What approval creates from the submission.',
+      help: 'What saying yes makes.',
       // D-210 A.8 slice 2b step 3 — `form_response` is the default: it is what
       // an unconfigured form used to mean by an absent target_kind.
       value: rule?.target_kind ?? 'form_response',
@@ -1471,8 +1471,8 @@ export const buildIntakeFormFormModel = (
     fields_to_include_in_target: {
       control: 'multiselect',
       key: 'submission_processing_rule.fields_to_include_in_target',
-      label: 'Fields routed into the target entity',
-      help: 'Form fields written into the target entity body / fields.',
+      label: 'Boxes saved into the thing you make',
+      help: 'Which boxes go into what you make.',
       value: rule?.fields_to_include_in_target ?? [],
       options: fieldNameOptions,
       min_selected: 0,
@@ -1481,8 +1481,8 @@ export const buildIntakeFormFormModel = (
     fields_to_attach_as_metadata: {
       control: 'multiselect',
       key: 'submission_processing_rule.fields_to_attach_as_metadata',
-      label: 'Fields attached as metadata',
-      help: 'Form fields stashed in the entity metadata blob — must not overlap the routed fields above.',
+      label: 'Boxes kept alongside',
+      help: 'Boxes kept with it, but not part of it. These cannot be the same as the ones above.',
       value: rule?.fields_to_attach_as_metadata ?? [],
       options: fieldNameOptions,
       min_selected: 0,
@@ -1492,47 +1492,47 @@ export const buildIntakeFormFormModel = (
     calendar_start_field: {
       control: 'select',
       key: 'submission_processing_rule.calendar_mapping.start_field',
-      label: 'Field carrying the start',
+      label: 'Which box holds the start',
       help: instantFieldNames.length === 0
-        ? 'Add a Date or Date & time field to the form first — a calendar event needs a start.'
-        : 'Which field holds when it starts. A Date field books the whole day; a Date & time field books an exact time.',
+        ? 'Add a Date, or a Date and time, box to the form first. A calendar event needs a start.'
+        : 'Which box holds the start. A Date box books the whole day. A Date and time box books an exact time.',
       value: calendarMapping?.start_field ?? '',
-      options: withEmptyOption(buildFieldNameOptions(instantFieldNames), 'Select a field…'),
+      options: withEmptyOption(buildFieldNameOptions(instantFieldNames), 'Choose a box…'),
     },
     calendar_end_mode: {
       control: 'select',
       key: INTAKE_FORM_CALENDAR_END_MODE_KEY,
-      label: 'How the end is worked out',
-      help: 'Pick one. Switching clears the others so only one is ever in force.',
+      label: 'How Recued works out the end',
+      help: 'Pick one. Choosing a different one clears the rest, so only one is ever used.',
       value: endMode,
       options: endModeOptions,
     },
     calendar_end_field: {
       control: 'select',
       key: 'submission_processing_rule.calendar_mapping.end_field',
-      label: 'Field carrying the end',
-      help: 'Which field holds when it ends. For whole days this is the day they leave — a stay from the 20th to the 23rd is three nights.',
+      label: 'Which box holds the end',
+      help: 'Which box holds the end. For whole days this is the day they leave. The 20th to the 23rd is three nights.',
       value: calendarMapping?.end_field ?? '',
       options: withEmptyOption(
         buildFieldNameOptions(
           instantFieldNames.filter((n) => n !== calendarMapping?.start_field),
         ),
-        'Select a field…',
+        'Choose a box…',
       ),
     },
     calendar_duration_field: {
       control: 'select',
       key: 'submission_processing_rule.calendar_mapping.duration_field',
-      label: 'Field carrying the duration (hours)',
-      help: 'Which number field holds how long, in hours.',
+      label: 'Which box holds the length, in hours',
+      help: 'Which number box holds how many hours.',
       value: calendarMapping?.duration_field ?? '',
-      options: withEmptyOption(buildFieldNameOptions(numberFieldNames), 'Select a field…'),
+      options: withEmptyOption(buildFieldNameOptions(numberFieldNames), 'Choose a box…'),
     },
     calendar_default_duration_minutes: {
       control: 'number',
       key: 'submission_processing_rule.calendar_mapping.default_duration_minutes',
-      label: 'Fixed length (minutes)',
-      help: 'How long every booking runs. The visitor never sees this.',
+      label: 'The same length every time, in minutes',
+      help: 'How long every booking lasts. People never see this.',
       value: calendarMapping?.default_duration_minutes
         ?? INTAKE_FORM_CALENDAR_DEFAULT_DURATION_MINUTES,
       min: INTAKE_FORM_CALENDAR_DURATION_MINUTES_MIN,
@@ -1542,7 +1542,7 @@ export const buildIntakeFormFormModel = (
       control: 'text',
       key: 'submission_processing_rule.calendar_mapping.timezone',
       label: 'Timezone',
-      help: 'The zone a visitor’s chosen time is read in — e.g. Europe/Paris. Leave blank for UTC.',
+      help: 'The time zone their chosen time is read in, like Europe/Paris. Leave it empty for UTC.',
       value: calendarMapping?.timezone ?? '',
       max_length: 64,
       required: false,
@@ -1553,8 +1553,8 @@ export const buildIntakeFormFormModel = (
     contact_name_field: {
       control: 'select',
       key: 'submission_processing_rule.contact_mapping.contact_name_field',
-      label: 'Field carrying the contact’s name',
-      help: 'Optional. The contact is keyed on the visitor’s email either way — this only adds a display name.',
+      label: 'Which box holds their name',
+      help: 'You can leave this out. Recued matches on the email address anyway. This only adds a name to show.',
       value: rule?.contact_mapping?.contact_name_field ?? '',
       options: withEmptyOption(fieldNameOptions, '— no name field —'),
     },
@@ -1562,8 +1562,8 @@ export const buildIntakeFormFormModel = (
     honeypot_fields: {
       control: 'multiselect',
       key: 'anti_spam.honeypot_fields',
-      label: 'Honeypot fields',
-      help: 'Form fields rendered hidden as bot bait — a submission that fills any of them is tagged spam.',
+      label: 'Spam traps',
+      help: 'Hidden boxes that only a robot would fill in. Anything that fills one is marked as spam.',
       value: spam?.honeypot_fields ?? [],
       options: fieldNameOptions,
       min_selected: 0,
@@ -1572,8 +1572,8 @@ export const buildIntakeFormFormModel = (
     rate_limit_per_ip: {
       control: 'number',
       key: 'anti_spam.rate_limit_per_ip',
-      label: 'Per-IP rate limit (per hour)',
-      help: 'Maximum submissions accepted from one IP per hour.',
+      label: 'How much one place may send, per hour',
+      help: 'The most Recued will take from one place in an hour.',
       value: spam?.rate_limit_per_ip ?? INTAKE_FORM_RATE_LIMIT_PER_IP_DEFAULT,
       min: INTAKE_FORM_RATE_LIMIT_PER_IP_MIN,
       max: INTAKE_FORM_RATE_LIMIT_PER_IP_MAX,
@@ -1582,21 +1582,21 @@ export const buildIntakeFormFormModel = (
       control: 'toggle',
       key: 'anti_spam.require_proof_of_work',
       label: 'Require proof-of-work',
-      help: 'Reserved compatibility setting. Proof-of-work is not currently implemented or enforced.',
+      help: 'This setting does nothing yet. Recued keeps it so older things still work.',
       value: spam?.require_proof_of_work ?? false,
     },
     require_captcha: {
       control: 'toggle',
       key: 'anti_spam.require_captcha',
       label: 'Require CAPTCHA',
-      help: 'Reserved compatibility setting. CAPTCHA is not currently implemented or enforced.',
+      help: 'This setting does nothing yet. Recued keeps it so older things still work.',
       value: spam?.require_captcha ?? false,
     },
     known_domain_allowlist: {
       control: 'repeater',
       key: 'anti_spam.known_domain_allowlist',
-      label: 'Email domain allowlist',
-      help: `Optional — submissions whose email domain is not listed are tagged rejected. Up to ${INTAKE_FORM_DOMAIN_ALLOWLIST_MAX}.`,
+      label: 'Email addresses you allow',
+      help: `You can leave this empty. Anything from an address you have not listed is marked as turned down. Up to ${INTAKE_FORM_DOMAIN_ALLOWLIST_MAX}.`,
       rows: spam?.known_domain_allowlist ?? [],
       min_rows: 0,
       max_rows: INTAKE_FORM_DOMAIN_ALLOWLIST_MAX,
@@ -1605,7 +1605,7 @@ export const buildIntakeFormFormModel = (
       control: 'select',
       key: 'required_visitor_fields.email',
       label: 'Visitor email',
-      help: 'Whether the substrate-injected email field is required, optional, or hidden.',
+      help: 'Whether the email box is needed, optional, or hidden.',
       value: config?.required_visitor_fields.email ?? 'optional',
       options: buildVisitorFieldRequirementOptions(['required', 'optional', 'omit']),
     },
@@ -1629,31 +1629,31 @@ export const validateIntakeFormFormConfig = (
 export const DROP_LINK_CONFIG_ERROR_COPY: Readonly<
   Record<DropLinkConfigValidationCode, string>
 > = {
-  config_shape_invalid: 'The drop link configuration is malformed. Refresh the page + try again.',
-  display_name_empty: 'Enter a display name — it is the visitor-facing heading on the upload form.',
+  config_shape_invalid: 'Recued could not read the file-drop settings. Load the page again and try once more.',
+  display_name_empty: 'Type a name. It is the heading people see when they send you a file.',
   display_name_too_long: `Display name is too long (max ${DROP_LINK_DISPLAY_NAME_MAX} characters).`,
   instructions_too_long: `Instructions are too long (max ${DROP_LINK_INSTRUCTIONS_MAX} characters).`,
   success_message_too_long: `Success message is too long (max ${DROP_LINK_SUCCESS_MESSAGE_MAX} characters).`,
   submit_button_label_too_long: `Submit-button label is too long (max ${DROP_LINK_SUBMIT_BUTTON_LABEL_MAX} characters).`,
-  template_ref_invalid: 'The template reference must be a non-empty string when present.',
-  link_kind_unknown: 'Pick whether the link is one-time or repeated.',
-  contact_scoping_invalid: 'The contact-scoping configuration is malformed. Refresh the page + try again.',
-  size_cap_out_of_range: 'The size cap must be between 1 KB and 1 GB.',
-  allowed_mime_types_empty: 'Pick at least one allowed file type.',
-  allowed_mime_types_too_many: 'Too many file types selected.',
-  allowed_mime_type_unknown: 'A selected file type is not in the closed allowlist.',
-  expiry_days_out_of_range: `Expiry must be ${DROP_LINK_EXPIRY_DAYS_MIN}–${DROP_LINK_EXPIRY_DAYS_MAX} days (drop links carry a hard 30-day ceiling).`,
-  max_uploads_out_of_range: `The per-day upload cap must be ${DROP_LINK_MAX_UPLOADS_PER_DAY_MIN}–${DROP_LINK_MAX_UPLOADS_PER_DAY_MAX}.`,
-  visitor_fields_invalid: 'A visitor-field requirement is malformed — name / email / description must each be Required, Optional, or Hidden.',
-  on_upload_invalid: 'The on-upload configuration is malformed. Refresh the page + try again.',
-  notification_target_unknown: 'Pick a notification target from the closed list.',
+  template_ref_invalid: 'If you use a template, it needs a name.',
+  link_kind_unknown: 'Choose whether the link works once, or again and again.',
+  contact_scoping_invalid: 'Recued could not read those settings. Load the page again and try once more.',
+  size_cap_out_of_range: 'The size limit has to be between 1 KB and 1 GB.',
+  allowed_mime_types_empty: 'Pick at least one kind of file to allow.',
+  allowed_mime_types_too_many: 'You have picked too many kinds of file.',
+  allowed_mime_type_unknown: 'One of the kinds you picked is not allowed.',
+  expiry_days_out_of_range: `Expiry must be ${DROP_LINK_EXPIRY_DAYS_MIN}–${DROP_LINK_EXPIRY_DAYS_MAX} days. File-drop links can never last longer than 30 days.`,
+  max_uploads_out_of_range: `The daily limit has to be ${DROP_LINK_MAX_UPLOADS_PER_DAY_MIN}–${DROP_LINK_MAX_UPLOADS_PER_DAY_MAX}.`,
+  visitor_fields_invalid: 'Recued could not read those settings. The name, the email and the description each have to be Needed, Optional or Hidden.',
+  on_upload_invalid: 'Recued could not read what happens after an upload. Load the page again and try once more.',
+  notification_target_unknown: 'Pick where to send the message.',
   triggered_recipe_id_invalid:
-    'Triggered recipes have been retired here — watch the destination entity instead. '
-    + 'Remove the field.',
-  auto_attach_to_project_id_invalid: 'The auto-attach project id must be a non-empty string when present.',
-  domain_allowlist_too_many: `Too many allowlisted domains (max ${DROP_LINK_DOMAIN_ALLOWLIST_MAX}).`,
-  domain_allowlist_entry_too_long: 'An allowlisted domain entry is too long or empty.',
-  visitor_receipt_invalid: 'The visitor-receipt configuration is malformed. Check the receipt delivery setting.',
+    'Recipes no longer start from here. Watch what the form creates instead. '
+    + 'Remove this setting.',
+  auto_attach_to_project_id_invalid: 'If you attach uploads to a project, it needs a name.',
+  domain_allowlist_too_many: `Too many allowed email domains (most you can have: ${DROP_LINK_DOMAIN_ALLOWLIST_MAX}).`,
+  domain_allowlist_entry_too_long: 'One allowed email domain is empty, or too long.',
+  visitor_receipt_invalid: 'Recued could not read the receipt settings. Check how the receipt is sent.',
 };
 
 /** § A.5.4 — per-`DropLinkAllowedMimeType` chip copy. */
@@ -1661,11 +1661,11 @@ export const DROP_LINK_MIME_TYPE_COPY: Readonly<
   Record<DropLinkAllowedMimeType, { label: string; help: string }>
 > = {
   'application/pdf': { label: 'PDF', help: 'PDF documents.' },
-  'image/jpeg': { label: 'JPEG image', help: 'JPEG photos / images.' },
+  'image/jpeg': { label: 'JPEG image', help: 'JPEG photos.' },
   'image/png': { label: 'PNG image', help: 'PNG images.' },
   'image/webp': { label: 'WebP image', help: 'WebP images.' },
   'image/gif': { label: 'GIF image', help: 'GIF images.' },
-  'text/plain': { label: 'Plain text', help: 'Plain-text files.' },
+  'text/plain': { label: 'Plain text', help: 'Plain writing, with no formatting.' },
 };
 
 /** The three visitor fields a drop link can collect. */
@@ -1676,9 +1676,9 @@ export type DropLinkVisitorFieldKey = (typeof DROP_LINK_VISITOR_FIELD_KEYS)[numb
 const DROP_LINK_VISITOR_FIELD_COPY: Readonly<
   Record<DropLinkVisitorFieldKey, { label: string; help: string }>
 > = {
-  name: { label: 'Visitor name', help: 'Who is sending the file.' },
-  email: { label: 'Visitor email', help: 'How you reach the sender about the upload.' },
-  description: { label: 'Description', help: 'A short "what is this file" line from the sender.' },
+  name: { label: 'Visitor name', help: 'Who is sending it.' },
+  email: { label: 'Visitor email', help: 'How you get back to them about it.' },
+  description: { label: 'Description', help: 'A short line from them saying what it is.' },
 };
 
 /** Full drop_link authoring form model. */
@@ -1715,7 +1715,7 @@ export const buildDropLinkFormModel = (
       control: 'text',
       key: 'display_name',
       label: 'Display name',
-      help: 'The visitor-facing heading on the upload form.',
+      help: 'The heading people see when they send you a file.',
       value: config?.display_name ?? '',
       max_length: DROP_LINK_DISPLAY_NAME_MAX,
       required: true,
@@ -1725,7 +1725,7 @@ export const buildDropLinkFormModel = (
       control: 'text',
       key: 'instructions',
       label: 'Instructions',
-      help: 'An optional paragraph shown above the upload widget.',
+      help: 'A paragraph shown above the upload box. You can leave it out.',
       value: config?.instructions ?? '',
       max_length: DROP_LINK_INSTRUCTIONS_MAX,
       required: false,
@@ -1735,7 +1735,7 @@ export const buildDropLinkFormModel = (
       control: 'text',
       key: 'success_message',
       label: 'Success message',
-      help: 'Confirmation-page copy. Leave blank for the substrate default ("Upload received").',
+      help: 'What the thank-you page says. Leave it empty and Recued says “Upload received”.',
       value: config?.success_message ?? '',
       max_length: DROP_LINK_SUCCESS_MESSAGE_MAX,
       required: false,
@@ -1745,7 +1745,7 @@ export const buildDropLinkFormModel = (
       control: 'text',
       key: 'submit_button_label',
       label: 'Submit button label',
-      help: 'Leave blank for the substrate default ("Upload").',
+      help: 'Leave it empty and the button says “Upload”.',
       value: config?.submit_button_label ?? '',
       max_length: DROP_LINK_SUBMIT_BUTTON_LABEL_MAX,
       required: false,
@@ -1755,7 +1755,7 @@ export const buildDropLinkFormModel = (
       control: 'text',
       key: 'template_ref',
       label: 'Template reference',
-      help: 'Set automatically when you start from a template. Leave blank for a hand-built link.',
+      help: 'Filled in for you when you start from a template. Leave it empty if you built the link yourself.',
       value: config?.template_ref ?? '',
       max_length: 100,
       required: false,
@@ -1765,18 +1765,18 @@ export const buildDropLinkFormModel = (
       control: 'select',
       key: 'link_kind',
       label: 'Link kind',
-      help: 'One-time links revoke themselves after a single successful upload; repeated links accept uploads up to the per-day cap.',
+      help: 'A one-time link switches itself off after one file arrives. A repeated link keeps working, up to the daily limit.',
       value: config?.link_kind ?? 'repeated',
       options: [
-        { value: 'repeated', label: 'Repeated', help: 'Accepts uploads up to the per-day cap, until expiry.' },
-        { value: 'one_time', label: 'One-time', help: 'Revokes itself after the first successful upload.' },
+        { value: 'repeated', label: 'Repeated', help: 'Takes files up to the daily limit, until it runs out.' },
+        { value: 'one_time', label: 'One-time', help: 'Switches itself off once one file arrives.' },
       ],
     },
     size_cap_bytes: {
       control: 'number',
       key: 'size_cap_bytes',
-      label: 'Size cap (bytes)',
-      help: 'Per-file size cap. Between 1 KB and 1 GB; the handler rejects oversize uploads at the body parse.',
+      label: 'Biggest file, in bytes',
+      help: 'How big one file may be. Between 1 KB and 1 GB. Anything bigger is turned away.',
       value: config?.size_cap_bytes ?? DROP_LINK_SIZE_CAP_DEFAULT_BYTES,
       min: DROP_LINK_SIZE_CAP_MIN_BYTES,
       max: DROP_LINK_SIZE_CAP_HARD_MAX_BYTES,
@@ -1785,7 +1785,7 @@ export const buildDropLinkFormModel = (
       control: 'multiselect',
       key: 'allowed_mime_types',
       label: 'Allowed file types',
-      help: 'The closed allowlist of file types the magic-byte detector will accept.',
+      help: 'The kinds of file Recued will take. It checks the file itself, not just its name.',
       value: config?.allowed_mime_types ?? ['application/pdf'],
       options: DROP_LINK_ALLOWED_MIME_TYPES.map((m) => ({
         value: m,
@@ -1799,7 +1799,7 @@ export const buildDropLinkFormModel = (
       control: 'number',
       key: 'expiry_days',
       label: 'Expiry (days)',
-      help: 'Drop links carry a hard 30-day ceiling — pick 1–30 days.',
+      help: 'File-drop links can never last longer than 30 days. Pick between 1 and 30.',
       value: config?.expiry_days ?? DROP_LINK_EXPIRY_DAYS_DEFAULT,
       min: DROP_LINK_EXPIRY_DAYS_MIN,
       max: DROP_LINK_EXPIRY_DAYS_MAX,
@@ -1807,8 +1807,8 @@ export const buildDropLinkFormModel = (
     max_uploads_per_endpoint_per_day: {
       control: 'number',
       key: 'max_uploads_per_endpoint_per_day',
-      label: 'Per-day upload cap',
-      help: 'Maximum uploads accepted per day so a single link cannot flood disk.',
+      label: 'Most files in one day',
+      help: 'How many files Recued will take in a day, so one link cannot fill your disk.',
       value: config?.max_uploads_per_endpoint_per_day ?? DROP_LINK_MAX_UPLOADS_PER_DAY_DEFAULT,
       min: DROP_LINK_MAX_UPLOADS_PER_DAY_MIN,
       max: DROP_LINK_MAX_UPLOADS_PER_DAY_MAX,
@@ -1831,22 +1831,22 @@ export const buildDropLinkFormModel = (
     create_data_file_entity: {
       control: 'toggle',
       key: 'on_upload.create_data_file_entity',
-      label: 'Create a file entity on upload',
-      help: 'When an upload lands, your engine creates the matching data.file work-entity.',
+      label: 'Save it as a file in Recued',
+      help: 'When a file arrives, Recued saves it with your other files.',
       value: ou?.create_data_file_entity ?? true,
     },
     auto_attach_to_contact: {
       control: 'toggle',
       key: 'on_upload.auto_attach_to_contact',
       label: 'Auto-attach to a contact',
-      help: 'When the uploader email resolves to a known contact, attach the file to that contact.',
+      help: 'If the sender’s email matches a contact you have, put the file with that contact.',
       value: ou?.auto_attach_to_contact ?? false,
     },
     auto_attach_to_project_id: {
       control: 'text',
       key: 'on_upload.auto_attach_to_project_id',
-      label: 'Auto-attach to project id',
-      help: 'Optionally attach every upload to a specific project.',
+      label: 'Always attach to one project',
+      help: 'Put every file that arrives with one particular project.',
       value: ou?.auto_attach_to_project_id ?? '',
       max_length: 100,
       required: false,
@@ -1855,8 +1855,8 @@ export const buildDropLinkFormModel = (
     known_domain_allowlist: {
       control: 'repeater',
       key: 'known_domain_allowlist',
-      label: 'Email domain allowlist',
-      help: `Optional — uploads whose email domain is not listed are tagged rejected. Up to ${DROP_LINK_DOMAIN_ALLOWLIST_MAX}.`,
+      label: 'Email addresses you allow',
+      help: `You can leave this empty. Anything from an address you have not listed is marked as turned down. Up to ${DROP_LINK_DOMAIN_ALLOWLIST_MAX}.`,
       rows: config?.known_domain_allowlist ?? [],
       min_rows: 0,
       max_rows: DROP_LINK_DOMAIN_ALLOWLIST_MAX,
@@ -1881,46 +1881,46 @@ export const validateDropLinkFormConfig = (
 export const APPROVAL_LINK_CONFIG_ERROR_COPY: Readonly<
   Record<ApprovalLinkConfigValidationCode, string>
 > = {
-  config_shape_invalid: 'The approval link configuration is malformed. Refresh the page + try again.',
-  display_name_empty: 'Enter a display name — it is the visitor-facing heading on the approval page.',
+  config_shape_invalid: 'Recued could not read the approval-link settings. Load the page again and try once more.',
+  display_name_empty: 'Type a name. It is the heading people see on the approval page.',
   display_name_too_long: `Display name is too long (max ${APPROVAL_LINK_DISPLAY_NAME_MAX} characters).`,
-  action_kind_unknown: 'Pick an action kind from the closed list.',
-  prompt_empty: 'Enter a prompt — it is the question the visitor is asked.',
+  action_kind_unknown: 'Pick what you want them to do.',
+  prompt_empty: 'Type the question you want to ask them.',
   prompt_too_long: `Prompt is too long (max ${APPROVAL_LINK_PROMPT_MAX} characters).`,
-  context_raw_invalid: 'The context block is malformed — it needs at least a summary.',
-  context_summary_empty: 'Enter a context summary — it is the only context the visitor sees.',
+  context_raw_invalid: 'Recued could not read that. It needs at least a short summary.',
+  context_summary_empty: 'Type a short summary. It is all they will see.',
   context_summary_too_long: `Context summary is too long (max ${APPROVAL_LINK_CONTEXT_SUMMARY_MAX} characters).`,
-  counterparty_aliases_invalid: 'Counterparty aliases must each be a string. They are never shown to the visitor.',
-  private_notes_invalid: 'Private notes must each be a string. They are never shown to the visitor.',
-  options_required_for_action_kind: 'This action kind needs an options list — add at least one option.',
-  options_not_permitted_for_action_kind: 'This action kind does not take options — remove the options list.',
-  options_shape_invalid: 'Each option needs a non-empty id and label.',
+  counterparty_aliases_invalid: 'Each name for the other person has to be text. They never see these.',
+  private_notes_invalid: 'Each private note has to be text. They never see these.',
+  options_required_for_action_kind: 'This needs a list of choices. Add at least one.',
+  options_not_permitted_for_action_kind: 'This does not take choices. Remove the list.',
+  options_shape_invalid: 'Each choice needs an id and a name.',
   options_too_few: `Add at least ${APPROVAL_LINK_OPTIONS_MIN} option.`,
   options_too_many: `Too many options (max ${APPROVAL_LINK_OPTIONS_MAX}).`,
-  options_duplicate_id: 'Two options share the same id — option ids must be unique.',
+  options_duplicate_id: 'Two choices have the same id. Every choice needs its own.',
   option_id_invalid: 'An option id is too long.',
   option_label_invalid: 'An option label is too long.',
   option_description_invalid: 'An option description is too long.',
-  visitor_field_constraints_invalid: 'The visitor-field constraints are malformed. Refresh the page + try again.',
-  visitor_field_name_invalid: 'The visitor-name constraint must be Required or Optional.',
-  visitor_field_email_invalid: 'The visitor-email constraint must be Required or Optional.',
-  require_email_match_invalid: 'The require-email-match value must be a well-formed email address.',
-  expiry_days_out_of_range: `Expiry must be ${APPROVAL_LINK_EXPIRY_DAYS_MIN}–${APPROVAL_LINK_EXPIRY_DAYS_MAX} days (approval links carry a hard 30-day ceiling).`,
-  on_action_invalid: 'The on-action configuration is malformed. Refresh the page + try again.',
-  on_action_target_id_invalid: 'Enter a target id — it binds this link to one thing to act on.',
-  on_approve_action_unknown: 'Pick an on-approve action from the closed list.',
+  visitor_field_constraints_invalid: 'Recued could not read those settings. Load the page again and try once more.',
+  visitor_field_name_invalid: 'The name has to be Needed or Optional.',
+  visitor_field_email_invalid: 'The email has to be Needed or Optional.',
+  require_email_match_invalid: 'That has to be a real email address.',
+  expiry_days_out_of_range: `Expiry must be ${APPROVAL_LINK_EXPIRY_DAYS_MIN}–${APPROVAL_LINK_EXPIRY_DAYS_MAX} days. Approval links can never last longer than 30 days.`,
+  on_action_invalid: 'Recued could not read what happens next. Load the page again and try once more.',
+  on_action_target_id_invalid: 'Type an id. It ties this link to the one thing it acts on.',
+  on_approve_action_unknown: 'Pick what happens when they say yes.',
   on_approve_action_unsupported:
-    'That on-approve action can no longer be honoured — a response would sit unprocessed '
-    + 'and never reach you. Choose "Create a commitment": the reply is held at the approval '
-    + 'gate and lands in your Reception Inbox.',
-  notification_target_unknown: 'Pick a notification target from the closed list.',
+    'Recued cannot do that any more. An answer would just sit there '
+    + 'and never reach you. Choose “Make a promise” instead. Their reply waits for you '
+    + 'and lands in your Reception inbox.',
+  notification_target_unknown: 'Pick where to send the message.',
   triggered_recipe_id_invalid:
-    'Triggered recipes have been retired here — watch the destination entity instead. '
-    + 'Remove the field.',
+    'Recipes no longer start from here. Watch what the form creates instead. '
+    + 'Remove this setting.',
   success_message_too_long: `Success message is too long (max ${APPROVAL_LINK_SUCCESS_MESSAGE_MAX} characters).`,
   submit_button_label_too_long: `Submit-button label is too long (max ${APPROVAL_LINK_SUBMIT_BUTTON_LABEL_MAX} characters).`,
-  template_ref_invalid: 'The template reference must be a non-empty string (max 100 characters) when present.',
-  visitor_receipt_invalid: 'The visitor-receipt configuration is malformed. Check the receipt delivery setting.',
+  template_ref_invalid: 'If you use a template, it needs a name, up to 100 characters.',
+  visitor_receipt_invalid: 'Recued could not read the receipt settings. Check how the receipt is sent.',
 };
 
 /** § A.5.5 — per-`ApprovalLinkActionKind` copy. `requires_options` flags
@@ -1931,27 +1931,27 @@ export const APPROVAL_LINK_ACTION_KIND_COPY: Readonly<
 > = {
   pick_time: {
     label: 'Pick a time',
-    help: 'The visitor picks one option from a list of times you offer.',
+    help: 'They pick one time from a list you offer.',
     requires_options: true,
   },
   approve_wording: {
     label: 'Approve wording',
-    help: 'The visitor approves or rejects a piece of wording — rejection can carry a comment.',
+    help: 'They say yes or no to some wording. If they say no, they can say why.',
     requires_options: false,
   },
   confirm_attendance: {
     label: 'Confirm attendance',
-    help: 'The visitor confirms yes / no against one option from a list.',
+    help: 'They say yes or no to one thing from a list.',
     requires_options: true,
   },
   answer_question: {
     label: 'Answer a question',
-    help: 'The visitor types a free-text answer to your prompt.',
+    help: 'They write an answer to your question.',
     requires_options: false,
   },
   upload_doc: {
     label: 'Upload a document',
-    help: 'The visitor is prompted to upload a document (the file flow routes through a companion drop link).',
+    help: 'They are asked to send a document. The file goes through a file-drop link.',
     requires_options: false,
   },
 };
@@ -1962,15 +1962,15 @@ export const APPROVAL_LINK_ON_APPROVE_ACTION_COPY: Readonly<
 > = {
   mark_resolved: {
     label: 'Mark resolved',
-    help: 'Resolve the target entity when the visitor approves.',
+    help: 'Mark it sorted when they say yes.',
   },
   create_commitment: {
-    label: 'Create a commitment',
-    help: 'Create a commitment work-entity when the visitor approves.',
+    label: 'Make a promise',
+    help: 'Make a promise when they say yes.',
   },
   fire_recipe: {
-    label: 'Fire a recipe',
-    help: 'Fire the reactive recipe named below when the visitor approves.',
+    label: 'Run a Recipe',
+    help: 'Run the Recipe named below when they say yes.',
   },
 };
 
@@ -2027,7 +2027,7 @@ export const buildApprovalLinkFormModel = (
       control: 'text',
       key: 'display_name',
       label: 'Display name',
-      help: 'The visitor-facing heading on the approval page.',
+      help: 'The heading people see on the approval page.',
       value: config?.display_name ?? '',
       max_length: APPROVAL_LINK_DISPLAY_NAME_MAX,
       required: true,
@@ -2164,7 +2164,7 @@ export const buildApprovalLinkFormModel = (
       control: 'text',
       key: 'success_message',
       label: 'Success message',
-      help: 'Confirmation-page copy. Leave blank for the substrate default.',
+      help: 'What the thank-you page says. Leave it empty to use Recued’s own wording.',
       value: config?.success_message ?? '',
       max_length: APPROVAL_LINK_SUCCESS_MESSAGE_MAX,
       required: false,
@@ -2174,7 +2174,7 @@ export const buildApprovalLinkFormModel = (
       control: 'text',
       key: 'submit_button_label',
       label: 'Submit button label',
-      help: 'Leave blank for the substrate default ("Submit").',
+      help: 'Leave it empty and the button says “Submit”.',
       value: config?.submit_button_label ?? '',
       max_length: APPROVAL_LINK_SUBMIT_BUTTON_LABEL_MAX,
       required: false,
@@ -2184,7 +2184,7 @@ export const buildApprovalLinkFormModel = (
       control: 'text',
       key: 'template_ref',
       label: 'Template reference',
-      help: 'Set automatically when you start from a template. Leave blank for a hand-built link.',
+      help: 'Filled in for you when you start from a template. Leave it empty if you built the link yourself.',
       value: config?.template_ref ?? '',
       max_length: 100,
       required: false,
@@ -2210,26 +2210,26 @@ export const validateApprovalLinkFormConfig = (
 export const STATUS_LINK_CONFIG_ERROR_COPY: Readonly<
   Record<StatusLinkConfigValidationCode, string>
 > = {
-  config_shape_invalid: 'The status page configuration is malformed. Refresh the page + try again.',
-  display_name_empty: 'Enter a display name — it is the visitor-facing heading on the status page.',
+  config_shape_invalid: 'Recued could not read the status-page settings. Load the page again and try once more.',
+  display_name_empty: 'Type a name. It is the heading people see on the status page.',
   display_name_too_long: `Display name is too long (max ${STATUS_LINK_DISPLAY_NAME_MAX} characters).`,
   caption_too_long: `Caption is too long (max ${STATUS_LINK_CAPTION_MAX} characters).`,
-  projection_kind_unknown: 'Pick a projection kind from the closed list.',
-  source_ref_invalid: 'The source entity reference is malformed. Refresh the page + try again.',
-  source_ref_kind_unknown: 'Pick a source entity kind from the closed list.',
-  source_ref_missing_id_field: 'Enter the source entity id.',
-  source_ref_disallowed_for_status_link: 'That source entity kind is not allowed for a status page.',
-  fields_visible_override_invalid: 'The visible-fields override is malformed.',
+  projection_kind_unknown: 'Pick what to show.',
+  source_ref_invalid: 'Recued could not read which thing to show. Load the page again and try once more.',
+  source_ref_kind_unknown: 'Pick what kind of thing to show.',
+  source_ref_missing_id_field: 'Type the id of the thing to show.',
+  source_ref_disallowed_for_status_link: 'You cannot show that kind of thing on a status page.',
+  fields_visible_override_invalid: 'Recued could not read which parts to show.',
   fields_visible_override_exceeds_ceiling:
     'The visible-fields override names a field outside this projection kind’s allowed list.',
-  refresh_policy_invalid: 'The refresh policy is malformed. Refresh the page + try again.',
+  refresh_policy_invalid: 'Recued could not read how often to update. Load the page again and try once more.',
   refresh_interval_required_when_enabled:
     'Set a refresh interval — it is required when auto-refresh is on.',
   refresh_interval_out_of_range: `The refresh interval must be ${STATUS_LINK_REFRESH_INTERVAL_SECONDS_MIN}–${STATUS_LINK_REFRESH_INTERVAL_SECONDS_MAX} seconds.`,
   expiry_days_out_of_range: `Expiry must be ${STATUS_LINK_EXPIRY_DAYS_MIN}–${STATUS_LINK_EXPIRY_DAYS_MAX} days (status pages carry a hard 90-day ceiling).`,
   comments_enabled_must_be_false_at_v1: 'Comments are a deferred feature — leave them off at v1.',
-  shows_update_history_invalid: 'The "show update history" toggle is malformed.',
-  template_ref_invalid: 'The template reference must be a non-empty string when present.',
+  shows_update_history_invalid: 'Recued could not read that switch.',
+  template_ref_invalid: 'If you use a template, it needs a name.',
 };
 
 /** § A.5.6 — per-`StatusLinkProjectionKind` copy. */
@@ -2292,13 +2292,13 @@ export const STATUS_LINK_SOURCE_KIND_ID_FIELD: Readonly<
 const STATUS_LINK_SOURCE_KIND_COPY: Readonly<
   Record<StatusLinkSourceKind, { label: string; help: string }>
 > = {
-  'data.task': { label: 'Task', help: 'Project a task entity.' },
-  'data.note': { label: 'Note', help: 'Project a note entity.' },
-  'data.commitment': { label: 'Commitment', help: 'Project a commitment entity.' },
-  'data.project': { label: 'Project', help: 'Project a project entity.' },
-  'data.event': { label: 'Event', help: 'Project an event entity.' },
-  'data.packing_list': { label: 'Packing list', help: 'Project a packing-list entity.' },
-  'data.itinerary': { label: 'Itinerary', help: 'Project an itinerary entity.' },
+  'data.task': { label: 'Task', help: 'Show a task.' },
+  'data.note': { label: 'Note', help: 'Show a note.' },
+  'data.commitment': { label: 'Commitment', help: 'Show a promise.' },
+  'data.project': { label: 'Project', help: 'Show a project.' },
+  'data.event': { label: 'Event', help: 'Show an event.' },
+  'data.packing_list': { label: 'Packing list', help: 'Show a packing list.' },
+  'data.itinerary': { label: 'Itinerary', help: 'Show a travel plan.' },
 };
 
 /** Assemble a status-link `SourceQueryRef` from the form's split
@@ -2364,7 +2364,7 @@ export const buildStatusLinkFormModel = (
       control: 'text',
       key: 'display_name',
       label: 'Display name',
-      help: 'The visitor-facing heading on the status page.',
+      help: 'The heading people see on the status page.',
       value: config?.display_name ?? '',
       max_length: STATUS_LINK_DISPLAY_NAME_MAX,
       required: true,

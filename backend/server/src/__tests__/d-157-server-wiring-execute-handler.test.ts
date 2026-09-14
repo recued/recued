@@ -1,8 +1,13 @@
 /** D-157 server-wiring - execute-handler internal resume wiring. */
 
 import { readFileSync } from 'node:fs';
+import {
+  executionSourceContractId,
+  STDIO_MCP_TOKEN_ID,
+} from '@recued/contracts';
 import type {
   Checkpoint,
+  ContractSnapshot,
   ExecutionSource,
   IngredientManifest,
   RecipeDefinition,
@@ -55,6 +60,29 @@ const chatSource: ExecutionSource = {
   actor: 'user_self',
   chat_session_id: 'chat-1',
   user_id: 'user-1',
+};
+
+/** D-153 P2.C — a contract-bearing source must arrive with its RESOLVED
+ *  snapshot; the gate throws without one.
+ *
+ *  ⚠ DIFFERS FROM THE SIBLING HARNESS IN `execute-handler-actor-thread.test.ts`
+ *  ON PURPOSE. That one passes `allowed_tools: []` because its recipe is
+ *  transform-only, so the gate has nothing to deny. THIS file's fixture recipe
+ *  carries a real ingredient step, so an empty allowance DENIES the run before
+ *  the engine is ever called — no hold, no checkpoint, and the assertions below
+ *  fail on a `stored` that was never written rather than on the field under
+ *  test. Allowing the fixture's own tool is what lets the run reach the hold. */
+const contractSnapshotFor = (source: ExecutionSource): ContractSnapshot | undefined => {
+  const contract_id = executionSourceContractId(source);
+  if (contract_id === undefined) return undefined;
+  return {
+    contract_id,
+    contract_version: 'v1',
+    allowed_tools: [TOOL_SLUG],
+    approval_required: [],
+    scope_restrictions: [],
+    resolved_at: 1_000,
+  };
 };
 
 const buildManifest = (
@@ -1336,6 +1364,122 @@ describe('handleExecute D-157 server-wiring audit and ask fields', () => {
       owner_override_offer: offer,
       approval_clamped_from: 'never',
       authorization_provenance: { pre_lift_approval: 'always' },
+    });
+  });
+  // ── D-161 Part B — the checkpoint records WHO STARTED a door-origin run ──
+  //
+  // ⛔ THE JOIN THE OTHER TWO D-161 SUITES CANNOT REACH. The composer suite and
+  // the card-projection suite both SET `preflight_context.origin_actor` by hand
+  // and assert on what is rendered from it. Neither one can tell whether this
+  // handler ever writes the field — so both would stay green while the line
+  // never appeared on a single real ask. This is the writer's half.
+
+  it('stamps origin_actor on the checkpoint for a reception visitor', async () => {
+    const recipe = buildRecipe('server-wiring-held-door-origin');
+    const checkpoints = checkpointStore();
+    executeRecipeMock.mockResolvedValueOnce(pausedResult(recipe.recipe_id));
+
+    const source: ExecutionSource = {
+      channel: 'reception',
+      actor: 'anonymous',
+      reception_id: 'reception-1',
+      contract_id: 'contract-public',
+    };
+    await handleExecute(
+      makeDeps(recipe, { auditLog: auditLog(), checkpointStore: checkpoints }),
+      {
+        recipe_id: recipe.recipe_id,
+        trigger_source: 'manual',
+        execution_source: source,
+        contract_snapshot: contractSnapshotFor(source),
+      },
+    );
+
+    const stored = [...checkpoints.written.values()][0];
+    expect(stored?.preflight_context).toMatchObject({ origin_actor: 'anonymous' });
+  });
+
+  it("writes no origin_actor for the owner's own run", async () => {
+    // The absence is the feature: a "Started by" on every ask is noise the
+    // reader learns to skip, which costs the one ask that needed it.
+    const recipe = buildRecipe('server-wiring-held-owner-origin');
+    const checkpoints = checkpointStore();
+    executeRecipeMock.mockResolvedValueOnce(pausedResult(recipe.recipe_id));
+
+    await handleExecute(
+      makeDeps(recipe, { auditLog: auditLog(), checkpointStore: checkpoints }),
+      {
+        recipe_id: recipe.recipe_id,
+        trigger_source: 'manual',
+        execution_source: chatSource,
+      },
+    );
+
+    const stored = [...checkpoints.written.values()][0];
+    expect(stored?.preflight_context).toBeDefined();
+    expect(stored?.preflight_context?.origin_actor).toBeUndefined();
+  });
+
+  it("does NOT call the owner's own stdio MCP client an outside AI", async () => {
+    // ⛔⛔ THE DEFECT A HAND-ROLLED PREDICATE SHIPS. The channel forces the
+    // owner's OWN stdio client to `actor: 'contracted_user'` — identical to a
+    // delegated outside agent on the actor field alone. Only the TOKEN tells
+    // them apart, and only `isDoorDispatchSource` consults it. Classify on the
+    // actor here and the owner's desktop session is announced to them as "an
+    // outside AI, through a door you opened" on every held action.
+    const recipe = buildRecipe('server-wiring-held-owner-stdio');
+    const checkpoints = checkpointStore();
+    executeRecipeMock.mockResolvedValueOnce(pausedResult(recipe.recipe_id));
+    const ownerStdio: ExecutionSource = {
+      channel: 'mcp',
+      actor: 'contracted_user',
+      agent_id: 'owner-desktop',
+      tool_call_id: 'call-1',
+      contract_id: 'contract-owner',
+      mcp_token_id: STDIO_MCP_TOKEN_ID,
+    };
+
+    await handleExecute(
+      makeDeps(recipe, { auditLog: auditLog(), checkpointStore: checkpoints }),
+      {
+        recipe_id: recipe.recipe_id,
+        trigger_source: 'manual',
+        execution_source: ownerStdio,
+        contract_snapshot: contractSnapshotFor(ownerStdio),
+      },
+    );
+
+    const stored = [...checkpoints.written.values()][0];
+    expect(stored?.preflight_context?.origin_actor).toBeUndefined();
+  });
+
+  it('stamps origin_actor for a DELEGATED mcp bearer', async () => {
+    // The other side of the same coin — a real outside agent must be named.
+    const recipe = buildRecipe('server-wiring-held-delegated-mcp');
+    const checkpoints = checkpointStore();
+    executeRecipeMock.mockResolvedValueOnce(pausedResult(recipe.recipe_id));
+    const delegated: ExecutionSource = {
+      channel: 'mcp',
+      actor: 'contracted_user',
+      agent_id: 'outside-agent',
+      tool_call_id: 'call-2',
+      contract_id: 'contract-agent',
+      mcp_token_id: 'tok_delegated_1',
+    };
+
+    await handleExecute(
+      makeDeps(recipe, { auditLog: auditLog(), checkpointStore: checkpoints }),
+      {
+        recipe_id: recipe.recipe_id,
+        trigger_source: 'manual',
+        execution_source: delegated,
+        contract_snapshot: contractSnapshotFor(delegated),
+      },
+    );
+
+    const stored = [...checkpoints.written.values()][0];
+    expect(stored?.preflight_context).toMatchObject({
+      origin_actor: 'contracted_user',
     });
   });
 });

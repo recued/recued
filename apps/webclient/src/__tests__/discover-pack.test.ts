@@ -161,7 +161,7 @@ describe('pack-discovery config', () => {
       new Set(['p']),
     );
     expect(b[0]).toMatchObject({ label: 'Needs update', tone: 'danger' });
-    expect(b[0]!.title).toContain('no longer runs');
+    expect(b[0]!.title).toContain('no longer works');
     // …and it does not displace the rest.
     expect(b.map((x) => x.label)).toContain('✓ Certified');
   });
@@ -186,7 +186,7 @@ describe('pack-discovery config', () => {
     // boot, and the roster gave no way to tell them from packs the owner picked.
     const b = packBadges(pr({ slug: 'reception-intake' }), new Set(['reception-intake']));
     expect(b[0]).toMatchObject({ label: 'Included', tone: 'muted' });
-    expect(b[0].title).toContain('every server boot');
+    expect(b[0].title).toContain('every time the server starts');
   });
 
   it('⛔ AND A PACK THE OWNER CHOSE CARRIES NO SUCH BADGE', () => {

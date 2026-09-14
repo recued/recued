@@ -17,5 +17,8 @@
     "@recued/renderer": "*",
     "@recued/transforms": "*",
     "@recued/ui-shared": "*"
+  },
+  "dependencies": {
+    "pdfjs-dist": "6.3.289"
   }
 }

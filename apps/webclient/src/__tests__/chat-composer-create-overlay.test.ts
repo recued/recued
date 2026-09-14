@@ -20,6 +20,8 @@ import type { ChatMessage, ChatSession } from '@recued/contracts';
 
 import {
   bootstrapChatRoute,
+  CHAT_ROUTE_ACTIVATION_ACTION_ATTR,
+  CHAT_ROUTE_ACTIVATION_CARD_ATTR,
   CHAT_ROUTE_COMPOSER_ACTION_ATTR,
   CHAT_ROUTE_COMPOSER_MORE_ATTR,
   CHAT_ROUTE_CREATE_CLOSE_ATTR,
@@ -246,7 +248,23 @@ const stubConn = ((method: string) => {
   return Promise.resolve({});
 }) as unknown as ChatRouteConn;
 
-const mount = (withCallers: boolean) => {
+/** D-267 — a TRUE first run: no sessions, nothing connected, nothing installed.
+ *  ⚠ `stubConn` above answers `chat.session.get` with a message, which sets
+ *  `hasCompletedChat` and retires the activation grid — so the grid cases need
+ *  their own conn rather than an extra flag on that one. */
+const firstRunConn = ((method: string) => {
+  if (method === 'chat.sessions.list') return Promise.resolve({ sessions: [] });
+  if (method === 'server.getLLMConfig') return Promise.resolve({ config: {} });
+  if (method === 'prefs.get') return Promise.resolve({ prefs: {} });
+  if (method === 'collection.connection.list') return Promise.resolve({ connections: [] });
+  if (method === 'recipe.list') return Promise.resolve({ recipes: [] });
+  return Promise.resolve({});
+}) as unknown as ChatRouteConn;
+
+const mount = (
+  withCallers: boolean,
+  extra: Partial<Parameters<typeof bootstrapChatRoute>[0]> = {},
+) => {
   const doc = makeDoc();
   const root = doc.createElement('div');
   const route = bootstrapChatRoute({
@@ -259,9 +277,15 @@ const mount = (withCallers: boolean) => {
           workEntityUpsertCaller: vi.fn(async () => ({ entity: {} as never })),
         }
       : {}),
+    ...extra,
   });
   return { doc, root, route };
 };
+
+const activationCardIntents = (root: FakeEl): Array<string | null> =>
+  collectByAttr(root, CHAT_ROUTE_ACTIVATION_CARD_ATTR).map(
+    (card) => card.getAttribute(CHAT_ROUTE_ACTIVATION_CARD_ATTR),
+  );
 
 const createButton = (root: FakeEl): FakeEl | undefined =>
   collectByAttr(root, CHAT_ROUTE_COMPOSER_ACTION_ATTR).find(
@@ -373,7 +397,7 @@ describe('Shell-frame Step 4 — composer buttons + Create overlay', () => {
     email.value = 'unfinished@example.test';
     expect(route.hasUnsavedChanges()).toBe(true);
     expect(route.unsavedChangesPrompt()).toBe(
-      'Discard this unfinished Create item?',
+      'Throw away this unfinished item?',
     );
 
     route.dispose();
@@ -411,5 +435,112 @@ describe('Shell-frame Step 4 — composer buttons + Create overlay', () => {
     doc.fireKeydown('Escape');
     expect(doc.activeElement).toBe(btn); // restored on close
     route.dispose();
+  });
+});
+
+describe('D-267 — the fourth first-run door', () => {
+  const firstRun = (withCallers: boolean) => {
+    const doc = makeDoc();
+    const root = doc.createElement('div');
+    const route = bootstrapChatRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      conn: firstRunConn,
+      enableFirstRunActivation: true,
+      ...(withCallers
+        ? {
+            contactUpsertCaller: vi.fn(async () => ({ contact: {} as never })),
+            workEntityUpsertCaller: vi.fn(async () => ({ entity: {} as never })),
+          }
+        : {}),
+    });
+    return { doc, root, route };
+  };
+
+  it('⛔ leads the grid with capture — and it is the ONLY create affordance on that screen', async () => {
+    const { root, route } = firstRun(true);
+    await tick();
+    await tick();
+
+    // Capture FIRST: the other three each need a model, an account, or a
+    // recipe. This one works on a machine with no network.
+    expect(activationCardIntents(root)).toEqual([
+      'capture', 'ask', 'connect', 'automate',
+    ]);
+
+    // ⛔⛔ THE DEFECT THIS CARD EXISTS FOR. The hero suppresses the composer
+    // action row while the grid is up, so on the actual first screen [✎ Create]
+    // is NOT RENDERED and the only path to it was the ☰ drawer. Asserting the
+    // card alone would not have caught that — the pair is the point.
+    expect(collectByAttr(root, CHAT_ROUTE_COMPOSER_ACTION_ATTR)).toHaveLength(0);
+    route.dispose();
+  });
+
+  it('opens the SAME shared overlay the composer chip opens', async () => {
+    const { doc, root, route } = firstRun(true);
+    await tick();
+    await tick();
+    const capture = collectByAttr(root, CHAT_ROUTE_ACTIVATION_ACTION_ATTR).find(
+      (node) => node.getAttribute(CHAT_ROUTE_ACTIVATION_ACTION_ATTR) === 'capture',
+    );
+    expect(capture).toBeDefined();
+    // A button, not a link: every other card navigates or seeds a prompt.
+    expect(capture?.getAttribute('href')).toBeNull();
+    expect(collectByAttr(doc.body, CHAT_ROUTE_CREATE_OVERLAY_ATTR)).toHaveLength(0);
+    capture!.click();
+    // Portaled to body, same overlay attr as the composer chip's — one modal,
+    // one commit path, so a capture from first-run is indistinguishable from
+    // one made anywhere else.
+    expect(collectByAttr(doc.body, CHAT_ROUTE_CREATE_OVERLAY_ATTR)).toHaveLength(1);
+    route.dispose();
+  });
+
+  it('omits capture when no upsert caller is wired — the three setup doors stand alone', async () => {
+    const { root, route } = firstRun(false);
+    await tick();
+    await tick();
+    // ⚠ The predicate is shared with the composer chip (`canOpenCreateOverlay`),
+    // so an unwired host offers no dead button here either.
+    expect(activationCardIntents(root)).toEqual(['ask', 'connect', 'automate']);
+    route.dispose();
+  });
+
+  it('⛔ the Find chip SAYS the chord — the only place it is ever said', async () => {
+    const wired = mount(true, { openUniversalSearch: vi.fn() });
+    await tick();
+    const find = collectByAttr(wired.root, CHAT_ROUTE_COMPOSER_ACTION_ATTR).find(
+      (b) => b.getAttribute(CHAT_ROUTE_COMPOSER_ACTION_ATTR) === 'find',
+    )!;
+    // ⛔ WITHOUT THIS THE CHORD SHIPS UNDISCOVERABLE. The Run palette earns its
+    // ⌘K by putting a visible kbd chip on a persistent top-bar trigger; search
+    // has no such trigger, so `UNIVERSAL_SEARCH_SHORTCUT` had no consumer at
+    // all outside its own module and this test — an exported constant nothing
+    // advertised, which is the same as no shortcut for anyone who did not read
+    // the source.
+    expect(find.getAttribute('aria-keyshortcuts')).toBe('Control+/ Meta+/');
+    expect(find.getAttribute('title')).toMatch(/⌘\/|Ctrl \//);
+    wired.route.dispose();
+  });
+
+  it('renders the Find chip only when the shell wires a search entry', async () => {
+    const openUniversalSearch = vi.fn();
+    const wired = mount(true, { openUniversalSearch });
+    await tick();
+    const find = collectByAttr(wired.root, CHAT_ROUTE_COMPOSER_ACTION_ATTR).find(
+      (b) => b.getAttribute(CHAT_ROUTE_COMPOSER_ACTION_ATTR) === 'find',
+    );
+    expect(find).toBeDefined();
+    find!.click();
+    expect(openUniversalSearch).toHaveBeenCalledTimes(1);
+    wired.route.dispose();
+
+    // ⛔ An embedded/test mount with no shell to navigate gets NO chip rather
+    // than one that does nothing.
+    const bare = mount(true);
+    await tick();
+    expect(collectByAttr(bare.root, CHAT_ROUTE_COMPOSER_ACTION_ATTR).map(
+      (b) => b.getAttribute(CHAT_ROUTE_COMPOSER_ACTION_ATTR),
+    )).not.toContain('find');
+    bare.route.dispose();
   });
 });

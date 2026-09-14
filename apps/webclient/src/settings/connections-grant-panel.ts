@@ -448,7 +448,7 @@ export const mountConnectionsGrantPanel = (
         card,
         CONNECTIONS_GRANT_GROUP_ERROR_ATTR,
         'conn-grant-group-error',
-        `Could not load permissions: ${row.groupsError}`,
+        `Recued could not load what is allowed: ${row.groupsError}`,
       );
     }
 
@@ -477,7 +477,7 @@ export const mountConnectionsGrantPanel = (
         root,
         CONNECTIONS_GRANT_PANEL_ERROR_ATTR,
         'conn-grant-error',
-        `Could not load connections: ${state.listError}`,
+        `Recued could not load your Connections: ${state.listError}`,
       );
     }
 
@@ -502,7 +502,7 @@ export const mountConnectionsGrantPanel = (
         root,
         CONNECTIONS_GRANT_PANEL_EMPTY_ATTR,
         'conn-grant-empty',
-        'No API connections. Vendor and private/local catalog connections you can grant operation permissions to appear here.',
+        'No Connections yet. The ones you can give permissions to show up here.',
       );
     }
     // phase === 'error' with zero rows → the error chip above is the whole

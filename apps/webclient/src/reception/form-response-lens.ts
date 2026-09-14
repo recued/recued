@@ -69,7 +69,7 @@ export const FR_LENS_DETAIL_RETRY_ATTR =
  *  been accepted yet. It names WHERE the missing thing actually is, which is the only useful
  *  thing an empty state can say here. */
 export const FR_LENS_EMPTY_COPY =
-  'No accepted form responses yet. New submissions stay in Reception Inbox until you approve them.';
+  'You have not accepted any answers yet. New ones wait in your Reception inbox until you say yes.';
 
 // ════════════════════════════════════════════════════════════════
 // Pure projection (ported)
@@ -206,7 +206,7 @@ const renderPicker = (state: PickerState): string => {
             <div><strong>${e(name)}</strong> <code>${e(match.entry.recipe_id)}</code></div>
             <span class="reception-responses-pill">${e(scope)}</span>
             <button type="button"
-              aria-label="${e(`Review and run ${name} (${match.entry.recipe_id})`)}"
+              aria-label="${e(`Look at it and run ${name} (${match.entry.recipe_id})`)}"
               ${FR_LENS_ACTION_ATTR}="review"
               ${FR_LENS_RECIPE_ATTR}="${e(match.entry.recipe_id)}">Review and run</button>
           </li>`;
@@ -246,7 +246,7 @@ const renderDetail = (
           ${canRun
             ? `<button type="button" ${FR_LENS_ACTION_ATTR}="discover"${discovering
               ? ' aria-disabled="true" aria-busy="true"'
-              : ''}>${discovering ? 'Finding automations…' : 'Run this response'}</button>`
+              : ''}>${discovering ? 'Looking for things that can run…' : 'Run this response'}</button>`
             : ''}
         </div>
       </div>
@@ -355,6 +355,9 @@ export const RECEPTION_RESPONSES_STYLES = `
 // ════════════════════════════════════════════════════════════════
 
 export interface ReceptionFormResponseLensOptions {
+  /** D-269 step 1 — the server's resolved IANA zone, forwarded to the run
+   *  modal's scheduled-activation stamp. Absent ⇒ this browser's, as before. */
+  serverTimeZone?: () => string | undefined;
   host: HTMLElement;
   conn: ReceptionFormResponseConn;
   document?: Document;
@@ -377,7 +380,7 @@ export interface ReceptionFormResponseLensMount {
 const errMessage = (err: unknown): string =>
   err instanceof Error && err.message.length > 0
     ? err.message
-    : 'Could not load form responses.';
+    : 'Recued could not load the answers.';
 
 export const mountReceptionFormResponseLens = (
   opts: ReceptionFormResponseLensOptions,
@@ -536,8 +539,8 @@ export const mountReceptionFormResponseLens = (
           ? `<section ${FR_LENS_DETAIL_ATTR}="${e(detailId)}">
                <button type="button" ${FR_LENS_ACTION_ATTR}="close">← Back to form responses</button>
                <p>${error === null
-                 ? 'This form response was not found.'
-                 : 'Could not load this form response. Try again or return to the list.'}</p>
+                 ? 'Recued could not find this answer.'
+                 : 'Recued could not open this answer. Try again, or go back to the list.'}</p>
                ${error === null ? '' : detailRetry}
              </section>`
           : renderDetail(detail, picker, canRun);
@@ -717,6 +720,7 @@ export const mountReceptionFormResponseLens = (
     if (match === undefined) return;
     try {
       const handle = RunModal.wireRunModal({
+      ...(opts.serverTimeZone ? { serverTimeZone: opts.serverTimeZone } : {}),
         recipe: match.entry,
         document: doc,
         initialTab: 'run',

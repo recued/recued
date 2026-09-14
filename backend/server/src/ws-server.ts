@@ -119,6 +119,9 @@ import {
   makeCliReachabilityHandlers,
   type CliReachabilityRpcDeps,
 } from './cli-reachability-handler.js';
+import { makeServerTimeZoneHandlers } from './server-timezone-handler.js';
+import { makeNotificationKindPolicyHandlers } from './notification-kind-policy-handler.js';
+import { makeQuietHoursHandlers } from './quiet-hours-handler.js';
 import {
   makeHostnameHandlers,
   type HostnameRpcDeps,
@@ -1107,6 +1110,16 @@ export interface AttachWebSocketOptions {
    *  (`cli.reachability.` in `MCP_RESERVED_RPC_PREFIXES`). Absent → those methods
    *  return `not_configured` (db-less harnesses). */
   cliReachabilityDeps?: CliReachabilityRpcDeps;
+  /** D-269 step 1 — `server.timezone.*`: the owner declares whether this
+   *  machine stays put (`fixed`) or travels with them (`follows_host`).
+   *  Absent → those methods return `not_configured` (db-less harnesses). */
+  serverTimeZoneDeps?: import('./server-timezone-handler.js').ServerTimeZoneRpcDeps;
+  /** D-269 step 2 — `notification.kind_policy.*`: the per-kind reminder policy
+   *  the due-status sweep reads. Absent → those methods return
+   *  `not_configured` (db-less harnesses). */
+  notificationKindPolicyDeps?: import('./notification-kind-policy-handler.js').NotificationKindPolicyRpcDeps;
+  /** D-269 step 3 — `notification.quiet_hours.*`. */
+  quietHoursDeps?: import('./quiet-hours-handler.js').QuietHoursRpcDeps;
   /** Supervision feature — owner-only `supervision.*` rpc deps (cli-daemon
    *  keep-alive). `supervision.` is in `MCP_RESERVED_RPC_PREFIXES`. Absent →
    *  those methods return `not_configured` (db-less harnesses). */
@@ -1525,6 +1538,9 @@ const buildWsBinding = (
     webhookIngressDeps,
     contractDeps,
     cliReachabilityDeps,
+    serverTimeZoneDeps,
+    notificationKindPolicyDeps,
+    quietHoursDeps,
     supervisionDeps,
     hostnameDeps,
     networkDeps,
@@ -1862,6 +1878,16 @@ const buildWsBinding = (
     // cli-reachability resolver reads. Owner-only via the `cli.reachability.`
     // MCP-reserved prefix.
     makeCliReachabilityHandlers(cliReachabilityDeps),
+    // D-269 step 1 — `server.timezone.*`. The one place the deployment fact
+    // (does this machine travel with its owner?) is stated, so nothing has to
+    // keep guessing it from a clock that cannot know.
+    makeServerTimeZoneHandlers(serverTimeZoneDeps),
+    // D-269 step 2 — the per-kind reminder policy. Same store the due-status
+    // sweep reads per cycle, so a change here lands on the next sweep rather
+    // than at the next restart.
+    makeNotificationKindPolicyHandlers(notificationKindPolicyDeps),
+    // D-269 step 3 — the one quiet-hours window.
+    makeQuietHoursHandlers(quietHoursDeps),
     // D-152 — Settings → Reachability hostname registry CRUD +
     // ownership-proof transitions. Same store as the listener SNI
     // binding lookup, so a verified/enabled RPC mutation is the state
@@ -2145,7 +2171,13 @@ const buildWsBinding = (
     // D-172 Half-A "open" — `data.file.read` owner read pair-RPC (Files tab
     // open/download). Fourth isolated channel over `handleFileRead`; owner-
     // trusted (registered-client boundary), no contract/egress gate.
-    makeFileReadRpcHandlers(fileReadRpcDeps),
+    makeFileReadRpcHandlers(fileReadRpcDeps ? { ...fileReadRpcDeps, deleted: file => {
+      try { collectionDeps?.annotationCascade?.('file', file); } catch { /* Same best-effort cleanup as collection.deleteRecord. */ }
+      try { collectionDeps?.enrichmentCascadeOnDelete?.('file', file); } catch { /* Retain the committed deletion. */ }
+    }, changed: (session_id, file_id, deleted) => {
+      chatDeps?.broadcast?.emit({ kind: 'chat.session_changed', session_id, field: 'attachments', value: { file_id, deleted } });
+      chatDeps?.broadcast?.emit({ kind: 'chat.session_changed', session_id, field: 'queue', value: true });
+    } } : undefined),
     // D-139 P5 — `data.contact.engagements.list` resolver pair-RPC.
     makeContactEngagementsRpcHandlers(contactEngagementsRpcDeps),
     // D-145 PB12 — Peer-Recued Preview consumer rpc. Wires

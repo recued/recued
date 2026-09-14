@@ -172,6 +172,7 @@ export interface PlanApprovalCard {
 export type PlanExecutionReceipt = ChatPlanExecutionReceipt;
 
 export interface ChatThreadState {
+  quoted_replies_available?: boolean;
   session: ChatSession | null;
   /** Authoritative message log — replaces on `chat.message_complete`,
    *  loaded initially via `chat.session.get` rpc. */
@@ -192,6 +193,12 @@ export interface ChatThreadState {
   has_more_before: boolean;
   /** Where the next older page resumes; null when there is none to ask for. */
   oldest_cursor: ChatHistoryCursor | null;
+  /** A message link can land in the middle of a conversation. */
+  has_more_after: boolean;
+  newest_cursor: ChatHistoryCursor | null;
+  /** Start of a separately recovered recent window. Paging can stop once
+   * the anchored window reaches it; broadcasts alone cannot prove that gap. */
+  latest_window_start: ChatHistoryCursor | null;
   /** Route-side scaffold handling — turn ids whose
    *  `chat.message_complete` already landed. In production the
    *  `chat.send` ack resolves only AFTER the whole turn broadcast, so
@@ -217,10 +224,14 @@ export const initialChatThreadState = (): ChatThreadState => ({
   completed_turn_ids: [],
   has_more_before: false,
   oldest_cursor: null,
+  has_more_after: false,
+  newest_cursor: null,
+  latest_window_start: null,
 });
 
 export type ChatThreadSnapshot =
   ChatSession & {
+    quoted_replies_available?: boolean;
     messages: ChatMessage[];
     plans?: ReadonlyArray<ChatPlanRecord>;
     /** ⛔ ABSENT MEANS COMPLETE, NOT UNKNOWN — the opposite of
@@ -232,14 +243,41 @@ export type ChatThreadSnapshot =
     has_more?: boolean;
     /** Where an older page resumes. Only ever present beside `has_more`. */
     oldest_cursor?: ChatHistoryCursor;
+    has_more_after?: boolean;
+    newest_cursor?: ChatHistoryCursor;
   };
 
-/** Apply a `chat.session.get` rpc snapshot to the thread state. */
+const compareHistoryCursors = (a: ChatHistoryCursor, b: ChatHistoryCursor): number =>
+  a.ts - b.ts || (a.message_id < b.message_id ? -1 : a.message_id > b.message_id ? 1 : 0);
+const messageCursor = (message: ChatMessage): ChatHistoryCursor => ({
+  ts: message.ts, message_id: message.id,
+});
+
+/** Apply fresh server history. Recovery from an old message link also reads
+ * the recent tail, so durable completions survive without losing the target.
+ * Keep the intervening gap explicit until pagination joins the two windows. */
 export const hydrateThreadFromSnapshot = (
   state: ChatThreadState,
   snapshot: ChatThreadSnapshot,
+  latestSnapshot?: ChatThreadSnapshot,
 ): ChatThreadState => {
-  const { messages, plans = [], ...session } = snapshot;
+  // A complete newer read is authoritative even for rows removed between reads.
+  if (latestSnapshot !== undefined && latestSnapshot.has_more !== true) {
+    return hydrateThreadFromSnapshot(state, latestSnapshot);
+  }
+  const { messages: latestMessages, plans = [], quoted_replies_available, ...session } = latestSnapshot ?? snapshot;
+  const messages = latestSnapshot === undefined ? latestMessages : [
+    ...new Map([...snapshot.messages, ...latestMessages].map(message => [message.id, message])).values(),
+  ].sort((a, b) => compareHistoryCursors(messageCursor(a), messageCursor(b)));
+  const latestStart = latestSnapshot?.messages[0];
+  const latestWindowStart = latestStart === undefined ? null : messageCursor(latestStart);
+  const gap = snapshot.has_more_after === true && (
+    latestWindowStart === null || snapshot.newest_cursor === undefined
+    || compareHistoryCursors(snapshot.newest_cursor, latestWindowStart) < 0
+  );
+  const before = latestWindowStart !== null && snapshot.messages[0] !== undefined
+    && compareHistoryCursors(latestWindowStart, messageCursor(snapshot.messages[0])) <= 0
+    ? latestSnapshot! : snapshot;
   // 🔑 DURABLE COMPLETION, recovered from the history itself. This used to be
   // `[]` and could only ever be refilled by live `chat.message_complete`
   // events — so a turn that finished while the socket was down was, to this
@@ -261,6 +299,7 @@ export const hydrateThreadFromSnapshot = (
   }
   return {
     session,
+    quoted_replies_available: quoted_replies_available === true,
     messages: messages.slice(),
     inflight: null,
     turn_failures: [],
@@ -284,8 +323,11 @@ export const hydrateThreadFromSnapshot = (
       recovered: true,
       payload_available: record.payload_available,
     })),
-    has_more_before: snapshot.has_more === true,
-    oldest_cursor: snapshot.oldest_cursor ?? null,
+    has_more_before: before.has_more === true,
+    oldest_cursor: before.oldest_cursor ?? null,
+    has_more_after: gap,
+    newest_cursor: (gap ? snapshot : latestSnapshot ?? snapshot).newest_cursor ?? null,
+    latest_window_start: gap ? latestWindowStart : null,
     // Same cap and same end as the live path: newest kept, oldest dropped.
     completed_turn_ids: completedTurnIds.slice(-COMPLETED_TURN_MEMORY),
   };
@@ -314,6 +356,30 @@ export const prependOlderMessages = (
     messages: [...fresh, ...state.messages],
     has_more_before: next.has_more,
     oldest_cursor: next.oldest_cursor,
+  };
+};
+
+/** Fill the gap after an anchored window while preserving live messages that
+ * arrived at the tail during the read. The cursor tracks the contiguous page,
+ * not the latest broadcast, so intervening history cannot be skipped. */
+export const appendNewerMessages = (
+  state: ChatThreadState,
+  newer: readonly ChatMessage[],
+  next: { has_more_after: boolean; newest_cursor: ChatHistoryCursor | null },
+): ChatThreadState => {
+  const known = new Set(state.messages.map((message) => message.id));
+  const fresh = newer.filter((message) => !known.has(message.id));
+  const reachedLatestWindow = state.latest_window_start !== null
+    && next.newest_cursor !== null
+    && compareHistoryCursors(next.newest_cursor, state.latest_window_start) >= 0;
+  const hasMoreAfter = next.has_more_after && !reachedLatestWindow;
+  return {
+    ...state,
+    messages: [...state.messages, ...fresh].sort((a, b) =>
+      a.ts - b.ts || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)),
+    has_more_after: hasMoreAfter,
+    newest_cursor: next.newest_cursor,
+    latest_window_start: hasMoreAfter ? state.latest_window_start : null,
   };
 };
 
@@ -939,6 +1005,22 @@ const applySessionChanged = (
   event: Extract<ServerEvent, { kind: 'chat.session_changed' }>,
 ): ChatThreadState => {
   if (!state.session || event.session_id !== state.session.id) return state;
+  if (event.field === 'attachments') {
+    const value = event.value as { file_id?: unknown; deleted?: unknown } | undefined;
+    if (!value || typeof value.file_id !== 'string' || value.deleted !== true) return state;
+    return { ...state, messages: state.messages.map(message => ({ ...message,
+      ...(message.attachments ? { attachments: message.attachments.map(file => file.source_file_id === value.file_id
+        || file.file_id === value.file_id ? { ...file, availability: 'deleted' as const } : file) } : {}) })) };
+  }
+  if (event.field === 'message') {
+    const message = event.value as ChatMessage | undefined;
+    if (!message || typeof message.id !== 'string' || message.session_id !== state.session.id
+      || typeof message.content !== 'string' || !Number.isFinite(message.ts)
+      || !['user', 'assistant'].includes(message.role)) return state;
+    if (state.messages.some((row) => row.id === message.id)) return state;
+    return { ...state, messages: [...state.messages, message].sort((a, b) =>
+      a.ts - b.ts || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)) };
+  }
   return {
     ...state,
     session: patchSessionField(state.session, event.field, event.value),

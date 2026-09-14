@@ -196,7 +196,7 @@ export type RunsRecipeNamesCaller = () => Promise<{
 const RECIPE_PICKER_CONFIG: RefPicker.RefPickerRenderConfig = {
   pickerId: 'logs-recipe-filter',
   placeholder: 'Any recipe',
-  ariaLabel: 'Filter by recipe',
+  ariaLabel: 'Show only one Recipe',
   emptyText: 'No recipes match.',
 };
 
@@ -1179,23 +1179,23 @@ const ERROR_CATEGORY_LABELS: Record<HeavyOpErrorCategory, string> = {
   crashed: 'crashed',
   stalled: 'stalled',
   killed: 'killed',
-  cancelled_before_dispatch: 'cancelled before dispatch',
+  cancelled_before_dispatch: 'cancelled before it was sent',
 };
 
 // D-182 — display copy for a cli (local-binary) step failure (the feed chip + the
 // detail block). Neutral + lowercase to match the status glyphs.
 const CLI_FAILURE_LABELS: Record<CliFailureReason, string> = {
   not_found: 'tool not found',
-  spawn_error: 'tool failed to start',
+  spawn_error: 'a tool would not start',
   nonzero_exit: 'tool error',
   timeout: 'tool timed out',
   bad_output: 'bad tool output',
 };
 
 const DEGRADATION_MESSAGES: Record<RunDegradation, string> = {
-  audit_unwritten: 'Part of this run’s history could not be saved.',
+  audit_unwritten: 'Recued could not save part of this run’s story.',
   provenance_incomplete:
-    'Some links to records affected by this run are missing.',
+    'Some links to what this run touched are missing.',
 };
 
 const APPROVAL_OUTCOME_LABELS: Record<RunApprovalOutcome, string> = {
@@ -1203,7 +1203,7 @@ const APPROVAL_OUTCOME_LABELS: Record<RunApprovalOutcome, string> = {
   deny: 'Denied',
   edit: 'Edited',
   dismiss: 'Dismissed',
-  dismiss_unseen: 'Dismissed without review',
+  dismiss_unseen: 'Closed without looking',
 };
 
 type RunOutcomeCore = Omit<RunOutcomeSummary, 'recordWarnings'>;
@@ -1216,86 +1216,86 @@ const FAILED_CATEGORY_OUTCOMES: Record<
     tone: 'danger',
     title: 'Run timed out',
     detail:
-      'The run reached its time limit before completing. Earlier steps may still have made changes.',
-    nextStep: 'Check the affected app or data before trying again.',
+      'The run ran out of time before it finished. Earlier steps may already have changed things.',
+    nextStep: 'Check the app or the data it touched before you try again.',
   },
   oom: {
     tone: 'danger',
-    title: 'Run ran out of memory',
+    title: 'The run ran out of memory',
     detail:
-      'The run stopped after exhausting available memory. Earlier steps may still have made changes.',
-    nextStep: 'Check the affected app or data before trying again.',
+      'The run ran out of memory and stopped. Earlier steps may already have changed things.',
+    nextStep: 'Check the app or the data it touched before you try again.',
   },
   crashed: {
     tone: 'danger',
     title: 'Run crashed',
     detail:
-      'The run stopped unexpectedly before completing. Earlier steps may still have made changes.',
-    nextStep: 'Check the affected app or data before trying again.',
+      'The run stopped without warning before it finished. Earlier steps may already have changed things.',
+    nextStep: 'Check the app or the data it touched before you try again.',
   },
   stalled: {
     tone: 'danger',
     title: 'Run stalled',
     detail:
-      'The run stopped because it was no longer making progress. Earlier steps may still have made changes.',
-    nextStep: 'Check the affected app or data before trying again.',
+      'The run stopped because it was getting nowhere. Earlier steps may already have changed things.',
+    nextStep: 'Check the app or the data it touched before you try again.',
   },
   killed: {
     tone: 'danger',
     title: 'Run was stopped',
     detail:
-      'The run was stopped while an operation was still active. Earlier steps may still have made changes.',
-    nextStep: 'Check the affected app or data before trying again.',
+      'The run was stopped while it was still doing something. Earlier steps may already have changed things.',
+    nextStep: 'Check the app or the data it touched before you try again.',
   },
   cancelled_before_dispatch: {
     tone: 'neutral',
-    title: 'Queued action was cancelled',
+    title: 'A waiting step was cancelled',
     detail:
-      'A queued step was cancelled before it was sent, so the run did not complete. Earlier steps may still have made changes.',
+      'A waiting step was cancelled before it was sent, so the run never finished. Earlier steps may already have changed things.',
     nextStep:
-      'Review the activity and any affected app or data before starting a new run.',
+      'Look at what happened, and at the app or data it touched, before you run it again.',
   },
 };
 
 const CLI_FAILURE_OUTCOMES: Record<CliFailureReason, RunOutcomeCore> = {
   not_found: {
     tone: 'danger',
-    title: 'Required tool was not found',
+    title: 'A tool it needed is missing',
     detail:
-      'The run could not start a required local tool and did not complete. Earlier steps may still have made changes.',
+      'The run could not start a tool it needed, so it never finished. Earlier steps may already have changed things.',
     nextStep:
-      'Review the tool error below, then install or configure the missing tool.',
+      'Read the error below, then install or set up the missing tool.',
   },
   spawn_error: {
     tone: 'danger',
-    title: 'Required tool could not start',
+    title: 'A tool it needed would not start',
     detail:
-      'The run could not start a required local tool and did not complete. Earlier steps may still have made changes.',
-    nextStep: 'Review the tool error below before trying again.',
+      'The run could not start a tool it needed, so it never finished. Earlier steps may already have changed things.',
+    nextStep: 'Read the error below before you try again.',
   },
   nonzero_exit: {
     tone: 'danger',
-    title: 'A required tool returned an error',
+    title: 'A tool it needed gave an error',
     detail:
-      'A local tool stopped the run before it completed. Earlier steps may still have made changes.',
+      'A tool stopped the run before it finished. Earlier steps may already have changed things.',
     nextStep:
-      'Review the tool error and check the affected app or data before trying again.',
+      'Read the error, and check the app or data it touched, before you try again.',
   },
   timeout: {
     tone: 'danger',
-    title: 'A required tool timed out',
+    title: 'A tool it needed took too long',
     detail:
-      'A local tool exceeded its time limit. Earlier steps may still have made changes.',
+      'A tool took too long. Earlier steps may already have changed things.',
     nextStep:
-      'Review the tool error and check the affected app or data before trying again.',
+      'Read the error, and check the app or data it touched, before you try again.',
   },
   bad_output: {
     tone: 'danger',
-    title: 'A required tool returned unreadable output',
+    title: 'A tool sent back something Recued could not read',
     detail:
-      'The run could not use a local tool’s result. Earlier steps may still have made changes.',
+      'The run could not use what a tool sent back. Earlier steps may already have changed things.',
     nextStep:
-      'Review the tool error and check the affected app or data before trying again.',
+      'Read the error, and check the app or data it touched, before you try again.',
   },
 };
 
@@ -1389,9 +1389,9 @@ const failedOutcome = (detail: RunDetail): RunOutcomeCore => {
       tone: 'danger',
       title: 'Permission was denied',
       detail:
-        'The denied step was not sent. Earlier steps may still have made changes.',
+        'The step you said no to was not sent. Earlier steps may already have changed things.',
       nextStep:
-        'Review the error and permission details below before trying again.',
+        'Read the error and the permission details below before you try again.',
     };
   }
 
@@ -1402,9 +1402,9 @@ const failedOutcome = (detail: RunDetail): RunOutcomeCore => {
     tone: 'danger',
     title: 'Run failed',
     detail:
-      'The run ended before completing. Earlier steps may still have made changes.',
+      'The run ended before it finished. Earlier steps may already have changed things.',
     nextStep:
-      'Review the error and check the affected app or data before trying again.',
+      'Read the error, and check the app or data it touched, before you try again.',
   };
 };
 
@@ -1414,9 +1414,9 @@ const runOutcomeCore = (detail: RunDetail): RunOutcomeCore => {
     case 'pending':
       return {
         tone: 'attention',
-        title: 'Run is waiting to start',
-        detail: 'The run has been recorded, but it has not started yet.',
-        nextStep: 'Check its live status before starting another run.',
+        title: 'The run is waiting to start',
+        detail: 'Recued has written the run down, but it has not started.',
+        nextStep: 'Check how it is doing before you start another run.',
         action: {
           href: serializeShellRoute('logs', 'active'),
           label: 'View live status',
@@ -1425,10 +1425,10 @@ const runOutcomeCore = (detail: RunDetail): RunOutcomeCore => {
     case 'running':
       return {
         tone: 'attention',
-        title: 'Run is still in progress',
+        title: 'The run is still going',
         detail:
-          'The run has started, but no final outcome has been recorded.',
-        nextStep: 'Check its live status before starting another run.',
+          'The run has started. Nothing has been written down about how it ended.',
+        nextStep: 'Check how it is doing before you start another run.',
         action: {
           href: serializeShellRoute('logs', 'active'),
           label: 'View live status',
@@ -1438,7 +1438,7 @@ const runOutcomeCore = (detail: RunDetail): RunOutcomeCore => {
       return {
         tone: 'positive',
         title: 'Run completed',
-        detail: 'The run finished successfully.',
+        detail: 'The run finished, and it worked.',
       };
     case 'failed':
       return failedOutcome(detail);
@@ -1447,37 +1447,37 @@ const runOutcomeCore = (detail: RunDetail): RunOutcomeCore => {
         tone: 'neutral',
         title: 'Run was cancelled',
         detail:
-          'The run stopped before completing. Earlier steps may still have made changes.',
+          'The run stopped before it finished. Earlier steps may already have changed things.',
         nextStep:
-          'Review the activity and any affected app or data before starting a new run.',
+          'Look at what happened, and at the app or data it touched, before you run it again.',
       };
     case 'killed':
       return FAILED_CATEGORY_OUTCOMES.killed;
     case 'in_doubt':
       return {
         tone: 'attention',
-        title: 'Outcome needs verification',
+        title: 'Somebody needs to check what happened',
         detail:
-          'The system lost confirmation before it could determine whether the action finished.',
+          'Recued lost contact before it could tell whether this finished.',
         nextStep:
-          'Check the affected app or data before trying again. This run will not retry automatically.',
+          'Check the app or the data it touched before you try again. Recued will not run it again by itself.',
       };
     case 'awaiting_approval': {
       const askId = detail.approvals.ask_id ?? detail.audit.ask_id;
       const hasAsk = askId !== undefined && askId.length > 0;
       return {
         tone: 'attention',
-        title: 'Run is waiting for approval',
+        title: 'The run is waiting for your yes',
         detail:
-          'The run paused before sending the step that needs approval. That step has not run.',
+          'The run stopped before the step that needs your yes. That step has not happened.',
         nextStep: hasAsk
-          ? 'Review the approval to continue or stop the action.'
-          : 'This hold is not linked to the approval queue. Check the surface that requested it for next steps.',
+          ? 'Look at it, then carry on or stop it.'
+          : 'This is not in your approvals list. Go to wherever it was asked for.',
         ...(hasAsk
           ? {
               action: {
                 href: serializeShellRoute('approvals', askId),
-                label: 'Review approval',
+                label: 'Look at this run',
               },
             }
           : {}),
@@ -1485,7 +1485,7 @@ const runOutcomeCore = (detail: RunDetail): RunOutcomeCore => {
     }
     case 'awaiting_peer':
       // D-234 § 234.4 — ⛔ NO ACTION LINK, DELIBERATELY. The `awaiting_approval`
-      // arm above offers "Review approval" because the owner CAN answer it. This
+      // arm above offers "Look at this run" because the owner CAN answer it. This
       // hold is answerable only by another server's owner; the affordances here
       // are wait or cancel, and offering a review link would send someone to a
       // queue that will never contain this. That asymmetry is exactly why
@@ -1494,11 +1494,11 @@ const runOutcomeCore = (detail: RunDetail): RunOutcomeCore => {
         tone: 'attention',
         title: 'Waiting on a peer',
         detail:
-          'The run paused after asking another Recued server. Nothing further has run, '
-          + 'and their answer is theirs to give when they are ready.',
+          'The run stopped after asking another Recued server. Nothing else has run, '
+          + 'and they will answer when they are ready.',
         nextStep:
-          'Nothing to do here — the run continues on its own when they answer. '
-          + 'Stop waiting from the run if you no longer need it.',
+          'There is nothing to do. The run carries on by itself when they answer. '
+          + 'If you no longer need it, stop it from the run.',
       };
     default: {
       const exhaustiveStatus: never = status;
@@ -1539,13 +1539,13 @@ export const projectRunOutcomeSummary = (
     ...(core.nextStep === undefined && positiveIsMisleading
       ? {
           nextStep:
-            'Check the steps below to see what was refused before treating '
+            'Look at the steps below to see what was refused, before you call '
             + 'this run as done.',
         }
       : core.nextStep === undefined && hasRecordWarning
         ? {
             nextStep:
-              'Review the record warning before relying on this run history.',
+              'Read the warning before you trust this run’s story.',
           }
         : {}),
     recordWarnings,
@@ -1595,15 +1595,15 @@ export const projectRunYieldNotice = (
     return {
       kind: 'all-refused',
       message: total === 1
-        ? 'The only item this run touched failed. It finished without an error, '
+        ? 'The one thing this run touched failed. It finished without an error, '
           + 'but nothing it set out to do actually happened.'
-        : `All ${total} items this run touched failed. It finished without an `
+        : `All ${total} things this run touched failed. It finished without an `
           + 'error, but nothing it set out to do actually happened.',
     };
   }
   return {
     kind: 'partial-failure',
-    message: `${failed} of ${total} items failed. The rest went through, which `
+    message: `${failed} of ${total} failed. The rest went through, which `
       + 'is why the run still finished without an error.',
   };
 };
@@ -1828,7 +1828,7 @@ const affectedActionLabel = (
     || status === 'killed'
     || status === 'in_doubt'
   ) {
-    return 'Verify before retrying';
+    return 'Check before running it again';
   }
   if (status === 'succeeded') {
     return relationship === 'derived' ? 'View result' : 'Verify item';
@@ -3517,8 +3517,8 @@ export const bootstrapLogsRoute = (
       if (status === 'killed') return { retired: true };
       return {
         noticed: status === 'already_terminal'
-          ? 'That run already finished.'
-          : 'That run is no longer active.',
+          ? 'That run has already finished.'
+          : 'That run has stopped.',
       };
     });
 
@@ -3531,8 +3531,8 @@ export const bootstrapLogsRoute = (
       if (status === 'cancelled_before_dispatch') return { retired: true };
       return {
         noticed: status === 'already_dispatched'
-          ? 'That call already started — use Kill instead.'
-          : 'That queued call is no longer waiting.',
+          ? 'That has already started. Use Stop instead.'
+          : 'That is no longer waiting.',
       };
     });
 
@@ -3543,7 +3543,7 @@ export const bootstrapLogsRoute = (
       }
       const { status } = await opts.promoteCaller({ queued_call_id });
       if (status === 'promoted') return { retired: true };
-      return { noticed: 'That queued call is no longer waiting.' };
+      return { noticed: 'That is no longer waiting.' };
     });
 
   // ── D-186 Slice C — "Active passes" (session-grant) load + revoke ──

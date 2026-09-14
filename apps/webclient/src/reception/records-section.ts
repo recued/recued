@@ -57,6 +57,9 @@ export const RECEPTION_RECORDS_HEADING_ATTR = 'data-recued-reception-records-hea
 export type ReceptionRecordsSectionConn = ReceptionRecordsConn & ReceptionFormResponseConn;
 
 export interface ReceptionRecordsSectionOptions {
+  /** D-269 step 1 — the server's resolved IANA zone, forwarded down to the run
+   *  modal's scheduled-activation stamp. Absent ⇒ this browser's, as before. */
+  serverTimeZone?: () => string | undefined;
   host: HTMLElement;
   conn: ReceptionRecordsSectionConn;
   document?: Document;
@@ -175,6 +178,7 @@ export const mountReceptionRecordsSection = (
   const mountChild = (): ReceptionRecordsPanelMount | ReceptionFormResponseLensMount =>
     lens === 'responses'
       ? mountReceptionFormResponseLens({
+          ...(opts.serverTimeZone ? { serverTimeZone: opts.serverTimeZone } : {}),
           host: content,
           conn: opts.conn,
           ...(opts.document !== undefined ? { document: opts.document } : {}),

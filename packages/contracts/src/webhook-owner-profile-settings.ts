@@ -62,7 +62,7 @@ const GENERIC_MANUAL_CONFIRM = Object.freeze({
   default: 'Register or update the endpoint above in the vendor dashboard for {{events}}. Configure the profile-declared authentication fields, then confirm below.',
 });
 const GENERIC_MANAGED_CREATE = Object.freeze({
-  default: 'After creation, use Register provider endpoint. Trusted core uses only the paired connection, canonical endpoint, profile-approved events, and locked registration-driver settings; packs and recipes cannot read credentials or change provider request authority.',
+  default: 'After creation, use Set up the address at the service. Trusted core uses only the paired connection, canonical endpoint, profile-approved events, and locked registration-driver settings; packs and recipes cannot read credentials or change provider request authority.',
 });
 const GENERIC_MANAGED_RECONCILE = Object.freeze({
   default: 'Trusted core registers and reads back this exact endpoint through the paired connection. The provider request, connection credential, idempotency material, and any returned signing secret are never exposed to packs or recipes.',
@@ -120,14 +120,14 @@ const SETTINGS_LIST: readonly WebhookOwnerProfileSettings[] = [
     connection_placeholder: 'stripe-live',
     create_instructions: {
       manual: {
-        default: 'Create the local ingress first. Register its displayed URL and selected events in Stripe, store the returned endpoint signing secret with Add credentials, confirm registration, and enable intake explicitly.',
+        default: 'Create the local ingress first. Register its displayed URL and selected events in Stripe, store the returned endpoint signing secret with Add keys, confirm registration, and let messages in yourself.',
       },
       managed_endpoint: {
-        default: 'After creation, use Register provider endpoint. Trusted core creates the Stripe endpoint through the paired connection and captures its one-time signing secret; packs and recipes cannot read it.',
+        default: 'After creation, use Set up the address at the service. Trusted core creates the Stripe endpoint through the paired connection and captures its one-time signing secret; packs and recipes cannot read it.',
       },
     },
     manual_confirmation_instructions: {
-      default: 'Register or update the endpoint above in Stripe for {{events}}. After the vendor returns the Endpoint signing secret, use Add credentials here, then confirm below.',
+      default: 'Register or update the endpoint above in Stripe for {{events}}. After the vendor returns the Endpoint signing secret, use Add keys here, then confirm below.',
     },
     managed_reconciliation_instructions: {
       default: 'Trusted core registers and reads back this exact Stripe endpoint through the paired connection. The API credential, provider request, idempotency key, and returned signing secret are never exposed to packs or recipes.',
@@ -138,16 +138,16 @@ const SETTINGS_LIST: readonly WebhookOwnerProfileSettings[] = [
     connection_placeholder: 'paddle-sandbox',
     create_instructions: {
       manual: {
-        default: 'Create the local ingress first. Then use the matching Paddle Sandbox account for test or Paddle Live account for live to create an active URL notification destination for the displayed endpoint and selected events. Store that destination\'s Endpoint secret key with Add credentials, confirm the saved destination, and enable intake explicitly.',
+        default: 'Create the local ingress first. Then use the matching Paddle Sandbox account for test or Paddle Live account for live to create an active URL notification destination for the displayed endpoint and selected events. Store that destination\'s Endpoint secret key with Add keys, confirm the saved destination, and let messages in yourself.',
       },
       managed_endpoint: {
-        default: 'Pair a Paddle API connection containing a modern Sandbox key for test or Live key for live. After creation, use Register provider endpoint. Trusted core searches that account, refuses ambiguous destinations, fixes every notification-setting field, captures the provider-generated endpoint secret, and reads the destination back before registration completes.',
+        default: 'Pair a Paddle API connection containing a modern Sandbox key for test or Live key for live. After creation, use Set up the address at the service. Trusted core searches that account, refuses ambiguous destinations, fixes every notification-setting field, captures the provider-generated endpoint secret, and reads the destination back before registration completes.',
       },
     },
     manual_confirmation_instructions: {
       default: 'This Paddle ingress has an unsupported environment. Keep intake closed and replace it; do not register this endpoint in Paddle.',
-      test: 'In the matching Paddle Sandbox account, open Developer tools > Notifications > New destination. Choose URL, set the URL to the endpoint above, API version to 1, and Usage type to Platform and simulation. Leave sensitive fields excluded unless the consuming pack explicitly requires them, subscribe to exactly these event types: {{events}}, keep the destination active, and save it. Open that destination\'s overflow menu > Edit destination, then copy its Endpoint secret key into Add credentials here. Confirm below only after the saved destination matches, then enable intake. After enablement, use Developer tools > Simulations > New simulation and choose this simulation-enabled destination; Recued does not synthesize Paddle deliveries.',
-      live: 'In the matching Paddle Live account, open Developer tools > Notifications > New destination. Choose URL, set the URL to the endpoint above, API version to 1, and Usage type to Platform. Leave sensitive fields excluded unless the consuming pack explicitly requires them, subscribe to exactly these event types: {{events}}, keep the destination active, and save it. Open that destination\'s overflow menu > Edit destination, then copy its Endpoint secret key into Add credentials here. Confirm below only after the saved destination matches, then enable intake. Test separately with a Paddle Sandbox account and a test ingress; do not route simulation traffic to this live ingress.',
+      test: 'In the matching Paddle Sandbox account, open Developer tools > Notifications > New destination. Choose URL, set the URL to the endpoint above, API version to 1, and Usage type to Platform and simulation. Leave sensitive fields excluded unless the consuming pack explicitly requires them, subscribe to exactly these event types: {{events}}, keep the destination active, and save it. Open that destination\'s overflow menu > Edit destination, then copy its Endpoint secret key into Add keys here. Confirm below only after the saved destination matches, then let messages in. After enablement, use Developer tools > Simulations > New simulation and choose this simulation-enabled destination; Recued does not synthesize Paddle deliveries.',
+      live: 'In the matching Paddle Live account, open Developer tools > Notifications > New destination. Choose URL, set the URL to the endpoint above, API version to 1, and Usage type to Platform. Leave sensitive fields excluded unless the consuming pack explicitly requires them, subscribe to exactly these event types: {{events}}, keep the destination active, and save it. Open that destination\'s overflow menu > Edit destination, then copy its Endpoint secret key into Add keys here. Confirm below only after the saved destination matches, then let messages in. Test separately with a Paddle Sandbox account and a test ingress; do not route simulation traffic to this live ingress.',
     },
     managed_reconciliation_instructions: {
       default: 'Trusted core refuses unsupported Paddle environments and leaves intake closed.',
@@ -166,13 +166,13 @@ const SETTINGS_LIST: readonly WebhookOwnerProfileSettings[] = [
   genericSettings('lemonsqueezy.webhook.v1', 'Lemon Squeezy webhooks', {
     create_instructions: {
       manual: {
-        default: 'Create the local ingress first. In the matching Lemon Squeezy test or live store, open Settings > Webhooks, create a webhook for the displayed callback URL and selected events, choose a strong signing secret, then enter that exact secret with Add credentials before confirming registration and enabling intake.',
+        default: 'Create the local ingress first. In the matching Lemon Squeezy test or live store, open Settings > Webhooks, create a webhook for the displayed callback URL and selected events, choose a strong signing secret, then enter that exact secret with Add keys before you confirm it and let messages in.',
       },
     },
     manual_confirmation_instructions: {
-      default: 'In the matching Lemon Squeezy environment, save one webhook whose callback URL is the exact endpoint above, whose subscribed events are exactly {{events}}, and whose signing secret exactly matches the active signing_secret entered with Add credentials. Confirm below only after saving that remote webhook, then enable intake explicitly.',
-      test: 'In Lemon Squeezy test mode, save one webhook whose callback URL is the exact endpoint above, whose subscribed events are exactly {{events}}, and whose signing secret exactly matches the active signing_secret entered with Add credentials. Confirm below only after saving that remote webhook, then enable intake and use a test-mode simulation or dashboard resend.',
-      live: 'In Lemon Squeezy live mode, save one webhook whose callback URL is the exact endpoint above, whose subscribed events are exactly {{events}}, and whose signing secret exactly matches the active signing_secret entered with Add credentials. Confirm below only after saving that remote webhook, then enable intake. Validate separately with a test ingress rather than routing test traffic here.',
+      default: 'In the matching Lemon Squeezy environment, save one webhook whose callback URL is the exact endpoint above, whose subscribed events are exactly {{events}}, and whose signing secret exactly matches the active signing_secret entered with Add keys. Confirm below only after saving that remote webhook, then let messages in yourself.',
+      test: 'In Lemon Squeezy test mode, save one webhook whose callback URL is the exact endpoint above, whose subscribed events are exactly {{events}}, and whose signing secret exactly matches the active signing_secret entered with Add keys. Confirm below only after saving that remote webhook, then let messages in and use a test-mode simulation or dashboard resend.',
+      live: 'In Lemon Squeezy live mode, save one webhook whose callback URL is the exact endpoint above, whose subscribed events are exactly {{events}}, and whose signing secret exactly matches the active signing_secret entered with Add keys. Confirm below only after saving that remote webhook, then let messages in. Validate separately with a test ingress rather than routing test traffic here.',
     },
     credential_rotation_instructions: 'Add the replacement signing_secret as a second local credential version, update this same Lemon Squeezy webhook to the replacement secret, and obtain an accepted delivery verified by the new version. Only then retire the older local credential.',
     external_test_guidance: {
@@ -180,30 +180,30 @@ const SETTINGS_LIST: readonly WebhookOwnerProfileSettings[] = [
       test: 'Use a Lemon Squeezy test-mode simulation or resend a recent test webhook after intake is enabled.',
       live: 'Use a separate Lemon Squeezy test-mode ingress; do not send test traffic to this live ingress.',
     },
-    test_delivery_boundary: 'No Recued-originated test delivery is available for this profile. Use Lemon Squeezy test mode or its dashboard resend after enabling intake; that proves vendor delivery while recipe effects remain asynchronous.',
+    test_delivery_boundary: 'No Recued-originated test delivery is available for this profile. Use Lemon Squeezy test mode or its dashboard resend after letting messages in; that proves vendor delivery while recipe effects remain asynchronous.',
     manual_retirement_instructions: 'Delete or disable the matching webhook in Lemon Squeezy before confirming local retirement. Local retirement is permanent: intake stays closed and all active credentials are retired; Recued cannot verify or perform the remote cleanup.',
   }),
   genericSettings('slack.request.v0', 'Slack requests', {
     connection_placeholder: 'slack-api',
     manual_confirmation_instructions: {
-      default: 'Register or update the endpoint above in the Slack app configuration for {{events}}, store the app signing secret with Add credentials, and confirm below.',
+      default: 'Register or update the endpoint above in the Slack app configuration for {{events}}, store the app signing secret with Add keys, and confirm below.',
     },
   }),
   genericSettings('slack.slash-command.v1', 'Slack slash commands', {
     connection_placeholder: 'slack-app',
     create_instructions: {
       manual: {
-        default: 'Create a separate ingress for Slack slash commands. This v1 profile covers Slack apps with public distribution disabled. After saving, open Features > Slash Commands in the Slack app, create or edit every intended command, set each Request URL to the displayed endpoint, and copy the app Signing Secret from Basic Information into Add credentials.',
+        default: 'Create a separate ingress for Slack slash commands. This v1 profile covers Slack apps with public distribution disabled. After saving, open Features > Slash Commands in the Slack app, create or edit every intended command, set each Request URL to the displayed endpoint, and copy the app Signing Secret from Basic Information into Add keys.',
       },
     },
     manual_confirmation_instructions: {
-      default: 'Under Features > Slash Commands in the Slack app, set every intended command\'s Request URL to the exact endpoint above and copy that app\'s Signing Secret from Basic Information into Add credentials. Confirm only after every intended command uses this endpoint. Slash commands do not use the Events API url_verification challenge, so this profile becomes registration-ready from this manual confirmation. Do not use this v1 profile while public distribution is active because its ssl_check request is not supported. After enabling intake, invoke one configured command to test it. Recued returns an empty 200 acknowledgement and triggers the bound recipe; it withholds response_url and the deprecated token field and does not send a command response.',
+      default: 'Under Features > Slash Commands in the Slack app, set every intended command\'s Request URL to the exact endpoint above and copy that app\'s Signing Secret from Basic Information into Add keys. Confirm only after every intended command uses this endpoint. Slash commands do not use the Events API url_verification challenge, so this profile becomes registration-ready from this manual confirmation. Do not use this v1 profile while public distribution is active because its ssl_check request is not supported. After letting messages in, invoke one configured command to test it. Recued returns an empty 200 acknowledgement and triggers the bound recipe; it withholds response_url and the deprecated token field and does not send a command response.',
     },
     external_test_guidance: {
-      default: 'After enabling intake, invoke a configured slash command in Slack. This profile has no Recued-originated delivery simulator.',
-      test: 'After enabling intake, invoke a configured slash command in a test workspace or test app.',
+      default: 'After letting messages in, invoke a configured slash command in Slack. This profile has no Recued-originated delivery simulator.',
+      test: 'After letting messages in, invoke a configured slash command in a test workspace or test app.',
     },
-    test_delivery_boundary: 'No Recued-originated test delivery is available for this profile. Invoke the configured command in Slack after enabling intake; the empty acknowledgement proves receipt only, while recipe effects remain asynchronous.',
+    test_delivery_boundary: 'No Recued-originated test delivery is available for this profile. Invoke the configured command in Slack after letting messages in; the empty acknowledgement proves receipt only, while recipe effects remain asynchronous.',
   }),
   genericSettings('telegram.bot-webhook.v1', 'Telegram bot updates', {
     connection_placeholder: 'telegram-bot-backup',
@@ -212,11 +212,11 @@ const SETTINGS_LIST: readonly WebhookOwnerProfileSettings[] = [
         default: 'Create the local ingress to mint a one-time Webhook secret token. Then call Telegram Bot API setWebhook with the displayed URL, secret_token, and selected allowed_updates before confirming registration here.',
       },
       managed_endpoint: {
-        default: 'After creation, use Register provider endpoint. Trusted core verifies the bot has no conflicting webhook, sets its singleton URL and allowed updates, and stores a generated secret token that packs and recipes cannot read.',
+        default: 'After creation, use Set up the address at the service. Trusted core verifies the bot has no conflicting webhook, sets its singleton URL and allowed updates, and stores a generated secret token that packs and recipes cannot read.',
       },
     },
     manual_confirmation_instructions: {
-      default: 'Call Telegram Bot API setWebhook with the endpoint above as url, the one-time Webhook secret token generated here as secret_token, and {{events}} as allowed_updates. If the token is no longer available, rotate credentials to mint a replacement, then confirm below.',
+      default: 'Call Telegram Bot API setWebhook with the endpoint above as url, the one-time Webhook secret token generated here as secret_token, and {{events}} as allowed_updates. If the token is no longer available, swap the keys to make a new one, then confirm below.',
     },
     managed_reconciliation_instructions: {
       default: 'Trusted core reads the bot webhook before every mutation, refuses a conflicting URL, preserves the encrypted generated token across updates, and confirms the exact URL and allowed updates afterward. The bot token and webhook secret are never exposed to packs or recipes.',
@@ -246,10 +246,10 @@ const SETTINGS_LIST: readonly WebhookOwnerProfileSettings[] = [
       },
     },
     manual_confirmation_instructions: {
-      default: 'In GitHub repository or organization Settings > Webhooks, set Payload URL to the endpoint above, Content type to application/json, Secret to the one-time Webhook secret generated here, keep SSL verification enabled, choose Let me select individual events, subscribe to exactly these event types: {{events}}, and leave Active selected. If the secret is no longer available, rotate credentials to mint a replacement. Confirm below only after that exact hook configuration is saved in GitHub, then enable intake here and use GitHub Recent deliveries to Redeliver the initial ping or trigger a selected event. GitHub does not automatically redeliver failed deliveries.',
+      default: 'In GitHub repository or organization Settings > Webhooks, set Payload URL to the endpoint above, Content type to application/json, Secret to the one-time Webhook secret generated here, keep SSL verification enabled, choose Let me select individual events, subscribe to exactly these event types: {{events}}, and leave Active selected. If the secret is no longer available, swap the keys to make a new one. Confirm below only after that exact hook configuration is saved in GitHub, then let them in here and use GitHub Recent deliveries to Redeliver the initial ping or trigger a selected event. GitHub does not automatically redeliver failed deliveries.',
     },
     managed_reconciliation_instructions: {
-      default: 'Trusted core searches only the selected {{target_kind}} {{target_key}}, refuses ambiguous or foreign hooks, generates and encrypts the signing secret, and reads the exact URL, events, active state, JSON content type, and SSL verification back. The personal access token and webhook secret are never exposed to packs or recipes. GitHub sends its immediate setup ping before intake is enabled and will not retry that failure automatically; after registration, enable intake and use Recent deliveries to redeliver that ping or trigger a selected event.',
+      default: 'Trusted core searches only the selected {{target_kind}} {{target_key}}, refuses ambiguous or foreign hooks, generates and encrypts the signing secret, and reads the exact URL, events, active state, JSON content type, and SSL verification back. The personal access token and webhook secret are never exposed to packs or recipes. GitHub sends its immediate setup ping before you let messages in and will not retry that failure automatically; after that, let messages in and use Recent deliveries to redeliver that ping or trigger a selected event.',
     },
     generated_credential_instructions: 'In GitHub repository or organization Settings > Webhooks, set Payload URL to the endpoint above, Content type to application/json, Secret to this generated webhook_secret, keep SSL verification enabled, choose Let me select individual events, subscribe to exactly these event types: {{events}}, and leave Active selected. GitHub sends an immediate ping while Recued intake is still closed and does not automatically redeliver a failure; after confirming and enabling here, open Recent deliveries and Redeliver that ping or trigger a selected event. For rotation, update this same GitHub hook to the new secret, obtain an accepted delivery verified by the new credential, and only then retire the older local version.',
     credential_rotation_instructions: 'Saving mints a new Webhook secret credential version and shows its plaintext once. GitHub accepts one secret for a hook: update that same hook first, obtain an accepted delivery verified by the new credential, and only then retire the older local version.',

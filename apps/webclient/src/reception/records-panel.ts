@@ -66,7 +66,7 @@ export const RECEPTION_RECORDS_RETRY_ATTR = 'data-recued-reception-records-retry
  *  🔑 TWO of them, and the difference is a factual claim about the future. "yet" is true while
  *  something may still materialize and FALSE once the outcome is final — a `spam` row saying
  *  "yet" tells the owner to wait for something that is never coming. */
-export const RECEPTION_RECORDS_UNRESOLVED_COPY = 'Nothing materialized yet';
+export const RECEPTION_RECORDS_UNRESOLVED_COPY = 'Nothing has been made yet';
 export const RECEPTION_RECORDS_UNRESOLVED_TERMINAL_COPY = 'Nothing materialized';
 
 /** ⚠ Deliberately not "stuck" / "failed". A record seconds old is `pending` too and will drain
@@ -349,7 +349,7 @@ export const mountReceptionRecordsPanel = (
     } else if (model.total === 0) {
       const copy =
         model.empty_reason === 'filtered_out'
-          ? 'No records match these filters.'
+          ? 'No records match what you picked.'
           : 'No reception records yet. Bookings and intake submissions appear here as they arrive.';
       body = `<p class="reception-records-note" ${RECEPTION_RECORDS_EMPTY_ATTR}>${escapeHtml(copy)}</p>`;
     } else {

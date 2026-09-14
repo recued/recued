@@ -326,13 +326,20 @@ const runServeUntilBanner = (dbPath: string): Promise<{
   // still fails.
   const forceStop = setTimeout(() => {
     stopProcessGroup(child.pid, 'SIGKILL');
-  }, 30_000);
+  }, 120_000);
   forceStop.unref();
 
   const timeout = setTimeout(() => {
     timedOut = true;
     requestStop();
-  }, 25_000);
+    // ⛔⛔ RAISED 25s → 100s (D-269 REV 26). THIS is the bound that actually
+    // failed: with the vitest per-test timeout raised, the test ran to
+    // completion and reported `timedOut === true` — the SPAWNED boot had blown
+    // its OWN budget, which the outer timeout had been masking all along.
+    // ⚠ THREE BOUNDS, ONE ORDER: inner timeout (100s) < SIGKILL (120s) < the
+    // per-test vitest bound (180s). Invert any pair and the failure stops
+    // naming its own cause — the invariant `d-261-boot` documents for its pair.
+  }, 100_000);
 
   child.stdout.on('data', (chunk: Buffer) => {
     stdout += chunk.toString('utf8');
@@ -426,14 +433,21 @@ const runMcpUntilToolsList = (
   // pays the same cold-boot cost plus catalog composition.
   const forceStop = setTimeout(() => {
     stopProcessGroup(child.pid, 'SIGKILL');
-  }, 30_000);
+  }, 120_000);
   forceStop.unref();
 
   const timeout = setTimeout(() => {
     timedOut = true;
     closeStdin();
     stopProcessGroup(child.pid, 'SIGTERM');
-  }, 25_000);
+    // ⛔⛔ RAISED 25s → 100s (D-269 REV 26). THIS is the bound that actually
+    // failed: with the vitest per-test timeout raised, the test ran to
+    // completion and reported `timedOut === true` — the SPAWNED boot had blown
+    // its OWN budget, which the outer timeout had been masking all along.
+    // ⚠ THREE BOUNDS, ONE ORDER: inner timeout (100s) < SIGKILL (120s) < the
+    // per-test vitest bound (180s). Invert any pair and the failure stops
+    // naming its own cause — the invariant `d-261-boot` documents for its pair.
+  }, 100_000);
 
   child.stdout.on('data', (chunk: Buffer) => {
     stdout += chunk.toString('utf8');
@@ -745,7 +759,12 @@ describe('production router', () => {
     expect(result.stdout).toContain('Recued Server');
     expect(result.stderr).toContain('"entrypoint":"bin"');
     expect(result.stderr).toContain('"detail":"./serve-entry.js"');
-  }, 20_000);
+      // ⚠ RAISED FOR FULL-SUITE CONTENTION (D-269 REV 26), not because the work
+    // grew. Alone this file is comfortably inside the old bound; under a bare
+    // `vitest run` (3,717 files) it is competing for CPU with the whole tree,
+    // and the release runs EXACTLY that suite in the exported projection —
+    // so a timeout here fails a release while the code is fine.
+  }, 180_000);
 
   it.each([
     ['pair', ['pair']],
@@ -910,7 +929,12 @@ describe('production router', () => {
     expect(secondShow.status).toBe(0);
     expect(secondShow.stdout).toBe(firstShow.stdout);
     expect(secondShow.stdout).toContain('"budget": 50000');
-  }, 30_000);
+      // ⚠ RAISED FOR FULL-SUITE CONTENTION (D-269 REV 26), not because the work
+    // grew. Alone this file is comfortably inside the old bound; under a bare
+    // `vitest run` (3,717 files) it is competing for CPU with the whole tree,
+    // and the release runs EXACTLY that suite in the exported projection —
+    // so a timeout here fails a release while the code is fine.
+  }, 180_000);
 
   it('preserves llm subcommand flags inside the profile context', () => {
     const dir = makeTmp();

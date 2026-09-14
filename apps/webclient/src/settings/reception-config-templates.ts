@@ -44,19 +44,19 @@ export const RECEPTION_CONFIG_TEMPLATE_KIND_COPY: Readonly<
 > = {
   scheduling_link: {
     label: 'Scheduling link',
-    help: 'A booking front door — visitors pick a time from your availability and the request lands in your inbox for review.',
+    help: 'A way for people to book time with you. They pick from when you are free, and it lands in your inbox.',
   },
   reception_page: {
     label: 'Contact page',
-    help: 'Your single public front page — a contact card plus call-to-action buttons linking to your other reception endpoints.',
+    help: 'Your one public page. It shows who you are, and has buttons linking to everything else.',
   },
   drop_link: {
     label: 'Drop link',
-    help: 'A file-upload front door — visitors send you a document or image and each upload lands for your review.',
+    help: 'A way for people to send you a document or a picture. Each one lands in your inbox.',
   },
   approval_link: {
     label: 'Approval link',
-    help: 'A single-use action token — one person approves wording, answers a question, or picks a time, then the link closes.',
+    help: 'A link that works once. One person says yes to some wording, answers a question, or picks a time. Then it closes.',
   },
 };
 

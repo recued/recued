@@ -330,7 +330,7 @@ describe('D-149 settings-reception — buildReceptionPageModel', () => {
       now: NOW,
     });
     expect(model.status_header.serving).toBe(false);
-    expect(model.status_header.status_label).toBe('Emergency disabled');
+    expect(model.status_header.status_label).toBe('Switched off in a hurry');
   });
 
   it('status header — not publicly exposed when reception_public is false', () => {
@@ -340,7 +340,7 @@ describe('D-149 settings-reception — buildReceptionPageModel', () => {
       now: NOW,
     });
     expect(model.status_header.serving).toBe(false);
-    expect(model.status_header.status_label).toBe('Not publicly exposed');
+    expect(model.status_header.status_label).toBe('Not open to the internet');
   });
 });
 
@@ -562,7 +562,7 @@ describe('D-149 settings-reception — reduceReceptionEmergencyDisabled', () => 
     const next = reduceReceptionEmergencyDisabled(model);
     expect(next.status_header.emergency_disabled).toBe(true);
     expect(next.status_header.serving).toBe(false);
-    expect(next.status_header.status_label).toBe('Emergency disabled');
+    expect(next.status_header.status_label).toBe('Switched off in a hurry');
     expect(next.active_endpoints).toBe(0);
     expect(next.is_first_run).toBe(true);
     expect(next.total_endpoints).toBe(2);

@@ -160,8 +160,8 @@ describe('D-123 follow-on — Run Now dialog AI-availability warning', () => {
         },
       }),
     });
-    expect(html).toContain('No AI configured');
-    expect(html).toContain('Settings → AI');
+    expect(html).toContain('No AI set up');
+    expect(html).toContain('Settings, AI');
     // Run Now button must be disabled.
     expect(html).toMatch(/data-action="housekeeping-run-now-confirm"[^>]*disabled/);
   });
@@ -181,7 +181,7 @@ describe('D-123 follow-on — Run Now dialog AI-availability warning', () => {
         },
       }),
     });
-    expect(html).toContain('AI quota is exhausted');
+    expect(html).toContain('You have used up your AI for today');
     expect(html).toMatch(/data-action="housekeeping-run-now-confirm"[^>]*disabled/);
   });
 });

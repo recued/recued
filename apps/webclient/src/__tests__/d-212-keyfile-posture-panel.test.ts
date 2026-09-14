@@ -263,8 +263,8 @@ describe('D-212 §7.10 — describeKeyfilePosture', () => {
     expect(view.tone).toBe('unsealed');
     expect(view.status).toContain('UNSEALED');
     expect(view.consequence).not.toBeNull();
-    expect(view.consequence).toMatch(/data directory/i);
-    expect(view.consequence).toMatch(/only copies that omit the keyfile/i);
+    expect(view.consequence).toMatch(/sits in the same folder/i);
+    expect(view.consequence).toMatch(/only a copy that leaves the keyfile out/i);
     expect(view.consequence).toMatch(/database-only backup/i);
     expect(view.remediation).not.toBeNull();
   });
@@ -278,13 +278,13 @@ describe('D-212 §7.10 — describeKeyfilePosture', () => {
     const { remediation } = describeKeyfilePosture({ kind: 'value', sealing: 'none' });
     expect(remediation).toContain('RECUED_IDENTITY_PASSPHRASE');
     expect(remediation).toContain('recover-keyfile');
-    expect(remediation).toMatch(/24-word recovery key/i);
+    expect(remediation).toMatch(/your 24 words/i);
     expect(remediation).toMatch(/pair again/i);
-    expect(remediation).toMatch(/publisher identity/i);
-    expect(remediation).toMatch(/account binding/i);
+    expect(remediation).toMatch(/key you sign Recipes with/i);
+    expect(remediation).toMatch(/unhooked from your account/i);
     // …and that the data itself survives, or the warning reads like a
     // threat to the warehouse and nobody acts on it.
-    expect(remediation).toMatch(/data is untouched/i);
+    expect(remediation).toMatch(/things are untouched/i);
   });
 
   it('⛔ keeps `none` and `null` apart on every field', () => {
@@ -300,7 +300,7 @@ describe('D-212 §7.10 — describeKeyfilePosture', () => {
     expect(unreported.remediation).toBeNull();
     // …and `null` must not be readable as reassurance.
     expect(unreported.status).not.toMatch(/sealed/i);
-    expect(unreported.detail).toMatch(/not a sealed keyfile/i);
+    expect(unreported.detail).toMatch(/not that it is safe/i);
   });
 
   it('keeps a failed read distinct from a server that reported nothing', () => {
@@ -314,7 +314,7 @@ describe('D-212 §7.10 — describeKeyfilePosture', () => {
     // Carries the reason (an operator can act on "transport closed"; they
     // cannot act on a blank) and refuses to be read as sealed.
     expect(unreadable.detail).toContain('transport closed');
-    expect(unreadable.detail).toMatch(/not a report that the keyfile is sealed/i);
+    expect(unreadable.detail).toMatch(/not that it is safe/i);
     expect(unreadable.consequence).toBeNull();
   });
 
@@ -369,7 +369,7 @@ describe('D-212 §7.10 — the keyfile posture card on the Key Health page', () 
     // Neither of the two things it is not.
     expect(text).not.toContain('UNSEALED');
     expect(findByAttr(host, KEYFILE_POSTURE_CONSEQUENCE_ATTR)).toBeNull();
-    expect(text).toMatch(/not a sealed keyfile/i);
+    expect(text).toMatch(/not that it is safe/i);
   });
 
   it('renders no card at all when the host wired no status reader', async () => {

@@ -202,27 +202,27 @@ interface RejectionInspectorState {
 }
 
 const blockerLabel: Record<WebhookIngressReadinessBlocker, string> = {
-  credentials_incomplete: 'Add all required credentials',
-  credential_shape_invalid: 'Replace or retire malformed credential versions',
-  registration_incomplete: 'Confirm vendor-side registration',
-  registration_endpoint_changed: 'Update and re-confirm the canonical endpoint',
-  event_selection_empty: 'Select at least one event',
-  profile_runtime_unavailable: 'This server has no code-backed adapter for the profile',
-  paired_connection_unavailable: 'Restore or choose the required API connection',
-  paired_connection_rebind_required: 'Re-prove provider account continuity, then rebind or reconcile',
-  listener_unavailable: 'The webhook listener or durable dispatcher is unavailable',
-  public_url_unavailable: 'Configure an HTTPS RECUED_PUBLIC_BASE_URL',
-  public_reachability_disabled: 'Enable RECUED_PUBLIC_REACHABLE',
-  tls_unavailable: 'A trusted HTTPS public endpoint is required',
-  clock_unverified: 'Clock synchronization has not been verified',
-  vault_locked: 'Unlock the server vault',
-  server_paused: 'Resume the paused server',
-  retired: 'This webhook is retired',
+  credentials_incomplete: 'Add all the keys it needs',
+  credential_shape_invalid: 'Replace or retire the keys that are wrong',
+  registration_incomplete: 'Say you have set it up at the other service',
+  registration_endpoint_changed: 'Update the one true address, then say so again',
+  event_selection_empty: 'Pick at least one event',
+  profile_runtime_unavailable: 'This server does not know how to talk to that service',
+  paired_connection_unavailable: 'Bring back, or pick, the Connection it needs',
+  paired_connection_rebind_required: 'Show it is still the same account, then link it up again',
+  listener_unavailable: 'The part that listens for webhooks is not running',
+  public_url_unavailable: 'Set an https RECUED_PUBLIC_BASE_URL',
+  public_reachability_disabled: 'Switch on RECUED_PUBLIC_REACHABLE',
+  tls_unavailable: 'You need a trusted public https address',
+  clock_unverified: 'Recued has not checked that your clock is right',
+  vault_locked: 'Unlock your server’s keys',
+  server_paused: 'Start the paused server again',
+  retired: 'This webhook is closed for good',
 };
 
 const errorText = (error: unknown): string => error instanceof Error
   ? error.message
-  : 'Webhook operation failed';
+  : 'That did not work';
 
 const clear = (element: HTMLElement): void => {
   while (element.firstChild) element.removeChild(element.firstChild);
@@ -302,14 +302,14 @@ const deduplicationDisclosure = (
   switch (policy.identity.kind) {
     case 'received_at_body_window': {
       const window = formatExactDuration(policy.identity.window_ms);
-      return `Identity uses ${window} receipt-time body-fingerprint buckets; a retry crossing a bucket boundary is distinct. Matching identities remain tombstoned for at least ${horizon}.`;
+      return `Recued tells them apart by when they arrived, in ${window} blocks, and by exactly what was sent. A retry that lands in the next block counts as new. Recued remembers ones it has seen for at least ${horizon}.`;
     }
     case 'signed_timestamp_body':
-      return `Identity uses the signed timestamp and exact body; a retry signed with a new timestamp is distinct. Matching identities remain tombstoned for at least ${horizon}.`;
+      return `Recued tells them apart by the signed time and exactly what was sent. A retry signed at a new time counts as new. Recued remembers ones it has seen for at least ${horizon}.`;
     case 'stable_provider_id_or_signed_timestamp_body':
-      return `Identity prefers a stable provider ID; when one is absent it uses the signed timestamp and exact body, so a retry signed with a new timestamp is distinct. Matching identities remain tombstoned for at least ${horizon}. This is Recued's support boundary, not a promise about how long the sender retains or retries deliveries.`;
+      return `Recued uses the id the service gives each one. If there is none, it uses the signed time and exactly what was sent, so a retry signed at a new time counts as new. Recued remembers ones it has seen for at least ${horizon}. That is how long Recued goes back — it is not a promise about how long the sender keeps trying.`;
     case 'stable_provider_id':
-      return `Matching stable provider identities remain tombstoned for at least ${horizon}. This is Recued's support boundary, not a promise about how long the sender retains or retries deliveries.`;
+      return `Recued remembers ids it has already seen for at least ${horizon}. That is how long Recued goes back — it is not a promise about how long the sender keeps trying.`;
   }
   const exhaustive: never = policy.identity;
   return exhaustive;
@@ -320,9 +320,9 @@ const formatOwnerText = (
   ingress?: WebhookIngressView,
 ): string => {
   const values: Readonly<Record<string, string>> = {
-    events: ingress?.selected_event_types.join(', ') ?? 'the selected events',
-    environment: ingress?.environment ?? 'the selected environment',
-    target_kind: ingress?.registration_target?.kind ?? 'provider target',
+    events: ingress?.selected_event_types.join(', ') ?? 'the events you picked',
+    environment: ingress?.environment ?? 'the one you picked',
+    target_kind: ingress?.registration_target?.kind ?? 'where it goes at the service',
     target_key: ingress?.registration_target?.key ?? '',
   };
   return Object.entries(values).reduce(
@@ -787,8 +787,8 @@ export const mountWebhooksPanel = (
     head.className = 'wh-card-head';
     const title = doc.createElement('strong');
     title.textContent = state?.detail === null
-      ? 'Accepted deliveries'
-      : 'Accepted delivery detail';
+      ? 'Messages that got through'
+      : 'About this message';
     head.appendChild(title);
     const close = button(doc, 'Close', 'deliveries-close');
     close.disabled = busy;
@@ -802,13 +802,13 @@ export const mountWebhooksPanel = (
 
     const boundary = doc.createElement('p');
     boundary.className = 'wh-copy';
-    boundary.textContent = 'Accepted requests only. Authentication failures and other rejected attempts are not included.';
+    boundary.textContent = 'Only messages that got through. Ones that failed the check, or were turned away, are not here.';
     inspector.appendChild(boundary);
 
     if (state === null || (busy && state.deliveries.length === 0)) {
       const loading = doc.createElement('p');
       loading.className = 'wh-copy';
-      loading.textContent = 'Loading accepted deliveries…';
+      loading.textContent = 'Loading the messages that got through…';
       inspector.appendChild(loading);
       return inspector;
     }
@@ -822,12 +822,12 @@ export const mountWebhooksPanel = (
       list.appendChild(description);
     };
     const timestamp = (value: number | null): string => value === null
-      ? 'Not supplied'
+      ? 'Not given'
       : new Date(value).toLocaleString();
 
     if (state.detail !== null) {
       const inspectedDeliveryId = state.detail.delivery.delivery_id;
-      const back = button(doc, 'Back to deliveries', 'deliveries-back');
+      const back = button(doc, 'Back to the messages', 'deliveries-back');
       back.disabled = busy;
       back.addEventListener('click', () => {
         if (deliveryInspector?.ingress_id !== ingress.ingress_id) return;
@@ -851,31 +851,31 @@ export const mountWebhooksPanel = (
       appendRow(deliveryMeta, 'Received', timestamp(delivery.received_at));
       appendRow(deliveryMeta, 'Profile', delivery.profile_id);
       appendRow(deliveryMeta, 'Environment', delivery.environment);
-      appendRow(deliveryMeta, 'Transport assurance', delivery.transport_assurance);
+      appendRow(deliveryMeta, 'How it arrived', delivery.transport_assurance);
       appendRow(deliveryMeta, 'Admission', delivery.admission_method);
-      appendRow(deliveryMeta, 'Freshness checked', delivery.freshness_checked ? 'Yes' : 'No');
-      appendRow(deliveryMeta, 'Raw body', delivery.raw_body_retained ? 'Retained' : 'Not retained');
-      appendRow(deliveryMeta, 'Raw body SHA-256', delivery.raw_body_sha256);
-      appendRow(deliveryMeta, 'Metadata prune eligible', timestamp(delivery.metadata_expires_at));
+      appendRow(deliveryMeta, 'Checked it was recent', delivery.freshness_checked ? 'Yes' : 'No');
+      appendRow(deliveryMeta, 'What was sent', delivery.raw_body_retained ? 'Retained' : 'Not kept');
+      appendRow(deliveryMeta, 'Fingerprint of what was sent (SHA-256)', delivery.raw_body_sha256);
+      appendRow(deliveryMeta, 'The labels around it can be cleared out', timestamp(delivery.metadata_expires_at));
       inspector.appendChild(deliveryMeta);
 
       if (state.detail.events.length === 0) {
         const empty = doc.createElement('p');
         empty.className = 'wh-copy';
-        empty.textContent = 'No decoded events were stored for this accepted delivery.';
+        empty.textContent = 'Recued kept no events from this message.';
         inspector.appendChild(empty);
       }
       for (const event of state.detail.events) {
         const eventNode = doc.createElement('article');
         eventNode.setAttribute(WEBHOOKS_PANEL_EVENT_ATTR, event.event_id);
         const eventMeta = doc.createElement('dl');
-        appendRow(eventMeta, 'Event type', event.provider_event_type);
+        appendRow(eventMeta, 'Kind of event', event.provider_event_type);
         appendRow(eventMeta, 'Dispatch', event.dispatch_state);
         appendRow(eventMeta, 'Selected', event.selected_for_dispatch ? 'Yes' : 'No');
-        appendRow(eventMeta, 'Provider event', event.provider_event_id ?? 'Not supplied');
-        appendRow(eventMeta, 'Provider resource', event.provider_resource_id ?? 'Not supplied');
+        appendRow(eventMeta, 'Event at the service', event.provider_event_id ?? 'Not given');
+        appendRow(eventMeta, 'What it was about', event.provider_resource_id ?? 'Not given');
         appendRow(eventMeta, 'Occurred', timestamp(event.provider_occurred_at));
-        appendRow(eventMeta, 'Payload prune eligible', timestamp(event.payload_expires_at));
+        appendRow(eventMeta, 'What was sent can be cleared out', timestamp(event.payload_expires_at));
         eventNode.appendChild(eventMeta);
 
         const loaded = state.payloads.get(event.event_id);
@@ -888,13 +888,13 @@ export const mountWebhooksPanel = (
         } else if (loaded?.payload_retained === false || !event.payload_retained) {
           const expired = doc.createElement('p');
           expired.className = 'wh-copy';
-          expired.textContent = 'Decoded payload expired and is no longer available.';
+          expired.textContent = 'What was sent has passed its time and is gone.';
           eventNode.appendChild(expired);
         } else {
-          const viewPayload = button(doc, 'View decoded payload', 'event-open');
+          const viewPayload = button(doc, 'See what was sent', 'event-open');
           viewPayload.setAttribute(
             'aria-label',
-            `View decoded payload for event ${event.event_id} in ${ingress.display_name} (${ingress.ingress_id})`,
+            `See what was sent for event ${event.event_id} in ${ingress.display_name} (${ingress.ingress_id})`,
           );
           viewPayload.disabled = busy;
           viewPayload.addEventListener('click', () => {
@@ -914,7 +914,7 @@ export const mountWebhooksPanel = (
     if (state.deliveries.length === 0) {
       const empty = doc.createElement('p');
       empty.className = 'wh-copy';
-      empty.textContent = 'No accepted deliveries have been retained.';
+      empty.textContent = 'Recued has kept no messages that got through.';
       inspector.appendChild(empty);
     }
     for (const delivery of state.deliveries) {
@@ -924,12 +924,12 @@ export const mountWebhooksPanel = (
       appendRow(deliveryMeta, 'Received', timestamp(delivery.received_at));
       appendRow(deliveryMeta, 'Assurance', delivery.transport_assurance);
       appendRow(deliveryMeta, 'Events', String(delivery.event_count));
-      appendRow(deliveryMeta, 'Raw body', delivery.raw_body_retained ? 'Retained' : 'Not retained');
+      appendRow(deliveryMeta, 'What was sent', delivery.raw_body_retained ? 'Retained' : 'Not kept');
       deliveryNode.appendChild(deliveryMeta);
-      const open = button(doc, 'Inspect delivery', 'delivery-open');
+      const open = button(doc, 'Look at this message', 'delivery-open');
       open.setAttribute(
         'aria-label',
-        `Inspect delivery ${delivery.delivery_id} for ${ingress.display_name} (${ingress.ingress_id})`,
+        `Look at message ${delivery.delivery_id} for ${ingress.display_name} (${ingress.ingress_id})`,
       );
       open.disabled = busy;
       open.addEventListener('click', () => {
@@ -939,7 +939,7 @@ export const mountWebhooksPanel = (
       inspector.appendChild(deliveryNode);
     }
     if (state.next_cursor !== null) {
-      const loadMore = button(doc, 'Load more accepted deliveries', 'deliveries-more');
+      const loadMore = button(doc, 'Show more messages', 'deliveries-more');
       loadMore.disabled = busy;
       loadMore.addEventListener('click', () => {
         loadDeliveries(ingress.ingress_id, state.next_cursor!);
@@ -958,7 +958,7 @@ export const mountWebhooksPanel = (
     const head = doc.createElement('div');
     head.className = 'wh-card-head';
     const title = doc.createElement('strong');
-    title.textContent = 'Rejected delivery summaries';
+    title.textContent = 'Messages that were turned away';
     head.appendChild(title);
     const close = button(doc, 'Close', 'rejections-close');
     close.disabled = busy;
@@ -972,19 +972,19 @@ export const mountWebhooksPanel = (
 
     const boundary = doc.createElement('p');
     boundary.className = 'wh-copy';
-    boundary.textContent = 'Minute-bucketed, ingress-known 4xx delivery-shape and authentication rejects only. Bodies, hashes, paths, headers, signatures, credentials, network identifiers, routing misses, rate or concurrency shedding, and retryable server failures are not retained here.';
+    boundary.textContent = 'Only messages turned away for a bad shape or a failed check, grouped by minute and by the way in they used. What they said, their fingerprints, paths, headers, signatures, keys, network details, wrong turns, ones dropped for coming too fast, and server faults you can try again are not kept here.';
     inspector.appendChild(boundary);
     if (state === null || (!state.loaded && busy)) {
       const loading = doc.createElement('p');
       loading.className = 'wh-copy';
-      loading.textContent = 'Loading rejected delivery summaries…';
+      loading.textContent = 'Loading the messages that were turned away…';
       inspector.appendChild(loading);
       return inspector;
     }
     if (!state.loaded) {
       const unavailable = doc.createElement('p');
       unavailable.className = 'wh-copy';
-      unavailable.textContent = 'Rejected delivery summaries are unavailable.';
+      unavailable.textContent = 'Recued cannot show the messages that were turned away.';
       inspector.appendChild(unavailable);
       return inspector;
     }
@@ -1001,7 +1001,7 @@ export const mountWebhooksPanel = (
     if (state.rejections.length === 0) {
       const empty = doc.createElement('p');
       empty.className = 'wh-copy';
-      empty.textContent = 'No rejected delivery summaries are retained.';
+      empty.textContent = 'Recued has kept no messages that were turned away.';
       inspector.appendChild(empty);
     }
     for (const rejection of state.rejections) {
@@ -1012,23 +1012,23 @@ export const mountWebhooksPanel = (
       appendRow(metadata, 'HTTP status', String(rejection.http_status));
       appendRow(
         metadata,
-        'Recorded attempts (lower bound)',
+        'Tries counted (at least this many)',
         String(rejection.recorded_attempt_count),
       );
-      appendRow(metadata, 'First recorded', timestamp(rejection.first_recorded_at));
-      appendRow(metadata, 'Last recorded', timestamp(rejection.last_recorded_at));
+      appendRow(metadata, 'First one', timestamp(rejection.first_recorded_at));
+      appendRow(metadata, 'Last one', timestamp(rejection.last_recorded_at));
       appendRow(metadata, 'Profile', rejection.profile_id);
       appendRow(metadata, 'Environment', rejection.environment);
       appendRow(
         metadata,
-        'Metadata prune eligible',
+        'The labels around it can be cleared out',
         timestamp(rejection.metadata_prune_eligible_at),
       );
       rejectionNode.appendChild(metadata);
       inspector.appendChild(rejectionNode);
     }
     if (state.next_cursor !== null) {
-      const loadMore = button(doc, 'Load more rejected summaries', 'rejections-more');
+      const loadMore = button(doc, 'Show more turned-away messages', 'rejections-more');
       loadMore.disabled = busy;
       loadMore.addEventListener('click', () => {
         loadRejectedDeliveries(ingress.ingress_id, state.next_cursor!);
@@ -1047,8 +1047,8 @@ export const mountWebhooksPanel = (
     form.setAttribute(WEBHOOKS_PANEL_FORM_ATTR, 'credentials');
     const title = doc.createElement('strong');
     title.textContent = ingress.active_credential_versions.length > 0
-      ? 'Rotate credentials'
-      : 'Add credentials';
+      ? 'Swap the keys'
+      : 'Add keys';
     form.appendChild(title);
     const values = new Map<string, HTMLInputElement>();
     for (const field of profile.fields) {
@@ -1076,7 +1076,7 @@ export const mountWebhooksPanel = (
       const generatedNote = doc.createElement('p');
       generatedNote.className = 'wh-copy';
       generatedNote.textContent = ownerSettings.credential_rotation_instructions
-        ?? `Saving mints a new ${generatedFields.join(', ')} credential version and shows its plaintext once. Update the vendor before retiring the previous version.`;
+        ?? `Saving makes a new ${generatedFields.join(', ')} key and shows it to you once. Put it into the other service before you retire the old one.`;
       form.appendChild(generatedNote);
     }
     if (generatedFields.length === 0
@@ -1089,7 +1089,7 @@ export const mountWebhooksPanel = (
     }
     const actions = doc.createElement('div');
     actions.className = 'wh-actions';
-    const save = button(doc, 'Save credential version', 'credential-save', true);
+    const save = button(doc, 'Save this key', 'credential-save', true);
     save.type = 'submit';
     save.disabled = busy;
     actions.appendChild(save);
@@ -1143,7 +1143,7 @@ export const mountWebhooksPanel = (
     form.appendChild(nameLabel);
 
     const profileLabel = doc.createElement('label');
-    profileLabel.textContent = 'Authentication profile';
+    profileLabel.textContent = 'How it proves who it is';
     const profileSelect = doc.createElement('select');
     profileSelect.setAttribute(WEBHOOKS_PANEL_PROFILE_ATTR, '');
     for (const profile of profiles) {
@@ -1162,7 +1162,7 @@ export const mountWebhooksPanel = (
     const renderDeduplication = (): void => {
       const capability = capabilityFor(profileSelect.value as WebhookIngressView['profile_id']);
       deduplicationNote.textContent = capability === null
-        ? 'The installed runtime did not provide a deduplication guarantee.'
+        ? 'This server did not say how it avoids doing the same thing twice.'
         : deduplicationDisclosure(capability.deduplication);
     };
 
@@ -1212,17 +1212,17 @@ export const mountWebhooksPanel = (
       }
 
       const modeLabel = doc.createElement('label');
-      modeLabel.textContent = 'Registration mode';
+      modeLabel.textContent = 'How to set it up';
       const modeSelect = doc.createElement('select');
       modeSelect.setAttribute(WEBHOOKS_PANEL_REGISTRATION_MODE_ATTR, '');
       for (const mode of availableModes) {
         const option = doc.createElement('option');
         option.value = mode;
         option.textContent = mode === 'operation_bound'
-          ? 'Attach during provider operation'
+          ? 'Add it while the service is doing something'
           : mode === 'managed_endpoint'
-            ? 'Register through paired connection'
-          : 'Register manually';
+            ? 'Set it up through a Connection'
+          : 'Set it up yourself';
         modeSelect.appendChild(option);
       }
       modeSelect.value = selectedRegistrationMode;
@@ -1237,7 +1237,7 @@ export const mountWebhooksPanel = (
 
       if (selectedRegistrationMode !== 'manual') {
         const connectionLabel = doc.createElement('label');
-        connectionLabel.textContent = 'Paired provider connection (required)';
+        connectionLabel.textContent = 'Connection to the service (needed)';
         const connection = doc.createElement('input');
         connection.required = true;
         connection.autocomplete = 'off';
@@ -1329,7 +1329,7 @@ export const mountWebhooksPanel = (
       }
       eventTypes.hidden = false;
       const legend = doc.createElement('legend');
-      legend.textContent = 'Provider events';
+      legend.textContent = 'Events at the service';
       eventTypes.appendChild(legend);
       for (const eventType of profile.event_types.known_values) {
         const label = doc.createElement('label');
@@ -1350,7 +1350,7 @@ export const mountWebhooksPanel = (
       }
       eventTypeValidation = doc.createElement('p');
       eventTypeValidation.className = 'wh-copy';
-      eventTypeValidation.textContent = 'Select at least one provider event.';
+      eventTypeValidation.textContent = 'Pick at least one event at the service.';
       eventTypeValidation.hidden = true;
       eventTypes.appendChild(eventTypeValidation);
     };
@@ -1377,13 +1377,13 @@ export const mountWebhooksPanel = (
     renderRegistrationNote = (): void => {
       const profile = descriptorFor(profileSelect.value);
       if (!profile) {
-        note.textContent = 'No installed webhook profile is available.';
+        note.textContent = 'This server has no webhook set-ups installed.';
         return;
       }
       const template = ownerSettingsFor(profile)
         .create_instructions[selectedRegistrationMode];
       note.textContent = template === undefined
-        ? 'This installed profile does not expose the selected registration mode.'
+        ? 'This set-up cannot be done that way.'
         : webhookOwnerTextForEnvironment(
             template,
             environment.value as WebhookIngressView['environment'],
@@ -1393,7 +1393,7 @@ export const mountWebhooksPanel = (
     form.appendChild(note);
     const actions = doc.createElement('div');
     actions.className = 'wh-actions';
-    const create = button(doc, 'Create webhook', 'create-submit', true);
+    const create = button(doc, 'Make a webhook', 'create-submit', true);
     create.type = 'submit';
     create.disabled = busy || profiles.length === 0;
     actions.appendChild(create);
@@ -1426,7 +1426,7 @@ export const mountWebhooksPanel = (
       }
       const pairedConnectionId = pairedConnectionInput?.value.trim() ?? '';
       if (selectedRegistrationMode !== 'manual' && pairedConnectionId.length === 0) {
-        error = `A paired provider connection is required for ${selectedRegistrationMode.replaceAll('_', ' ')} registration.`;
+        error = `You need a Connection to the service to set it up ${selectedRegistrationMode.replaceAll('_', ' ')}.`;
         render();
         return;
       }
@@ -1539,48 +1539,48 @@ export const mountWebhooksPanel = (
     const deduplication = row(
       'Deduplication',
       profileCapability === null
-        ? 'Runtime guarantee unavailable'
+        ? 'Recued cannot tell what this server promises'
         : deduplicationDisclosure(profileCapability.deduplication),
     );
     deduplication.setAttribute(WEBHOOKS_PANEL_DEDUPLICATION_ATTR, ingress.ingress_id);
     row('Environment', ingress.environment);
-    row('Registration mode', ingress.registration_mode.replaceAll('_', ' '));
-    row('Paired connection', ingress.paired_connection_id ?? 'None');
-    row('Registration target', ingress.registration_target === null
+    row('How to set it up', ingress.registration_mode.replaceAll('_', ' '));
+    row('Connection', ingress.paired_connection_id ?? 'None');
+    row('Where it is set up', ingress.registration_target === null
       ? 'None'
       : `${ingress.registration_target.kind}: ${ingress.registration_target.key}`);
     if ((ingress.pending_paired_connection_id ?? null) !== null) {
-      row('Pending paired connection', ingress.pending_paired_connection_id!);
+      row('Waiting for a Connection', ingress.pending_paired_connection_id!);
     }
     row('Events', ingress.selected_event_types.join(', '));
     row('Health', ingress.health.status);
-    row('Last failure', ingress.health.last_error_code ?? 'None');
-    row('Last delivery', ingress.health.last_delivery_at === null
-      ? 'No delivery observed'
+    row('Last thing that went wrong', ingress.health.last_error_code ?? 'None');
+    row('Last message', ingress.health.last_delivery_at === null
+      ? 'No messages yet'
       : new Date(ingress.health.last_delivery_at).toLocaleString());
-    row('Test delivery', ingress.readiness.test_delivery_supported
-      ? 'Recued public-path simulator supported'
+    row('Test message', ingress.readiness.test_delivery_supported
+      ? 'Recued can pretend to send one from outside'
       : ownerSettings === null
-        ? 'Profile settings unavailable'
+        ? 'Recued cannot show these settings'
         : webhookOwnerTextForEnvironment(
             ownerSettings.external_test_guidance,
             ingress.environment,
           ));
-    row('Credential versions', ingress.active_credential_versions
+    row('Keys', ingress.active_credential_versions
       .map((version) => `v${version.version} (${version.last_verified_at === null
-        ? 'not yet verified'
+        ? 'not checked yet'
         : 'verified'})`).join(', ') || 'None');
     card.appendChild(detail);
 
     const endpoint = doc.createElement('code');
     endpoint.setAttribute(WEBHOOKS_PANEL_ENDPOINT_ATTR, '');
-    endpoint.textContent = ingress.endpoint_url ?? 'Public HTTPS endpoint unavailable';
+    endpoint.textContent = ingress.endpoint_url ?? 'No public https address yet';
     card.appendChild(endpoint);
 
     if (oneTime?.ingress_id === ingress.ingress_id) {
       const callout = doc.createElement('div');
       callout.setAttribute(WEBHOOKS_PANEL_ONE_TIME_ATTR, '');
-      callout.textContent = 'Copy these generated values now. They will not be shown again.';
+      callout.textContent = 'Copy these now. Recued will not show them again.';
       for (const [key, value] of Object.entries(oneTime.credentials)) {
         const secret = doc.createElement('code');
         secret.textContent = `${key}: ${value}`;
@@ -1604,7 +1604,7 @@ export const mountWebhooksPanel = (
       notice.setAttribute(WEBHOOKS_PANEL_RETENTION_ATTR, ingress.ingress_id);
       notice.className = 'wh-note';
       const result = retentionNotice.result;
-      notice.textContent = `Pruned eligible data: ${result.payloads_deleted} payloads, ${result.outbox_rows_deleted} completed outbox rows, ${result.events_deleted} events, ${result.deliveries_deleted} deliveries, and ${result.rejected_summaries_deleted} rejected summaries. Pending, leased, or dead-letter work and pinned payloads remain protected.`;
+      notice.textContent = `Cleared out: ${result.payloads_deleted} things that were sent, ${result.outbox_rows_deleted} finished outgoing rows, ${result.events_deleted} events, ${result.deliveries_deleted} messages, and ${result.rejected_summaries_deleted} turned-away summaries. Anything still waiting, being worked on, stuck, or pinned is kept safe.`;
       card.appendChild(notice);
     }
 
@@ -1612,7 +1612,7 @@ export const mountWebhooksPanel = (
       const notice = doc.createElement('div');
       notice.setAttribute(WEBHOOKS_PANEL_TEST_ATTR, ingress.ingress_id);
       notice.className = 'wh-note';
-      notice.textContent = `Test delivery ${testDeliveryNotice.delivery_id} was durably accepted at ${new Date(testDeliveryNotice.observed_at).toLocaleString()}. It followed normal event dispatch.`;
+      notice.textContent = `Test message ${testDeliveryNotice.delivery_id} arrived and was kept at ${new Date(testDeliveryNotice.observed_at).toLocaleString()}. It went the same way a real one would.`;
       card.appendChild(notice);
     }
 
@@ -1620,9 +1620,9 @@ export const mountWebhooksPanel = (
       const instructions = doc.createElement('p');
       instructions.className = 'wh-note';
       instructions.textContent = ingress.endpoint_url === null
-        ? 'Fix the public HTTPS URL before registering this webhook with the vendor.'
+        ? 'Fix the public https address before you set this up at the other service.'
         : ownerSettings === null
-          ? 'Profile owner settings are unavailable; keep intake closed.'
+          ? 'Recued cannot show the owner settings. Keep this closed.'
           : formatOwnerText(webhookOwnerTextForEnvironment(
               ownerSettings.manual_confirmation_instructions,
               ingress.environment,
@@ -1633,7 +1633,7 @@ export const mountWebhooksPanel = (
       const instructions = doc.createElement('p');
       instructions.className = 'wh-note';
       instructions.textContent = ownerSettings === null
-        ? 'Profile owner settings are unavailable; keep intake closed.'
+        ? 'Recued cannot show the owner settings. Keep this closed.'
         : formatOwnerText(webhookOwnerTextForEnvironment(
             ownerSettings.managed_reconciliation_instructions,
             ingress.environment,
@@ -1644,15 +1644,15 @@ export const mountWebhooksPanel = (
       const instructions = doc.createElement('p');
       instructions.className = 'wh-note';
       instructions.textContent = (ingress.pending_paired_connection_id ?? null) === null
-        ? 'Local intake is closed. Provider endpoint cleanup is still pending; retry keeps the route closed and never creates a replacement endpoint.'
-        : `Local intake is closed while trusted core removes the endpoint from ${ingress.paired_connection_id ?? 'the current connection'}. Only after confirmed absence will it switch to ${ingress.pending_paired_connection_id}; registration on the replacement remains explicit.`;
+        ? 'Nothing can come in here now. The address at the service still has to be cleaned up. Trying again keeps this closed, and never makes a new address.'
+        : `Nothing can come in here while your server removes the address from ${ingress.paired_connection_id ?? 'this Connection'}. Only once it has checked the address is gone will it switch to ${ingress.pending_paired_connection_id}, and you still set the new one up yourself.`;
       card.appendChild(instructions);
     }
 
     if (ingress.readiness.blockers.length > 0) {
       const blockers = doc.createElement('p');
       blockers.className = 'wh-copy';
-      blockers.textContent = `Before enablement: ${ingress.readiness.blockers
+      blockers.textContent = `Before you switch it on: ${ingress.readiness.blockers
         .map((value) => blockerLabel[value]).join('; ')}.`;
       card.appendChild(blockers);
     }
@@ -1660,7 +1660,7 @@ export const mountWebhooksPanel = (
       const testBoundary = doc.createElement('p');
       testBoundary.className = 'wh-copy';
       testBoundary.textContent = ownerSettings?.test_delivery_boundary
-        ?? 'The profile test boundary is unavailable.';
+        ?? 'Recued cannot test this set-up.';
       card.appendChild(testBoundary);
     }
 
@@ -1677,12 +1677,12 @@ export const mountWebhooksPanel = (
         >= MAX_ACTIVE_WEBHOOK_CREDENTIAL_VERSIONS;
       const rotate = button(
         doc,
-        ingress.active_credential_versions.length > 0 ? 'Rotate credentials' : 'Add credentials',
+        ingress.active_credential_versions.length > 0 ? 'Swap the keys' : 'Add keys',
         'credentials',
       );
       rotate.disabled = busy || credentialOverlapFull;
       if (credentialOverlapFull) {
-        rotate.title = `Retire one of the ${MAX_ACTIVE_WEBHOOK_CREDENTIAL_VERSIONS} active credential versions before adding another`;
+        rotate.title = `Retire one of the ${MAX_ACTIVE_WEBHOOK_CREDENTIAL_VERSIONS} keys in use before you add another`;
       }
       rotate.addEventListener('click', () => {
         credentialIngressId = ingress.ingress_id;
@@ -1699,8 +1699,8 @@ export const mountWebhooksPanel = (
       const confirm = button(
         doc,
         ingress.registration_state === 'registered'
-          ? 'I updated this endpoint'
-          : 'I registered this endpoint',
+          ? 'I have updated this address'
+          : 'I have set up this address',
         'manual-confirm',
         true,
       );
@@ -1718,13 +1718,13 @@ export const mountWebhooksPanel = (
       const reconcile = button(
         doc,
         isFirstRegistration
-          ? 'Register provider endpoint'
-          : 'Reconcile provider endpoint',
+          ? 'Set up the address at the service'
+          : 'Line the address up again',
         'registration-reconcile',
         ingress.registration_state !== 'registered',
       );
       reconcile.disabled = busy || ingress.endpoint_url === null;
-      reconcile.title = 'Uses the canonical endpoint and profile-approved events; no owner-supplied request URL';
+      reconcile.title = 'Uses the one true address and the events this set-up allows. You do not type a web address.';
       reconcile.addEventListener('click', () => {
         void mutate(() => options.runRegistrationReconcile!({
           ingress_id: ingress.ingress_id,
@@ -1734,7 +1734,7 @@ export const mountWebhooksPanel = (
     }
     if (profileModeAvailable
       && (ingress.intake_state === 'ready' || ingress.intake_state === 'disabled')) {
-      const enable = button(doc, 'Enable intake', 'enable', true);
+      const enable = button(doc, 'Let messages in', 'enable', true);
       enable.disabled = busy || !ingress.readiness.can_enable;
       enable.title = ingress.readiness.blockers.map((value) => blockerLabel[value]).join('; ');
       enable.addEventListener('click', () => {
@@ -1743,7 +1743,7 @@ export const mountWebhooksPanel = (
       actions.appendChild(enable);
     }
     if (ingress.intake_state === 'enabled' || ingress.intake_state === 'degraded') {
-      const disable = button(doc, 'Disable intake', 'disable');
+      const disable = button(doc, 'Stop messages coming in', 'disable');
       disable.disabled = busy;
       disable.addEventListener('click', () => {
         void mutate(() => options.runDisable({ ingress_id: ingress.ingress_id }));
@@ -1756,8 +1756,8 @@ export const mountWebhooksPanel = (
       const retryCleanup = button(
         doc,
         pendingConnectionId !== null && ingress.intake_state !== 'retired'
-          ? 'Retry connection cutover'
-          : 'Retry provider cleanup',
+          ? 'Try the swap again'
+          : 'Try the clean-up again',
         'cleanup-retry',
         true,
       );
@@ -1789,9 +1789,9 @@ export const mountWebhooksPanel = (
       && ingress.registration_state !== 'cleanup_pending'
       && ingress.registration_state !== 'retired'
       && ingress.intake_state !== 'retired') {
-      const rebind = button(doc, 'Change paired connection', 'connection-rebind');
+      const rebind = button(doc, 'Change the Connection', 'connection-rebind');
       rebind.disabled = busy;
-      rebind.title = 'Core validates the replacement before closing or changing the current endpoint';
+      rebind.title = 'Your server checks the new one before it closes or changes the one you have';
       rebind.addEventListener('click', () => {
         connectionRebindIngressId = ingress.ingress_id;
         render();
@@ -1807,12 +1807,12 @@ export const mountWebhooksPanel = (
       && profileModeAvailable
       && ingress.environment === 'test'
       && ingress.readiness.test_delivery_supported) {
-      const sendTest = button(doc, 'Send test delivery', 'test-delivery');
+      const sendTest = button(doc, 'Send a test message', 'test-delivery');
       sendTest.disabled = busy
         || !ingress.readiness.can_enable
         || (ingress.intake_state !== 'enabled'
           && ingress.intake_state !== 'degraded');
-      sendTest.title = 'Sends an authenticated request through the canonical public endpoint; bound test recipes may run';
+      sendTest.title = 'Sends a signed message to your public address. Recipes tied to this may run.';
       sendTest.addEventListener('click', () => {
         testDeliveryNotice = null;
         void mutate(async () => {
@@ -1820,7 +1820,7 @@ export const mountWebhooksPanel = (
             ingress_id: ingress.ingress_id,
           });
           if (response.ingress.ingress_id !== ingress.ingress_id) {
-            throw new Error('Webhook test delivery returned a mismatched ingress');
+            throw new Error('The test message came back from the wrong way in');
           }
           testDeliveryNotice = {
             ingress_id: ingress.ingress_id,
@@ -1835,7 +1835,7 @@ export const mountWebhooksPanel = (
       const inspecting = deliveryInspector?.ingress_id === ingress.ingress_id;
       const deliveries = button(
         doc,
-        inspecting ? 'Hide accepted deliveries' : 'View accepted deliveries',
+        inspecting ? 'Hide the messages that got through' : 'See the messages that got through',
         'deliveries',
       );
       deliveries.disabled = busy;
@@ -1862,7 +1862,7 @@ export const mountWebhooksPanel = (
       const inspecting = rejectionInspector?.ingress_id === ingress.ingress_id;
       const rejections = button(
         doc,
-        inspecting ? 'Hide rejected summaries' : 'View rejected summaries',
+        inspecting ? 'Hide the turned-away messages' : 'See the turned-away messages',
         'rejections',
       );
       rejections.disabled = busy;
@@ -1885,9 +1885,9 @@ export const mountWebhooksPanel = (
       actions.appendChild(rejections);
     }
     if (options.runRetentionPrune) {
-      const prune = button(doc, 'Prune eligible delivery data', 'retention-prune');
+      const prune = button(doc, 'Clear out what can go', 'retention-prune');
       prune.disabled = busy;
-      prune.title = 'Deletes only data already past server-owned retention thresholds';
+      prune.title = 'Only deletes what your server has already kept long enough';
       prune.addEventListener('click', () => {
         void mutate(async () => {
           const response = await options.runRetentionPrune!({
@@ -1920,7 +1920,7 @@ export const mountWebhooksPanel = (
       if (retirementConfirmIngressId === ingress.ingress_id) {
         const confirmRetire = button(
           doc,
-          'Confirm webhook retirement',
+          'Really close this webhook for good?',
           'retire-confirm',
         );
         confirmRetire.disabled = busy || retirementBlocked;
@@ -1930,7 +1930,7 @@ export const mountWebhooksPanel = (
             if (response.ingress.ingress_id !== ingress.ingress_id
               || response.ingress.intake_state !== 'retired'
               || response.ingress.registration_state !== 'retired') {
-              throw new Error('Webhook retirement returned a mismatched ingress');
+              throw new Error('Closing it came back from the wrong way in');
             }
             // Retirement may commit even if the generic post-mutation list
             // refresh fails. Remove the row immediately so the UI never renders
@@ -1947,7 +1947,7 @@ export const mountWebhooksPanel = (
           });
         });
         actions.appendChild(confirmRetire);
-        const cancelRetire = button(doc, 'Cancel retirement', 'retire-cancel');
+        const cancelRetire = button(doc, 'Never mind', 'retire-cancel');
         cancelRetire.disabled = busy;
         cancelRetire.addEventListener('click', () => {
           retirementConfirmIngressId = null;
@@ -1956,13 +1956,13 @@ export const mountWebhooksPanel = (
         });
         actions.appendChild(cancelRetire);
       } else {
-        const retire = button(doc, 'Retire webhook', 'retire');
+        const retire = button(doc, 'Close this webhook for good', 'retire');
         retire.disabled = busy || retirementBlocked;
         retire.title = exposedIntake
-          ? 'Disable intake before retiring this webhook'
+          ? 'Stop messages coming in before you close this webhook'
           : remoteCleanupUnavailable
-            ? 'A code-backed provider cleanup adapter is required before retirement'
-            : 'Permanently retires the ingress and every active credential';
+            ? 'Your server has to know how to clean up at the service first'
+            : 'Closes this way in for good, and every key it uses';
         retire.addEventListener('click', () => {
           retirementConfirmIngressId = ingress.ingress_id;
           render();
@@ -1978,7 +1978,7 @@ export const mountWebhooksPanel = (
       && profileModeAvailable) {
       const form = doc.createElement('form');
       const label = doc.createElement('label');
-      label.textContent = 'Replacement paired connection ID';
+      label.textContent = 'Id of the Connection to use instead';
       const input = doc.createElement('input');
       input.setAttribute(WEBHOOKS_PANEL_REBIND_ATTR, '');
       input.name = 'paired_connection_id';
@@ -1991,11 +1991,11 @@ export const mountWebhooksPanel = (
       const boundary = doc.createElement('p');
       boundary.className = 'wh-copy';
       boundary.textContent = ownerSettings?.connection_rebind_instructions
-        ?? 'Profile rebind guidance is unavailable; keep intake closed.';
+        ?? 'Recued cannot tell you how to link this up again. Keep it closed.';
       form.appendChild(boundary);
       const formActions = doc.createElement('div');
       formActions.className = 'wh-actions';
-      const submit = button(doc, 'Validate and switch', 'connection-rebind-confirm', true);
+      const submit = button(doc, 'Check it and switch', 'connection-rebind-confirm', true);
       submit.type = 'submit';
       submit.disabled = busy;
       formActions.appendChild(submit);
@@ -2029,11 +2029,11 @@ export const mountWebhooksPanel = (
       const warning = doc.createElement('p');
       warning.className = 'wh-note';
       warning.textContent = ingress.registration_mode === 'managed_endpoint'
-        ? 'Retirement is permanent: intake closes first, active credentials retire, and trusted core deletes then confirms the provider endpoint. A failed provider call remains visible for retry.'
+        ? 'This cannot be undone. Messages stop coming in first, the keys in use are retired, and your server deletes the address at the service and then checks it is gone. If that last call fails you will still see it, so you can try again.'
         : ingress.registration_mode === 'operation_bound'
-          ? 'Retirement is permanent. This ingress was never enabled, so no operation-bound callback attachment could have been dispatched; active credentials and the public id will be retired.'
+          ? 'This cannot be undone. This way in was never switched on, so nothing could ever have been sent to it. The keys in use, and the public id, will be retired.'
           : ownerSettings?.manual_retirement_instructions
-            ?? 'Profile retirement guidance is unavailable; keep intake closed.';
+            ?? 'Recued cannot tell you how to close this. Keep it closed.';
       card.appendChild(warning);
     }
 
@@ -2044,7 +2044,7 @@ export const mountWebhooksPanel = (
       const rotation = doc.createElement('div');
       rotation.className = 'wh-actions';
       for (const version of ingress.active_credential_versions) {
-        const retire = button(doc, `Retire credential v${version.version}`, 'credential-retire');
+        const retire = button(doc, `Retire key v${version.version}`, 'credential-retire');
         const liveIntake = ingress.intake_state === 'enabled'
           || ingress.intake_state === 'degraded';
         const hasVerifiedRemaining = ingress.active_credential_versions.some(
@@ -2053,7 +2053,7 @@ export const mountWebhooksPanel = (
         );
         retire.disabled = busy || (liveIntake && !hasVerifiedRemaining);
         if (liveIntake && !hasVerifiedRemaining) {
-          retire.title = 'Verify a remaining credential with an accepted delivery first';
+          retire.title = 'First let a message through using one of the other keys';
         }
         retire.addEventListener('click', () => {
           void mutate(async () => {
@@ -2086,18 +2086,18 @@ export const mountWebhooksPanel = (
     const copy = doc.createElement('div');
     const heading = doc.createElement('h2');
     heading.tabIndex = -1;
-    heading.textContent = 'Inbound webhooks';
+    heading.textContent = 'Webhooks coming in';
     copy.appendChild(heading);
     const subtitle = doc.createElement('p');
     subtitle.className = 'wh-copy';
-    subtitle.textContent = 'Create authenticated inbound endpoints, register them at the vendor, then enable intake explicitly.';
+    subtitle.textContent = 'Make a signed address for messages to arrive at, set it up at the other service, then switch it on yourself.';
     copy.appendChild(subtitle);
     head.appendChild(copy);
     const newButton = button(doc, 'New webhook', 'new', true);
     newButton.setAttribute(WEBHOOKS_PANEL_NEW_ATTR, '');
     newButton.disabled = busy || createProfiles().length === 0;
     if (createProfiles().length === 0) {
-      newButton.title = 'No server-installed webhook profile is available';
+      newButton.title = 'This server has no webhook set-ups installed';
     }
     newButton.addEventListener('click', () => {
       showCreate = true;
@@ -2117,7 +2117,7 @@ export const mountWebhooksPanel = (
     if (ingresses.length === 0 && !showCreate) {
       const empty = doc.createElement('div');
       empty.className = 'wh-empty';
-      empty.textContent = busy ? 'Loading webhooks…' : 'No inbound webhooks yet.';
+      empty.textContent = busy ? 'Loading webhooks…' : 'No webhooks coming in yet.';
       root.appendChild(empty);
     }
     for (const ingress of ingresses) root.appendChild(ingressCard(ingress));

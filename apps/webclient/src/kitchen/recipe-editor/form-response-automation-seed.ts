@@ -103,8 +103,8 @@ export const createFormResponseAutomationSeed = (
     version: 1,
     ttl: 300,
     metadata: {
-      name: 'Handle accepted form responses',
-      description: 'Runs after the owner accepts a response from this intake form.',
+      name: 'Deal with form answers you accept',
+      description: 'Runs after you accept an answer from this form.',
       author: 'local',
       supported_platforms: [],
     },

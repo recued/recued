@@ -1,0 +1,40 @@
+{
+  "recipe_id": "save-composed-draft-to-mailbox",
+  "chat_exposed": false,
+  "version": 1,
+  "ttl": 0,
+  "metadata": {
+    "name": "Save a draft into your mailbox",
+    "description": "Use “Save a draft into your mailbox” in Recued. Copies a draft you already saved into that same mail account's own Drafts folder, so you can finish it in your phone or desktop mail client. It does not send — parking a message and sending it stay separate. Saving again updates the mailbox copy where your provider allows. Attachments stay in Recued.",
+    "author": "recued-core",
+    "supported_platforms": [],
+    "budget_ms": 30000,
+    "tags": ["mail", "compose", "draft"]
+  },
+  "requires": [],
+  "variables": {
+    "draft_id": {
+      "label": "Saved draft",
+      "type": "string",
+      "default": ""
+    }
+  },
+  "prefetch_steps": [],
+  "steps": [
+    {
+      "id": "save_to_mailbox",
+      "op": "core.mail.draft.save-to-mailbox",
+      "args": {
+        "draft_id": "{{config.draft_id}}"
+      }
+    }
+  ],
+  "output": {
+    "render": [
+      {
+        "type": "summary",
+        "source": "step.save_to_mailbox"
+      }
+    ]
+  }
+}

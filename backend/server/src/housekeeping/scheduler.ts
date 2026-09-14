@@ -16,6 +16,7 @@
  *
  *  Spec: D-123 §2.2 + §2.3 + §2.4. */
 
+import { isMinuteWithinWindow, localMinuteOfDay } from '@recued/contracts';
 import {
   HOUSEKEEPING_AGGRESSIVE_IDLE_THRESHOLD_MS,
   HOUSEKEEPING_AUTO_RETRY_AFTER_MS,
@@ -55,6 +56,9 @@ export interface HousekeepingScheduler {
 }
 
 export interface CreateHousekeepingSchedulerOptions {
+  /** D-269 — the server's declared IANA zone, for the `custom` preset's
+   *  window. Absent ⇒ host-local, the pre-D-269 behaviour. */
+  serverTimeZone?: () => string | undefined;
   ctx: HousekeepingContext;
   config: HousekeepingConfigStore;
   state: HousekeepingStateStore;
@@ -124,19 +128,36 @@ export interface CreateHousekeepingSchedulerOptions {
 // Helpers
 // ────────────────────────────────────────────────────────────────
 
-/** True when local-time hour falls inside `[start_hour, end_hour)`,
- *  honouring midnight crossings (e.g. start=22, end=5 → window
- *  spans 22:00 → 23:59 + 00:00 → 04:59). */
+/** True when the owner's local hour falls inside `[start_hour, end_hour)`,
+ *  honouring midnight crossings (e.g. start=22, end=5 → 22:00 → 04:59).
+ *
+ *  ⛔⛔ D-269 — `timeZone` ABSENT MEANS THE HOST'S CLOCK, WHICH IS WHAT THIS
+ *  ALWAYS DID AND WHY IT WAS WRONG. The owner sets *"do background work between
+ *  22:00 and 05:00"* in Settings → Housekeeping, and nothing in the contract
+ *  ever said whose 22:00 — so it was the datacenter's on a VPS. Milder than the
+ *  cron defect (it delays work rather than misfiring it) but the same silent
+ *  assumption, and the same fix: the zone the OWNER declared for this server.
+ *
+ *  ⚠ AND THE CROSS-MIDNIGHT RULE IS NO LONGER RE-IMPLEMENTED HERE. This file and
+ *  quiet hours independently arrived at the same predicate — including the
+ *  `start === end → false` choice, on the same reasoning that reading an empty
+ *  window as "all day" lets one mis-set field silence everything. Independent
+ *  convergence is reassuring about the rule and a warning about the
+ *  duplication: **the next person to fix one would not have known about the
+ *  other.** It now calls the one in contracts. */
 export const inCustomWindow = (
   now_ms: number,
   start_hour: number,
   end_hour: number,
+  timeZone?: string,
 ): boolean => {
-  const local = new Date(now_ms);
-  const hour = local.getHours();
-  if (start_hour === end_hour) return false;
-  if (start_hour < end_hour) return hour >= start_hour && hour < end_hour;
-  return hour >= start_hour || hour < end_hour;
+  const minute = timeZone === undefined
+    ? new Date(now_ms).getHours() * 60 + new Date(now_ms).getMinutes()
+    : localMinuteOfDay(now_ms, timeZone);
+  // ⚠ Hours in, minutes compared — the shared predicate speaks minutes because
+  // quiet hours needs them. Converting here keeps the housekeeping setting's
+  // own vocabulary (whole hours) while sharing the rule.
+  return isMinuteWithinWindow(minute, start_hour * 60, end_hour * 60);
 };
 
 interface GateInputs {
@@ -144,6 +165,9 @@ interface GateInputs {
   cycle_interval_minutes: number;
   custom_window_start_hour?: number;
   custom_window_end_hour?: number;
+  /** D-269 — the zone the custom window's hours are read in. Absent ⇒
+   *  host-local, the pre-D-269 behaviour. */
+  time_zone?: string;
   last_run_at: number | null;
   now: number;
   busy: EngineBusySignal;
@@ -161,6 +185,7 @@ export const shouldFireCycle = ({
   last_run_at,
   now,
   busy,
+  time_zone,
 }: GateInputs): boolean => {
   if (preset === 'off') return false;
   if (busy.isBusy()) return false;
@@ -175,7 +200,9 @@ export const shouldFireCycle = ({
     if (custom_window_start_hour === undefined || custom_window_end_hour === undefined) {
       return false;
     }
-    if (!inCustomWindow(now, custom_window_start_hour, custom_window_end_hour)) {
+    if (!inCustomWindow(
+      now, custom_window_start_hour, custom_window_end_hour, time_zone,
+    )) {
       return false;
     }
   }
@@ -570,6 +597,13 @@ export const createHousekeepingScheduler = (
         last_run_at: lastCycleAt,
         now,
         busy: opts.busy,
+        // D-269 — the owner's declared zone, so "between 22:00 and 05:00" means
+        // their 22:00 and not the datacenter's. Read PER TICK: under
+        // `follows_host` the answer is the host clock.
+        ...((): { time_zone?: string } => {
+          const tz = opts.serverTimeZone?.();
+          return tz !== undefined && tz.length > 0 ? { time_zone: tz } : {};
+        })(),
       });
       if (!fire) return;
       void enqueueCycle(config.cycle_budget_ms).catch((err) => {

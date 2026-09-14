@@ -82,7 +82,7 @@ describe('notificationSchemas.email — D-127 P4.3 shape', () => {
     // dynamic path; the resolver prefers options_source when both
     // are present anyway, but absence keeps the schema honest.
     expect(field?.options).toBeUndefined();
-    expect(field?.emptyGuidance).toMatch(/no send-capable mail accounts/i);
+    expect(field?.emptyGuidance).toMatch(/no mailbox that can send/i);
   });
 
   it('default_recipient is optional', () => {
@@ -152,7 +152,7 @@ describe('renderConnectionsPage — email form dynamic options', () => {
     expect(html).toContain('value="gmail-personal"');
     // Empty-state guidance is gated on isEmpty — should NOT appear
     // when the host supplied options.
-    expect(html).not.toContain('No send-capable mail accounts');
+    expect(html).not.toContain('You have no mailbox that can send');
   });
 
   it('does not visually select the first dynamic option until state has a value', () => {
@@ -174,14 +174,14 @@ describe('renderConnectionsPage — email form dynamic options', () => {
       dialog: dialogShowingEmailForm({ values: { name: 'newsletter', display_name: 'Newsletter' } }),
       dynamicOptions: { 'data.mail.send_capable_instances': [] },
     }));
-    expect(html).toContain('No send-capable mail accounts');
+    expect(html).toContain('You have no mailbox that can send');
     expect(html).toContain('Configure SMTP for an IMAP account');
     expect(html).toContain('grant Send permission');
     // Disabled select carries the empty placeholder.
     expect(html).toContain('— no options available —');
     // The top checkpoint routes to one labelled, described field-level note;
     // the exact guidance is not duplicated or asserted on initial render.
-    expect(html.match(/No send-capable mail accounts/gu)).toHaveLength(1);
+    expect(html.match(/no mailbox that can send/gu)).toHaveLength(1);
     expect(html).toContain('Review the prerequisite shown with this field.');
     expect(html).toContain('role="note"');
     expect(html).toMatch(
@@ -197,7 +197,7 @@ describe('renderConnectionsPage — email form dynamic options', () => {
       dialog: dialogShowingEmailForm({ values: { name: 'newsletter', display_name: 'Newsletter' } }),
       // dynamicOptions completely omitted.
     }));
-    expect(html).toContain('No send-capable mail accounts');
+    expect(html).toContain('You have no mailbox that can send');
   });
 
   it('disables submit when the picker is empty (one validation surface, not two)', () => {

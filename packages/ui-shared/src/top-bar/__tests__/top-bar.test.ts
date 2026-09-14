@@ -51,7 +51,7 @@ describe('renderTopBarSearchInput', () => {
   it('renders an empty input when no query is active', () => {
     const html = renderTopBarSearchInput({ query: null });
     expect(html).toContain('data-field="recipe-filter"');
-    expect(html).toContain('placeholder="Search recipes…"');
+    expect(html).toContain('placeholder="Search Recipes…"');
     // The textInput primitive always emits value=, but it's empty
     // when query is null — the rendered field is blank.
     expect(html).toContain('value=""');

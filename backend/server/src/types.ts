@@ -328,7 +328,16 @@ export interface ExecuteResponse {
     render: ResolvedOutputSection[];
     sidebar: ResolvedOutputSection[];
   };
-  steps: { id: string; type: string; skipped: boolean; duration_ms: number; error: unknown }[];
+  /** ⚠ `foreach` WAS ALREADY BEING COPIED ONTO EVERY RESPONSE AND WAS MISSING
+   *  FROM THIS TYPE, so no typed consumer could read it. The enumerating copier
+   *  in `execute-handler.ts` emits `...(s.foreach === undefined ? {} : { foreach: s.foreach })`;
+   *  the declaration simply never caught up. D-268 needs it to ask
+   *  `deriveRunYield` whether a run refused every item it attempted — a run that
+   *  reports `success: true` while producing nothing. */
+  steps: {
+    id: string; type: string; skipped: boolean; duration_ms: number; error: unknown;
+    foreach?: { items: number; failed: number };
+  }[];
   errors: unknown[];
   duration_ms: number;
   /** Post-execution observability degradation. The run's side effects

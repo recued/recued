@@ -19,6 +19,7 @@ import type {
 } from '@recued/contracts';
 import { CHAT_CATALOG_SMART_DEFAULT_BY_SOURCE } from '@recued/contracts';
 import { TOOLS_SEARCH_TOOL_NAME } from '../chat-tools-search-name.js';
+import { handleSend } from '../chat-handler.js';
 import { RECALL_SEARCH_TOOL_NAME } from '../chat-recall-search-tool.js';
 import type { AuditLogStore } from '@recued/storage';
 import type { EventBus } from '../events/bus.js';
@@ -272,6 +273,24 @@ afterEach(() => {
 });
 
 describe('composeChatOrchestrator', () => {
+  it('D-265 admits and mirrors through the actual boot-composed queue and Chat store', async () => {
+    const { bundle } = composeHarness(); const bridge = bundle.orchestrator.messengerBridge!;
+    cleanups.push(() => bundle.orchestrator.turnQueue!.close());
+    const bound = bridge.bind('slack', 'C265', 'slack:T265:B265'); const sent: string[] = [];
+    bridge.register('slack', { resolve: async () => ({ token: 'fixture', recipient: 'C265', account: 'slack:T265:B265' }),
+      send: async message => { sent.push(message.text); return { ok: true, vendor_message_id: 'receipt' }; },
+    });
+    const ack = await handleSend(bundle.chatDeps, { session_id: bound.session_id, message: 'boot composition',
+      submission_id: 'boot-send', picker_state: { current: 'self' } });
+    expect(ack.disposition).toBe('accepted');
+    await vi.waitFor(async () => expect((await bundle.orchestrator.turnQueue!.snapshot(bound.session_id)).turns[0]?.status).toBe('completed'));
+    await vi.waitFor(async () => expect((await bridge.snapshot(bound.session_id)).pending_count).toBe(0), { timeout: 5000 });
+    const messages = await bundle.chatStore.listMessages(bound.session_id);
+    expect(messages.map(message => message.role)).toEqual(['user', 'assistant']);
+    expect(messages[1]!.content).toContain('No AI model is available');
+    expect(sent).toEqual(['Owner (via webclient)\nboot composition', messages[1]!.content]);
+  });
+
   it('returns exactly the expected bundle fields with usable store and orchestrator shapes', () => {
     const { bundle } = composeHarness();
 
@@ -312,6 +331,8 @@ describe('composeChatOrchestrator', () => {
     }));
     expect(bundle.orchestrator).toEqual(expect.objectContaining({
       runTurn: expect.any(Function),
+      turnQueue: expect.objectContaining({ submit: expect.any(Function) }),
+      messengerBridge: expect.objectContaining({ snapshot: expect.any(Function), bind: expect.any(Function) }),
       dispatch: expect.objectContaining({
         dispatchTool: expect.any(Function),
       }),

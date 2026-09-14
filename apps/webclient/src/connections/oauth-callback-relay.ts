@@ -78,13 +78,13 @@ const STATUS_TEXT: Record<
 > = {
   ok: { title: 'Sign-in complete.', message: 'You can close this window.', ok: true },
   provider_error: {
-    title: 'Provider returned an error.',
+    title: 'The other service said something went wrong.',
     message: 'You can close this window and try again.',
     ok: false,
   },
   missing_code: {
-    title: 'Missing authorization code.',
-    message: 'The provider did not return a code. Please retry.',
+    title: 'The code is missing.',
+    message: 'The other service did not send a code back. Please try again.',
     ok: false,
   },
   invalid: {

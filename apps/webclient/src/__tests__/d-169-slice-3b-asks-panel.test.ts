@@ -228,7 +228,7 @@ describe('D-169 P2 Slice 3b — webclient Approvals panel', () => {
     expect(mount.getState()).toBe('ready');
     expect(collectByAttr(host, ASK_CARD_ATTR)).toHaveLength(0);
     expect(collectByAttr(host, ASKS_PANEL_EMPTY_ATTR)).toHaveLength(1);
-    expect(allText(host).join(' ')).toContain('No pending approvals');
+    expect(allText(host).join(' ')).toContain('Nothing to approve');
     mount.dispose();
   });
 

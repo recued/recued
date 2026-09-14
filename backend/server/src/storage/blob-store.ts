@@ -26,7 +26,7 @@
 
 import { createHash, randomBytes, createCipheriv, createDecipheriv } from 'node:crypto';
 import { mkdir, open, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises';
-import { existsSync, mkdirSync, createReadStream, createWriteStream } from 'node:fs';
+import { existsSync, mkdirSync, unlinkSync, createReadStream, createWriteStream } from 'node:fs';
 import type { Readable } from 'node:stream';
 import { join, dirname } from 'node:path';
 import { pipeline } from 'node:stream/promises';
@@ -99,6 +99,9 @@ export interface BlobStore {
    *  falls back to it (correct for keyless, where the two coincide). */
   plaintextSizeOf?(hash: string): Promise<number | null>;
   sweepOrphans(keepSet: Set<string>): Promise<number>;
+  /** Recheck live references at deletion, under the caller's storage lock.
+   * remove is synchronous so a new lease cannot race between the check and unlink. */
+  addOrphanDeleteGuard?(guard: (hash: string, remove: () => boolean) => boolean): void;
   totalBytes(): Promise<number>;
   readonly root: string;
   /** True iff this store encrypts at rest (a `getEncryptionKey` was provided).
@@ -212,10 +215,12 @@ const requireKey = (provider: () => Uint8Array | null): Uint8Array => {
 export const createBlobStore = (root: string, options: BlobStoreOptions = {}): BlobStore => {
   if (!existsSync(root)) mkdirSync(root, { recursive: true, mode: OBJECT_DIR_MODE });
   const encryption = options.getEncryptionKey;
+  const orphanGuards: Array<(hash: string, remove: () => boolean) => boolean> = [];
 
   return {
     root,
     encrypted: !!encryption,
+    addOrphanDeleteGuard: guard => { orphanGuards.push(guard); },
 
     async put(data) {
       const hash = sha256Hex(data);
@@ -525,8 +530,15 @@ export const createBlobStore = (root: string, options: BlobStoreOptions = {}): B
           const rest = file.slice(0, -'.bin'.length);
           const hash = prefix + rest;
           if (keepSet.has(hash)) continue;
-          await unlink(join(prefixDir, file));
-          deleted++;
+          if (orphanGuards.length) {
+            const remove = (index: number): boolean => {
+              const guard = orphanGuards[index];
+              if (guard) return guard(hash, () => remove(index + 1));
+              try { unlinkSync(join(prefixDir, file)); return true; }
+              catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false; throw error; }
+            };
+            if (remove(0)) deleted++;
+          } else { await unlink(join(prefixDir, file)); deleted++; }
         }
       }
       return deleted;

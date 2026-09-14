@@ -624,6 +624,45 @@ describe('Automation route — rendering', () => {
     expect(rig.host.innerHTML).toContain('errors_24h=10');
   });
 
+  it('D-268 — a schedule the SERVER stopped reads differently from one the owner paused', async () => {
+    // ⛔ THE TWO RENDERED IDENTICALLY, AND THE ONE NEEDING ACTION WAS THE ONE
+    // THAT LOOKED HANDLED. The test directly above pins the owner-paused row as
+    // "Paused" and must keep passing — the whole point is that these two states
+    // stop sharing a label. An owner arm/disarm clears `consecutive_failures`
+    // in both directions, so a non-zero counter on a disabled row is only ever
+    // the server's doing.
+    const rig = mountRoute({
+      schedulesListCaller: async () => ({
+        schedules: [schedule({
+          enabled: false,
+          consecutive_failures: 5,
+          last_status: 'error',
+          last_error: 'A token refresh failed.',
+        })],
+      }),
+    });
+    await rig.route.whenLoaded();
+    clickSubnav(rig.host, 'schedules');
+
+    expect(rig.host.innerHTML).toContain('data-armed="tripped"');
+    expect(rig.host.innerHTML).toContain('Auto-disabled');
+    expect(rig.host.innerHTML).toContain('A token refresh failed.');
+  });
+
+  it('D-268 — a disabled schedule with no failures is still just Paused', async () => {
+    // The negative half, with its cause named: it reads "Paused" BECAUSE the
+    // counter is zero, not because the row happens to lack a field.
+    const rig = mountRoute({
+      schedulesListCaller: async () => ({
+        schedules: [schedule({ enabled: false, consecutive_failures: 0 })],
+      }),
+    });
+    await rig.route.whenLoaded();
+    clickSubnav(rig.host, 'schedules');
+    expect(rig.host.innerHTML).toContain('Paused');
+    expect(rig.host.innerHTML).not.toContain('data-armed="tripped"');
+  });
+
   it('degrades per section: one failing caller shows that tab error while others render', async () => {
     const rig = mountRoute({
       triggersListCaller: async () => {
@@ -685,7 +724,7 @@ describe('Automation route — rendering', () => {
     });
     await route.whenLoaded();
 
-    expect(route.getLoadErrors().auto_run).toContain('not wired');
+    expect(route.getLoadErrors().auto_run).toContain('Recued cannot list');
     const host = root.children[0]!;
     expect(host.innerHTML).toContain(`${AUTOMATION_ROUTE_ERROR_ATTR}="auto_run"`);
     expect(host.innerHTML).not.toContain(`${AUTOMATION_ROUTE_EMPTY_ATTR}="schedule"`);
@@ -791,7 +830,7 @@ describe('Automation route — hash and tab state', () => {
 
     expect(rig.route.getActiveSection()).toBe('triggers');
     expectOnlySection(rig.host.innerHTML, 'event_trigger');
-    expect(rig.host.innerHTML).toContain('No event triggers for this recipe.');
+    expect(rig.host.innerHTML).toContain('Nothing sets this Recipe off.');
   });
 });
 
@@ -816,7 +855,7 @@ describe('Automation route — filters', () => {
 
     changeSelect(rig.host, AUTOMATION_ROUTE_STATUS_FILTER_ATTR, 'on');
     expect(rig.host.innerHTML).not.toContain(`${AUTOMATION_ROUTE_ROW_ATTR}="auto_run:ticker"`);
-    expect(rig.host.innerHTML).toContain('No auto-run recipes installed.');
+    expect(rig.host.innerHTML).toContain('You have no Recipes that run on their own.');
   });
 
   it('filters trigger rows by origin', async () => {
@@ -839,7 +878,7 @@ describe('Automation route — filters', () => {
 
     changeSelect(rig.host, AUTOMATION_ROUTE_ORIGIN_FILTER_ATTR, 'user');
     expect(rig.host.innerHTML).not.toContain(`${AUTOMATION_ROUTE_ROW_ATTR}="event_trigger:t-recipe"`);
-    expect(rig.host.innerHTML).toContain('No event triggers yet.');
+    expect(rig.host.innerHTML).toContain('Nothing sets a Recipe off yet.');
   });
 
   it('does not let a filtered-out paused trigger claim its tripped backing watch', async () => {
@@ -1057,7 +1096,7 @@ describe('Automation route — mutations', () => {
     );
     expect(rig.route.hasInFlightWork()).toBe(true);
     expect(rig.route.inFlightWorkPrompt()).toBe(
-      'An automation action is still in progress. Leave Automation anyway?',
+      'Something is still happening here. Leave anyway?',
     );
 
     // Internal tabs and filters bypass the shell-level work tracker. They
@@ -1311,7 +1350,7 @@ describe('Automation route — recipe-focus deep-link', () => {
     expect(rig.host.innerHTML).not.toContain('schedule:sch_other');
 
     clickSubnav(rig.host, 'auto-run');
-    expect(rig.host.innerHTML).toContain('This recipe has no auto-run ticker.');
+    expect(rig.host.innerHTML).toContain('This Recipe does not run on its own.');
     expect(rig.host.innerHTML).not.toContain('someone-else');
   });
 
@@ -1481,7 +1520,7 @@ describe('Automation route — activation-kind capability gate', () => {
     // The offer lives on the rule's DETAIL view. Without opening it the
     // NEGATIVE case below would pass for the wrong reason.
     clickAction(rig.host, 'detail:schedule', 'sch_1');
-    expect(rig.host.innerHTML).toContain('Review next run');
+    expect(rig.host.innerHTML).toContain('Look at the next run');
   });
 
   /** ⛔ THE POINT. A server that cannot freeze this kind used to get a button
@@ -1492,7 +1531,7 @@ describe('Automation route — activation-kind capability gate', () => {
     // The offer lives on the rule's DETAIL view. Without opening it the
     // NEGATIVE case below would pass for the wrong reason.
     clickAction(rig.host, 'detail:schedule', 'sch_1');
-    expect(rig.host.innerHTML).not.toContain('Review next run');
+    expect(rig.host.innerHTML).not.toContain('Look at the next run');
   });
 
   /** ⚠ MONOTONE: an unanswered capability set must not withdraw a feature the
@@ -1503,7 +1542,7 @@ describe('Automation route — activation-kind capability gate', () => {
     // The offer lives on the rule's DETAIL view. Without opening it the
     // NEGATIVE case below would pass for the wrong reason.
     clickAction(rig.host, 'detail:schedule', 'sch_1');
-    expect(rig.host.innerHTML).toContain('Review next run');
+    expect(rig.host.innerHTML).toContain('Look at the next run');
   });
 
   it('keeps the prior behaviour when the host wires no capability caller', async () => {
@@ -1512,7 +1551,7 @@ describe('Automation route — activation-kind capability gate', () => {
     // The offer lives on the rule's DETAIL view. Without opening it the
     // NEGATIVE case below would pass for the wrong reason.
     clickAction(rig.host, 'detail:schedule', 'sch_1');
-    expect(rig.host.innerHTML).toContain('Review next run');
+    expect(rig.host.innerHTML).toContain('Look at the next run');
   });
 });
 
@@ -1544,7 +1583,7 @@ describe('Automation route — pre-approved marker on the list row', () => {
   it('flags a held run for attention rather than reading as calmly approved', async () => {
     const rig = listed('held');
     await rig.route.whenLoaded();
-    expect(rig.host.innerHTML).toContain('Pre-approved · needs you');
+    expect(rig.host.innerHTML).toContain('Already said yes · still needs you');
     expect(rig.host.innerHTML).toMatch(/data-recued-automation-preapproval[^>]*data-attention="yes"/);
   });
 
@@ -1585,14 +1624,14 @@ describe('Automation route — remove pre-approval', () => {
     clickAction(rig.host, 'detail:schedule', 'sch_1');
 
     // The review link stays — removing is the second, destructive option.
-    expect(rig.host.innerHTML).toContain('Review approval');
+    expect(rig.host.innerHTML).toContain('Look at this run');
     expect(rig.host.innerHTML).toContain('Remove pre-approval');
 
     // ⛔ ONE PRESS IS NOT A REVOCATION. It only arms the confirm, exactly like
     // the row's own Remove. An owner who mis-clicks loses nothing.
     clickAction(rig.host, 'preapproval-remove:schedule', 'sch_1');
     expect(remove).not.toHaveBeenCalled();
-    expect(rig.host.innerHTML).toContain('Confirm remove approval');
+    expect(rig.host.innerHTML).toContain('Yes, take back this approval');
 
     clickAction(rig.host, 'preapproval-remove-confirm:schedule', 'sch_1');
     await flush();
@@ -1610,7 +1649,7 @@ describe('Automation route — remove pre-approval', () => {
     clickAction(rig.host, 'preapproval-remove-cancel:schedule', 'sch_1');
     expect(remove).not.toHaveBeenCalled();
     expect(rig.host.innerHTML).toContain('Remove pre-approval');
-    expect(rig.host.innerHTML).not.toContain('Confirm remove approval');
+    expect(rig.host.innerHTML).not.toContain('Yes, take back this approval');
   });
 
   /** ⚠ The repository dedupes revocations on `(request_id, responder_key)` and
@@ -1640,7 +1679,7 @@ describe('Automation route — remove pre-approval', () => {
     const rig = armed();
     await rig.route.whenLoaded();
     clickAction(rig.host, 'detail:schedule', 'sch_1');
-    expect(rig.host.innerHTML).toContain('Review approval');
+    expect(rig.host.innerHTML).toContain('Look at this run');
     expect(rig.host.innerHTML).not.toContain('Remove pre-approval');
   });
 });

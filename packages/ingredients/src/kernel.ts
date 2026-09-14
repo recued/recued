@@ -1556,6 +1556,24 @@ export interface KernelDispatchers {
   // direct callers (Settings → Connections probe, MCP agent, tests)
   // reach the dispatcher without an engine context — the audit row
   // simply omits both fields in that case.
+  /** D-264 — push a SAVED draft into the mailbox's own Drafts folder.
+   *
+   *  ⛔ Takes a `draft_id`, never a message. The draft already lives in
+   *  `mail_drafts`; handing the content in again would let a caller export
+   *  something the owner never saved, under the authority of a draft they did.
+   *  The server reads the row, so the exported message and the reviewed message
+   *  are the same bytes by construction rather than by agreement. */
+  mailDraftSaveToMailbox?: (
+    input: { draft_id: string },
+    stepMeta?: StepMeta,
+  ) => Promise<{
+    draft_id: string;
+    source_id: string;
+    saved_at: number;
+    replaced: boolean;
+    warnings?: Array<{ code: string; message: string }>;
+  }>;
+
   mailSend?: (input: {
     instance: string;
     to: string[];
@@ -1852,6 +1870,17 @@ export const createKernelAdapter = (dispatchers: KernelDispatchers): Adapter => 
         const method = action === 'read' ? 'get' : action as 'create' | 'update' | 'delete';
         const parse = { create: parseMailDraftCreate, get: parseMailDraftGet, update: parseMailDraftUpdate, delete: parseMailDraftDelete }[method];
         return dispatchers.mailDraft(method, parse(call.input), call.stepMeta);
+      }
+      case 'mail-draft-save-to-mailbox': {
+        if (!dispatchers.mailDraftSaveToMailbox) {
+          throw new IngredientError('SERVER_NOT_REACHABLE',
+            'Exporting a saved draft to the mailbox is unavailable.', { slug });
+        }
+        const input = call.input as { draft_id?: unknown } | null;
+        if (!input || typeof input.draft_id !== 'string' || input.draft_id.length === 0) {
+          throw new IngredientError('BAD_INPUT', 'mail-draft-save-to-mailbox: draft_id is required', { slug });
+        }
+        return dispatchers.mailDraftSaveToMailbox({ draft_id: input.draft_id }, call.stepMeta);
       }
       case 'preapproval-request': {
         if (!dispatchers.preapprovalRequest) {

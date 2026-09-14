@@ -46,11 +46,11 @@ const COPY = {
   empty: (vendor: string): string => `No ${vendor} account is connected yet.`,
   enroll_empty: (vendor: string): string => `Connect ${vendor}`,
   enroll_more: 'Connect a new account',
-  hint: 'You can install now and connect it later.',
+  hint: 'You can install it now and connect the account later.',
   summary_prefix: 'Will connect: ',
-  none_label: 'Not now — install only',
+  none_label: 'Not now. Just install it',
   customize: 'Use a different account',
-  none_option: "Don't connect now (install only)",
+  none_option: 'Do not connect now, just install it',
   arrow: ' →',
 };
 

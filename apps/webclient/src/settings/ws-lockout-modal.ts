@@ -78,30 +78,30 @@ export const WS_LOCKOUT_MODAL_COPY: Record<
   { title: string; subtitle: string; bullets: ReadonlyArray<string> }
 > = {
   webclient_self_disconnect: {
-    title: 'Disconnect this webclient?',
-    subtitle: 'You are about to saw the branch you sit on.',
+    title: 'Cut this browser off?',
+    subtitle: 'You are about to cut off the branch you are sitting on.',
     bullets: [
-      'You are calling from this webclient over /ws — disabling /ws drops your connection immediately.',
-      'Active WS connections will be terminated in the 30s graceful drain window.',
-      'To get back in: open Settings on the LAN listener (port 80) or use the CLI to re-enable /ws.',
+      'You are here through /ws. Switching /ws off cuts you off straight away.',
+      'Anything still connected is cut off within 30 seconds.',
+      'To get back in: open Settings on your own network (port 80), or switch /ws back on from the command line.',
     ],
   },
   cli_disconnects_others: {
-    title: 'Disconnect every connected webclient?',
-    subtitle: 'Webclients over /ws will be dropped.',
+    title: 'Cut off every browser?',
+    subtitle: 'Every browser using /ws is cut off.',
     bullets: [
-      'Active WS connections will be terminated in the 30s graceful drain window.',
-      'Pending approvals + real-time renders will pause until the user re-pairs or you re-enable /ws.',
-      'You will still have CLI access; consider scheduling a maintenance window for the affected users.',
+      'Anything still connected is cut off within 30 seconds.',
+      'Anything waiting for a yes, and anything updating live, stops until they pair again or you switch /ws back on.',
+      'You will still have the command line. Think about picking a quiet time for the people this affects.',
     ],
   },
   no_active_clients: {
     title: 'Disable /ws?',
-    subtitle: 'No webclients are currently connected.',
+    subtitle: 'No browsers are connected right now.',
     bullets: [
-      'No connections will be terminated immediately.',
-      'Future webclient access via /ws will be blocked until you re-enable it.',
-      'Re-enable from the CLI or by editing config files locally if you cannot reach Settings.',
+      'Nothing is cut off right now.',
+      'No browser can get in through /ws until you switch it back on.',
+      'If you cannot reach Settings, switch it back on from the command line, or by editing the files on the server.',
     ],
   },
 };

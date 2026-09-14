@@ -277,22 +277,29 @@ export const bootSalesforce = async (
   const salesforceEngagementReconcilers: VendorReconciler[] = [];
   if (deps.engagementStore) {
     const engagementStore = deps.engagementStore;
+    // D-269 — D-139 § A.3.7's third fallback step, on every entity for the same
+    // reason as HubSpot: the step is per-engagement, so a partial wire would
+    // make `event_at_tz_inferred` mean different things per row.
+    const tz = deps.prefsTimezone ? { prefsTimezone: deps.prefsTimezone } : {};
     const substrate = buildSalesforceEngagementReconcilers(
       {
         task: {
           search: { refreshAuth: deps.refreshAuth },
           engagementStore,
           authorship: {},
+          ...tz,
         },
         event: {
           search: { refreshAuth: deps.refreshAuth },
           engagementStore,
           authorship: {},
+          ...tz,
         },
         email_message: {
           search: { refreshAuth: deps.refreshAuth },
           engagementStore,
           authorship: {},
+          ...tz,
         },
         replayIdTracker: salesforceReplayIdTracker,
       },
@@ -443,6 +450,10 @@ export const bootSalesforce = async (
             engagementStore,
             authorship: {},
             callEntity: winner,
+            // D-269 — the call entity is discovered late (winner-picked at
+            // boot-scan), so it is constructed here rather than in the
+            // substrate above; the fallback step still applies to it.
+            ...(deps.prefsTimezone ? { prefsTimezone: deps.prefsTimezone } : {}),
           });
           registerHousekeepingTask(
             buildVendorReconciliationTask({

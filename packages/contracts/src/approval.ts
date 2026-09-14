@@ -514,8 +514,10 @@ export interface RunRecipePlaintext {
     | 'email';
   /** Present only for Smart Backfill catch-ups. Diagnostic metadata
    *  surfaced in audit as "N cycles missed since <t>". `missed_cycles`
-   *  is `'unknown'` on the first catch-up after schedule creation
-   *  (no prev_run_at sample yet to compute observed cadence). */
+   *  is `'unknown'` only when the cron expression cannot be read.
+   *  ⚠ It used to also mean "no `prev_run_at` sample yet"; the count is
+   *  now a tally of cron occurrences and needs no sample, so a
+   *  schedule's FIRST catch-up reports a real number. */
   backfill?: { missed_cycles: number | 'unknown'; last_run_at_before: number };
 }
 

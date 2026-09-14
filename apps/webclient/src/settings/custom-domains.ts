@@ -79,45 +79,45 @@ export type CustomDomainEnrolCaller = (args: {
  *  check that failed. */
 const CHECK_TITLES: Record<string, string> = {
   host_route: 'Your domain points at this server',
-  acme_delegation: 'Certificate delegation',
-  caa: 'Certificate authority permissions (CAA)',
+  acme_delegation: 'Letting Recued get certificates',
+  caa: 'Who may issue your certificates',
 };
 
 const CHECK_DETAIL: Record<string, string> = {
   // host_route
-  host_cname_matches_ddns: 'Resolves to your Recued address.',
+  host_cname_matches_ddns: 'Points at your Recued address.',
   host_flattened_matches_ddns:
-    'Resolves to the right address today, but as a flattened A record rather than a CNAME — '
-    + 'if your provider does not keep it in sync with your Recued address, it will break when your IP changes.',
+    'Points at the right address today, but as a fixed address rather than a name. '
+    + 'If your provider does not keep it up to date, it will break when your address changes.',
   host_flattened_stale:
-    'Points at an address that is no longer yours. Replace it with a CNAME to your Recued address, '
-    + 'or an ALIAS/ANAME if this is a zone apex.',
-  host_cname_target_mismatch: 'Points somewhere else. Update it to your Recued address.',
-  host_unresolved: 'Does not resolve. Add the record below.',
+    'Points at an address that is not yours any more. Replace it with a CNAME to your Recued address, '
+    + 'or an ALIAS or ANAME if this is the root of your domain.',
+  host_cname_target_mismatch: 'Points somewhere else. Change it to your Recued address.',
+  host_unresolved: 'Points nowhere. Add the record below.',
   host_ddns_baseline_unavailable:
-    'We could not read your Recued address to compare against, so this one is unproven rather than wrong.',
-  host_resolver_error: 'We could not look this up just now — this says nothing about your records.',
+    'Recued could not read its own address to compare with, so this is unchecked rather than wrong.',
+  host_resolver_error: 'Recued could not look this up just now. That says nothing about your records.',
   // acme_delegation
-  delegation_target_matches: 'Delegated to Recued. Certificates can be issued and renewed.',
-  delegation_target_mismatch: 'Points somewhere else. Update it to the exact value below.',
+  delegation_target_matches: 'Recued can get and renew certificates for you.',
+  delegation_target_mismatch: 'Points somewhere else. Change it to exactly the value below.',
   delegation_missing:
-    'Not found. Without it Recued cannot prove it may issue certificates for this domain — '
-    + 'pointing your domain at the server is not enough on its own.',
+    'Missing. Without it, Recued cannot prove it is allowed to get certificates for your domain. '
+    + 'Pointing your domain at the server is not enough on its own.',
   delegation_not_a_cname:
     'A record exists at that name, but it is not a CNAME pointing at Recued. If your DNS provider '
     + 'proxies records — Cloudflare\'s orange cloud — set this one to "DNS only"; a proxied CNAME is '
     + 'hidden from the certificate authority and cannot be followed.',
-  delegation_resolver_error: 'We could not look this up just now — this says nothing about your records.',
+  delegation_resolver_error: 'Recued could not look this up just now. That says nothing about your records.',
   // caa
-  caa_absent: 'No restrictions — any certificate authority may issue.',
-  caa_permits_all_rotation_cas: 'Permits every authority Recued uses.',
+  caa_absent: 'No rules set. Anyone may issue your certificates.',
+  caa_permits_all_rotation_cas: 'Allows everyone Recued uses.',
   caa_permits_some_rotation_cas:
-    'Permits only some of the authorities Recued uses. Issuance would succeed sometimes and fail '
-    + 'other times, months apart, with nothing obvious linking the two.',
-  caa_permits_no_rotation_cas: 'Blocks every authority Recued uses.',
+    'Allows only some of the people Recued uses. It would work sometimes and fail '
+    + 'other times, months apart, with nothing to connect the two.',
+  caa_permits_no_rotation_cas: 'Blocks everyone Recued uses.',
   caa_critical_unknown_tag:
-    'Contains a critical record no authority will look past, so all issuance is refused.',
-  caa_resolver_error: 'We could not look this up just now — this says nothing about your records.',
+    'Has a record nobody will look past, so no certificate will ever work.',
+  caa_resolver_error: 'Recued could not look this up just now. That says nothing about your records.',
 };
 
 const STATUS_MARK: Record<string, string> = {
@@ -130,18 +130,18 @@ const STATUS_MARK: Record<string, string> = {
 /** ⚠ Deliberately NOT "error" copy for a gate that has not been reached. Every
  *  blocker names something the user does next, in their words. */
 const BLOCKER_COPY: Record<CustomDomainIssuanceBlocker, string> = {
-  not_a_custom_acme_hostname: 'This hostname is not set up as a Recued-managed custom domain yet.',
-  ownership_unverified: 'Verify you own this hostname first — use the Verify action on its row.',
+  not_a_custom_acme_hostname: 'Recued does not look after this name yet.',
+  ownership_unverified: 'Show that you own this name first. Use Verify on its row.',
   ownership_proof_method_insufficient:
-    'This hostname was verified with a certificate proof, which cannot authorize Recued to issue a '
-    + 'new certificate. Re-verify with the DNS TXT or HTTP token challenge.',
+    'This name was checked with a certificate, and that cannot let Recued get a '
+    + 'new one. Check it again using the DNS or web method instead.',
   delegation_unchecked: 'Run the DNS check first.',
-  delegation_unverified: 'The _acme-challenge delegation is not pointing at Recued yet.',
-  caa_blocks_rotation: 'Your CAA records do not permit every certificate authority Recued uses.',
-  subscription_inactive: 'Custom domains need an active Pro subscription.',
-  hostname_disabled: 'This hostname is disabled. Enable it to have Recued manage its certificate.',
+  delegation_unverified: 'The _acme-challenge record does not point at Recued yet.',
+  caa_blocks_rotation: 'Your records do not allow everyone Recued uses.',
+  subscription_inactive: 'You need Pro to use your own domain.',
+  hostname_disabled: 'This name is switched off. Switch it on and Recued will look after its certificate.',
   custom_hostname_cap_reached:
-    'You have reached the limit for custom domains on this server. Remove one to add another.',
+    'This server cannot hold any more domains. Remove one to add another.',
 };
 
 export interface CustomDomainsPanelState {
@@ -359,7 +359,7 @@ export const mountCustomDomainsPanel = (
   const runCheck = async (): Promise<void> => {
     const hostname = normalize(state.hostname);
     if (hostname.length === 0) {
-      setState({ error: 'Enter the hostname you want to use.' });
+      setState({ error: 'Type the name you want to use.' });
       return;
     }
     setState({ checking: true, error: null, enrolled: null });
@@ -434,7 +434,7 @@ export const mountCustomDomainsPanel = (
       const hint = el(
         'div',
         'custom-domains-record-hint',
-        `Most DNS providers want the name relative to your zone — enter just: ${short}`,
+        `Most providers want the short name, so type just: ${short}`,
       );
       hint.setAttribute(CUSTOM_DOMAINS_RELATIVE_ATTR, short);
       box.appendChild(hint);
@@ -485,10 +485,10 @@ export const mountCustomDomainsPanel = (
       el(
         'div',
         'custom-domains-delegation-lead',
-        'Then add that same record a second time, with _acme-challenge. in front of '
-          + 'both the name and the value. This is what lets Recued prove it may issue '
-          + 'certificates for your domain — without it the domain reaches your server '
-          + 'but every certificate order fails.',
+        'Then add the same record again, with _acme-challenge. in front of '
+          + 'both the name and the value. This is what lets Recued prove it may get '
+          + 'certificates for your domain. Without it, your domain reaches your server '
+          + 'but no certificate will ever work.',
       ),
     );
 
@@ -509,7 +509,7 @@ export const mountCustomDomainsPanel = (
       const hint = el(
         'div',
         'custom-domains-record-hint',
-        `Most DNS providers want the name relative to your zone — enter just: ${short}`,
+        `Most providers want the short name, so type just: ${short}`,
       );
       hint.setAttribute(CUSTOM_DOMAINS_RELATIVE_ATTR, short);
       box.appendChild(hint);
@@ -576,11 +576,11 @@ export const mountCustomDomainsPanel = (
         //   below says, so the two never disagree.
         //   § 2.5's warning stays — it is the last clause, and it is the whole
         //   reason this panel exists.
-        'Use a domain you own — Recued issues and renews its certificate for you. '
-          + 'That takes one CNAME, entered twice: once to point the domain at your server, '
-          + 'and once more with an _acme-challenge. prefix so Recued can prove it may issue '
-          + 'certificates. Without the prefixed one your domain will reach your server, but '
-          + 'no certificate can ever be issued.',
+        'Use a domain you own. Recued gets and renews the certificate for you. '
+          + 'You add one record twice: once to point the domain at your server, '
+          + 'and once with _acme-challenge. in front, so Recued can prove it may get '
+          + 'certificates. Without the _acme-challenge one, your domain reaches your server, but '
+          + 'no certificate will ever work.',
       ),
     );
 
@@ -623,15 +623,15 @@ export const mountCustomDomainsPanel = (
       const apex = el(
         'div',
         'custom-domains-apex',
-        `${preflight.hostname} looks like the root of your domain, and DNS does not allow a CNAME there. `
+        `${preflight.hostname} looks like the root of your domain, and you cannot use a CNAME there. `
           // Scoped to the ROUTING record on purpose: `_acme-challenge.<apex>` is
           // a subdomain of the apex, not the apex, so a CNAME there is legal and
           // needs no flattening. Naming the record by what it DOES keeps that
           // distinction after the ordinals went away.
           + 'Use your provider\'s ALIAS, ANAME or "CNAME flattening" option for the record '
           + 'that points your domain at the server — '
-          + 'Cloudflare, Route 53, DNSimple and deSEC all support it. A subdomain like '
-          + `recued.${preflight.hostname} avoids the problem entirely and works everywhere.`,
+          + 'Cloudflare, Route 53, DNSimple and deSEC all have one. A name like '
+          + `recued.${preflight.hostname} avoids the whole problem and works everywhere.`,
       );
       apex.setAttribute(CUSTOM_DOMAINS_APEX_ATTR, '');
       root.appendChild(apex);
@@ -683,7 +683,7 @@ export const mountCustomDomainsPanel = (
         el(
           'div',
           'custom-domains-intro',
-          `${state.enrolled} added. Recued will issue its certificate once the checks above pass, `
+          `${state.enrolled} added. Recued will get its certificate once the checks above pass, `
             + 'and renew it from then on.',
         ),
       );

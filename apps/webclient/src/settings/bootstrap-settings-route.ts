@@ -133,6 +133,27 @@ import {
   type NotificationsSetChannelCaller,
   type NotificationsSetVerificationPhraseCaller,
 } from './notifications-panel.js';
+import {
+  mountServerTimeZonePanel,
+  type ServerTimeZoneGetCaller,
+  type ServerTimeZonePanelMount,
+  type ServerTimeZoneSetCaller,
+  SERVER_TIMEZONE_PANEL_STYLES,
+} from './server-timezone-panel.js';
+import {
+  mountQuietHoursPanel,
+  type QuietHoursGetCaller,
+  type QuietHoursPanelMount,
+  type QuietHoursSetCaller,
+  QUIET_HOURS_PANEL_STYLES,
+} from './quiet-hours-panel.js';
+import {
+  mountKindPolicyPanel,
+  KIND_POLICY_PANEL_STYLES,
+  type KindPolicyGetCaller,
+  type KindPolicyPanelMount,
+  type KindPolicySetCaller,
+} from './notification-kind-policy-panel.js';
 // D-187 §6 follow-on — the Packs panel, the {Access × Scope} install grant
 // picker, and the install-time cli grant dialog all moved with the Packs
 // surface to `packs/bootstrap-packs-route.ts`. (The roster-wide Local tools
@@ -555,6 +576,17 @@ export interface BootstrapSettingsRouteOptions {
    *  to render — the panel's read-list + toggle surface depends on
    *  both. Test environments / pre-D-163-Slice-C server builds that
    *  omit either skip the section rather than mount a broken UI. */
+  /** D-269 step 1 — Settings → Server → Timezone. Absent ⇒ the tab does not
+   *  render (a webclient against a pre-D-269 server). */
+  /** D-269 step 3 — Settings → Approval & notifications → Quiet hours. Absent ⇒
+   *  the panel does not render (a webclient against a pre-D-269 server). */
+  /** D-269 step 2 — Settings → Approval & notifications → Reminders. */
+  kindPolicyGetCaller?: KindPolicyGetCaller;
+  kindPolicySetCaller?: KindPolicySetCaller;
+  quietHoursGetCaller?: QuietHoursGetCaller;
+  quietHoursSetCaller?: QuietHoursSetCaller;
+  serverTimeZoneGetCaller?: ServerTimeZoneGetCaller;
+  serverTimeZoneSetCaller?: ServerTimeZoneSetCaller;
   notificationsDescribeCaller?: NotificationsDescribeCaller;
   /** D-163 Slice C — `notifications.set_channel` rpc caller forwarded
    *  to the Notifications section's panel for per-row toggle.
@@ -1270,6 +1302,13 @@ export const bootstrapSettingsRoute = (
       // the page never mounts.
       KEY_HEALTH_PANEL_STYLES,
       CERT_PIN_STALE_PANEL_STYLES,
+      // D-269 — the three panels this arc added shipped with NO styles while
+      // every sibling here ships one, so a mounted, wired control rendered as an
+      // unseparated run of checkboxes. Scoped to their own panel attributes, so
+      // each is inert when its callers are absent and the panel never mounts.
+      KIND_POLICY_PANEL_STYLES,
+      QUIET_HOURS_PANEL_STYLES,
+      SERVER_TIMEZONE_PANEL_STYLES,
       NOTIFICATIONS_PANEL_STYLES,
       // D-187 §6 follow-on — PACKS_PANEL_STYLES / INSTALL_GRANT_PICKER_STYLES /
       // CLI_GRANT_DIALOG_STYLES moved to the `#packs` route bundle
@@ -2168,6 +2207,9 @@ export const bootstrapSettingsRoute = (
   // per D-158 P2b-ii, channel-specific settings per § O-2) can append
   // into the same section host under the same gate.
   let notifications: NotificationsPanelMount | null = null;
+  let serverTimeZone: ServerTimeZonePanelMount | null = null;
+  let quietHours: QuietHoursPanelMount | null = null;
+  let kindPolicy: KindPolicyPanelMount | null = null;
   const canMountNotifications =
     opts.notificationsDescribeCaller !== undefined
     && opts.notificationsSetChannelCaller !== undefined;
@@ -2215,6 +2257,41 @@ export const bootstrapSettingsRoute = (
       // the panel on the mount + retry + post-toggle-refresh cadence.
       ...(opts.subscribe !== undefined ? { subscribe: opts.subscribe } : {}),
     });
+
+    // D-269 step 2 — the per-kind reminder policy. ⛔ Shipped without this, so
+    // the offset D-269 set out to stop being a constant WAS one the owner could
+    // not reach: the rpc, the store and the sweep all worked, at exactly one
+    // value. Placed ABOVE quiet hours, because "what am I told about" is the
+    // question that precedes "and when may it reach me".
+    if (opts.kindPolicyGetCaller !== undefined && opts.kindPolicySetCaller !== undefined) {
+      const kindHost = doc.createElement('div');
+      notifSection.appendChild(kindHost);
+      kindPolicy = mountKindPolicyPanel({
+        host: kindHost,
+        document: doc,
+        runGet: opts.kindPolicyGetCaller,
+        runSet: opts.kindPolicySetCaller,
+        // ⚠ The SAME caller the notifications panel above uses. Narrowed by
+        // `canMountNotifications`, so it is always present inside this block —
+        // the kind panel keeps it optional because its own tests mount it alone.
+        describeChannels: opts.notificationsDescribeCaller!,
+      });
+    }
+
+    // D-269 step 3 — quiet hours joins the section that already pairs approval
+    // and notification, which is the exact pairing D-269 splits into policies.
+    // The section's own note anticipated this: "future surfaces ... can append
+    // into the same section host under the same gate".
+    if (opts.quietHoursGetCaller !== undefined && opts.quietHoursSetCaller !== undefined) {
+      const quietHost = doc.createElement('div');
+      notifSection.appendChild(quietHost);
+      quietHours = mountQuietHoursPanel({
+        host: quietHost,
+        document: doc,
+        runGet: opts.quietHoursGetCaller,
+        runSet: opts.quietHoursSetCaller,
+      });
+    }
 
     registerSubview('notifications', 'Approval & notifications', notifSection);
   }
@@ -2308,6 +2385,12 @@ export const bootstrapSettingsRoute = (
       opts.tlsRenewCaller !== undefined
       || opts.certPinWatcher !== undefined
       || canMountTlsCertificates;
+    // D-269 step 1 — the server's own timezone. Both callers required: the panel
+    // is read-then-write and a read-only half would render a control that
+    // silently does nothing.
+    const canMountServerTimeZone =
+      opts.serverTimeZoneGetCaller !== undefined
+      && opts.serverTimeZoneSetCaller !== undefined;
     const serverHosts = buildSectionTabs(
       serverSection,
       [
@@ -2321,6 +2404,9 @@ export const bootstrapSettingsRoute = (
         ...(hasCertificates
           ? [{ id: 'certificates', label: 'Certificates' }]
           : []),
+        ...(canMountServerTimeZone
+          ? [{ id: 'timezone', label: 'Timezone' }]
+          : []),
         ...(canMountKeyHealth
           ? [{ id: 'key-health', label: 'Key Health' }]
           : []),
@@ -2331,6 +2417,20 @@ export const bootstrapSettingsRoute = (
       'Server sections',
       opts.initialServerTabId,
     );
+
+    if (canMountServerTimeZone) {
+      // D-269 — where the owner states whether this machine travels with them.
+      // Everything with a wall clock resolves through the answer, so it lives
+      // beside the server's other operating parameters rather than under
+      // Account: it is a declared fact ABOUT THE MACHINE's relationship to its
+      // owner, not an inference from either one's clock.
+      serverTimeZone = mountServerTimeZonePanel({
+        host: serverHosts['timezone']!,
+        document: doc,
+        runGet: opts.serverTimeZoneGetCaller as ServerTimeZoneGetCaller,
+        runSet: opts.serverTimeZoneSetCaller as ServerTimeZoneSetCaller,
+      });
+    }
 
     if (canMountExposure) {
       // The Exposure panel's "Connection example" needs the paired server URL,
@@ -2695,7 +2795,7 @@ export const bootstrapSettingsRoute = (
         return 'An account setting is still updating. Leave Settings anyway?';
       }
       if (devicesPage?.hasInFlightWork() === true) {
-        return 'A device revoke is still updating. Leave Settings anyway?';
+        return 'Recued is still shutting a device out. Leave Settings anyway?';
       }
       if (updatesPage?.hasInFlightWork() === true) {
         return 'A server update change is still in progress. Leave Settings anyway?';
@@ -2740,6 +2840,9 @@ export const bootstrapSettingsRoute = (
       // tear down here.
       if (permissions !== null) permissions.dispose();
       if (notifications !== null) notifications.dispose();
+      if (serverTimeZone !== null) serverTimeZone.dispose();
+      if (quietHours !== null) quietHours.dispose();
+      if (kindPolicy !== null) kindPolicy.dispose();
       // D-187 §6 follow-on — Packs / Local tools / cli grant dialog dispose
       // moved to the `#packs` route.
       if (devicesPage !== null) devicesPage.dispose();

@@ -35,7 +35,20 @@ export const bootCronScheduler = (
     handle = createScheduler({
       store: scheduleStore,
       executeDeps,
+      // D-269 — the declared server zone, so `0 9 * * *` means 9am to the
+      // OWNER rather than 9am wherever this process happens to run. Read per
+      // tick, because under `follows_host` it is the host clock and the
+      // scheduler outlives any single reading.
+      ...(ctx.serverTimeZone ? { serverTimeZone: ctx.serverTimeZone } : {}),
       ...(ctx.isVaultUnlocked ? { isVaultUnlocked: ctx.isVaultUnlocked } : {}),
+      // D-266 — the missed-run ask. Cron only: auto-run and housekeeping
+      // have no cron cycle to miss, so there is nothing for them to ask
+      // about. `rebuild()` re-reads it through `ctx`, so a maintenance
+      // swap keeps the seam.
+      ...(ctx.onMissedRuns ? { onMissedRuns: ctx.onMissedRuns } : {}),
+      // D-268 — the failure notice. Same `ctx` re-read as the line above, so a
+      // maintenance rebuild keeps the seam rather than silently dropping it.
+      ...(ctx.onAutomationFailure ? { onAutomationFailure: ctx.onAutomationFailure } : {}),
     });
     handle.start();
   };

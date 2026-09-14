@@ -483,7 +483,7 @@ export const mountReceptionRoute = (
         return {
           ok: false,
           message:
-            'Describe-it needs AI configured on this server — pick a template or build by hand.',
+            'Writing it for you needs AI set up on this server. Pick a template, or make one yourself.',
         };
       }
     },

@@ -142,6 +142,12 @@ describe('pressureSurfaceRows', () => {
     expect(formatPressureBytes(40 * 1024)).toBe('40 KB');
     expect(formatPressureBytes(1.5 * MB)).toBe('1.5 MB');
     expect(formatPressureBytes(5 * GB)).toBe('5.00 GB');
+    // The top tier is TB — a disk-backed surface over 1024 GB used to print
+    // `3072.00 GB`. Pin BOTH sides of the boundary: the last GB value and the
+    // first TB one, so a future tier edit cannot slide the cutover unseen.
+    expect(formatPressureBytes(1023 * GB)).toBe('1023.00 GB');
+    expect(formatPressureBytes(1024 * GB)).toBe('1.00 TB');
+    expect(formatPressureBytes(3 * 1024 * GB)).toBe('3.00 TB');
     // A malformed number must not render as '0 B' — that reads as "empty".
     expect(formatPressureBytes(Number.NaN)).toBe('—');
     expect(formatPressureBytes(-1)).toBe('—');

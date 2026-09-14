@@ -1265,7 +1265,7 @@ const renderChatPlanRow = (
     || (
       payloadAvailable
         ? ''
-        : ' disabled title="Exact reviewed details are required before approval."'
+        : ' disabled title="Recued needs the exact details before you can say yes."'
     );
   const busyClass = busy ? ' is-busy' : '';
   const idAttr = escapeHtml(plan.plan_id);
@@ -1277,9 +1277,9 @@ const renderChatPlanRow = (
     ? ` data-retry-of-plan-id="${escapeHtml(plan.retry_of_plan_id!)}"`
     : '';
   const reason = !payloadAvailable
-    ? 'Exact reviewed details are unavailable after recovery. You can safely reject this plan, but it cannot be approved.'
+    ? 'Recued cannot get the details back. You can safely say no to this, but you cannot say yes.'
     : freshReview
-      ? 'Earlier permission was used; review this action again before approving.'
+      ? 'Your earlier yes was used up. Look at this again before you say yes.'
       : '';
   return `
     <li class="attention-row attention-row--chat-plan"
@@ -1287,7 +1287,7 @@ const renderChatPlanRow = (
       data-plan-id="${idAttr}"${retryAttr}>
       <div class="attention-row-body">
         <h3 class="attention-row-title">${freshReview ? 'Review again: ' : 'Run '}${actionLabel}</h3>
-        <span class="attention-row-meta">${freshReview ? 'Fresh approval' : 'Chat approval'} &middot; ${sourceLabel}</span>
+        <span class="attention-row-meta">${freshReview ? 'A new yes' : 'Chat approval'} &middot; ${sourceLabel}</span>
         ${reason === '' ? '' : `<span class="attention-row-reason">${escapeHtml(reason)}</span>`}
       </div>
       <div class="attention-row-actions">
@@ -1429,29 +1429,29 @@ const renderConnectionRecoveryRow = (
   const identity = `${recovery.kind}/${recovery.name}`;
   const copy = recovery.status === 'auth_failed'
     ? {
-        title: `${recovery.displayName} still needs sign-in attention`,
-        meta: 'Connection recovery · Saved credential rejected',
-        reason: 'A fresh server check still found a rejection. Review the current saved credential.',
-        action: 'Review credential',
+        title: `${recovery.displayName} still needs signing in`,
+        meta: 'Fixing a connection · The saved key was refused',
+        reason: 'Recued checked again, and it was still refused. Look at the key you have saved.',
+        action: 'Look at the key',
       }
     : recovery.status === 'unreachable'
       ? {
           title: `Finish recovery for ${recovery.displayName}`,
-          meta: 'Connection recovery · Provider unreachable',
-          reason: 'The provider could not be reached; this does not prove the saved credential is wrong.',
+          meta: 'Fixing a connection · Recued could not reach them',
+          reason: 'Recued could not reach them. That does not mean your saved key is wrong.',
           action: 'Try check again',
         }
       : recovery.status === 'unknown'
         ? {
             title: `Finish recovery for ${recovery.displayName}`,
-            meta: 'Connection recovery · Check incomplete',
-            reason: 'The server could not complete an authoritative check. Reconnect, then try once more.',
+            meta: 'Fixing a connection · The check did not finish',
+            reason: 'Your server could not finish checking. Reconnect, then try again.',
             action: 'Try check again',
           }
         : {
             title: `Finish recovery for ${recovery.displayName}`,
-            meta: 'Connection recovery · Check required',
-            reason: 'The earlier recovery stop is closed. Check the credential currently saved.',
+            meta: 'Fixing a connection · Needs a check',
+            reason: 'That is sorted now. Check the key you have saved.',
             action: 'Check connection',
           };
   return `
@@ -1484,17 +1484,17 @@ const formatInactiveRecoveryObservation = (
   now: number,
 ): string => {
   const elapsed = Math.max(0, now - observedAt);
-  if (elapsed < 60_000) return 'Last confirmed while active just now';
+  if (elapsed < 60_000) return 'Last checked while in use, just now';
   const minutes = Math.floor(elapsed / 60_000);
   if (minutes < 60) {
-    return `Last confirmed while active ${minutes} ${minutes === 1 ? 'minute' : 'minutes'} ago`;
+    return `Last checked while in use, ${minutes} ${minutes === 1 ? 'minute' : 'minutes'} ago`;
   }
   const hours = Math.floor(minutes / 60);
   if (hours < 24) {
-    return `Last confirmed while active ${hours} ${hours === 1 ? 'hour' : 'hours'} ago`;
+    return `Last checked while in use, ${hours} ${hours === 1 ? 'hour' : 'hours'} ago`;
   }
   const days = Math.floor(hours / 24);
-  return `Last confirmed while active ${days} ${days === 1 ? 'day' : 'days'} ago`;
+  return `Last checked while in use, ${days} ${days === 1 ? 'day' : 'days'} ago`;
 };
 
 const renderInactiveConnectionRecoveryRow = (
@@ -1506,8 +1506,8 @@ const renderInactiveConnectionRecoveryRow = (
     data-server-profile-id="${escapeHtml(hint.serverProfileId)}"
     ${ATTENTION_INACTIVE_PROFILE_RECOVERY_ATTR}>
     <div class="attention-row-body">
-      <h3 class="attention-row-title">${escapeHtml(`${hint.serverProfileLabel} may still need connection recovery`)}</h3>
-      <span class="attention-row-meta">${escapeHtml(`Inactive server profile · ${formatInactiveRecoveryObservation(hint.observedAt, now)}`)}</span>
+      <h3 class="attention-row-title">${escapeHtml(`${hint.serverProfileLabel} may still have a connection to fix`)}</h3>
+      <span class="attention-row-meta">${escapeHtml(`A server you are not using · ${formatInactiveRecoveryObservation(hint.observedAt, now)}`)}</span>
       <span class="attention-row-reason">This is a last-observed reminder, not a live result. Open Account to review the profile switch. After it succeeds, Recued will recheck before revealing connection details or actions.</span>
     </div>
     <div class="attention-row-actions">
@@ -1515,7 +1515,7 @@ const renderInactiveConnectionRecoveryRow = (
         class="attention-row-action attention-row-action--link"
         data-action="review-inactive-connection-recovery"
         data-server-profile-id="${escapeHtml(hint.serverProfileId)}"
-        aria-label="${escapeHtml(`Review the profile switch to recheck connection recovery on ${hint.serverProfileLabel}`)}">
+        aria-label="${escapeHtml(`Switch servers to check the connections on ${hint.serverProfileLabel}`)}">
         Review switch
       </button>
     </div>
@@ -1542,15 +1542,15 @@ const renderConnectionRecoveryReview = (
       : review.recoveryCount === 0
         ? `${review.serverProfileLabel} is clear`
         : review.recoveryCount === 1
-          ? `A fresh check found 1 connection recovery`
-          : `A fresh check found ${review.recoveryCount} connection recoveries`;
+          ? `A new check found 1 connection to fix`
+          : `A fresh check found ${review.recoveryCount} connections to fix`;
   const detail = review.phase === 'checking'
-    ? 'Recued is asking the selected server now. The inactive-profile reminder is not being treated as current.'
+    ? 'Recued is asking your server now. It is not trusting the old reminder.'
     : review.phase === 'retryable'
-      ? 'The selected server did not return a valid recovery list. Reconnect or retry here; no stale connection details were shown.'
+      ? 'Your server did not send back a proper list. Reconnect, or try again here. Recued showed you nothing out of date.'
       : review.recoveryCount === 0
-        ? 'A fresh authoritative check found no unresolved connection recovery. The earlier reminder has been retired.'
-        : 'These connection rows came from the selected server’s fresh authoritative list. The earlier inactive reminder has been replaced.';
+        ? 'A new check found nothing left to fix. The old reminder is gone.'
+        : 'These came from your server’s own up-to-date list. They replace the old reminder.';
   return `
     <div class="attention-plan-resolution attention-connection-recovery-review"
       role="status" aria-live="polite" aria-atomic="true"
@@ -1678,8 +1678,8 @@ const serverControlOutcomePresentation = (
     : 'continuing';
   const title = currentState !== undefined
     ? currentState.state === 'paused'
-      ? 'Current server state: paused'
-      : 'Current server state: running'
+      ? 'Your server right now: paused'
+      : 'Your server right now: running'
     : outcome.phase === 'pending'
     ? `${action} was still pending`
     : outcome.phase === 'accepted'
@@ -1687,48 +1687,48 @@ const serverControlOutcomePresentation = (
       : outcome.phase === 'confirmed'
         ? `${action} completed`
         : outcome.phase === 'reconnected'
-          ? 'Restart was not fully confirmed'
+          ? 'Recued is not sure the restart finished'
           : outcome.phase === 'superseded'
-            ? `Server state changed after ${action}`
+            ? `The server changed after ${action}`
             : outcome.phase === 'failed'
               ? `${action} did not complete`
               : `${action} was not confirmed`;
   const outcomeSentence = outcome.phase === 'pending'
-    ? `The last receipt from ${value.serverProfileLabel} had not confirmed the ${action} request.`
+    ? `The last answer from ${value.serverProfileLabel} had not confirmed the ${action} request.`
     : outcome.phase === 'accepted'
-      ? `${value.serverProfileLabel} accepted Restart, but that receipt did not yet confirm a fresh process.`
+      ? `${value.serverProfileLabel} took the restart, but did not say it had actually started again.`
       : outcome.phase === 'confirmed'
         ? outcome.action === 'restart'
-          ? `${value.serverProfileLabel} confirmed Restart with a fresh process status.`
+          ? `${value.serverProfileLabel} restarted, and said so.`
           : `${value.serverProfileLabel} confirmed ${action}.`
         : outcome.phase === 'reconnected'
-          ? `${value.serverProfileLabel} responded after Restart was accepted, but that receipt did not confirm a fresh process.`
+          ? `${value.serverProfileLabel} answered after taking the restart, but did not say it had actually started again.`
           : outcome.phase === 'superseded'
-            ? `${action} completed, but a newer status from ${value.serverProfileLabel} reports a different execution state.`
+            ? `${action} finished, but a newer answer from ${value.serverProfileLabel} says something different is happening.`
             : outcome.phase === 'failed'
               ? `${value.serverProfileLabel} did not complete ${action}.`
-              : `The last receipt from ${value.serverProfileLabel} did not provide enough current state to confirm ${action}.`;
+              : `The last answer from ${value.serverProfileLabel} did not say enough for Recued to be sure about ${action}.`;
   const latestState = outcome.currentState === 'paused'
-    ? 'execution is paused'
+    ? 'work is paused'
     : outcome.currentState === 'running'
-      ? 'execution is running'
+      ? 'work is running'
       : outcome.currentState === 'restarting'
         ? 'the server is restarting'
         : null;
   const stateSentence = latestState === null
     ? ''
-    : ` Latest known state: ${latestState}.`;
+    : ` Last known state: ${latestState}.`;
   const reconciledStateSentence = currentState === undefined
     ? null
-    : `The exact review received a fresh status from ${value.serverProfileLabel} reporting that execution was ${currentState.state}.`;
+    : `Recued got a new answer from ${value.serverProfileLabel} saying that work was ${currentState.state}.`;
   const attributionBoundary = outcome.action === 'restart'
-    ? `This current state does not prove the earlier Restart request started a fresh process; that receipt remains historical.`
-    : `This establishes the current state without claiming the earlier ${action} request caused it.`;
+    ? `This says how things are now. It does not prove the earlier Restart actually started the server again.`
+    : `This says how things are now. It does not claim the earlier ${action} caused it.`;
   const detail = currentState !== undefined
     ? `${reconciledStateSentence} ${attributionBoundary} It does not verify ${value.areaLabel}. Check ${value.areaLabel} once against this current baseline before ${landingActionGerund}; ${action} will not replay.`
     : unresolved
       ? `${outcomeSentence}${stateSentence} Review ${value.serverProfileLabel} again to compare its current live state with this receipt or deliberately choose a corrective action. You can verify ${value.areaLabel} instead when ready; ${action} will not replay.`
-      : `${outcomeSentence}${stateSentence} This server result does not verify ${value.areaLabel}. Check ${value.areaLabel} once against the latest server state before ${landingActionGerund}; ${action} will not replay.`;
+      : `${outcomeSentence}${stateSentence} This answer from the server does not prove ${value.areaLabel}. Check ${value.areaLabel} once against the latest server state before ${landingActionGerund}; ${action} will not replay.`;
   return {
     title,
     detail,
@@ -1741,7 +1741,7 @@ const serverControlOutcomePresentation = (
       ? `Latest review of ${value.serverProfileLabel} found execution ${currentState.state}. The earlier ${action} result remains historical. Run one fresh ${value.areaLabel} check before ${landingActionGerund}; ${action} will not replay.`
       : unresolved
       ? `${title} on ${value.serverProfileLabel}. Review that exact server again, or verify ${value.areaLabel} instead before ${landingActionGerund}. ${action} will not replay.`
-      : `${title} on ${value.serverProfileLabel}. This server result does not verify ${value.areaLabel}. Run one fresh ${value.areaLabel} check before ${landingActionGerund}; ${action} will not replay.`,
+      : `${title} on ${value.serverProfileLabel}. This answer from the server does not prove ${value.areaLabel}. Run one fresh ${value.areaLabel} check before ${landingActionGerund}; ${action} will not replay.`,
     primaryLabel: `Verify ${value.areaLabel} & ${landingAction}`,
     primaryAriaLabel: `Verify ${value.areaLabel} on ${value.serverProfileLabel}, then ${landingAction}; ${action} will not replay`,
     unresolved,
@@ -1804,62 +1804,62 @@ const renderRecoveryIntentContinuation = (
   const title = value.phase === 'checking'
     ? `Rechecking ${value.areaLabel}…`
     : waitingForConnection
-      ? `Waiting to recheck ${value.areaLabel}`
+      ? `Waiting to check ${value.areaLabel}`
       : awaitingReviewOutcome
         ? serverOutcome?.title
-          ?? `What happened after reviewing ${reviewedTargetLabel}?`
+          ?? `What happened after you looked at ${reviewedTargetLabel}?`
       : verificationReady
         ? deferredVerification
-          ? `${value.areaLabel} check kept for later`
+          ? `${value.areaLabel} check saved for later`
           : `Finish checking ${value.areaLabel}`
       : verificationInterrupted
-        ? 'Verification was interrupted'
+        ? 'The check was cut short'
       : verificationHandoff
         ? canReviewServer
           ? value.interruptionReason === 'connection'
-            ? 'Review the connection before another check'
-            : 'Verification keeps getting interrupted'
+            ? 'Look at the connection before checking again'
+            : 'The check keeps getting cut short'
           : boundedAreaReviewAvailable
               ? `Review ${value.areaLabel} before another check`
-              : 'Verification keeps getting interrupted'
+              : 'The check keeps getting cut short'
       : value.phase === 'failed'
         ? value.remediation === 'escalated'
-          ? `Still can’t verify ${value.areaLabel}`
+          ? `Recued still cannot check ${value.areaLabel}`
           : value.remediation === 'connection'
           ? `Reconnect before returning to ${value.areaLabel}`
           : value.remediation === 'review'
             ? `Review ${value.areaLabel} before ${landingActionGerund}`
-            : `${value.areaLabel} couldn’t be refreshed`
+            : `${value.areaLabel} could not be brought up to date`
         : value.intent === 'choose_again'
           ? `Return to ${value.areaLabel} and choose again`
           : `Finish returning to ${value.areaLabel}`;
   const detail = value.phase === 'checking'
-    ? `Recued is checking ${value.areaLabel} on ${value.serverProfileLabel} against the latest server state. You can close Attention; this saved return stays available until the check finishes.`
+    ? `Recued is checking ${value.areaLabel} on ${value.serverProfileLabel} against what your server says now. You can close this. It stays here until the check finishes.`
     : waitingForConnection
-      ? `Recued will retry the exact current-state check when ${value.serverProfileLabel} reconnects, then return you to the exact place to ${landingAction} in ${value.areaLabel}. No action or confirmation will replay.`
+      ? `Recued will check again when ${value.serverProfileLabel} reconnects, then bring you back to ${landingAction} in ${value.areaLabel}. No action or confirmation will replay.`
       : awaitingReviewOutcome
         ? serverOutcome?.detail
-          ?? `Recued won’t assume the direct review fixed the issue. If it looks resolved, run one fresh current-state check before returning to the exact place to ${landingAction} in ${value.areaLabel}. If it is still blocked, keep this reminder for later. No action or confirmation will replay.`
+          ?? `Recued will not assume your look at it fixed anything. If it seems sorted, run one more check before going back to ${landingAction} in ${value.areaLabel}. If it is still blocked, keep this reminder for later. No action or confirmation will replay.`
       : verificationReady
         ? deferredVerification
-          ? `This exact check is saved quietly in this tab. Before ${landingActionGerund}, run one fresh ${value.areaLabel} check on ${value.serverProfileLabel}; or leave it here until it expires. Recued kept only the broad return and closed check—not the server action, receipt, current state, credentials, or provider detail. Nothing will run or replay on its own.`
-          : `The server re-review finished, but the final ${value.areaLabel} check did not. For privacy, Recued restored only where to return and that you wanted to ${landingAction}—not the server action, receipt, current state, or credentials. Check ${value.areaLabel} once on ${value.serverProfileLabel} when you’re ready, or choose Keep for later. Nothing will replay.`
+          ? `This check is saved quietly in this tab. Before ${landingActionGerund}, run one fresh ${value.areaLabel} check on ${value.serverProfileLabel}; or leave it here until it expires. Recued kept only the broad return and closed check—not the server action, receipt, current state, credentials, or provider detail. Nothing will run or replay on its own.`
+          : `The server finished looking, but the last ${value.areaLabel} check did not. To keep things private, Recued only remembered where to go back to, and that you wanted to ${landingAction}—not the server action, receipt, current state, or credentials. Check ${value.areaLabel} once on ${value.serverProfileLabel} when you are ready, or choose Keep for later. Nothing runs again.`
       : verificationInterrupted
         ? `Recued did not finish checking ${value.areaLabel} after your review of ${reviewedTargetLabel}. Your “Looks resolved” outcome and exact return are still saved. Retry verification when ${value.serverProfileLabel} is available${canReviewInterruptedTarget ? `, or review ${reviewedTargetLabel} again` : ''}. It won’t retry on its own; no action or confirmation will replay.`
       : verificationHandoff
         ? boundedReviewTarget === null
-          ? `Two verification attempts did not finish safely on ${value.serverProfileLabel}, so Recued stopped the retry loop. This view cannot open a safe review target. Keep the saved return for later, or stop recovery if you no longer need it. No action or confirmation will replay.`
-          : `Two verification attempts did not finish safely on ${value.serverProfileLabel}, so Recued stopped the retry loop. Review ${boundedReviewTarget}, then explicitly confirm the outcome before another check. Your exact return stays saved; no action or confirmation will replay.`
+          ? `Two checks did not finish safely on ${value.serverProfileLabel}, so Recued stopped trying. There is nothing safe to open from here. Keep it for later, or stop altogether if you no longer need it. Nothing runs again.`
+          : `Two checks did not finish safely on ${value.serverProfileLabel}, so Recued stopped trying. Look at ${boundedReviewTarget}, then say what happened before checking again. Recued keeps your place, and nothing runs again.`
       : value.phase === 'failed'
         ? value.remediation === 'escalated'
           ? escalationReviewTarget === null
-            ? 'Two recovery attempts couldn’t finish safely in this tab, so Recued stopped the retry loop. Close Attention to keep this saved return for later, or stop recovery if you no longer need it. No action or confirmation will replay.'
-            : `Two recovery attempts couldn’t finish safely in this tab, so Recued stopped the retry loop. Review ${escalationReviewTarget} directly before ${landingActionGerund}. Close Attention to keep this saved return for later; no action or confirmation will replay.`
+            ? 'Two attempts did not finish safely in this tab, so Recued stopped trying. Close this to keep it for later, or stop altogether if you no longer need it. Nothing runs again.'
+            : `Two attempts did not finish safely in this tab, so Recued stopped trying. Look at ${escalationReviewTarget} directly before ${landingActionGerund}. Close Attention to keep this saved return for later; no action or confirmation will replay.`
           : value.remediation === 'connection'
-          ? `${value.serverProfileLabel} wasn’t connected when Recued checked ${value.areaLabel}. Review that connection so Recued can recheck and return you to the exact place to ${landingAction}.`
+          ? `${value.serverProfileLabel} was not connected when Recued checked ${value.areaLabel}. Review that connection so Recued can recheck and return you to the exact place to ${landingAction}.`
           : value.remediation === 'review'
-            ? `${value.areaLabel} does not expose a safe background refresh from this view. Open its current status instead; your work wasn’t changed and the earlier confirmation won’t repeat.`
-            : `Recued couldn’t confirm that ${value.areaLabel} is current. Retry its route-owned check, or review the area as it is now. Your work wasn’t changed and the earlier confirmation won’t repeat.`
+            ? `${value.areaLabel} cannot be checked quietly from here. Open it and look instead. Your work was not changed, and nothing runs again.`
+            : `Recued could not check that ${value.areaLabel} is up to date. Try its own check again, or just go and look. Your work was not changed, and nothing runs again.`
         : `Recued paused this return on ${value.serverProfileLabel} so it wouldn’t interrupt you. Recheck the current view when you’re ready; the earlier confirmation won’t repeat.`;
   const reviewAction = (primary: boolean): string => canReview
     ? `<button type="button"
@@ -1882,7 +1882,7 @@ const renderRecoveryIntentContinuation = (
           class="attention-row-action${primary ? ' attention-row-action--approve' : ''}"
           data-action="remediate-recovery-intent-connection"
           aria-label="${escapeHtml(`Review the ${value.serverProfileLabel} connection before returning to ${value.areaLabel}`)}">
-          Review connection
+          Look at the connection
         </button>`
       : '';
   const serverReviewAction = (primary: boolean): string =>
@@ -1959,7 +1959,7 @@ const renderRecoveryIntentContinuation = (
           class="attention-row-action${primary ? ' attention-row-action--approve' : ''}"
           data-action="review-recovery-intent-server"
           aria-label="${escapeHtml(`Review the ${value.serverProfileLabel} connection before another verification of ${value.areaLabel}`)}">
-          Review connection
+          Look at the connection
         </button>`
       : '';
   const boundedVerificationActions = (): string => {
@@ -2091,7 +2091,7 @@ const renderRecoveryIntentExpiryHandoff = (
               ? `${value.serverProfileLabel} needs connection review`
               : `${value.areaLabel} needs direct review`
             : retry
-              ? `${value.areaLabel} couldn’t be refreshed`
+              ? `${value.areaLabel} could not be brought up to date`
               : `Saved ${value.areaLabel} check expired`;
   const detail = checking
     ? `Recued is asking the current ${value.areaLabel} view for fresh information on ${value.serverProfileLabel}. The expired exact return remains removed, and no prior action or receipt will replay.`
@@ -2107,13 +2107,13 @@ const renderRecoveryIntentExpiryHandoff = (
             : `The one-time current-area check could not confirm fresh information. No more check will run from this reminder. Inspect current ${value.areaLabel} directly, or close the review.`
           : handoff
             ? value.diagnosisTarget === 'server'
-              ? `Recued stopped after two connection-blocked checks. Review the exact active server in Account before deciding what to do next. Opening it will not retry ${value.areaLabel}, restore the expired return, or replay an action.`
+              ? `Recued stopped after two connection-blocked checks. Review the exact active server in Account before you decide what to do. Opening it will not retry ${value.areaLabel}, restore the expired return, or replay an action.`
               : `Recued stopped after two unsuccessful checks. Open current ${value.areaLabel} to inspect its latest status or error directly. This will not restore the expired return or separately replay its saved check.`
             : retry
               ? value.retryReason === 'offline'
-                ? `${value.serverProfileLabel} is offline, so Recued did not check ${value.areaLabel} again. Reconnect, then retry when you’re ready. The expired exact return remains removed and nothing will run automatically.`
+                ? `${value.serverProfileLabel} is offline, so Recued did not check ${value.areaLabel} again. Reconnect, then retry when you are ready. The expired exact return remains removed and nothing will run automatically.`
                 : value.retryReason === 'interrupted'
-                  ? `The current ${value.areaLabel} check ended before Recued could confirm fresh information on ${value.serverProfileLabel}. Retry the broad area when you’re ready. The expired exact return remains removed and nothing will replay automatically.`
+                  ? `The current ${value.areaLabel} check ended before Recued could confirm fresh information on ${value.serverProfileLabel}. Retry the broad area when you are ready. The expired exact return remains removed and nothing will replay automatically.`
                   : `Recued couldn’t confirm ${value.areaLabel} is current on ${value.serverProfileLabel}. Try the current area again when you’re ready; Recued will ask it for fresh information. The expired exact return remains removed, and no prior action or receipt will replay.`
               : `The 30-minute exact return expired, so Recued discarded the prior intent and unfinished check. You can review ${value.areaLabel} as it is now on ${value.serverProfileLabel}. Nothing will run automatically, and no prior action or receipt will replay.`;
   const actionLabel = outcome
@@ -2344,8 +2344,8 @@ const renderUnifiedPopover = (state: {
                 ? `Current ${state.recoveryIntentExpiryHandoff.areaLabel} could not be confirmed twice; review the exact active server.`
                 : `Current ${state.recoveryIntentExpiryHandoff.areaLabel} could not be confirmed twice; review the area directly.`
             : state.recoveryIntentExpiryHandoff.phase === 'retry'
-              ? `Current ${state.recoveryIntentExpiryHandoff.areaLabel} could not be confirmed; retry when you’re ready.`
-              : `A saved ${state.recoveryIntentExpiryHandoff.areaLabel} check expired; review the current area when you’re ready.`
+              ? `Current ${state.recoveryIntentExpiryHandoff.areaLabel} could not be confirmed; retry when you are ready.`
+              : `A saved ${state.recoveryIntentExpiryHandoff.areaLabel} check expired; review the current area when you are ready.`
         : deferredRecoveryIntent
             && state.recoveryIntentContinuation !== null
             && state.blockingCount === 0
@@ -2380,8 +2380,8 @@ const renderUnifiedPopover = (state: {
                   ? `${state.recoveryIntentContinuation.areaLabel} is waiting on its server connection.`
                   : state.recoveryIntentContinuation.remediation === 'review'
                     ? `${state.recoveryIntentContinuation.areaLabel} needs a current-area review.`
-                    : `${state.recoveryIntentContinuation.areaLabel} couldn’t be refreshed; review it or try again.`
-                : `A paused return to ${state.recoveryIntentContinuation.areaLabel} is saved for when you’re ready.`
+                    : `${state.recoveryIntentContinuation.areaLabel} could not be brought up to date; review it or try again.`
+                : `A paused return to ${state.recoveryIntentContinuation.areaLabel} is saved for when you are ready.`
           : state.blockingCount > 0
             ? `${state.blockingCount} item${state.blockingCount === 1 ? ' is' : 's are'} waiting for you.`
             : state.loading
@@ -3162,11 +3162,11 @@ export const mountApprovalAttentionPopover = (
               ? `Verification of ${recoveryIntentContinuation.areaLabel} was interrupted. It won’t retry on its own. Retry verification${interruptedReviewAgain}, or stop recovery.`
             : recoveryIntentContinuation.phase === 'verification_handoff'
               ? opts.onReviewRecoveryIntentServer !== undefined
-                ? `Verification of ${recoveryIntentContinuation.areaLabel} was interrupted twice. Recued stopped the retry loop. Review the ${recoveryIntentContinuation.serverProfileLabel} connection${recoveryIntentContinuation.reviewTarget === 'area' && opts.onReviewRecoveryIntentContinuation !== undefined ? ` or ${recoveryIntentContinuation.areaLabel}` : ''}, or stop recovery.`
+                ? `Verification of ${recoveryIntentContinuation.areaLabel} was cut short twice. Recued stopped trying. Look at the ${recoveryIntentContinuation.serverProfileLabel} connection${recoveryIntentContinuation.reviewTarget === 'area' && opts.onReviewRecoveryIntentContinuation !== undefined ? ` or ${recoveryIntentContinuation.areaLabel}` : ''}, or stop recovery.`
                 : recoveryIntentContinuation.reviewTarget === 'area'
                     && opts.onReviewRecoveryIntentContinuation !== undefined
-                  ? `Verification of ${recoveryIntentContinuation.areaLabel} was interrupted twice. Recued stopped the retry loop. Review ${recoveryIntentContinuation.areaLabel}, or stop recovery.`
-                  : `Verification of ${recoveryIntentContinuation.areaLabel} was interrupted twice. Recued stopped the retry loop. Keep the saved return for later, or stop recovery.`
+                  ? `Verification of ${recoveryIntentContinuation.areaLabel} was cut short twice. Recued stopped trying. Look at ${recoveryIntentContinuation.areaLabel}, or stop recovery.`
+                  : `Verification of ${recoveryIntentContinuation.areaLabel} was cut short twice. Recued stopped trying. Keep it for later, or stop altogether.`
             : recoveryIntentContinuation.phase === 'failed'
               ? recoveryIntentContinuation.remediation === 'escalated'
                 ? `Recued stopped retrying ${recoveryIntentContinuation.areaLabel} in this tab. It won’t retry on its own.`
@@ -3174,8 +3174,8 @@ export const mountApprovalAttentionPopover = (
                 ? `${recoveryIntentContinuation.areaLabel} needs ${recoveryIntentContinuation.serverProfileLabel} connected. Review the connection to retry the exact return after reconnect.`
                 : recoveryIntentContinuation.remediation === 'review'
                   ? `${recoveryIntentContinuation.areaLabel} cannot be safely rechecked here. Review the current area before ${recoveryIntentContinuation.intent === 'choose_again' ? 'choosing again' : 'continuing'}.`
-                  : `${recoveryIntentContinuation.areaLabel} couldn’t be refreshed. Review the area or try again.`
-              : `A paused return to ${recoveryIntentContinuation.areaLabel} is saved for when you’re ready.`,
+                  : `${recoveryIntentContinuation.areaLabel} could not be brought up to date. Review the area or try again.`
+              : `A paused return to ${recoveryIntentContinuation.areaLabel} is saved for when you are ready.`,
         }
       : recoveryExcursionReturn !== null
         ? {
@@ -3212,11 +3212,11 @@ export const mountApprovalAttentionPopover = (
                   ? `The one-time current ${recoveryIntentExpiryHandoff.areaLabel} check did not confirm fresh information. No more check will run from this reminder.`
                 : recoveryIntentExpiryHandoff.phase === 'handoff'
                   ? recoveryIntentExpiryHandoff.diagnosisTarget === 'server'
-                    ? `Recued stopped after two unsuccessful ${recoveryIntentExpiryHandoff.areaLabel} checks. Review the exact ${recoveryIntentExpiryHandoff.serverProfileLabel} connection; nothing will retry automatically.`
-                    : `Recued stopped after two unsuccessful ${recoveryIntentExpiryHandoff.areaLabel} checks. Review the current area directly; nothing will retry automatically.`
+                    ? `Recued stopped after two unsuccessful ${recoveryIntentExpiryHandoff.areaLabel} checks. Review the exact ${recoveryIntentExpiryHandoff.serverProfileLabel} connection; Nothing will run again by itself.`
+                    : `Recued stopped after two unsuccessful ${recoveryIntentExpiryHandoff.areaLabel} checks. Review the current area directly; Nothing will run again by itself.`
                 : recoveryIntentExpiryHandoff.phase === 'retry'
                   ? recoveryIntentExpiryHandoff.retryReason === 'offline'
-                    ? `${recoveryIntentExpiryHandoff.serverProfileLabel} is offline, so current ${recoveryIntentExpiryHandoff.areaLabel} was not checked. Reconnect, then retry when you’re ready.`
+                    ? `${recoveryIntentExpiryHandoff.serverProfileLabel} is offline, so current ${recoveryIntentExpiryHandoff.areaLabel} was not checked. Reconnect, then retry when you are ready.`
                     : `Current ${recoveryIntentExpiryHandoff.areaLabel} could not be confirmed on ${recoveryIntentExpiryHandoff.serverProfileLabel}. Retry when you’re ready; nothing will run automatically.`
                   : `A saved ${recoveryIntentExpiryHandoff.areaLabel} check expired. Review the current area when you’re ready; nothing will run automatically.`,
             }
@@ -3243,7 +3243,7 @@ export const mountApprovalAttentionPopover = (
         ? null
         : {
             error: classifyRpcError(chatPlanState.error),
-            label: "Couldn't refresh Chat approvals",
+            label: "Recued could not reload the Chat approvals",
           };
     // Tier 2 — connection-caused failures defer to the global offline banner
     // (keep the last-known counts; show nothing here) instead of stacking 3-5
@@ -3507,7 +3507,7 @@ export const mountApprovalAttentionPopover = (
         render();
       } catch (err) {
         if (disposed || gen !== approvalSubscribeGeneration) return;
-        approvalLiveError = { error: classifyRpcError(err), label: 'Live approval updates unavailable' };
+        approvalLiveError = { error: classifyRpcError(err), label: 'Approvals are not updating live' };
         render();
       }
     })();
@@ -3868,7 +3868,7 @@ export const mountApprovalAttentionPopover = (
       if (result === 'missing') recoveryIntentContinuation = null;
       recoveryIntentActionError = result === 'missing'
         ? 'That paused return no longer matches this server or work area. The reminder was retired.'
-        : 'That reminder couldn’t be confirmed right now. It remains here and no work was changed; try again or stop recovery when you’re ready.';
+        : 'That reminder couldn’t be confirmed right now. It remains here and no work was changed; try again or stop recovery when you are ready.';
       render();
       focusAttentionDialog();
       return;
@@ -3993,7 +3993,7 @@ export const mountApprovalAttentionPopover = (
       if (result === 'missing') recoveryIntentContinuation = null;
       recoveryIntentActionError = result === 'missing'
         ? 'That paused return no longer matches this server or work area. The reminder was retired.'
-        : 'That server connection can’t be reviewed right now. The saved return is unchanged; review the connection again or dismiss it when you’re ready.';
+        : 'That server connection can’t be reviewed right now. The saved return is unchanged; review the connection again or dismiss it when you are ready.';
       render();
       focusAttentionDialog();
       return;
@@ -4085,8 +4085,8 @@ export const mountApprovalAttentionPopover = (
       recoveryIntentActionError = result === 'missing'
         ? 'That paused return no longer matches this server or work area. The reminder was retired.'
         : canReviewAreaInstead
-          ? `That server can’t be opened from Account right now. The saved return is unchanged; review ${continuation.areaLabel} instead, or stop recovery when you’re ready.`
-          : 'That server can’t be opened from Account right now. The saved return is unchanged; keep it for later, or stop recovery when you’re ready.';
+          ? `That server can’t be opened from Account right now. The saved return is unchanged; review ${continuation.areaLabel} instead, or stop recovery when you are ready.`
+          : 'That server can’t be opened from Account right now. The saved return is unchanged; keep it for later, or stop recovery when you are ready.';
       render();
       focusAttentionDialog();
       return;

@@ -1,3 +1,4 @@
+import { resolveServerTimeZone } from '@recued/contracts';
 import type { UpstreamMergeRegistry } from '../data/vendor-boot-registry.js';
 import type { EventBus } from '../events/bus.js';
 import type { BackgroundServiceRegistry } from '../composition/bin/wire-background-services.js';
@@ -35,6 +36,15 @@ export type HousekeepingStartupCollectionContext =
 
 export interface StartHousekeepingStartupOptions {
   readonly storage: HousekeepingStartupStorageContext;
+  /** D-269 step 4 — called once when quiet hours ends, with a digest recomputed
+   *  from anchor rows. Threaded from the caller, which owns the notification
+   *  block. Absent ⇒ no card. */
+  /** D-269 — the booking / calendar reminder sink, threaded from the caller
+   *  that owns the notification block. */
+  readonly notifyReminder?: (message: { title: string; text: string }) => void;
+  readonly onQuietHoursReleased?: (
+    digest: import('@recued/contracts').QuietHoursDigest,
+  ) => void;
   readonly app: HousekeepingStartupAppContext;
   readonly collection: HousekeepingStartupCollectionContext;
   readonly upstreamMergeRegistry: UpstreamMergeRegistry | undefined;
@@ -86,6 +96,13 @@ export const startHousekeepingStartup = async (
   const vendorRefs = await composeVendorSubstrateContext({
     app,
     upstreamMergeRegistry: options.upstreamMergeRegistry,
+    // D-269 step 1 — the owner's declared server zone. ⚠ Read PER CALL, not
+    // captured: under `follows_host` the answer is the host clock, which moves
+    // with the machine, and a reconciliation cycle outlives any one reading.
+    prefsTimezone: (): string | null => resolveServerTimeZone(
+      storage.serverTimeZoneStore.read(),
+      Intl.DateTimeFormat().resolvedOptions().timeZone,
+    ),
     auditLog: storage.auditLog,
     eventBus: storage.eventBus,
     backgroundServices: options.backgroundServices,
@@ -99,6 +116,10 @@ export const startHousekeepingStartup = async (
   });
 
   return startServeHousekeepingScheduler({
+    ...(options.notifyReminder ? { notifyReminder: options.notifyReminder } : {}),
+    ...(options.onQuietHoursReleased
+      ? { onQuietHoursReleased: options.onQuietHoursReleased }
+      : {}),
     storage,
     app,
     collection: options.collection,

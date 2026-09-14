@@ -66,7 +66,7 @@ const item = (over: Partial<InboxItem> = {}): InboxItem => ({
     subtitle: 'Intake form request',
     when: NOW + 2 * 60 * 60 * 1000,
   },
-  proposed_action: over.proposed_action ?? 'Create a commitment',
+  proposed_action: over.proposed_action ?? 'Make a promise',
   status: over.status ?? 'pending',
   ...(over.attachment !== undefined ? { attachment: over.attachment } : {}),
 });
@@ -197,9 +197,9 @@ describe('D-173 P6 reception inbox - projection model', () => {
       scan_status: 'pending',
       approve_blocked: true,
       requires_acknowledgement: false,
-      warning: 'Attachment is being scanned…',
+      warning: 'Checking the file for viruses…',
     });
-    expect(detail.approve_disabled_reason).toBe('Attachment is being scanned.');
+    expect(detail.approve_disabled_reason).toBe('Recued is checking the file for viruses.');
     expect(detail.immutable_arg_keys).toEqual(['immutable_arg']);
   });
 
@@ -409,12 +409,12 @@ describe('computeReceptionInboxOverlapLabel — D-173 D7', () => {
       computeReceptionInboxOverlapLabel(
         overlap({ count: 1, calendars_read: 1, unreadable_calendars: 1 }),
       ),
-    ).toBe('At least 1 other booking then — 1 calendar couldn’t be read');
+    ).toBe('At least 1 other booking then — 1 calendar could not be read');
     expect(
       computeReceptionInboxOverlapLabel(
         overlap({ count: 4, calendars_read: 1, unreadable_calendars: 2 }),
       ),
-    ).toBe('At least 4 other bookings then — 2 calendars couldn’t be read');
+    ).toBe('At least 4 other bookings then — 2 calendars could not be read');
   });
 
   it('a partial read NEVER claims "nothing else" — the unread calendar is where the clash hides', () => {
@@ -424,6 +424,6 @@ describe('computeReceptionInboxOverlapLabel — D-173 D7', () => {
       computeReceptionInboxOverlapLabel(
         overlap({ count: 0, calendars_read: 0, unreadable_calendars: 1 }),
       ),
-    ).toBe('At least 0 other bookings then — 1 calendar couldn’t be read');
+    ).toBe('At least 0 other bookings then — 1 calendar could not be read');
   });
 });

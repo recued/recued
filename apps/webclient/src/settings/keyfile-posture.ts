@@ -70,11 +70,11 @@ export interface KeyfilePostureView {
  *      recover-keyfile", which reads cheaper than it is. This surface is a
  *      page, so it has the room. */
 const UNSEALED_REMEDIATION =
-  'Sealing is chosen once, at install. To change it now: set '
+  'You choose this once, when you install. To change it now, set '
   + 'RECUED_IDENTITY_PASSPHRASE on the server, then run ‘recued recover-keyfile’ '
-  + 'with your 24-word recovery key. That mints a new server identity — every '
-  + 'paired device, this one included, has to pair again, your publisher '
-  + 'identity changes, and the account binding is lost. Your data is untouched.';
+  + 'with your 24 words. That gives your server a new identity, so every '
+  + 'paired device, including this one, has to pair again. The key you sign Recipes with '
+  + 'changes too, and your server is unhooked from your account. Your things are untouched.';
 
 /** Project a posture into the words a reader sees. */
 export const describeKeyfilePosture = (
@@ -92,8 +92,8 @@ export const describeKeyfilePosture = (
       // error code reach a user), so it is a finished sentence — hence the
       // dash rather than a colon.
       detail:
-        `Couldn’t read the keyfile posture — ${input.message} `
-        + 'This is a failed read, not a report that the keyfile is sealed.',
+        `Recued could not read how the keyfile is protected. ${input.message} `
+        + 'That means Recued does not know, not that it is safe.',
       consequence: null,
       remediation: null,
     };
@@ -105,9 +105,9 @@ export const describeKeyfilePosture = (
         tone: 'sealed',
         status: 'Sealed by this machine',
         detail:
-          'A platform secret store (OS keyring, Windows DPAPI or systemd-creds) '
-          + 'holds the secret that unwraps this keyfile, and it lives outside the '
-          + 'data directory — so a copy of that directory does not carry it.',
+          'Your computer’s own secret store holds the secret that unlocks '
+          + 'this keyfile, and it sits outside the '
+          + 'data folder. So copying that folder does not copy the secret.',
         consequence: null,
         remediation: null,
       };
@@ -116,7 +116,7 @@ export const describeKeyfilePosture = (
         tone: 'sealed',
         status: 'Sealed by your passphrase',
         detail:
-          'RECUED_IDENTITY_PASSPHRASE unwraps this keyfile at boot. The server '
+          'RECUED_IDENTITY_PASSPHRASE unlocks this keyfile when the server starts. It '
           + 'reads it from its environment and never writes it to the data '
           + 'directory.',
         consequence: null,
@@ -130,13 +130,13 @@ export const describeKeyfilePosture = (
         // only condition.
         status: '⚠ UNSEALED',
         detail:
-          'The key that opens this realm sits readable in the server’s own data '
-          + 'directory, with nothing wrapping it.',
+          'The key that opens everything sits in plain sight, in the server’s own data '
+          + 'folder, with nothing protecting it.',
         consequence:
-          'Your realm is still encrypted, but the key travels with the data '
-          + 'directory: anyone who copies that whole directory gets everything '
-          + 'in it. Only copies that omit the keyfile — for example, a '
-          + 'database-only backup — retain this protection.',
+          'Your things are still locked, but the key sits in the same folder: '
+          + 'anyone who copies that whole folder gets everything in it. Only a '
+          + 'copy that leaves the keyfile out, such as a database-only backup, '
+          + 'keeps this protection.',
         remediation: UNSEALED_REMEDIATION,
       };
     case null:
@@ -144,8 +144,8 @@ export const describeKeyfilePosture = (
         tone: 'unreported',
         status: 'Not reported',
         detail:
-          'This server reported no keyfile posture — it predates the field, or '
-          + 'its key store isn’t wired. That is an unknown, not a sealed keyfile.',
+          'This server said nothing about its keyfile. It may be an older version, or '
+          + 'its key store is not set up. That means Recued does not know, not that it is safe.',
         consequence: null,
         remediation: null,
       };

@@ -394,7 +394,7 @@ describe('D-149 launch-wizard — buildLaunchWizardPlanModel (profile gate)', ()
     const plan = buildLaunchWizardPlan(mkWizardInput(), NOW);
     const model = buildLaunchWizardPlanModel({ plan, now: NOW });
     expect(model.profile_gate.switch_needed).toBe(false);
-    expect(model.profile_gate.headline).toBe('Exposure profile ready');
+    expect(model.profile_gate.headline).toBe('Your server can be reached');
     expect(model.profile_gate.recommended_exposure_profile).toBe(
       RECEPTION_RECOMMENDED_EXPOSURE_PROFILE,
     );
@@ -407,7 +407,7 @@ describe('D-149 launch-wizard — buildLaunchWizardPlanModel (profile gate)', ()
     );
     const model = buildLaunchWizardPlanModel({ plan, now: NOW });
     expect(model.profile_gate.switch_needed).toBe(true);
-    expect(model.profile_gate.headline).toBe('Switch your exposure profile');
+    expect(model.profile_gate.headline).toBe('Change who can reach your server');
     expect(model.profile_gate.current_exposure_profile).toBe('lan_only');
     expect(model.profile_gate.detail).toContain('lan_only');
     expect(model.profile_gate.detail).toContain(RECEPTION_RECOMMENDED_EXPOSURE_PROFILE);

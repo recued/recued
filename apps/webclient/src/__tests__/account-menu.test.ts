@@ -298,7 +298,7 @@ describe('mountAccountMenu', () => {
       .toBe('#settings/account');
     expect(findAllByAttr(servers, SERVER_SWITCHER_ITEM_ATTR)).toHaveLength(2);
     expect(findByAttr(servers, ACCOUNT_MENU_SERVERS_DETAIL_ATTR)?.textContent)
-      .toBe('Names and recent use are stored only on this browser.');
+      .toBe('Names and recent use are kept only in this browser.');
   });
 
   it('refreshes relative recency when Account opens after an idle tab', () => {
@@ -434,7 +434,7 @@ describe('mountAccountMenu', () => {
       'recued-account-menu-connection-diagnosis-detail recued-account-menu-connection-diagnosis-status',
     );
     expect(subtreeText(section)).toContain(
-      'The latest check ended when the server connection changed.',
+      'The check stopped because the server connection changed.',
     );
     expect(subtreeText(section)).toContain(
       'Opening Account does not retry verification or mark it resolved.',
@@ -456,7 +456,7 @@ describe('mountAccountMenu', () => {
     expect(dom.activeElement()).toBe(title);
     mount.setUnreachable(true);
     expect(status.textContent).toContain(
-      'home.example:8443 is not reachable',
+      'home.example:8443 cannot be reached',
     );
     expect(dom.activeElement()).toBe(title);
     mount.refresh(
@@ -473,7 +473,7 @@ describe('mountAccountMenu', () => {
       section,
       ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RETURN_ATTR,
     )!;
-    expect(returnButton.textContent).toBe('Report review outcome');
+    expect(returnButton.textContent).toBe('Say what you found');
     returnButton.click();
     expect(mount.isOpen()).toBe(false);
     expect(dom.activeElement()).toBe(
@@ -530,7 +530,7 @@ describe('mountAccountMenu', () => {
       section,
       ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RETURN_ATTR,
     )!;
-    expect(returnButton.textContent).toBe('Choose check or close');
+    expect(returnButton.textContent).toBe('Choose: check, or close');
     expect(returnButton.getAttribute('aria-label')).toContain(
       'choose one current Contracts check or close the review',
     );
@@ -599,7 +599,7 @@ describe('mountAccountMenu', () => {
       ACCOUNT_MENU_CONNECTION_DIAGNOSIS_STATUS_ATTR,
     )!;
     const serverSlot = findByAttr(host, ACCOUNT_MENU_SERVER_SLOT_ATTR)!;
-    expect(controls.textContent).toBe('Review active server controls');
+    expect(controls.textContent).toBe('Look at the server controls');
     expect(controls.hasAttribute('disabled')).toBe(false);
     expect(section.getAttribute('data-control-review')).toBe('ready');
 
@@ -609,7 +609,7 @@ describe('mountAccountMenu', () => {
     expect(serverSlot.hasAttribute(
       ACCOUNT_MENU_SERVER_SLOT_DIAGNOSIS_TARGET_ATTR,
     )).toBe(true);
-    expect(controls.textContent).toBe('Viewing server controls');
+    expect(controls.textContent).toBe('Looking at the server controls');
     expect(controls.hasAttribute('disabled')).toBe(true);
     expect(status.textContent).toContain('controls are open');
 
@@ -617,8 +617,8 @@ describe('mountAccountMenu', () => {
     expect(receipt.hasAttribute('hidden')).toBe(false);
     expect(receipt.getAttribute('data-action')).toBe('pause');
     expect(receipt.getAttribute('data-phase')).toBe('pending');
-    expect(receipt.textContent).toContain('Pause requested');
-    expect(receipt.textContent).toContain('does not verify Contracts');
+    expect(receipt.textContent).toContain('Pause asked for');
+    expect(receipt.textContent).toContain('does not prove Contracts');
     publishControlReceipt({
       action: 'pause',
       phase: 'confirmed',
@@ -626,7 +626,7 @@ describe('mountAccountMenu', () => {
     });
     expect(receipt.getAttribute('data-phase')).toBe('confirmed');
     expect(receipt.textContent).toContain('Pause completed');
-    expect(receipt.textContent).toContain('execution is paused');
+    expect(receipt.textContent).toContain('work is paused');
 
     returnFromControls();
     expect(section.getAttribute('data-control-review')).toBe('returned');
@@ -634,7 +634,7 @@ describe('mountAccountMenu', () => {
       ACCOUNT_MENU_SERVER_SLOT_DIAGNOSIS_TARGET_ATTR,
     )).toBe(false);
     expect(controls.textContent).toBe(
-      'Review active server controls again',
+      'Look at the server controls again',
     );
     expect(status.textContent).toContain(
       'home.example:8443 is connected now. Back from its controls',
@@ -650,23 +650,23 @@ describe('mountAccountMenu', () => {
     });
     expect(receipt.getAttribute('data-phase')).toBe('accepted');
     expect(receipt.textContent).toContain('Restart accepted');
-    expect(receipt.textContent).toContain('fresh server status');
+    expect(receipt.textContent).toContain('a new status to arrive');
     publishControlReceipt({
       action: 'restart',
       phase: 'reconnected',
       currentState: 'running',
     });
     expect(receipt.getAttribute('data-phase')).toBe('reconnected');
-    expect(receipt.textContent).toContain('does not prove a fresh process');
-    expect(receipt.textContent).toContain('execution is running');
-    expect(receipt.textContent).toContain('does not verify Contracts');
+    expect(receipt.textContent).toContain('does not prove it actually started again');
+    expect(receipt.textContent).toContain('work is running');
+    expect(receipt.textContent).toContain('does not prove Contracts');
     publishControlReceipt({
       action: 'restart',
       phase: 'confirmed',
       currentState: 'running',
     });
-    expect(receipt.textContent).toContain('process uptime reset');
-    expect(receipt.textContent).toContain('execution is running');
+    expect(receipt.textContent).toContain('really did start again');
+    expect(receipt.textContent).toContain('work is running');
     publishControlReceipt({
       action: 'restart',
       phase: 'failed',
@@ -674,16 +674,16 @@ describe('mountAccountMenu', () => {
       detail: 'A restart is already in progress.',
     });
     expect(receipt.textContent).toContain(
-      'Restart was not started by this request',
+      'This request did not start a restart',
     );
-    expect(receipt.textContent).toContain('execution is running');
+    expect(receipt.textContent).toContain('work is running');
     publishControlReceipt({
       action: 'pause',
       phase: 'failed',
       currentState: 'running',
       detail: `${'x'.repeat(319)}…`,
     });
-    expect(receipt.textContent).toContain('… Latest known state');
+    expect(receipt.textContent).toContain('… Last known state');
     expect(receipt.textContent).not.toContain('….');
 
     controls.focus();
@@ -796,7 +796,7 @@ describe('mountAccountMenu', () => {
     expect(receipt.getAttribute('data-action')).toBe('restart');
     expect(receipt.getAttribute('data-phase')).toBe('reconnected');
     expect(receipt.textContent).toContain(
-      'does not prove a fresh process started',
+      'does not prove it actually started again',
     );
 
     // Inspecting the controls does not synthesize a fresh action receipt. The
@@ -866,12 +866,12 @@ describe('mountAccountMenu', () => {
     )!;
     expect(reconcile.hasAttribute('hidden')).toBe(false);
     expect(reconcile.hasAttribute('disabled')).toBe(true);
-    expect(reconcile.textContent).toBe('Waiting for current server state…');
+    expect(reconcile.textContent).toBe('Waiting to hear how the server is doing…');
     expect(status.textContent).toContain('controls are open');
 
     mount.setConnectionDiagnosisCurrentStateAvailability('p1', true);
     expect(reconcile.hasAttribute('disabled')).toBe(false);
-    expect(reconcile.textContent).toBe('Use current server state');
+    expect(reconcile.textContent).toBe('Use what the server says now');
     expect(status.textContent).toContain(
       'stable current state ready to reconcile with the last receipt',
     );
@@ -1266,7 +1266,7 @@ describe('mountAccountMenu', () => {
     expect(findByAttr(guide, ACCOUNT_MENU_SERVER_UPDATE_STATUS_ATTR)?.textContent)
       .toContain('connected');
     expect(guide.children[4]?.textContent).toContain(
-      'No replacement credential is stored',
+      'never keeps or sends a new key',
     );
     expect(findByAttr(host, ACCOUNT_MENU_BADGE_ATTR)?.getAttribute('data-state'))
       .toBe('working');
@@ -1372,10 +1372,10 @@ describe('mountAccountMenu', () => {
     mount.setServerUpdateGuide({ ...guide, phase: 'ready' });
 
     expect(returnButton.hasAttribute('disabled')).toBe(false);
-    expect(returnButton.textContent).toBe('Return and check');
+    expect(returnButton.textContent).toBe('Go back and check');
     expect(returnButton.getAttribute('aria-label')).toMatch(/return.*check/i);
     expect(findByAttr(host, ACCOUNT_MENU_SERVER_UPDATE_STATUS_ATTR)?.textContent)
-      .toMatch(/server reconnected/i);
+      .toMatch(/the server is back/i);
   });
 
   it('shows one active exact check, then offers one interruption-safe resume without replaying completion', () => {
@@ -1425,14 +1425,14 @@ describe('mountAccountMenu', () => {
       ACCOUNT_MENU_SERVER_UPDATE_OPEN_ATTR,
     )!;
     expect(section.children[0]?.textContent).toBe(
-      'Credential check underway',
+      'Checking the key',
     );
     expect(section.getAttribute('aria-busy')).toBe('true');
     expect(subtreeText(section)).toMatch(
-      /credential replacement is active.*re-reading the latest saved connection.*will not start a duplicate check/i,
+      /another key is already being replaced/i,
     );
     expect(subtreeText(section)).not.toMatch(/recovery finished/i);
-    expect(returnButton.textContent).toBe('Check underway…');
+    expect(returnButton.textContent).toBe('Checking…');
     expect(returnButton.hasAttribute('disabled')).toBe(true);
     expect(dismissButton.hasAttribute('disabled')).toBe(true);
     expect(openButton.hasAttribute('hidden')).toBe(true);
@@ -1452,25 +1452,25 @@ describe('mountAccountMenu', () => {
     mount.setServerUpdateGuide(interrupted);
 
     expect(section.children[0]?.textContent).toBe(
-      'Resume credential check',
+      'Carry on checking the key',
     );
     expect(section.hasAttribute('aria-busy')).toBe(false);
     expect(subtreeText(section)).toMatch(
-      /stopped before.*activity check and follow-up saved-connection read/i,
+      /stopped before Recued finished its checks/i,
     );
     expect(subtreeText(section)).toMatch(
-      /no credential.*success receipt is restored/i,
+      /carries over no keys, nothing you typed, and no results/i,
     );
-    expect(returnButton.textContent).toBe('Resume exact check');
+    expect(returnButton.textContent).toBe('Carry on checking');
     expect(returnButton.hasAttribute('disabled')).toBe(false);
     expect(openButton.hasAttribute('hidden')).toBe(true);
     expect(returnButton.getAttribute('aria-label')).toMatch(
-      /resume.*interrupted exact credential check.*api\/github-main/i,
+      /carry on the key check for api\/github-main/i,
     );
     expect(findByAttr(host, ACCOUNT_MENU_BADGE_ATTR)?.getAttribute('data-state'))
       .toBe('result-ready');
     expect(findByAttr(host, ACCOUNT_MENU_TRIGGER_ATTR)?.getAttribute('aria-label'))
-      .toMatch(/interrupted credential check is ready to resume/i);
+      .toMatch(/key check that was stopped can carry on/i);
 
     openButton.click();
     expect(onReturnToWork).not.toHaveBeenCalled();
@@ -1509,21 +1509,21 @@ describe('mountAccountMenu', () => {
       ACCOUNT_MENU_SERVER_UPDATE_OPEN_ATTR,
     )!;
     expect(section.children[0]?.textContent)
-      .toBe('Resume credential replacement');
+      .toBe('Carry on replacing the key');
     expect(section.hasAttribute('aria-busy')).toBe(false);
     expect(subtreeText(section)).toMatch(
-      /clean credential editor.*closed before any field changed/i,
+      /fresh key editor.*closed before any field changed/i,
     );
     expect(subtreeText(section)).toMatch(
       /repeat.*activity.*latest-saved-connection checks/i,
     );
     expect(subtreeText(section)).toMatch(
-      /no field value.*server-recovery receipt is restored/i,
+      /nothing you typed, no keys, and no results are kept/i,
     );
     expect(subtreeText(section)).not.toMatch(/recovery finished/i);
-    expect(returnButton.textContent).toBe('Resume clean editor');
+    expect(returnButton.textContent).toBe('Reopen the fresh editor');
     expect(returnButton.getAttribute('aria-label')).toMatch(
-      /resume the clean credential editor.*repeating its safety check/i,
+      /reopen the fresh key editor.*running its safety check again/i,
     );
     expect(findByAttr(
       section,
@@ -1533,7 +1533,7 @@ describe('mountAccountMenu', () => {
     expect(findByAttr(host, ACCOUNT_MENU_BADGE_ATTR)?.getAttribute('data-state'))
       .toBe('result-ready');
     expect(findByAttr(host, ACCOUNT_MENU_TRIGGER_ATTR)?.getAttribute('aria-label'))
-      .toMatch(/clean credential editor is ready to resume/i);
+      .toMatch(/fresh key editor is ready to reopen/i);
 
     openButton.click();
     expect(onReturnToWork).not.toHaveBeenCalled();
@@ -1577,7 +1577,7 @@ describe('mountAccountMenu', () => {
     expect(findByAttr(
       section,
       ACCOUNT_MENU_SERVER_UPDATE_STATUS_ATTR,
-    )?.textContent).toMatch(/in an open Recued tab/i);
+    )?.textContent).toMatch(/in another open Recued tab/i);
     const updatesButton = findByAttr(
       section,
       ACCOUNT_MENU_SERVER_UPDATE_OPEN_ATTR,
@@ -1585,7 +1585,7 @@ describe('mountAccountMenu', () => {
     expect(updatesButton.hasAttribute('hidden')).toBe(false);
     expect(updatesButton.textContent).toBe('View Server Updates');
     expect(updatesButton.getAttribute('aria-label')).toMatch(
-      /view.*shared server update progress/i,
+      /see the shared server update progress/i,
     );
     const returnButton = findByAttr(
       section,
@@ -1598,7 +1598,7 @@ describe('mountAccountMenu', () => {
     expect(returnButton.hasAttribute('disabled')).toBe(true);
     expect(dismissButton.hasAttribute('disabled')).toBe(true);
     expect(section.children[4]?.textContent).toMatch(
-      /opaque ID.*server profile.*credentials.*endpoints.*raw errors/i,
+      /meaningless code for the server.*never share keys.*addresses.*error details/i,
     );
 
     // Inspecting the passive progress is safe, while credential continuation
@@ -1626,7 +1626,7 @@ describe('mountAccountMenu', () => {
       section,
       ACCOUNT_MENU_SERVER_UPDATE_STATUS_ATTR,
     )?.textContent).toMatch(
-      /accepted.*checking.*server-issued restart receipt/i,
+      /accepted.*checking what the server said about restarting/i,
     );
 
     mount.setServerUpdateGuide(base);
@@ -1668,9 +1668,9 @@ describe('mountAccountMenu', () => {
 
     const guideEl = findByAttr(host, ACCOUNT_MENU_SERVER_UPDATE_ATTR)!;
     expect(guideEl.getAttribute('aria-busy')).toBeNull();
-    expect(guideEl.children[0]?.textContent).toMatch(/receipt needs attention/i);
+    expect(guideEl.children[0]?.textContent).toMatch(/result needs a look/i);
     expect(findByAttr(guideEl, ACCOUNT_MENU_SERVER_UPDATE_STATUS_ATTR)?.textContent)
-      .toMatch(/did not recognize/i);
+      .toMatch(/did not know about/i);
     const retry = findByAttr(
       guideEl,
       ACCOUNT_MENU_SERVER_UPDATE_RETRY_ATTR,
@@ -1698,7 +1698,7 @@ describe('mountAccountMenu', () => {
     await flush();
     expect(serverUpdateDiagnosticWriter).toHaveBeenCalledWith(summary);
     expect(findByAttr(host, ACCOUNT_MENU_TRIGGER_ATTR)?.getAttribute('aria-label'))
-      .toMatch(/receipt needs attention/i);
+      .toMatch(/result needs a look/i);
 
     mount.setServerUpdateGuide({
       ...guide,
@@ -1710,7 +1710,7 @@ describe('mountAccountMenu', () => {
     });
     expect(retry.hasAttribute('hidden')).toBe(false);
     expect(retry.hasAttribute('disabled')).toBe(true);
-    expect(retry.textContent).toBe('Checking receipt…');
+    expect(retry.textContent).toBe('Checking the result…');
     mount.dispose();
   });
 
@@ -1747,12 +1747,12 @@ describe('mountAccountMenu', () => {
       },
     });
     const guide = findByAttr(host, ACCOUNT_MENU_SERVER_UPDATE_ATTR)!;
-    expect(guide.children[0]?.textContent).toMatch(/review unresolved/i);
-    expect(subtreeText(guide)).toMatch(/no closure is recorded until.*confirm/i);
+    expect(guide.children[0]?.textContent).toMatch(/closing this unanswered/i);
+    expect(subtreeText(guide)).toMatch(/nothing is written down until you say so/i);
     expect(findByAttr(
       guide,
       ACCOUNT_MENU_SERVER_UPDATE_OPEN_ATTR,
-    )?.textContent).toBe('Return to closure review');
+    )?.textContent).toBe('Back to closing this');
 
     mount.setServerUpdateGuide({
       ...base,
@@ -1764,17 +1764,17 @@ describe('mountAccountMenu', () => {
       },
     });
     expect(guide.children[0]?.textContent).toMatch(
-      /closure recorded.*confirm current state/i,
+      /closed.*check how things are/i,
     );
     expect(findByAttr(
       guide,
       ACCOUNT_MENU_SERVER_UPDATE_STATUS_ATTR,
-    )?.textContent).toMatch(/closed unresolved.*remains unconfirmed/i);
+    )?.textContent).toMatch(/closed this without an answer.*still unclear/i);
     const finish = findByAttr(
       guide,
       ACCOUNT_MENU_SERVER_UPDATE_RETRY_ATTR,
     )!;
-    expect(finish.textContent).toBe('Confirm current server state');
+    expect(finish.textContent).toBe('Check how the server is');
     expect(finish.hasAttribute('disabled')).toBe(false);
     finish.click();
     expect(onFinishServerUpdateReceiptClosure).toHaveBeenCalledOnce();
@@ -1804,16 +1804,16 @@ describe('mountAccountMenu', () => {
       },
     });
     expect(guide.children[0]?.textContent).toMatch(
-      /current server state confirmed/i,
+      /checked how the server is/i,
     );
     expect(findByAttr(
       guide,
       ACCOUNT_MENU_SERVER_UPDATE_STATUS_ATTR,
     )?.textContent).toMatch(
-      /running 26\.8\.1.*stable.*reports this version is current.*github-main.*pending.*original rollback outcome remains unknown/i,
+      /running 26\.8\.1.*stable.*this is the newest version.*github-main.*pending.*original rollback result is still unknown/i,
     );
     expect(finish.textContent).toBe(
-      'Finish and return to api/github-main',
+      'Finish and go back to api/github-main',
     );
     // The server read already completed. Retiring the exact local latch remains
     // available during a later network blip and cannot send another mutation.
@@ -1846,13 +1846,13 @@ describe('mountAccountMenu', () => {
       },
     });
     expect(guide.children[0]?.textContent).toMatch(
-      /current state confirmed.*finish needs retry/i,
+      /checked. finishing needs another go/i,
     );
     expect(finish.textContent).toBe(
-      'Retry finish and return to api/github-main',
+      'Try finishing again and go back to api/github-main',
     );
     expect(subtreeText(guide)).toMatch(
-      /browser could not retire the exact recovery latch.*no server action will repeat/i,
+      /browser could not finish tidying up.*nothing is sent to the server twice/i,
     );
     finish.click();
     expect(onFinishServerUpdateReceiptClosure).toHaveBeenCalledTimes(3);
@@ -1866,7 +1866,7 @@ describe('mountAccountMenu', () => {
         reason: 'server_closed_unresolved',
       },
     });
-    expect(finish.textContent).toBe('Finishing recovery…');
+    expect(finish.textContent).toBe('Finishing up…');
     expect(finish.hasAttribute('disabled')).toBe(true);
     mount.refresh([HOME, OFFICE], 'p1', false, true);
 
@@ -1899,12 +1899,12 @@ describe('mountAccountMenu', () => {
       '#connections/others/retry-credential-rotation/api/github-main',
     );
     expect(guide.children[0]?.textContent).toMatch(
-      /recovery finished.*return to work/i,
+      /all sorted.*back to work/i,
     );
-    expect(subtreeText(guide)).toMatch(/controls are available again/i);
+    expect(subtreeText(guide)).toMatch(/server controls work again/i);
     expect(subtreeText(guide)).toMatch(/running 26\.8\.1/i);
-    expect(subtreeText(guide)).toMatch(/fresh exact preflight/i);
-    expect(subtreeText(guide)).toMatch(/one-shot.*will not replay/is);
+    expect(subtreeText(guide)).toMatch(/new safety check/i);
+    expect(subtreeText(guide)).toMatch(/one-off note.*gone after a reload/is);
     expect(finish.hasAttribute('hidden')).toBe(true);
     expect(findByAttr(
       guide,
@@ -1984,18 +1984,18 @@ describe('mountAccountMenu', () => {
     });
 
     const guide = findByAttr(host, ACCOUNT_MENU_SERVER_UPDATE_ATTR)!;
-    expect(guide.children[0]?.textContent).toBe('Server update needs attention');
+    expect(guide.children[0]?.textContent).toBe('A server update needs a look');
     expect(guide.children[1]?.textContent).toContain('home.example:8443');
     expect(findByAttr(guide, ACCOUNT_MENU_SERVER_UPDATE_STATUS_ATTR)?.textContent)
       .toContain('Running 26.8.0');
     expect(findByAttr(guide, ACCOUNT_MENU_SERVER_UPDATE_STATUS_ATTR)?.textContent)
       .toContain('before update: 26.7.3');
     expect(findByAttr(guide, ACCOUNT_MENU_SERVER_UPDATE_STEPS_ATTR)?.children[1]?.textContent)
-      .toMatch(/version changed.*complete server image or package/i);
+      .toMatch(/version changed.*whole update/i);
     expect(findByAttr(guide, ACCOUNT_MENU_SERVER_UPDATE_OPEN_ATTR)?.textContent)
-      .toBe('Review update status');
+      .toBe('See how the update is going');
     expect(findByAttr(guide, ACCOUNT_MENU_SERVER_UPDATE_RETURN_ATTR)?.textContent)
-      .toBe('Check server again');
+      .toBe('Check the server again');
     expect(findByAttr(host, ACCOUNT_MENU_TRIGGER_ATTR)?.getAttribute('aria-label'))
       .toContain('Server update diagnosis is ready for api/github-main');
     const diagnostic = findByAttr(
@@ -2009,7 +2009,7 @@ describe('mountAccountMenu', () => {
     )?.textContent ?? '';
     expect(summary).toContain('Server host: home.example:8443');
     expect(summary).toContain(
-      'Missing capability: collection.connection.credentialRotationActivity',
+      'Missing feature: collection.connection.credentialRotationActivity',
     );
     expect(summary).not.toContain('/ws');
     expect(summary).not.toMatch(/token|credential value|config\.base_url/i);
@@ -2053,23 +2053,23 @@ describe('mountAccountMenu', () => {
 
     const section = findByAttr(host, ACCOUNT_MENU_SERVER_UPDATE_ATTR)!;
     expect(section.children[0]?.textContent).toBe(
-      'Credential check is ready',
+      'The key check is ready',
     );
     expect(section.children[1]?.textContent).toMatch(
-      /fresh, read-only check confirmed.*home\.example:8443/i,
+      /look-only check says.*home\.example:8443/i,
     );
     expect(findByAttr(
       section,
       ACCOUNT_MENU_SERVER_UPDATE_STATUS_ATTR,
-    )?.textContent).toMatch(/fresh, read-only server check.*stayed/i);
+    )?.textContent).toMatch(/look-only question to the server.*did not move/i);
     expect(findByAttr(
       section,
       ACCOUNT_MENU_SERVER_UPDATE_STEPS_ATTR,
     )?.children[1]?.textContent).toMatch(
-      /did not read, store, or send a credential or form value/i,
+      /never read, kept, or sent a key/i,
     );
     expect(section.children[4]?.textContent).toMatch(
-      /one-time confirmation.*will not replay after reload/i,
+      /kept only in this tab and is gone after a reload/i,
     );
     expect(findByAttr(
       section,
@@ -2085,12 +2085,12 @@ describe('mountAccountMenu', () => {
     )!;
     expect(continueButton.textContent).toBe('Continue in this tab');
     expect(continueButton.getAttribute('aria-label')).toMatch(
-      /continue.*api\/github-main.*this tab/i,
+      /carry on checking the new key for api\/github-main/i,
     );
     expect(findByAttr(host, ACCOUNT_MENU_BADGE_ATTR)?.getAttribute('data-state'))
       .toBe('result-ready');
     expect(findByAttr(host, ACCOUNT_MENU_TRIGGER_ATTR)?.getAttribute('aria-label'))
-      .toContain('Credential check is ready for api/github-main');
+      .toContain('The key check is ready for api/github-main');
     expect(onReturnToWork).not.toHaveBeenCalled();
 
     continueButton.click();
@@ -2119,7 +2119,7 @@ describe('mountAccountMenu', () => {
         channel: 'stable',
       },
     });
-    expect(summary).toContain('Selected profile: Home server');
+    expect(summary).toContain('Server you picked: Home server');
     expect(summary).toContain('Server host: home.example:8443');
     expect(summary).not.toContain('/private/path');
     expect(summary).not.toContain('must-not-leak');
@@ -2145,7 +2145,7 @@ describe('mountAccountMenu', () => {
 
     const guide = findByAttr(host, ACCOUNT_MENU_SERVER_UPDATE_ATTR)!;
     expect(findByAttr(guide, ACCOUNT_MENU_SERVER_UPDATE_STEPS_ATTR)?.children[1]?.textContent)
-      .toMatch(/do not apply.*trusted release key.*manifest signature/i);
+      .toMatch(/do not install.*trusted update key.*signature/i);
     expect(findByAttr(guide, ACCOUNT_MENU_SERVER_UPDATE_STATUS_ATTR)?.textContent)
       .toMatch(/update check: bad signature/i);
   });
@@ -2182,11 +2182,11 @@ describe('mountAccountMenu', () => {
       ACCOUNT_MENU_SERVER_UPDATE_DIAGNOSTIC_SUMMARY_ATTR,
     )!;
     expect(copy.hasAttribute('disabled')).toBe(false);
-    expect(copy.textContent).toBe('Copy safe diagnostic');
+    expect(copy.textContent).toBe('Copy the details');
     expect(findByAttr(
       host,
       ACCOUNT_MENU_SERVER_UPDATE_DIAGNOSTIC_STATUS_ATTR,
-    )?.textContent).toMatch(/copy was unavailable/i);
+    )?.textContent).toMatch(/could not copy it/i);
     expect(dom.activeElement()).toBe(summary);
   });
 
@@ -2281,7 +2281,7 @@ describe('mountAccountMenu', () => {
       host,
       ACCOUNT_MENU_SERVER_UPDATE_DIAGNOSTIC_SUMMARY_ATTR,
     )?.textContent ?? '';
-    expect(summary).toContain('Selected profile: Renamed home');
+    expect(summary).toContain('Server you picked: Renamed home');
     expect(summary).toContain('Server host: renamed.example:9443');
     expect(copy.hasAttribute('disabled')).toBe(false);
     expect(findByAttr(
@@ -2330,7 +2330,7 @@ describe('mountAccountMenu', () => {
       const badge = findByAttr(host, ACCOUNT_MENU_BADGE_ATTR)!;
       expect(badge.getAttribute('data-state')).toBe('ok');
       expect(findByAttr(host, ACCOUNT_MENU_TRIGGER_ATTR)!.getAttribute('aria-label'))
-        .toBe('Account and server profiles');
+        .toBe('Your account and servers');
     });
 
     it('shows, and SAYS SO, when the server is unreachable', () => {
@@ -2341,8 +2341,8 @@ describe('mountAccountMenu', () => {
       expect(badge.getAttribute('data-state')).toBe('unreachable');
       expect(badge.getAttribute('aria-hidden')).toBe('true');
       const trigger = findByAttr(host, ACCOUNT_MENU_TRIGGER_ATTR)!;
-      expect(trigger.getAttribute('aria-label')).toContain('not reachable');
-      expect(trigger.getAttribute('title')).toContain('not reachable');
+      expect(trigger.getAttribute('aria-label')).toContain('cannot reach this server');
+      expect(trigger.getAttribute('title')).toContain('cannot reach this server');
     });
 
     it('flips live with the connection status', () => {
@@ -2551,8 +2551,8 @@ describe('the outage explainer', () => {
     const steps = findByAttr(host, ACCOUNT_MENU_RECOVERY_STEPS_ATTR)!;
     expect(steps.children).toHaveLength(2);
     const text = steps.children.map((c) => c.textContent).join(' ');
-    expect(text).toContain('internet connection');
-    expect(text).toContain('server is running');
+    expect(text).toContain('this device is online');
+    expect(text).toContain('server is switched on');
     // The retired third step. Settings cannot load without the server.
     expect(text).not.toContain('Server settings');
   });
@@ -2587,14 +2587,14 @@ describe('the outage explainer', () => {
       withAlternative.host,
       ACCOUNT_MENU_RECOVERY_ATTR,
     )!.children[1]!.textContent;
-    expect(alternativeCopy).toContain('switch to another saved profile');
+    expect(alternativeCopy).toContain('pick another saved server');
 
     const oneProfile = setup({ profiles: [HOME], unreachable: true });
     const oneProfileCopy = findByAttr(
       oneProfile.host,
       ACCOUNT_MENU_RECOVERY_ATTR,
     )!.children[1]!.textContent;
-    expect(oneProfileCopy).not.toContain('switch to another saved profile');
+    expect(oneProfileCopy).not.toContain('pick another saved server');
     expect(oneProfileCopy).toContain('add another server');
   });
 });

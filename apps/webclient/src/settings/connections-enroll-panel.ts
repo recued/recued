@@ -798,11 +798,11 @@ const PACK_USAGE_SELECTOR = '[data-conn-pack-usage]';
 const OPEN_ADD_SELECTOR = '[data-action="connections-open-add"]';
 const VALID_KINDS: ReadonlySet<string> = new Set(['api', 'mcp', 'notification']);
 const ROTATION_UNAVAILABLE_COPY =
-  'Safe credential rotation is not available on this server yet. Your current credentials were not changed; update the server, then retry.';
+  'Recued cannot safely replace keys on this server yet. Your current keys were not changed. Update the server, then try again.';
 const ROTATION_CONTINUITY_UNAVAILABLE_COPY =
   "Recued couldn't protect this replacement through a reload, so nothing was sent. Keep this tab open, allow session storage for this site, then try again.";
 const ROTATION_CONTINUITY_OCCUPIED_COPY =
-  'An earlier credential replacement in this tab still needs an outcome. Return to the server profile where you started it before beginning another.';
+  'You started swapping a key in this tab and it has not finished. Go back to the server where you started it before you start another.';
 const CREDENTIAL_ROTATION_STATUS_POLL_MS = 2_000;
 const CREDENTIAL_ROTATION_SUCCESSOR_POLL_MS = 2_000;
 const SERVER_UPDATE_EDITOR_PAUSE_PREFIX =
@@ -1684,7 +1684,7 @@ export const mountConnectionsEnrollPanel = (
   const connectionDraftLeavePrompt = (): string | null => {
     if (!hasUnsavedConnectionDraft()) return null;
     if (state.dialog.saving) {
-      return 'Leave while this connection save finishes? Select Cancel to stay. Recued may still apply the save; if you leave, credential fields cannot be restored if it fails.';
+      return 'Leave while this Connection is saving? Choose Cancel to stay. Recued may still save it, and if you leave and it goes wrong, what you typed cannot be brought back.';
     }
     const subject = state.dialog.mode === 'edit'
       && state.dialog.editingId !== null
@@ -2258,7 +2258,7 @@ export const mountConnectionsEnrollPanel = (
         && state.dialog.credentialCorrection === null
       ) state.dialog.credentialCorrection = ctx.credentialSafeStop;
       setOAuthCorrection({
-        message: 'Could not open the provider authorization page. Your credential entries are still here; try again.',
+        message: 'Recued could not open the other service’s sign-in page. What you typed is still here. Try again.',
         fieldKey: null,
       });
       render();
@@ -2277,7 +2277,7 @@ export const mountConnectionsEnrollPanel = (
       if (p !== null && p.flow_id === started.flow_id) {
         settlePendingOAuth(p, {
           error:
-            'Authorization timed out and did not return to Recued. Your credential entries are still here. Verify the exact callback URL and app credentials shown above, then retry.',
+            'Signing in took too long and never came back to Recued. What you typed is still here. Check the exact address to come back to, and the app keys shown above, then try again.',
         });
       }
     }, VENDOR_OAUTH_TIMEOUT_MS);
@@ -2354,7 +2354,7 @@ export const mountConnectionsEnrollPanel = (
     if (!outcome.ok) {
       setOAuthCorrection({
         message: outcome.reason === 'popup_blocked'
-          ? 'Popup blocked. Allow popups for this Recued site, then try again; your credential entries are unchanged.'
+          ? 'Your browser blocked the pop-up. Allow pop-ups for this Recued address, then try again. What you typed is unchanged.'
           : outcome.reason === 'denied'
             ? 'The provider did not grant access. Check the app’s permissions, then retry.'
             : `Authorization did not finish (${outcome.reason}). Your credential entries are unchanged.`,
@@ -2482,7 +2482,7 @@ export const mountConnectionsEnrollPanel = (
     const popup = oauthEnv.open('', '_blank');
     if (popup === null) {
       setOAuthCorrection({
-        message: 'Popup blocked. Allow popups for this Recued site, then try again; your credential entries are unchanged.',
+        message: 'Your browser blocked the pop-up. Allow pop-ups for this Recued address, then try again. What you typed is unchanged.',
         fieldKey: null,
       });
       render();
@@ -2785,18 +2785,18 @@ export const mountConnectionsEnrollPanel = (
     reason: ConnectionCredentialRotationFailureReason,
   ): string => {
     if (reason === 'auth_failed') {
-      return 'The provider rejected the replacement. Your saved credential was preserved; correct the replacement and try again.';
+      return 'The provider rejected the replacement. Your Recued kept the old key; correct the replacement and try again.';
     }
     if (reason === 'unreachable') {
-      return "The provider check couldn't finish. Your saved credential was preserved; check the provider connection before retrying.";
+      return "The provider check couldn't finish. Your Recued kept the old key; check the provider connection before retrying.";
     }
     if (reason === 'inconclusive') {
-      return "The provider couldn't prove the replacement was valid. Your saved credential was preserved; review the endpoint before retrying.";
+      return "The provider couldn't prove the replacement was valid. Your Recued kept the old key; review the endpoint before retrying.";
     }
     if (reason === 'conflict') {
       return 'This connection changed during verification, so the replacement was not applied. Review the latest connection before retrying.';
     }
-    return 'The replacement did not complete. Your saved credential was preserved; review the connection before retrying.';
+    return 'The replacement did not complete. Your Recued kept the old key; review the connection before retrying.';
   };
 
   let credentialRotationReconcilePromise: Promise<void> | null = null;
@@ -3420,7 +3420,7 @@ export const mountConnectionsEnrollPanel = (
         if (originatingEditorStillCurrent()) {
           state.dialog.saving = false;
           state.dialog.credentialCorrection = null;
-          state.dialog.error = 'The server has no current receipt for this replacement. It was not applied to any currently enrolled connection with this identity; review the connection before trying again.';
+          state.dialog.error = 'Your server has no receipt for this swap. It was not used on any Connection you have set up with this name. Look at the Connection before you try again.';
         }
       } else {
         state.credentialRotationRecovery = {
@@ -3512,8 +3512,8 @@ export const mountConnectionsEnrollPanel = (
         next.safeStopClosure = {
           phase: 'unsupported',
           error: hasExactToken
-            ? 'This client cannot send authoritative safe-stop closure to the paired server. Update the client, or enter a materially new credential before verifying again.'
-            : 'The paired server cannot provide authoritative safe-stop closure yet. Update it, or enter a materially new credential before verifying again.',
+            ? 'This browser cannot tell your server that it stopped safely. Update it, or type a properly different key before you check again.'
+            : 'Your server cannot say yet that it stopped safely. Update it, or type a properly different key before you check again.',
         };
       } else {
         next.safeStopClosure = { phase: 'checking', error: null };
@@ -3560,8 +3560,8 @@ export const mountConnectionsEnrollPanel = (
     setDialogCredentialSafeStopClosure(
       'unsupported',
       acknowledgementToken === null
-        ? 'The paired server can show this safe stop but cannot record its closure yet. Update the server, or enter a materially new credential before verifying again.'
-        : 'This client cannot send authoritative safe-stop closure to the paired server. Update the client, or enter a materially new credential before verifying again.',
+        ? 'Your server can show this safe stop, but cannot write down that it is finished. Update it, or type a properly different key before you check again.'
+        : 'This browser cannot tell your server that it stopped safely. Update it, or type a properly different key before you check again.',
     );
   };
 
@@ -3782,7 +3782,7 @@ export const mountConnectionsEnrollPanel = (
     ) {
       setDialogCredentialSafeStopClosure(
         'unsupported',
-        'This client and paired server cannot record authoritative safe-stop closure. Update them, or enter a materially new credential before verifying again.',
+        'Neither this browser nor your server can write down that it stopped safely. Update them, or type a properly different key before you check again.',
       );
       renderPreservingActiveField();
       return;
@@ -3832,7 +3832,7 @@ export const mountConnectionsEnrollPanel = (
       ) {
         setDialogCredentialSafeStopClosure(
           'unsupported',
-          'The paired server cannot record authoritative safe-stop closure yet. Update it, or enter a materially new credential before verifying again.',
+          'Your server cannot write down yet that it stopped safely. Update it, or type a properly different key before you check again.',
         );
         renderPreservingActiveField();
         syncSubmitDisabled();
@@ -3912,7 +3912,7 @@ export const mountConnectionsEnrollPanel = (
     ) {
       setDialogCredentialSafeStopClosure(
         'unconfirmed',
-        'Recued could not confirm that the paired server recorded this fix. Reconnect and check server closure before retrying; your replacement stays only in this tab.',
+        'Recued could not confirm that your server wrote this fix down. Reconnect and check before you try again. Your new key stays only in this tab.',
       );
       renderPreservingActiveField();
       syncSubmitDisabled();
@@ -4168,7 +4168,7 @@ export const mountConnectionsEnrollPanel = (
         ? undefined
         : (value: string) => doc.defaultView!.navigator.clipboard.writeText(value));
     if (copy === undefined) {
-      feedback('Copy manually', 'Clipboard unavailable. Select and copy the callback URL manually.');
+      feedback('Copy manually', 'Recued could not copy it. Select the address to come back to and copy it yourself.');
       return;
     }
     try {
@@ -4219,7 +4219,7 @@ export const mountConnectionsEnrollPanel = (
         ? undefined
         : (value: string) => doc.defaultView!.navigator.clipboard.writeText(value));
     if (copy === undefined) {
-      feedback('Copy manually', 'Clipboard unavailable. Select and copy the scopes manually.');
+      feedback('Copy manually', 'Recued could not copy it. Select what it may do and copy it yourself.');
       return;
     }
     try {
@@ -4272,29 +4272,29 @@ export const mountConnectionsEnrollPanel = (
     if (copy === undefined) {
       feedback(
         'Copy manually',
-        'Clipboard unavailable. The safe handoff is focused for manual copying.',
+        'Recued could not copy it. The safe hand-over is selected, so you can copy it yourself.',
         true,
       );
       return;
     }
     element.setAttribute('disabled', '');
     element.textContent = 'Copying…';
-    if (status !== null) status.textContent = 'Copying the reviewed handoff…';
+    if (status !== null) status.textContent = 'Copying the hand-over you looked at…';
     try {
       void copy(summary)
         .then(() => feedback(
           'Copied',
-          'Safe handoff copied. Nothing was sent automatically.',
+          'Safe hand-over copied. Recued sent nothing by itself.',
         ))
         .catch(() => feedback(
           'Copy manually',
-          'Copy failed. The safe handoff is focused for manual copying.',
+          'Copying did not work. The safe hand-over is selected, so you can copy it yourself.',
           true,
         ));
     } catch {
       feedback(
         'Copy manually',
-        'Copy failed. The safe handoff is focused for manual copying.',
+        'Copying did not work. The safe hand-over is selected, so you can copy it yourself.',
         true,
       );
     }
@@ -5009,7 +5009,7 @@ export const mountConnectionsEnrollPanel = (
       state.dialog.error = null;
       const correctionLanded = setDialogCredentialCorrection(
         safeStop.correction,
-        'The paired server confirmed that credential recovery stopped after repeated rejection. The saved credential was not changed.',
+        'Your server says it stopped trying after the key was refused again and again. The key it had saved was not changed.',
       );
       state.dialog.credentialRotationOwnership = correctionLanded
         ? null
@@ -5018,7 +5018,7 @@ export const mountConnectionsEnrollPanel = (
             name,
             phase: 'safe_stopped',
             automaticTakeover: false,
-            error: 'The rejected sign-in method differs from this editor. Review the exact recovery before starting another credential check.',
+            error: 'The sign-in that was refused is not the one in this form. Look at what happened before you start another check.',
           };
     }
     applyCredentialSafeStopClosureCapability(
@@ -5358,7 +5358,7 @@ export const mountConnectionsEnrollPanel = (
             name,
             phase: 'safe_stop_unconfirmed',
             automaticTakeover: false,
-            error: 'This server cannot confirm the cross-tab safe stop. Continue recovery in the originating tab or update the server.',
+            error: 'This server cannot confirm the safe stop across tabs. Carry on in the tab you started in, or update the server.',
           };
         }
         renderPreservingActiveField();
@@ -5416,7 +5416,7 @@ export const mountConnectionsEnrollPanel = (
               name,
               phase: 'safe_stop_unconfirmed',
               automaticTakeover: false,
-              error: 'The paired server did not provide authoritative safe-stop state. Continue in the originating tab or update the server.',
+              error: 'Your server did not say whether it stopped safely. Carry on in the tab you started in, or update the server.',
             };
           }
           renderPreservingActiveField();
@@ -5445,7 +5445,7 @@ export const mountConnectionsEnrollPanel = (
         if (hadConfirmedSafeStop) {
           setDialogCredentialSafeStopClosure(
             'unconfirmed',
-            'Recued could not reach the paired server to confirm safe-stop closure. Reconnect and check again; your replacement stays only in this tab.',
+            'Recued could not reach your server to check it finished safely. Reconnect and try again. Your new key stays only in this tab.',
           );
           renderPreservingActiveField();
           syncSubmitDisabled();
@@ -5592,7 +5592,7 @@ export const mountConnectionsEnrollPanel = (
       if (convergence?.supportsOwnershipLeases !== true) {
         if (checkStillCurrent()) {
           ownership.phase = 'unconfirmed';
-          ownership.error = 'This browser cannot elect one live tab safely. Finish or dismiss the check in the original tab.';
+          ownership.error = 'This browser cannot safely pick which tab is in charge. Finish the check, or close it, in the tab you started in.';
           renderPreservingActiveField();
           syncSubmitDisabled();
         }
@@ -6474,7 +6474,7 @@ export const mountConnectionsEnrollPanel = (
         && state.dialog.recentProbe.name === rotationMarker.name;
       if (!disposed && gen === loadGeneration && recoveredRotation) {
         try {
-          // The first list and the receipt check intentionally start together
+          // The first list and the result again intentionally start together
           // so a slow provider cannot block the page. Once success is known,
           // take one causally-later snapshot so an old pre-swap list response
           // cannot leave the confirmed connection looking stale.
@@ -7344,7 +7344,7 @@ export const mountConnectionsEnrollPanel = (
     if (run === undefined) {
       setEngagementError(
         key,
-        'Salesforce capability re-probe is not available in this view — the D-139 re-probe caller is not wired.',
+        'Recued cannot check what Salesforce can do from here.',
       );
       render();
       return;
@@ -8528,8 +8528,8 @@ export const mountConnectionsEnrollPanel = (
       }
       openEditConnection(kind, name);
       const message = correction === undefined
-        ? 'A fresh paired-server check could not authenticate this saved connection. The earlier recovery stop stays closed; review the endpoint and sign-in method before checking again.'
-        : 'A fresh paired-server check found that the provider still rejects the currently saved credential. The earlier recovery stop stays closed; enter a replacement and verify it once.';
+        ? 'A new check could not sign in with this saved Connection. The earlier stop stays closed. Look at the address and the way it signs in before you check again.'
+        : 'A new check found the other service still refuses the key you have saved. The earlier stop stays closed. Type a new one and check it once.';
       const correctionLanded = setDialogCredentialCorrection(
         correction,
         message,
@@ -8804,7 +8804,7 @@ export const mountConnectionsEnrollPanel = (
               name,
               phase: 'safe_stopped',
               automaticTakeover: false,
-              error: 'The server-confirmed recovery does not fit this connection schema. Saving remains paused; update the client/server before retrying.',
+              error: 'What your server sorted out does not fit this kind of Connection. Saving stays paused. Update this browser or your server before you try again.',
             };
       }
       if (correctionLanded) {
@@ -8977,7 +8977,7 @@ export const mountConnectionsEnrollPanel = (
       const key = connectionRowKey('api', dataset.name);
       setEngagementError(
         key,
-        'Housekeeping cadence configuration is not wired from this panel yet. Use the Server housekeeping settings.',
+        'You cannot set how often tidying runs from here yet. Use the server’s Housekeeping settings.',
       );
       render();
     },

@@ -108,7 +108,7 @@ describe('pack permission preview — what installing WOULD allow', () => {
     const el = renderPackPermissionPreview({ document: fakeDoc, manifest: manifest() });
     const text = allText(el as unknown as FakeEl);
     expect(text).toContain('Not installed');
-    expect(text).toContain('nothing is granted yet');
+    expect(text).toContain('nothing is allowed yet');
   });
 
   it('⛔ the approval wording is DERIVED from RISK_APPROVAL_FLOOR, not restated', () => {
@@ -121,11 +121,11 @@ describe('pack permission preview — what installing WOULD allow', () => {
     const el = renderPackPermissionPreview({ document: fakeDoc, manifest: manifest() });
     const rows = withAttr(el as unknown as FakeEl, PACK_PERMISSION_PREVIEW_TIER_ATTR);
     const byTier = new Map(rows.map((r) => [r.attrs.get('data-tier'), r.textContent]));
-    expect(byTier.get('write')).toContain('asks before each action');
-    expect(byTier.get('destructive')).toContain('always asks, every time');
+    expect(byTier.get('write')).toContain('asks you before it does anything');
+    expect(byTier.get('destructive')).toContain('asks you every single time');
     /** ⚠ And a READ row must not claim an approval it does not have — overstating here
      *  trains the owner to expect a prompt that never comes. */
-    expect(byTier.get('read')).toContain('runs without asking');
+    expect(byTier.get('read')).toContain('runs without asking you');
   });
 
   it('⛔⛔ lists a bound account even when NO scopes are declared', () => {

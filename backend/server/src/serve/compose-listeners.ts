@@ -23,6 +23,9 @@ import { composeReceptionInboxDeps } from '../composition/bin/wire-reception-inb
 import { countCalendarOverlap } from '../collections/calendar/overlap-counter.js';
 import { createInMemoryAskLandingNonceStore } from '../ask-landing-nonce-store.js';
 import { createAskLandingDetailResolver } from '../ask-landing-held-op-details.js';
+import { createAskCardDetailResolver } from '../ask-card-held-op-details.js';
+import { resolveArgEditSchema } from '../preflight-arg-schema-resolver.js';
+import { buildResolverDeps } from '../composition/bin/wire-reception-inbox-deps.js';
 import { createAskLandingEditApproval } from '../ask-landing-edit-approval.js';
 import {
   findReceptionHoldItem,
@@ -138,6 +141,7 @@ import { createHostnameSniBindingLookup } from '../hostname/index.js';
 import type { CollectionContext } from './compose-collection-context.js';
 import type { ExecutionContext } from './compose-execution-context.js';
 import type { AppContext } from './compose-app-context.js';
+import type { NotificationMessage } from '@recued/notification';
 import { composeEventTriggers } from '../composition/bin/wire-event-triggers.js';
 import { composeWatchManager } from '../composition/bin/wire-watch-manager.js';
 import {
@@ -289,6 +293,9 @@ export interface ComposeListenersOptions {
     | 'draftStore'
     | 'recipeStore'
     | 'hostnameRegistryStore'
+    | 'serverTimeZoneStore'
+    | 'notificationKindPolicyStore'
+    | 'quietHoursStore'
     // D-173 INT-3 — Reception Inbox boot-wiring. `db` backs the SQLite
     // subview store (D10); `checkpointStore` is the held-state + N.5 narrow
     // writer; `eventBus` carries the `reception_inbox` broadcast.
@@ -318,6 +325,10 @@ export interface ComposeListenersOptions {
     | 'llmTranscriptionAdapterRegistry'
     | 'emptyTabProbe'
     | 'cacheDeps'
+    // D-250 — the daily batch reads a recipe-defined board's pending result from here.
+    // ⚠ The store is built in `compose-app-context`; this hop was the only one missing,
+    // which is why an eval board could be granted locally and never submitted.
+    | 'sharedStoreRef'
     // D-172 — the CAS root; the messenger media scratch dir is derived as a
     // data-volume sibling so large downloads stream to disk, not tmpfs.
     | 'cacheBlobs'
@@ -349,6 +360,8 @@ export interface ComposeListenersOptions {
     // work-entity CRUD rpc's freshness metadata reads them through the
     // resolver.
     | 'workEntitySourceSyncStateRef'
+    | 'workEntityCrudDepsRef'
+    | 'calendarWriteDepsRef'
     // D-192 P5 — work-graph edges for the CRUD rpc's `get` decoration.
     | 'workEntityEdgeStoreRef'
     // D-192 — the post-commit work-entity Source reconcile the install/uninstall
@@ -918,6 +931,14 @@ export const composeListeners = async (
       : {}),
   });
 
+  if (app.chatDeps) app.chatDeps.messengerReceiveStatus = vendor => {
+    if (!app.isVaultUnlocked()) return 'locked';
+    if (app.serverState?.isPaused()) return 'paused';
+    const status = messengerIngressSupervisor?.status(vendor, vendor);
+    if (status?.state === 'webhook' && vendorWebhookListener === undefined) return 'not_connected';
+    return status?.state ?? 'unknown';
+  };
+
   // WatchSource messenger push-source provider — one governance row per
   // enrolled messenger-capable notification connection (slack /
   // telegram; the row name IS the vendor per D-163 I-4). Active when
@@ -1239,8 +1260,35 @@ export const composeListeners = async (
   // Each source is wired only when present; an absent source resolves its
   // read to `[]` (the handler self-gates), matching the `system.status`
   // null-counter posture.
+  // D-270 — the approval card's "what will happen" rows.
+  //
+  // 🔑 BOUND INDEPENDENTLY OF THE RECEPTION BUNDLE, deliberately. The obvious
+  // wiring is to reach for `receptionInboxBundle.receptionInboxDeps` (it already
+  // holds a live-catalog `resolveArgEditSchema`) — and it would have tied the
+  // CARD's details to whether the RECEPTION lane composed, which is exactly the
+  // coupling this entry exists to undo. `resolveArgEditSchema` + `buildResolverDeps`
+  // are importable on their own and need only the manifest store, so the card's
+  // resolver needs nothing the reception lane owns.
+  const askCardDetails = storage.auditLog && execution.executeDeps.checkpointStore
+    ? createAskCardDetailResolver({
+      getCheckpoint: (id: string) => execution.executeDeps.checkpointStore!.get(id),
+      getAnchor: (run_id: string) => storage.auditLog!.get(run_id),
+      resolveArgEditSchema: (operationId, prefilledArgs) =>
+        resolveArgEditSchema(
+          operationId,
+          prefilledArgs,
+          buildResolverDeps(storage.localManifestStore),
+        ),
+      // ⛔ REQUIRED or every batched ask fails closed and renders no rows — the
+      // same silent feature-off the `/ask` page had before its own membership
+      // read was threaded. Not passing it is not a smaller feature, it is none.
+      ...(execution.getBatch !== undefined ? { getBatch: execution.getBatch } : {}),
+    })
+    : undefined;
+
   const historyDeps: HistoryDeps = {
     ...(storage.auditLog ? { auditLog: storage.auditLog } : {}),
+    ...(askCardDetails ? { resolveAskDetails: askCardDetails } : {}),
     ...(execution.notificationBlock
       ? {
           listOpenAsks: () => execution.notificationBlock!.listOpenAsks(),
@@ -1774,6 +1822,19 @@ export const composeListeners = async (
     localManifestStore: storage.localManifestStore,
     // R21.1 — reactive fan-out drops while the vault is sealed.
     isVaultUnlocked: app.isVaultUnlocked,
+    // D-268 — a failed reactive fire finally reaches the owner. Bound here
+    // because this is where the dispatcher composition and the notification
+    // block meet; the dispatcher itself stays ignorant of the block.
+    // ⚠ Fire-and-forget: a dead owner channel must not delay a fan-out.
+    ...(execution.notificationBlock
+      ? {
+        onAutomationFailure: (notice: NotificationMessage): void => {
+          void execution.notificationBlock!.notify(notice).catch((err: unknown) => {
+            console.warn('[d-268] trigger failure notice not delivered', err);
+          });
+        },
+      }
+      : {}),
   });
 
   let refreshPreapprovalAutomations: (() => void | Promise<void>) | undefined;
@@ -2482,6 +2543,54 @@ export const composeListeners = async (
       publicBaseUrl: resolvePublicBaseUrl(process.env.RECUED_PUBLIC_BASE_URL) ?? undefined,
     }) : undefined;
 
+  // D-174 #22 + slice 1 — built ONCE, used TWICE: the `work_entity.{upsert,
+  // delete}` pair-RPC below and the Tier-1 `work.create` chat tool both
+  // dispatch through this object.
+  //
+  // ⛔ HOISTED RATHER THAN BUILT TWICE ON PURPOSE. Re-deriving it for the chat
+  // path would mint a SECOND `createWorkEntityResolver` over the same store —
+  // two readers with independently-cached freshness, and a chat create landing
+  // through a different instance than the click that the owner can see. One
+  // object keeps the warehouse events, the enrichment cascade and the audit
+  // trail identical whichever surface asked.
+  const workEntityCrudDepsShared =
+    storage.workEntityStoreRef && collection.workEntityDispatchers
+      ? {
+          store: storage.workEntityStoreRef,
+          // D-192 read resolution — the sync-state dep lights up the
+          // resolver's `sourceFreshness`, so `work_entity.{list,get}`
+          // responses carry per-Source freshness metadata.
+          resolver: createWorkEntityResolver(
+            storage.workEntityStoreRef,
+            app.workEntitySourceSyncStateRef !== undefined
+              ? { syncState: app.workEntitySourceSyncStateRef }
+              : {},
+          ),
+          dispatchers: collection.workEntityDispatchers,
+          // D-192 P5 — `get` responses carry the row's work-graph
+          // edges; contact edges forward-resolve to the survivor's
+          // display identity at read time.
+          ...(app.workEntityEdgeStoreRef !== undefined
+            ? { edges: app.workEntityEdgeStoreRef }
+            : {}),
+          ...(app.contactStoreRef !== undefined
+            ? { contactDisplay: app.contactStoreRef }
+            : {}),
+        }
+      : undefined;
+  // Publish for the chat tool. Set BEFORE the handler set is built so no
+  // ordering question exists between the two consumers.
+  app.workEntityCrudDepsRef.current = workEntityCrudDepsShared ?? null;
+  // Slice 2 — publish the SAME calendar dispatchers the recipe step and the
+  // reception booking seam use, so a chat mutation is not a third path into the
+  // provider with its own mirroring behaviour.
+  app.calendarWriteDepsRef.current = collection.calendarStack
+    ? {
+        calendarCreate: collection.calendarStack.kernelDispatchers.calendarCreate,
+        calendarUpdate: collection.calendarStack.kernelDispatchers.calendarUpdate,
+      } as never
+    : null;
+
   const serverHandlerSet = createServerHandlerSet({
     ...(preapproval ? { preapprovalDeps: preapproval.handlers } : {}),
     ...(webclientBundle ? { webclientBundle } : {}),
@@ -3004,6 +3113,19 @@ export const composeListeners = async (
           },
         }
       : {}),
+    // D-269 step 1 — `server.timezone.*`. The owner states whether this machine
+    // travels with them; every wall-clock surface resolves through the answer
+    // instead of guessing from a host clock that cannot know.
+    serverTimeZoneDeps: { store: storage.serverTimeZoneStore },
+    // D-269 step 2 — the per-kind reminder policy.
+    notificationKindPolicyDeps: { store: storage.notificationKindPolicyStore },
+    // D-269 step 3 — the quiet-hours window. Carries the timezone store because
+    // arming is gated on a resolvable zone: a wall-clock window with no zone is
+    // a setting that silently does nothing.
+    quietHoursDeps: {
+      store: storage.quietHoursStore,
+      timezoneStore: storage.serverTimeZoneStore,
+    },
     hostnameDeps: {
       store: storage.hostnameRegistryStore,
       serverIdentityId: storage.serverInstanceId,
@@ -3041,6 +3163,15 @@ export const composeListeners = async (
     ...(rpc.housekeepingRpcDeps?.db
       ? {
           metricDeps: {
+            // ⛔ ADAPTED TO A NARROW READER RIGHT HERE, so nothing downstream holds the store.
+            // `read` answers `SharedRecord | null`; the batch wants the VALUE, and a missing
+            // row is the same silence as a row with nothing useful in it.
+            ...(app.sharedStoreRef === undefined
+              ? {}
+              : {
+                  readPendingBoardResult: async (key: string): Promise<unknown> =>
+                    (await app.sharedStoreRef!.read(key))?.value,
+                }),
             db: rpc.housekeepingRpcDeps.db,
             // D-250 § B3.3 — everything the daily batch needs and this module cannot
             // derive. ⛔ RETURNS undefined WHEN THE SERVER CANNOT PUBLISH (no booted
@@ -3374,31 +3505,12 @@ export const composeListeners = async (
     // built (so `work_entity.{upsert,delete}` emit warehouse events on
     // the ingredient channel's path). Gated on both the store + the
     // dispatchers (the latter is undefined when the store is absent).
-    ...(storage.workEntityStoreRef && collection.workEntityDispatchers
-      ? {
-          workEntityCrudDeps: {
-            store: storage.workEntityStoreRef,
-            // D-192 read resolution — the sync-state dep lights up the
-            // resolver's `sourceFreshness`, so `work_entity.{list,get}`
-            // responses carry per-Source freshness metadata.
-            resolver: createWorkEntityResolver(
-              storage.workEntityStoreRef,
-              app.workEntitySourceSyncStateRef !== undefined
-                ? { syncState: app.workEntitySourceSyncStateRef }
-                : {},
-            ),
-            dispatchers: collection.workEntityDispatchers,
-            // D-192 P5 — `get` responses carry the row's work-graph
-            // edges; contact edges forward-resolve to the survivor's
-            // display identity at read time.
-            ...(app.workEntityEdgeStoreRef !== undefined
-              ? { edges: app.workEntityEdgeStoreRef }
-              : {}),
-            ...(app.contactStoreRef !== undefined
-              ? { contactDisplay: app.contactStoreRef }
-              : {}),
-          },
-        }
+    // Slice 1 (`work.create`) — the SAME deps object is also published onto
+    // `app.workEntityCrudDepsRef` ABOVE, so the Tier-1 chat tool writes
+    // through this exact dispatcher instance rather than a second one. One
+    // write path, one set of warehouse events, one audit story.
+    ...(workEntityCrudDepsShared
+      ? { workEntityCrudDeps: workEntityCrudDepsShared }
       : {}),
     // Accepted Reception forms are canonical owner data independent of any
     // downstream materialization plan. Expose their immutable store through a
@@ -3473,6 +3585,10 @@ export const composeListeners = async (
     // rather than half-reading. Owner-trusted (registered-client boundary in the
     // handler) — the contract/egress gate is only for the AI/recipe channels.
     fileReadRpcDeps: {
+      ...(storage.db && app.connectionStoreRef && storage.workEntityStoreRef ? {
+        cloudAttachments: { db: storage.db, connections: app.connectionStoreRef, sources: storage.workEntityStoreRef,
+          ...(app.fileSourceSyncStateRef ? { syncState: app.fileSourceSyncStateRef } : {}) },
+      } : {}),
       getFileReadDeps: () => {
         if (!app.cacheBlobs) return undefined;
         // D-192 remote byte-fetch — when the file-source mirror + its connection

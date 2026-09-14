@@ -119,10 +119,10 @@ describe('D-137 P1.2 — runTurn persists + emits', () => {
     expect(messages[0].content).toBe('hello');
     expect(messages[1].role).toBe('assistant');
     // D-164 P6.3 — no executeAiCall wired in this test so the
-    // orchestrator ships an empty-assistant + emits only
-    // `chat.message_complete` (substrate-reachable fallback).
-    expect(captured.length).toBe(1);
-    expect(captured[0].kind).toBe('chat.message_complete');
+    // orchestrator ships an empty assistant. Both committed roles reach
+    // other webclients, including this substrate-only fallback.
+    expect(captured.map((event) => event.kind)).toEqual(['chat.session_changed', 'chat.message_complete']);
+    expect(captured[0]).toMatchObject({ field: 'message', value: { role: 'user', content: 'hello' } });
   });
 
   it('emits chat_message_sent audit per persisted row', async () => {

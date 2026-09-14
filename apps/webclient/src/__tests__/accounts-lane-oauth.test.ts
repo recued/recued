@@ -838,7 +838,7 @@ describe('Mail lane OAuth (mountAccountsLanePanel)', () => {
       oauthCredValues: { client_id: 'GMAIL-CID', client_secret: '' },
       oauthFinishing: false,
     });
-    expect(mount.getState().formError).toContain('tab reloaded before sign-in finished');
+    expect(mount.getState().formError).toContain('tab reloaded before you finished signing in');
     expect(fake.popupOpenCount()).toBe(0);
     expect(continuity.snapshot()).toEqual({ status: 'idle' });
     expect(host.innerHTML).toContain('start again');
@@ -885,7 +885,7 @@ describe('Mail lane OAuth (mountAccountsLanePanel)', () => {
       providerId: 'gmail',
     });
     expect(host.innerHTML).toContain('Account connected');
-    expect(host.innerHTML).not.toContain('Restart sign-in');
+    expect(host.innerHTML).not.toContain('Start signing in again');
     expect(continuity.snapshot()).toEqual({ status: 'idle' });
     mount.dispose();
     continuity.dispose();
@@ -1116,20 +1116,20 @@ describe('Mail lane OAuth (mountAccountsLanePanel)', () => {
       retryAfterSeconds: 5,
     });
     expect(host.innerHTML).toContain('Do not repeat sign-in yet');
-    expect(host.innerHTML).not.toContain('Restart sign-in');
+    expect(host.innerHTML).not.toContain('Start signing in again');
     expect(continuity.snapshot()).toMatchObject({ status: 'failed' });
 
     clickAction({ action: 'accounts-oauth-recovery-check' });
     await mount.whenLoaded();
     expect(mount.getState().oauthReloadRecovery?.status).toBe('check_again');
     expect(host.innerHTML).toContain('wait about 5 seconds');
-    expect(host.innerHTML).not.toContain('Restart sign-in');
+    expect(host.innerHTML).not.toContain('Start signing in again');
 
     currentNow = RELOAD_NOW + 10_000;
     clickAction({ action: 'accounts-oauth-recovery-check' });
     await mount.whenLoaded();
     expect(mount.getState().oauthReloadRecovery?.status).toBe('ready_to_retry');
-    expect(host.innerHTML).toContain('Restart sign-in');
+    expect(host.innerHTML).toContain('Start signing in again');
     expect(continuity.snapshot()).toMatchObject({ status: 'failed' });
 
     clickAction({ action: 'accounts-oauth-recovery-restart' });
@@ -1170,7 +1170,7 @@ describe('Mail lane OAuth (mountAccountsLanePanel)', () => {
     expect(host.innerHTML).toContain('Do not repeat sign-in yet');
     expect(host.innerHTML).toContain('server offline');
     expect(host.innerHTML).toContain('Check again');
-    expect(host.innerHTML).not.toContain('Restart sign-in');
+    expect(host.innerHTML).not.toContain('Start signing in again');
     expect(continuity.snapshot()).toMatchObject({ status: 'failed' });
 
     clickAction({ action: 'accounts-oauth-recovery-check' });

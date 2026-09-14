@@ -255,7 +255,7 @@ const fetchCatalog = async <Row>(
   const origin = resolveApexOrigin({ ...(opts.origin !== undefined ? { override: opts.origin } : {}) });
   const fetchFn = opts.fetchFn ?? (globalThis.fetch as CatalogFetch | undefined);
   if (fetchFn === undefined) {
-    return { status: 'error', message: 'No fetch available in this environment' };
+    return { status: 'error', message: 'Recued cannot reach the internet from here' };
   }
   // Keep the request CORS-simple (GET + `Accept` only) so no preflight is needed.
   const headers: Record<string, string> = { Accept: 'application/json' };
@@ -269,14 +269,14 @@ const fetchCatalog = async <Row>(
   } catch (e) {
     return {
       status: 'error',
-      message: `Couldn't reach the marketplace — ${(e as Error)?.message ?? String(e)}`,
+      message: `Recued could not reach the Marketplace — ${(e as Error)?.message ?? String(e)}`,
     };
   }
 
   if (!res.ok) {
     return {
       status: 'error',
-      message: `Marketplace catalog unavailable (HTTP ${res.status})`,
+      message: `The Marketplace did not answer (HTTP ${res.status})`,
       httpStatus: res.status,
     };
   }
@@ -285,7 +285,7 @@ const fetchCatalog = async <Row>(
   try {
     body = await res.json();
   } catch {
-    return { status: 'error', message: 'Marketplace catalog returned a malformed response' };
+    return { status: 'error', message: 'Recued could not read what the Marketplace sent back' };
   }
   return { status: 'ok', rows: parseWith(body, parse) };
 };
@@ -387,7 +387,7 @@ const fetchSearch = async <Row>(
   const origin = resolveApexOrigin({ ...(opts.origin !== undefined ? { override: opts.origin } : {}) });
   const fetchFn = opts.fetchFn ?? (globalThis.fetch as CatalogFetch | undefined);
   if (fetchFn === undefined) {
-    return { status: 'error', message: 'No fetch available in this environment' };
+    return { status: 'error', message: 'Recued cannot reach the internet from here' };
   }
 
   let res: Response;
@@ -399,13 +399,13 @@ const fetchSearch = async <Row>(
   } catch (e) {
     return {
       status: 'error',
-      message: `Couldn't reach the marketplace — ${(e as Error)?.message ?? String(e)}`,
+      message: `Recued could not reach the Marketplace — ${(e as Error)?.message ?? String(e)}`,
     };
   }
   if (!res.ok) {
     return {
       status: 'error',
-      message: `Marketplace search unavailable (HTTP ${res.status})`,
+      message: `Marketplace search did not answer (HTTP ${res.status})`,
       httpStatus: res.status,
     };
   }
@@ -414,17 +414,17 @@ const fetchSearch = async <Row>(
   try {
     body = await res.json();
   } catch {
-    return { status: 'error', message: 'Marketplace search returned a malformed response' };
+    return { status: 'error', message: 'Recued could not read the search results' };
   }
   if (!isRecord(body)) {
-    return { status: 'error', message: 'Marketplace search returned a malformed response' };
+    return { status: 'error', message: 'Recued could not read the search results' };
   }
 
   const rows = parseWith(body.rows, parse);
   // `total` is what the pager and the "N results" copy assert, so a missing or
   // non-numeric one is a malformed response, not a zero.
   if (typeof body.total !== 'number' || typeof body.totalPages !== 'number') {
-    return { status: 'error', message: 'Marketplace search returned a malformed response' };
+    return { status: 'error', message: 'Recued could not read the search results' };
   }
   return {
     status: 'ok',
@@ -483,7 +483,7 @@ export const fetchCatalogVersions = async (
   const origin = resolveApexOrigin({ ...(opts.origin !== undefined ? { override: opts.origin } : {}) });
   const fetchFn = opts.fetchFn ?? (globalThis.fetch as CatalogFetch | undefined);
   if (fetchFn === undefined) {
-    return { status: 'error', message: 'No fetch available in this environment' };
+    return { status: 'error', message: 'Recued cannot reach the internet from here' };
   }
 
   for (let i = 0; i < unique.length; i += VERSIONS_CHUNK) {
@@ -498,21 +498,21 @@ export const fetchCatalogVersions = async (
     } catch (e) {
       return {
         status: 'error',
-        message: `Couldn't reach the marketplace — ${(e as Error)?.message ?? String(e)}`,
+        message: `Recued could not reach the Marketplace — ${(e as Error)?.message ?? String(e)}`,
       };
     }
     if (!res.ok) {
-      return { status: 'error', message: `Marketplace version lookup unavailable (HTTP ${res.status})` };
+      return { status: 'error', message: `Recued could not check the version (HTTP ${res.status})` };
     }
     let body: unknown;
     try {
       body = await res.json();
     } catch {
-      return { status: 'error', message: 'Marketplace version lookup returned a malformed response' };
+      return { status: 'error', message: 'Recued could not read the version it was sent' };
     }
     const map = isRecord(body) && isRecord(body.versions) ? body.versions : null;
     if (map === null) {
-      return { status: 'error', message: 'Marketplace version lookup returned a malformed response' };
+      return { status: 'error', message: 'Recued could not read the version it was sent' };
     }
     for (const [id, v] of Object.entries(map)) {
       if (typeof v === 'number' && Number.isFinite(v)) versions.set(id, v);

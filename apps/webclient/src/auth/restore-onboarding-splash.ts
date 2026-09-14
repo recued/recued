@@ -332,7 +332,7 @@ const renderPhase = (s: RestoreOnboardingState, armed: boolean): string => {
     case 'collect':
       // Only the initial (error-null) collect reaches here — the bounce path is
       // handled by the collect-form seam before render.
-      return statusScreen('collect', 'Preparing restore…');
+      return statusScreen('collect', 'Getting ready…');
     case 'pairing':
       return statusScreen('pairing', 'Pairing with your server…');
     case 'uploading':
@@ -341,18 +341,18 @@ const renderPhase = (s: RestoreOnboardingState, armed: boolean): string => {
       return statusScreen(
         'validating',
         'Checking your backup…',
-        'Verifying the recovery key and reading the backup.',
+        'Checking your recovery key and reading the backup.',
       );
     case 'preview':
       return renderPreview(s, armed);
     case 'restoring':
       return statusScreen(
         'restoring',
-        'Restoring your backup…',
-        'Writing your data. Your server will restart when it finishes.',
+        'Putting your backup back…',
+        'Saving your things. Your server restarts when it is done.',
       );
     case 'done':
-      return statusScreen('done', 'Restore complete — starting Recued…');
+      return statusScreen('done', 'All back. Starting Recued…');
     case 'fatal':
       return renderFatal(s);
   }
@@ -397,11 +397,11 @@ const renderPreview = (s: RestoreOnboardingState, armed: boolean): string => {
     );
   }
 
-  const confirmLabel = armed ? 'Tap again to restore' : 'Restore this backup';
+  const confirmLabel = armed ? 'Tap again to put it back' : 'Put this backup back';
   return wrap(
     'preview',
     `
-    <h2 class="restore-splash-title">Restore this backup?</h2>
+    <h2 class="restore-splash-title">Put this backup back?</h2>
     ${renderManifest(s)}
     ${renderRealm(s)}
     <p class="restore-splash-detail">
@@ -467,7 +467,7 @@ const renderFatal = (s: RestoreOnboardingState): string =>
     `
     <h2 class="restore-splash-title">Restore couldn’t continue</h2>
     <p class="restore-splash-error" role="status">${e(
-      s.error ?? 'The restore could not continue. Reload to start over.',
+      s.error ?? 'Recued could not carry on. Reload the page to start again.',
     )}</p>
     <div class="restore-splash-actions">
       <button id="${e(RESTORE_SPLASH_RELOAD_ID)}" type="button"

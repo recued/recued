@@ -134,7 +134,7 @@ export interface CredentialRotationServerUpdateContinuity {
   /** Overlay privacy-safe, server-global tab progress without changing or
    * persisting the underlying exact retry/triage phase. */
   observeServerUpdateProgress(progress: ServerUpdateTabProgress | null): void;
-  /** Overlay route-independent receipt recovery without persisting it. */
+  /** Overlay route-independent result without persisting it. */
   observeServerUpdateVerification(
     state: ServerUpdateReceiptVerificationState | null,
   ): void;

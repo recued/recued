@@ -69,7 +69,7 @@ const RECEPTION_INBOX_REASON_ATTR =
 /** D-177 N.14 — allow never combines with edits (the server refuses; the
  *  client explains instead of silently dropping the edits). */
 export const RECEPTION_INBOX_ALLOW_WITH_EDITS_COPY =
-  "Clear your edits first — an edited approval can't grant standing trust for this form.";
+  "Undo your changes first. If you change something, Recued cannot trust this form from now on.";
 
 /** Render the allow offer's bounds ("24 h / 20 uses"; days past 48 h). */
 const formatAllowBounds = (offer: { ttl_ms: number; max_uses: number }): string => {
@@ -615,7 +615,7 @@ const parseFieldValue = (
       //
       // The type, not the prefill, decides the coercion.
       const ms = new Date(raw).getTime();
-      if (!Number.isFinite(ms)) throw new Error(`${field.label} must be a date and time.`);
+      if (!Number.isFinite(ms)) throw new Error(`${field.label} has to be a date and a time.`);
       return ms;
     }
     case 'json':
@@ -648,7 +648,7 @@ const renderFieldControl = (
     // "unavailable" label (and stays disabled) rather than an empty dropdown.
     empty.textContent =
       field.options_source !== null
-        ? `Picker unavailable: ${field.options_source}`
+        ? `Recued cannot offer choices here: ${field.options_source}`
         : 'Select';
     select.appendChild(empty);
     select.value = typeof field.value === 'string' ? field.value : '';
@@ -786,12 +786,12 @@ export const mountReceptionInboxPanel = (
   ): RefPicker.RefPickerRenderConfig => ({
     pickerId: `reception-inbox-dest-${field.key}`,
     placeholder:
-      destinationLoad === 'loading' ? 'Loading destinations...' : 'Search destinations',
+      destinationLoad === 'loading' ? 'Loading where it can go…' : 'Search where it can go',
     ariaLabel: field.label,
     emptyText:
       destinationLoad === 'loading'
-        ? 'Loading destinations...'
-        : 'No destinations match.',
+        ? 'Loading where it can go…'
+        : 'Nothing matches.',
   });
 
   const destinationSeed = (
@@ -847,7 +847,7 @@ export const mountReceptionInboxPanel = (
       appendText(
         doc,
         failure,
-        `Could not load destinations: ${destinationError}`,
+        `Recued could not load where it can go: ${destinationError}`,
       );
       const retry = makeButton(
         doc,
@@ -1184,7 +1184,7 @@ export const mountReceptionInboxPanel = (
     if (state.loading && state.items.length === 0) {
       const loading = doc.createElement('div');
       loading.className = 'reception-inbox-empty';
-      loading.textContent = 'Loading Reception Inbox...';
+      loading.textContent = 'Loading your Reception inbox…';
       shell.appendChild(loading);
       return;
     }
@@ -1201,8 +1201,8 @@ export const mountReceptionInboxPanel = (
       empty.className = 'reception-inbox-empty';
       empty.textContent =
         state.view === 'open'
-          ? 'No held Reception requests.'
-          : 'No dismissed or expired Reception requests.';
+          ? 'Nothing is waiting for you.'
+          : 'Nothing has been turned away or run out.';
       list.appendChild(empty);
     } else {
       for (const group of currentModel.groups) {
@@ -1433,7 +1433,7 @@ export const mountReceptionInboxPanel = (
       selected_hold_id: selectedHoldId,
       loading: false,
       in_flight: false,
-      error: `Decision saved, but the inbox couldn't refresh: ${errMessage(err)}`,
+      error: `Saved. Recued could not reload your inbox: ${errMessage(err)}`,
       acknowledge_risk: false,
     };
     render();
@@ -1654,7 +1654,7 @@ export const mountReceptionInboxPanel = (
     if (detail === null) {
       const empty = doc.createElement('div');
       empty.className = 'reception-inbox-empty';
-      empty.textContent = 'Select an inbox item.';
+      empty.textContent = 'Pick something from your inbox.';
       parent.appendChild(empty);
       return;
     }
@@ -1700,7 +1700,7 @@ export const mountReceptionInboxPanel = (
       heading.textContent = `Previous bookings (${bookingHistory.total})`;
       history.appendChild(heading);
       if (bookingHistory.entries.length === 0) {
-        appendText(doc, history, 'No previous completed or no-show bookings.');
+        appendText(doc, history, 'No finished bookings, and no no-shows.');
       } else {
         const list = doc.createElement('ul');
         history.appendChild(list);
@@ -1760,7 +1760,7 @@ export const mountReceptionInboxPanel = (
         });
         label.appendChild(checkbox);
         label.appendChild(
-          doc.createTextNode(' I reviewed this attachment — attach it anyway'),
+          doc.createTextNode(' I have looked at this file. Attach it anyway'),
         );
         attachment.appendChild(label);
       }
@@ -1792,7 +1792,7 @@ export const mountReceptionInboxPanel = (
     if (detail.fields.length === 0) {
       const noFields = doc.createElement('div');
       noFields.className = 'reception-inbox-muted';
-      noFields.textContent = 'No editable args for this held operation.';
+      noFields.textContent = 'There is nothing to change here.';
       form.appendChild(noFields);
     }
 
@@ -1832,7 +1832,7 @@ export const mountReceptionInboxPanel = (
       }
       const helpParts: string[] = [];
       if (field.privacy !== null) helpParts.push(`privacy: ${field.privacy}`);
-      if (field.affects_target) helpParts.push('changes the destination');
+      if (field.affects_target) helpParts.push('changes where it goes');
       // The live picker IS the affordance for a resolvable destination — only
       // surface the raw `picker:` hint for a source that is still stubbed.
       if (field.options_source !== null && !isDestinationPicker) {
@@ -1844,14 +1844,14 @@ export const mountReceptionInboxPanel = (
         help.textContent = helpParts.join(' - ');
         wrap.appendChild(help);
       }
-      if (field.affects_target) appendChip(doc, wrap, 'changes the destination', true);
+      if (field.affects_target) appendChip(doc, wrap, 'changes where it goes', true);
     }
 
     const reason = doc.createElement('textarea');
     reason.className = 'reception-inbox-reason';
     reason.setAttribute(RECEPTION_INBOX_REASON_ATTR, '');
-    reason.setAttribute('aria-label', 'Reject reason');
-    reason.placeholder = 'Reject reason';
+    reason.setAttribute('aria-label', 'Why you are saying no');
+    reason.placeholder = 'Why you are saying no';
     reason.value = decisionDraft?.reason ?? '';
     reason.disabled = state.in_flight;
     parent.appendChild(reason);
@@ -1893,7 +1893,7 @@ export const mountReceptionInboxPanel = (
         doc,
         allowPending
           ? 'Approving & allowing…'
-          : `Approve & allow for this form (${formatAllowBounds(detail.item.allow_offer)})`,
+          : `Say yes, and allow this form from now on (${formatAllowBounds(detail.item.allow_offer)})`,
         () => void approveSelected(detail, { allow: true }),
         {
           disabled:
@@ -1938,7 +1938,7 @@ export const mountReceptionInboxPanel = (
     if (detail.immutable_arg_keys.length > 0) {
       const immutable = doc.createElement('div');
       immutable.className = 'reception-inbox-help';
-      immutable.textContent = `Immutable args: ${detail.immutable_arg_keys.join(', ')}`;
+      immutable.textContent = `You cannot change these: ${detail.immutable_arg_keys.join(', ')}`;
       parent.appendChild(immutable);
     }
   };

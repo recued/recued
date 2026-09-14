@@ -94,7 +94,7 @@ describe('D-223 — hint-only pack connection disclosure', () => {
     // an empty section.
     const text = allText(render());
     expect(text).toMatch(/install it first/iu);
-    expect(text).toMatch(/change anything before saving/iu);
+    expect(text).toMatch(/change anything before you save/iu);
   });
 
   it('still renders a paragraph carrying the copy', () => {

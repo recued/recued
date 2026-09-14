@@ -80,6 +80,28 @@ export interface PreflightCheckpointContext {
   owner_override_offer?: PreflightOverrideOffer;
   approval_clamped_from?: OperationApproval;
   authorization_provenance?: AuthorizationProvenance;
+  /** D-161 Part B (display) — the `ExecutionSource.actor` of the run that
+   *  raised this hold, captured ONLY when it is an outside actor
+   *  (`anonymous` / `contracted_user`). The owner's own runs (`user_self`,
+   *  and `system` schedules acting on their authority) leave it absent, so
+   *  the ask gains a line exactly when there is something to say.
+   *
+   *  ⛔ WHY IT IS TOLD TO THE OWNER AT ALL. The taint layer already makes an
+   *  outside-origin run unable to ride a standing grant — that is WHY these
+   *  holds reach the owner (`reception-recipe-runner.ts`). The ask never said
+   *  so: it opens "Recipe X wants to run …" whether the run was started by the
+   *  owner at a keyboard or by a stranger posting a public form. Naming the
+   *  starter is the one fact the reviewer cannot recover from anything else on
+   *  the card.
+   *
+   *  ⛔ WIDENED `string`, NOT `Actor`, AND DELIBERATELY SO — the same choice
+   *  `risk_tier` above makes. `isCheckpoint` rejects the WHOLE checkpoint on a
+   *  member it cannot validate, and a rejected checkpoint is a PENDING
+   *  APPROVAL THE OWNER LOSES. This field only ever prints a sentence, so a
+   *  future `Actor` member read back by an older binary must degrade to "no
+   *  line", never to "hold discarded". Renderers match known values and emit
+   *  nothing for the rest. */
+  origin_actor?: string;
 }
 
 /** D-182 §8 (GRANT HALF, Inc B-writes) — the recipe-LESS raw-op door hold.
@@ -539,7 +561,12 @@ export const isCheckpoint = (value: unknown): value is Checkpoint => {
       || Array.isArray(v.preflight_context)
     ) return false;
     const c = v.preflight_context as Record<string, unknown>;
-    for (const f of ['tool_slug', 'connection_name', 'risk_tier', 'reason'] as const) {
+    // `origin_actor` rides the widened-string lane WITH `risk_tier`, not the
+    // closed-union lane with `approval_clamped_from` below: a display-only
+    // member must never be the reason a pending approval fails to load.
+    for (const f of [
+      'tool_slug', 'connection_name', 'risk_tier', 'reason', 'origin_actor',
+    ] as const) {
       if (c[f] !== undefined && typeof c[f] !== 'string') return false;
     }
     if (c.gated_action_settlement_mode !== undefined

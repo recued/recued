@@ -54,6 +54,22 @@ describe('D-172 P2 — media class hint', () => {
 });
 
 describe('D-172 P2 — composer attachments', () => {
+  it('restores finalized references without an upload transport and removes only the submitted rows', () => {
+    const attachments = createComposerAttachments({ onChange: vi.fn() });
+    const first = { file_id: 'file:first', media_class: 'image', filename: 'Photo.png', selection_revision: 'a'.repeat(64) };
+    const later = { file_id: 'file:later', media_class: 'document', filename: 'Attachment' };
+    attachments.restore([first]);
+    attachments.restore([first]); // Selecting it twice does not duplicate the chip.
+    expect(attachments.rows()).toHaveLength(1);
+    const submitted = attachments.rows()[0]!.id;
+    expect(attachments.hasInFlight()).toBe(false);
+    expect(attachments.payload()).toEqual([first]);
+    attachments.restore([later]);
+    attachments.remove(submitted);
+    expect(attachments.payload()).toEqual([later]);
+    attachments.clear();
+    expect(attachments.rows()).toEqual([]);
+  });
   it('is NOT attachable until the record id lands', async () => {
     const { engines, restore } = await withFakeEngine();
     try {
@@ -77,7 +93,7 @@ describe('D-172 P2 — composer attachments', () => {
 
       engines[0].listener?.({ sent: 10, total: 10, recordId: 'file:abc' });
       expect(a.rows()[0].phase).toBe('attached');
-      expect(a.payload()).toEqual([{ file_id: 'file:abc', media_class: 'document' }]);
+      expect(a.payload()).toEqual([{ file_id: 'file:abc', media_class: 'document', filename: 'contract.pdf' }]);
       expect(a.hasInFlight()).toBe(false);
     } finally {
       restore();
@@ -137,7 +153,7 @@ describe('D-172 P2 — composer attachments', () => {
       expect(a.rows()).toHaveLength(1);
       expect(a.rows()[0].id).toBe(secondId);
       expect(a.rows()[0].filename).toBe('second.pdf');
-      expect(a.payload()).toEqual([{ file_id: 'file:second', media_class: 'document' }]);
+      expect(a.payload()).toEqual([{ file_id: 'file:second', media_class: 'document', filename: 'second.pdf' }]);
     } finally {
       restore();
     }

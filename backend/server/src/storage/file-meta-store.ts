@@ -81,6 +81,8 @@ export type FileMetaStore = SourceMirrorStore<
    *  fires per-keystroke; an empty query has nothing to match). (`list` stays
    *  per-scope + AND-filtered; a global picker needs to span Sources + OR.) */
   searchAll(needle: string, limit: number): FileMetaRow[];
+  /** Stable key pagination within one connected source; filtering precedes LIMIT. */
+  browse(scope: string, query: string, limit: number, after?: string): FileMetaRow[];
 };
 
 export class FileMetaSnapshotTooLargeError extends Error {
@@ -358,6 +360,16 @@ export const createFileMetaStore = (db: Database.Database): FileMetaStore => {
     get,
     list,
     searchAll,
+    browse(scope, query, limit, after) {
+      const terms = query.trim().split(/\s+/).filter(Boolean);
+      const rows = db.prepare(`SELECT scope,target_id,meta FROM ${FILE_META_TABLE}
+        WHERE scope=? ${after !== undefined ? 'AND target_id>?' : ''}
+          ${terms.map(() => `AND ${HAYSTACK} LIKE ? ESCAPE '\\'`).join(' ')}
+        ORDER BY target_id ASC LIMIT ?`).all(scope, ...(after !== undefined ? [after] : []),
+          ...terms.map(term => `%${escapeLikeWildcards(term)}%`), Math.min(201, Math.max(1, limit))) as
+          Array<{ scope: string; target_id: string; meta: string }>;
+      return rows.map(row => ({ ...row, meta: deserializeFileMeta(row.meta) }));
+    },
     listSnapshotHashes,
     listSourcePaths,
     deleteForSource,

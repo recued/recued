@@ -178,7 +178,7 @@ describe('mountRecipeInstallDialog', () => {
     expect(dialog.isOpen()).toBe(true);
     expect(depRows(host)).toHaveLength(3);
     expect(collectText(host)).toContain(
-      'Install this recipe together with any selected packs it needs to run.',
+      'Install this Recipe along with the Packs it needs.',
     );
     // hubspot installed (no checkbox), salesforce missing+known (checked),
     // thirdparty unknown (no checkbox) → only salesforce selected.
@@ -455,7 +455,7 @@ describe('mountRecipeInstallDialog — per-dep grant scope (§7.1/§7.2)', () =>
     });
   });
 
-  it('choosing All other contracts sends install_scope.scope all_other_contracts', async () => {
+  it('choosing Everyone else you have an agreement with sends install_scope.scope all_other_contracts', async () => {
     const { dialog, installPack } = setup();
     dialog.open(recipe, [connDep('salesforce')]);
     dialog.setDepScope('salesforce', 'all_other_contracts');

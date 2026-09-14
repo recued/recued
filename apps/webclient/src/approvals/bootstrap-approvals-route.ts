@@ -517,7 +517,7 @@ export const bootstrapApprovalsRoute = (
   header.appendChild(heading);
   const reviewedExecutionsLink = doc.createElement('a');
   reviewedExecutionsLink.href = preapprovalHref();
-  reviewedExecutionsLink.textContent = 'Reviewed executions';
+  reviewedExecutionsLink.textContent = 'Runs you have looked at';
   header.appendChild(reviewedExecutionsLink);
 
   const refreshButton = doc.createElement('button');
@@ -792,7 +792,7 @@ export const bootstrapApprovalsRoute = (
             ? actionFocusOwner.action?.value
             : undefined,
         disabledReason: stale
-          ? 'Timed out - refresh queue.'
+          ? 'That took too long. Load the list again.'
           : resolving.has(approval.approval_id)
             ? 'Resolving...'
             : undefined,
@@ -813,7 +813,7 @@ export const bootstrapApprovalsRoute = (
     try {
       await panel.submitAnswer(askId, optionId, note);
     } catch (err) {
-      askResolveErrors.set(askId, 'Could not submit — try again.');
+      askResolveErrors.set(askId, 'Recued could not send that. Try again.');
       throw err;
     } finally {
       resolvingAsks.delete(askId);
@@ -1102,7 +1102,7 @@ export const bootstrapApprovalsRoute = (
           ? null
           : {
               error: classifyRpcError(chatPlanState.error),
-              label: "Couldn't refresh Chat approvals",
+              label: "Recued could not reload the Chat approvals",
             },
       ],
       { hasData: planCount > 0 },
@@ -1126,7 +1126,7 @@ export const bootstrapApprovalsRoute = (
       askErr.className = 'approvals-error';
       askErr.setAttribute(APPROVALS_ROUTE_ERROR_ATTR, 'error');
       askErr.setAttribute('role', 'alert');
-      askErr.textContent = `Couldn't load asks: ${askSnapshot.listError}`;
+      askErr.textContent = `Recued could not load the questions: ${askSnapshot.listError}`;
       list.appendChild(askErr);
     }
 
@@ -1141,7 +1141,7 @@ export const bootstrapApprovalsRoute = (
       const loading = doc.createElement('div');
       loading.className = 'approvals-loading';
       loading.setAttribute(APPROVALS_ROUTE_LOADING_ATTR, '');
-      loading.textContent = 'Loading pending decisions...';
+      loading.textContent = 'Loading what is waiting for you…';
       list.appendChild(loading);
       reconcileDecisionFocus(focusedCardId, decisionRows);
       renderChrome();
@@ -1222,10 +1222,10 @@ export const bootstrapApprovalsRoute = (
     summary.textContent =
       total === 0
         ? loading
-          ? 'Checking pending decisions...'
+          ? 'Checking what is waiting for you…'
           : verified
-          ? 'No pending decisions.'
-          : "Pending decisions couldn't be verified."
+          ? 'Nothing is waiting for you.'
+          : "Recued could not check what is waiting for you."
         : `${total} pending ${plural(total, 'decision')} waiting on you.`;
 
     const allClear =
@@ -1256,7 +1256,7 @@ export const bootstrapApprovalsRoute = (
         approvalState = {
           ...approvalState,
           phase: 'error',
-          listError: { error: classifyRpcError(err), label: "Couldn't load approval gates" },
+          listError: { error: classifyRpcError(err), label: "Recued could not load the approval rules" },
         };
         renderDecisions();
       }
@@ -1309,7 +1309,7 @@ export const bootstrapApprovalsRoute = (
         if (disposed || gen !== approvalSubscribeGeneration) return;
         approvalState = {
           ...approvalState,
-          liveError: { error: classifyRpcError(err), label: 'Live approval updates unavailable' },
+          liveError: { error: classifyRpcError(err), label: 'Approvals are not updating live' },
         };
         renderDecisions();
       }
@@ -1559,7 +1559,7 @@ export const bootstrapApprovalsRoute = (
       || resolvingAsks.size > 0
       || resolvingPlans.size > 0
       || panel.hasInFlightWork()
-        ? 'An approval action is still in progress. Leave Approvals anyway?'
+        ? 'Something is still happening here. Leave anyway?'
         : null,
     dispose: () => {
       if (disposed) return;

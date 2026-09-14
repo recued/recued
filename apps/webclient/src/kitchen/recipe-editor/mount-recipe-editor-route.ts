@@ -576,21 +576,21 @@ export const mountFormResponseRecipeSeedRoute = (
 
     const eyebrow = doc.createElement('p');
     eyebrow.className = 'form-response-automation-eyebrow';
-    eyebrow.textContent = 'Accepted-response automation';
+    eyebrow.textContent = 'What happens when you accept an answer';
     panel.appendChild(eyebrow);
 
     const heading = doc.createElement('h1');
     heading.tabIndex = -1;
-    heading.textContent = 'Automations for this form';
+    heading.textContent = 'What runs for this form';
     panel.appendChild(heading);
 
     const intro = doc.createElement('p');
     intro.className = 'form-response-automation-intro';
     intro.textContent = matches.length === 0
-      ? 'Choose an installed workflow template, or start with a blank accepted-response automation.'
+      ? 'Pick a ready-made template, or start from nothing.'
       : matches.length === 1
-        ? 'One saved recipe listens to accepted responses associated with this form. Open it, use an installed workflow template, or start another automation.'
-        : `${matches.length} saved recipes listen to accepted responses associated with this form. Open one, use an installed workflow template, or start another automation.`;
+        ? 'One saved Recipe runs when you accept an answer to this form. Open it, use a ready-made template, or start another automation.'
+        : `${matches.length} saved Recipes run when you accept an answer to this form. Open one, use a ready-made template, or start another automation.`;
     panel.appendChild(intro);
 
     if (matches.length > 0) {
@@ -619,12 +619,12 @@ export const mountFormResponseRecipeSeedRoute = (
         scope.textContent = match.scope === 'this_form'
           ? 'This form'
           : match.scope === 'this_form_filtered'
-            ? 'This form + filters'
+            ? 'This form, plus filters'
             : 'All forms';
         if (match.scope === 'this_form_filtered') {
           scope.setAttribute(
             'title',
-            'This recipe also narrows by response or endpoint.',
+            'This Recipe only runs for certain answers or links.',
           );
         }
         link.appendChild(scope);
@@ -652,16 +652,16 @@ export const mountFormResponseRecipeSeedRoute = (
       use.setAttribute(FORM_RESPONSE_WORKFLOW_TEMPLATE_USE_ATTR, template.entry.recipe_id);
       use.setAttribute(
         'aria-label',
-        `Use installed workflow template ${templateName} (${template.entry.recipe_id})`,
+        `Use a ready-made template ${templateName} (${template.entry.recipe_id})`,
       );
-      use.textContent = 'Use installed workflow template';
+      use.textContent = 'Use a ready-made template';
       use.addEventListener('click', () => mountFreshDraft(template.entry));
       row.appendChild(use);
       panel.appendChild(row);
     }
 
     panel.appendChild(makeCreateButton(
-      matches.length > 0 ? 'Create another automation' : 'Start blank automation',
+      matches.length > 0 ? 'Make another one' : 'Start from nothing',
     ));
     host.appendChild(panel);
     if (focusHeading) heading.focus?.({ preventScroll: true });
@@ -675,14 +675,14 @@ export const mountFormResponseRecipeSeedRoute = (
     line.setAttribute('role', 'alert');
     line.textContent = `Couldn’t check existing automations: ${humanizeRpcError(error)}`;
     host.appendChild(line);
-    const recovery = makeCreateButton('Create a new automation anyway');
+    const recovery = makeCreateButton('Make a new one anyway');
     host.appendChild(recovery);
     if (focusRecovery) recovery.focus?.({ preventScroll: true });
   };
 
   const loading = doc.createElement('p');
   loading.setAttribute(MOUNT_RECIPE_EDITOR_STATUS_ATTR, 'loading');
-  loading.textContent = 'Checking existing automations…';
+  loading.textContent = 'Looking at what you already have…';
   host.appendChild(loading);
 
   void Promise.resolve()

@@ -7,10 +7,15 @@
  *  `.var-*` widget rules under the modal host).
  */
 
+import { describePickedInstantOnServer } from '../two-clock.js';
 import {
   buildTargetRequiredMessage,
   CRON_PRESETS,
   describeCron,
+  DEFAULT_MISSED_SCHEDULE_POLICY,
+  MISSED_SCHEDULE_POLICIES,
+  MISSED_SCHEDULE_POLICY_COPY,
+  type MissedSchedulePolicy,
   type ServerRecipeListEntry,
   type ServerSchedule,
 } from '@recued/contracts';
@@ -42,9 +47,16 @@ export const RUN_MODAL_PRESET_ATTR = 'data-recued-run-modal-preset';
  *  the CRON preset picker and Add creates a ONE-SHOT. */
 export const RUN_MODAL_REPEAT_ATTR = 'data-recued-run-modal-repeat';
 /** D-215 slice 5 — the one-shot datetime-local input. */
+export const RUN_MODAL_SERVER_TIME_ATTR = 'data-recued-run-modal-server-time';
 export const RUN_MODAL_RUN_AT_ATTR = 'data-recued-run-modal-run-at';
 export const RUN_MODAL_RULE_ID_ATTR = 'data-recued-run-modal-rule-id';
 export const RUN_MODAL_SCHEDULE_ERROR_ATTR = 'data-recued-run-modal-schedule-error';
+/** D-266 — the per-schedule missed-run policy select. Carries the
+ *  schedule id in `RUN_MODAL_RULE_ID_ATTR` alongside it. */
+export const RUN_MODAL_MISSED_POLICY_ATTR = 'data-recued-run-modal-missed-policy';
+/** D-266 — the Add-schedule form's policy select (no schedule id yet). */
+export const RUN_MODAL_NEW_MISSED_POLICY_ATTR =
+  'data-recued-run-modal-new-missed-policy';
 export const RUN_MODAL_PATTERN_ATTR = 'data-recued-run-modal-pattern';
 export const RUN_MODAL_TRIGGER_ERROR_ATTR = 'data-recued-run-modal-trigger-error';
 
@@ -206,7 +218,7 @@ const renderRunTab = (
     : `
         <div ${RUN_MODAL_TARGET_WARNING_ATTR} role="alert" class="run-modal-target-warning">
           ${e(buildTargetRequiredMessage(recipe.recipe_id, gate.assessment.missing))}${
-            pageMissing ? ` ${e('You can also run it from chat — the AI resolves the record for you.')}` : ''
+            pageMissing ? ` ${e('You can also run it from Chat, and the AI will find the right one for you.')}` : ''
           }
         </div>`;
   const targetBody = targetRows.length > 0 || targetWarning.length > 0
@@ -293,6 +305,48 @@ const scheduleActionName = (
   return e(`${action} schedule ${cadence} (${schedule.schedule_id})`);
 };
 
+/** A stable element id per schedule, so the modal's existing
+ *  focus-by-id restore survives the repaint that follows a policy
+ *  change — no new focus kind needed. */
+export const missedPolicySelectId = (scheduleId: string): string =>
+  `run-modal-missed-policy-${scheduleId}`;
+
+/** D-266 — the owner's answer to "what if this does not run?".
+ *
+ *  Rendered ON the schedule, not on the recipe: the same recipe answers
+ *  differently on two schedules, and it is the owner who knows whether a
+ *  late run is worth having. One-shots are excluded — there is no
+ *  "missed cycle" for a schedule with exactly one occurrence; D-215
+ *  already retains a one-shot that did not run as the owner's retry
+ *  handle, which is the same decision made a different way. */
+const missedPolicyOptions = (current: MissedSchedulePolicy): string =>
+  MISSED_SCHEDULE_POLICIES.map((policy) => {
+    const copy = MISSED_SCHEDULE_POLICY_COPY[policy];
+    return `<option value="${e(policy)}"${policy === current ? ' selected' : ''}`
+      + ` title="${e(copy.description)}">${e(copy.label)}</option>`;
+  }).join('');
+
+const renderMissedPolicy = (
+  schedule: ServerSchedule,
+  mutating: boolean,
+): string => {
+  if (schedule.mode === 'one_shot') return '';
+  const options = missedPolicyOptions(
+    schedule.missed_policy ?? DEFAULT_MISSED_SCHEDULE_POLICY,
+  );
+  return `
+      <label class="run-modal-meta" for="${e(missedPolicySelectId(schedule.schedule_id))}">
+        If it is missed:
+        <select class="run-modal-select"
+          id="${e(missedPolicySelectId(schedule.schedule_id))}"
+          ${RUN_MODAL_MISSED_POLICY_ATTR}
+          ${RUN_MODAL_RULE_ID_ATTR}="${e(schedule.schedule_id)}"
+          aria-label="${scheduleActionName('Missed-run policy for', schedule)}"${
+            mutating ? ' aria-disabled="true"' : ''
+          }>${options}</select>
+      </label>`;
+};
+
 const renderScheduleRow = (
   schedule: ServerSchedule,
   enabled: boolean,
@@ -312,6 +366,7 @@ const renderScheduleRow = (
       <div class="run-modal-meta">next ${
         enabled && nextRunAt !== null ? e(new Date(nextRunAt).toLocaleString()) : '—'
       }${lastError ? ` · ${e(lastError)}` : ''}</div>
+      ${renderMissedPolicy(schedule, mutating)}
     </div>
     <div class="run-modal-actions">
       ${showConfig ? `<button type="button" class="run-modal-button"
@@ -387,7 +442,24 @@ const renderScheduleTab = (
         </select>`
           : `<input type="datetime-local" id="run-modal-preset" class="run-modal-select"
              ${RUN_MODAL_RUN_AT_ATTR} value="${e(state.run_at_local)}"
-             aria-label="Run once at" />`}
+             aria-label="Run once at" />${((): string => {
+               // D-269 — a `datetime-local` is read in the BROWSER's zone, and
+               // the schedule runs on a machine that may keep another. The
+               // instant is right; the sentence saying which clock was missing.
+               // ⚠ Silent when the two agree — a line telling you 09:00 means
+               // 09:00 is the line that teaches people to stop reading them.
+               const picked = Date.parse(state.run_at_local);
+               if (!Number.isFinite(picked)) return '';
+               const note = describePickedInstantOnServer(picked, state.server_time_zone);
+               return note === null ? '' : `<p class="run-modal-copy" ${RUN_MODAL_SERVER_TIME_ATTR}>${e(note)}</p>`;
+             })()}`}
+        ${state.repeat ? `<label class="run-modal-copy" for="run-modal-new-missed-policy">
+          If it is missed:
+          <select id="run-modal-new-missed-policy" class="run-modal-select"
+            ${RUN_MODAL_NEW_MISSED_POLICY_ATTR}>${
+              missedPolicyOptions(state.missed_policy)
+            }</select>
+        </label>` : ''}
         <button type="button" class="run-modal-button run-modal-button--primary"
           ${RUN_MODAL_ACTION_ATTR}="add-schedule"${state.mutating ? ' aria-disabled="true" aria-busy="true"' : ''}>
           ${state.repeat ? 'Add schedule' : 'Schedule once'}
@@ -410,7 +482,7 @@ const renderTriggerTab = (
   caps: RunModalCaps,
 ): string => {
   if (!caps.canTrigger) {
-    return '<p class="run-modal-meta">Event triggers are not available on this server yet.</p>';
+    return '<p class="run-modal-meta">This server cannot set things off from events yet.</p>';
   }
   if (state.triggers === null) {
     return '<p class="run-modal-meta">Loading triggers…</p>';
@@ -510,7 +582,7 @@ export const renderRunModal = (
       : renderRunTab(state, recipe, caps);
   return `
     <div ${RUN_MODAL_OVERLAY_ATTR}="${e(recipe.recipe_id)}">
-      <section class="run-modal-panel" role="dialog" aria-modal="true" aria-label="Run a recipe" tabindex="-1">
+      <section class="run-modal-panel" role="dialog" aria-modal="true" aria-label="Run a Recipe" tabindex="-1">
         <header class="run-modal-header">
           <h2 class="run-modal-title">${e(title)}</h2>
           <div class="run-modal-recipe-id" ${RUN_MODAL_IDENTITY_ATTR}

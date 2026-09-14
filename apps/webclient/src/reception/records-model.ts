@@ -83,12 +83,12 @@ const OUTCOME_LABELS: Readonly<
   pending: 'Waiting',
   processed: 'Processed',
   auto_confirmed: 'Auto-confirmed',
-  requires_review: 'Needs review',
+  requires_review: 'Needs a look',
   rejected: 'Rejected',
   failed: 'Failed',
   duplicate: 'Duplicate',
   spam: 'Spam',
-  rejected_domain: 'Blocked domain',
+  rejected_domain: 'That email address is blocked',
 };
 
 /** ⚠ `outcome` is typed per-arm on the contract but arrives over the wire, so an unknown value

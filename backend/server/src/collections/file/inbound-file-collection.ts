@@ -1,11 +1,17 @@
 import { initializePreapprovalLifecycle, synchronizePreapprovalIdentity } from '../../storage/preapproval-lifecycle.js';
 import { filePreapprovalMaterial } from './file-snapshot.js';
 import { createHash } from 'node:crypto';
-import { quoteSqliteIdent } from '../../storage/collection-blob-refs.js';
+import { createWriteStream } from 'node:fs';
+import { pipeline } from 'node:stream/promises';
+import { listCollectionReferencedBlobHashes, quoteSqliteIdent } from '../../storage/collection-blob-refs.js';
+import { listReferencedBlobHashes } from '../../storage/sqlite-cache-store.js';
+import { createFileAttachmentLifecycle, type FileAttachmentLifecycle, type FileLifecycleResult } from '../../storage/file-attachment-lifecycle.js';
 import type Database from 'better-sqlite3';
 import type { StorageGate } from '@recued/storage-gate';
 import type { AuditLogStore } from '@recued/storage';
+import { isFileCloudCapture, type FileCloudCapture } from '@recued/contracts';
 import type {
+  FileLifecycleMutation,
   CollectionHealth,
   CollectionListQuery,
   CollectionRecord,
@@ -70,6 +76,7 @@ export interface DataFileHotFields extends Record<string, unknown> {
   origin: FileOrigin;
   scan_status: FileScanStatus;
   media_class: FileMediaClass;
+  cloud_capture?: FileCloudCapture;
 }
 
 export interface DataFileRecord extends CollectionRecord {
@@ -94,12 +101,23 @@ export interface InboundFileIngestInput {
   size_bytes?: number;
   origin: FileOrigin;
   source_id: string;
+  /** Server-captured source metadata, never supplied by the attachment picker. */
+  cloud_capture?: FileCloudCapture;
   scan_status?: FileScanStatus;
   now?: number;
 }
 
+/** Bytes must already be in CAS. Synchronous publication can join a receipt transaction. */
+export type StoredFileIngestInput = Omit<InboundFileIngestInput, 'bytes' | 'src_path' | 'storage_ref'> & {
+  storage_ref: FileStorageRef;
+};
+
 export interface InboundFileCollection extends Collection {
+  attachmentLifecycle?: FileAttachmentLifecycle;
+  mutateLifecycle?(input: FileLifecycleMutation): FileLifecycleResult;
   ingest(input: InboundFileIngestInput): Promise<DataFileRecord>;
+  /** A receipt can wrap publication in its transaction; events fire after commit. */
+  ingestStored(input: StoredFileIngestInput, transaction?: (publish: () => DataFileRecord) => DataFileRecord): DataFileRecord;
   get(record_id: string): DataFileRecord | null;
   list(query: CollectionListQuery): DataFileRecord[];
   /** D-173 P5 (scan-gate part B) — patch one record's `scan_status` hot field
@@ -123,6 +141,10 @@ export interface InboundFileCollection extends Collection {
    *  recipes / AI is `data-file-read`; this path is reached only after the
    *  producing cli op was itself grant-gated. */
   readBytes(record_id: string): Promise<{ bytes: Buffer; mime_type: string; filename: string }>;
+  /** Server-internal streaming materialization for an already authorized
+   * consumer. The caller supplies private scratch, waits for authentication to
+   * finish, and owns cleanup. Not a new RPC or model/recipe read capability. */
+  copyToFile?(record_id: string, destPath: string): Promise<void>;
   liveCasBlobHashes(): Set<string>;
   sweepOrphanCasBlobs(): Promise<InboundFileCasSweepResult>;
   totalBytes(): number;
@@ -279,6 +301,10 @@ export const createInboundFileCollection = (
     slug,
     onBytesChanged: (delta) => { gate.addUsed(delta); },
   });
+  const attachmentLifecycle = createFileAttachmentLifecycle(db);
+  db.exec(`UPDATE ${quoteSqliteIdent(table.tableName)} SET hot_fields=json_set(hot_fields,'$.archived',0)
+    WHERE json_extract(hot_fields,'$.archived') IS NULL`);
+  attachmentLifecycle.register(slug, table.tableName);
 
   const emitter = createCollectionEmitter({
     bus,
@@ -344,7 +370,9 @@ export const createInboundFileCollection = (
       WHERE kind='file_source' AND key='${slug.replaceAll("'", "''")}:' || OLD.record_id AND present=1;
     END`);
   const upsertWithRef = (record: CollectionRecord, storage_ref: FileStorageRef): CollectionRecord | null => {
+    if (attachmentLifecycle.version(record.record_id)) throw new Error('Retained attachment versions are immutable.');
     const stored = normalizeRecordForStorage(record, storage_ref);
+    stored.hot_fields.archived = table.get(record.record_id)?.hot_fields.archived ?? 0;
     const tx = db.transaction(() => {
       synchronizePreapprovalIdentity(db, 'file_source', `${slug}:${record.record_id}`,
         filePreapprovalMaterial({ ...stored, storage_ref }));
@@ -423,6 +451,26 @@ export const createInboundFileCollection = (
       size_bytes = input.size_bytes;
     }
 
+    return ingestStored({ ...input, storage_ref, content_hash, size_bytes });
+  };
+
+  const ingestStored: InboundFileCollection['ingestStored'] = (input, transaction) => {
+    const storage_ref = assertStorageRef(input.storage_ref);
+    const content_hash = input.content_hash ?? (storage_ref.kind === 'cas' ? storage_ref.blob_hash : '');
+    if (!content_hash || (storage_ref.kind === 'cas' && content_hash !== storage_ref.blob_hash)) {
+      throw new Error('data.file.received.ingest: stored_content_hash_mismatch');
+    }
+    if (input.cloud_capture !== undefined && (!isFileCloudCapture(input.cloud_capture)
+      || input.origin !== 'connection_download' || storage_ref.kind !== 'cas'
+      || input.cloud_capture.content_hash !== content_hash
+      || (input.cloud_capture.export_as !== undefined
+        && (input.cloud_capture.export_as.filename !== sanitizeFileDisplayName(input.filename) || input.cloud_capture.export_as.mime_type !== input.mime_type)))) {
+      throw new Error('data.file.received.ingest: cloud_capture_content_mismatch');
+    }
+    const size_bytes = input.size_bytes;
+    if (size_bytes === undefined || !Number.isSafeInteger(size_bytes) || size_bytes < 0) {
+      throw new Error('data.file.received.ingest: size_bytes required for pre-stored storage_ref');
+    }
     const record_id = inboundFileRecordId(input.origin, input.source_id);
     const prior = table.get(record_id);
     const stamp = input.now ?? nowOf();
@@ -438,6 +486,7 @@ export const createInboundFileCollection = (
         origin: input.origin,
         scan_status: input.scan_status ?? 'unscanned',
         media_class: mediaClassForMimeType(input.mime_type),
+        ...(input.cloud_capture ? { cloud_capture: input.cloud_capture } : {}),
       },
       size_bytes,
       source_id: input.source_id,
@@ -445,38 +494,60 @@ export const createInboundFileCollection = (
       ...(storage_ref.kind === 'cas' ? { blob_hash: storage_ref.blob_hash } : {}),
     };
 
-    const prev = upsertWithRef(record, storage_ref);
-    if (prev) emitter.updated(record_id, prev.hot_fields);
-    else emitter.created(record_id);
-    lastIndexedAt = stamp;
-    return hydrate(table.get(record_id))!;
+    const publication: { previous: CollectionRecord | null; written: boolean } = { previous: null, written: false };
+    const publish = (): DataFileRecord => {
+      publication.previous = upsertWithRef(record, storage_ref); publication.written = true;
+      return hydrate(table.get(record_id))!;
+    };
+    let result: DataFileRecord;
+    try { result = transaction ? transaction(publish) : publish(); }
+    catch (error) {
+      // CollectionTable accounts writes eagerly; a surrounding receipt transaction
+      // may roll back those rows, so restore the gate's live total as well.
+      gate.setUsed(totalBytes()); throw error;
+    }
+    if (publication.written) {
+      gate.setUsed(totalBytes());
+      if (publication.previous) emitter.updated(record_id, publication.previous.hot_fields);
+      else emitter.created(record_id);
+      lastIndexedAt = stamp;
+    }
+    return result;
   };
 
   const readBytes = async (
     record_id: string,
   ): Promise<{ bytes: Buffer; mime_type: string; filename: string }> => {
-    const record = hydrate(table.get(record_id));
+    const record = attachmentLifecycle.getVersion(record_id) ?? hydrate(table.get(record_id));
     if (!record) {
       throw new Error(`data.file.${slug}.readBytes: unknown record '${record_id}'`);
     }
     if (record.storage_ref.kind !== 'cas') {
       throw new Error(`data.file.${slug}.readBytes: record '${record_id}' is not a CAS blob (remote refs resolve through the file_meta_ref read path)`);
     }
-    const bytes = await blobs.get(record.storage_ref.blob_hash);
-    if (!bytes) {
-      throw new Error(`data.file.${slug}.readBytes: CAS blob missing for record '${record_id}'`);
-    }
-    return {
-      bytes,
-      mime_type: record.hot_fields.mime_type,
-      filename: record.hot_fields.filename,
-    };
+    const release = attachmentLifecycle.lease(record_id, record.storage_ref.blob_hash);
+    try {
+      const bytes = await blobs.get(record.storage_ref.blob_hash);
+      if (!bytes) {
+        throw new Error(`data.file.${slug}.readBytes: CAS blob missing for record '${record_id}'`);
+      }
+      return {
+        bytes,
+        mime_type: record.hot_fields.mime_type,
+        filename: record.hot_fields.filename,
+      };
+    } finally { release(); }
   };
 
   const setScanStatus = (
     record_id: string,
     status: FileScanStatus,
   ): DataFileRecord | null => {
+    const version = attachmentLifecycle.getVersion(record_id);
+    if (version) {
+      db.prepare('UPDATE collection_file_attachment_versions SET scan_status=? WHERE content_hash=?').run(status, version.hot_fields.content_hash);
+      return attachmentLifecycle.getVersion(record_id);
+    }
     const existing = hydrate(table.get(record_id));
     if (!existing) return null;
     // Idempotent — re-reporting the same verdict (a resumed run, a duplicate
@@ -493,6 +564,8 @@ export const createInboundFileCollection = (
     // changes. `upsertWithRef` strips the in-memory `storage_ref` back into the
     // side table + `blob_hash` (via `normalizeRecordForStorage`).
     const prev = upsertWithRef(next, existing.storage_ref);
+    db.prepare('UPDATE collection_file_attachment_versions SET scan_status=? WHERE content_hash=?')
+      .run(status, existing.hot_fields.content_hash);
     if (prev) emitter.updated(record_id, prev.hot_fields);
     else emitter.created(record_id);
     lastIndexedAt = nowOf();
@@ -500,8 +573,20 @@ export const createInboundFileCollection = (
   };
 
   const liveCasBlobHashes = (): Set<string> => {
-    return table.referencedBlobHashes();
+    const keep = listCollectionReferencedBlobHashes(db);
+    if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='cache_entries'").get()) {
+      for (const hash of listReferencedBlobHashes(db)) keep.add(hash);
+    }
+    return keep;
   };
+
+  // A sweep may have captured its keep-set before a cloud import acquired its
+  // lease. Hold the same SQLite writer lock as lease admission through unlink;
+  // this also protects imports from the cache-pressure sweep on this CAS root.
+  blobs.addOrphanDeleteGuard?.((hash, remove) => {
+    if (!db.open) return false;
+    return db.transaction(() => liveCasBlobHashes().has(hash) ? false : remove()).immediate();
+  });
 
   const sweepOrphanCasBlobs = async (): Promise<InboundFileCasSweepResult> => {
     const keepSet = liveCasBlobHashes();
@@ -519,6 +604,11 @@ export const createInboundFileCollection = (
     return result;
   };
 
+  const totalBytes = (): number => table.totalBytes() + (db.prepare(`SELECT COALESCE(SUM(size),0) AS bytes FROM (
+    SELECT blob_hash,MAX(json_extract(record_json,'$.size_bytes')) AS size FROM collection_file_attachment_versions
+    WHERE blob_hash IS NOT NULL AND blob_hash NOT IN (SELECT blob_hash FROM ${quoteSqliteIdent(table.tableName)} WHERE blob_hash IS NOT NULL)
+    GROUP BY blob_hash)`).get() as { bytes: number }).bytes;
+
   const health = (): CollectionHealth => ({
     platform: 'file',
     slug,
@@ -534,17 +624,44 @@ export const createInboundFileCollection = (
     gate,
     sync,
     ingest,
+    ingestStored,
+    attachmentLifecycle,
+    mutateLifecycle(input) {
+      const changed: CollectionRecord[] = [];
+      let result: FileLifecycleResult;
+      try {
+        result = attachmentLifecycle.mutate(input.record_id, input.action, input.revision, id => {
+          const previous = table.get(id);
+          if (previous) changed.push(previous);
+          if (input.action === 'archive') {
+            db.prepare(`UPDATE ${quoteSqliteIdent(table.tableName)} SET hot_fields=json_set(hot_fields,'$.archived',1) WHERE record_id=?`).run(id);
+          } else {
+            synchronizePreapprovalIdentity(db, 'file_source', `${slug}:${id}`, null);
+            table.delete(id); refDelete.run(slug, id);
+          }
+        });
+      } finally { gate.setUsed(totalBytes()); }
+      const previous = changed[0];
+      if (previous) {
+        const fields = previous.hot_fields;
+        if (input.action === 'archive') emitter.updated(result.record_id, fields);
+        else emitter.deleted(result.record_id, fields);
+      }
+      return result;
+    },
     upsert(record) {
       const storage_ref = assertStorageRef(
         (record as { storage_ref?: unknown }).storage_ref ??
           (record.blob_hash ? { kind: 'cas', blob_hash: record.blob_hash } : undefined),
       );
       const prev = upsertWithRef(record, storage_ref);
+      gate.setUsed(totalBytes());
       if (prev) emitter.updated(record.record_id, prev.hot_fields);
       else emitter.created(record.record_id);
       lastIndexedAt = nowOf();
     },
     delete(record_id) {
+      attachmentLifecycle.assertDelete(record_id);
       const tx = db.transaction(() => {
         synchronizePreapprovalIdentity(db, 'file_source', `${slug}:${record_id}`, null);
         const prev = table.delete(record_id);
@@ -556,10 +673,10 @@ export const createInboundFileCollection = (
       return prev !== null;
     },
     get(record_id) {
-      return hydrate(table.get(record_id));
+      return attachmentLifecycle.getVersion(record_id) ?? hydrate(table.get(record_id));
     },
     list(query: CollectionListQuery) {
-      return table.list(query).map((record) => hydrate(record)!);
+      return table.list({ ...query, filters: { ...query.filters, archived: query.filters?.archived ?? 0 } }).map((record) => hydrate(record)!);
     },
     search(query: CollectionSearchQuery): CollectionSearchMatch[] {
       return table.search(query);
@@ -570,9 +687,24 @@ export const createInboundFileCollection = (
       await sync.stop();
     },
     readBytes,
+    async copyToFile(record_id, destPath) {
+      const record = attachmentLifecycle.getVersion(record_id) ?? hydrate(table.get(record_id));
+      if (!record || record.storage_ref.kind !== 'cas') throw new Error('Retained file unavailable.');
+      const release = attachmentLifecycle.lease(record_id, record.storage_ref.blob_hash);
+      try {
+        if (blobs.encrypted) {
+          if (!blobs.decryptToFile) throw new Error('Streaming file read unavailable.');
+          await blobs.decryptToFile(record.storage_ref.blob_hash, destPath);
+        } else {
+          const stream = await blobs.getStream?.(record.storage_ref.blob_hash);
+          if (!stream) throw new Error('Retained file unavailable.');
+          await pipeline(stream, createWriteStream(destPath, { flags: 'wx', mode: 0o600 }));
+        }
+      } finally { release(); }
+    },
     setScanStatus,
     liveCasBlobHashes,
     sweepOrphanCasBlobs,
-    totalBytes: () => table.totalBytes(),
+    totalBytes,
   };
 };

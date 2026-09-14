@@ -131,7 +131,7 @@ describe('deliberate server-switch continuity', () => {
       recoveryReturnLandingHash: '#data/files/source-record-42',
       storage,
       reload,
-    })).toThrow('recovery return area is no longer safe');
+    })).toThrow('no longer safe to go back there');
     expect(reload).not.toHaveBeenCalled();
     expect(storage.data.has(SERVER_SWITCH_CONTINUITY_SESSION_KEY)).toBe(false);
 
@@ -140,14 +140,14 @@ describe('deliberate server-switch continuity', () => {
       recoveryReturnContext: 'area',
       storage,
       reload,
-    })).toThrow('recovery return context is no longer valid');
+    })).toThrow('can no longer take you back there');
     expect(() => requestServerSwitchReload({
       targetProfileId: 'profile-home',
       recoveryReturnLandingHash: '#data/files',
       recoveryReturnContext: 'record-42' as never,
       storage,
       reload,
-    })).toThrow('recovery return context is no longer valid');
+    })).toThrow('can no longer take you back there');
     expect(reload).not.toHaveBeenCalled();
     expect(storage.data.has(SERVER_SWITCH_CONTINUITY_SESSION_KEY)).toBe(false);
   });

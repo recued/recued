@@ -870,6 +870,12 @@ export const broadcastEmitterFromBus = (bus: EventBus): ChatBroadcastEmitter => 
 export interface ChatOrchestratorDeps {
   /** Per-pair chat session/message store. */
   chatStore: ChatStore;
+  /** D-269 step 1 — the server's own resolved IANA zone for the `current_date`
+   *  anchor, used only when the calling surface supplied none (Slack, Telegram,
+   *  anything sweep-initiated). A thunk because `follows_host` re-reads the host
+   *  clock — a laptop that flew overnight anchors where it woke. Absent (db-less
+   *  harness) ⇒ the pre-D-269 host reading. */
+  serverTimeZone?: () => string | undefined;
   /** D-172 P2 — resolve attached `data.file` ids to their CURRENT filenames for
    *  the chat tail's attachment marker. Optional: absent (dbless / partial
    *  harness) means the marker is simply omitted, which is the correct
@@ -1198,6 +1204,16 @@ export interface ChatOrchestratorDeps {
 }
 
 export interface ChatTurnInput {
+  /** Host-only queue ownership. Never accepted from an RPC payload. */
+  queue_turn_id?: string;
+  /** Host snapshot of routing at admission; authorization is still checked at execution. */
+  model_routing_snapshot?: ChatSession['model_routing'];
+  queue_generation?: string;
+  complete_turn?: (() => void) | undefined;
+  assert_active?: (() => void) | undefined;
+  submission_id?: string;
+  repeat?: boolean;
+  reply_to_message_id?: string;
   session_id: string;
   message: string;
   /** D-172 P2 — `data.file` records the owner attached to THIS turn. Ids only;
@@ -1240,7 +1256,7 @@ export interface ChatTurnInput {
    *  `ChatTurnAck` incl. `total_usage`) — direct callers (tests, the
    *  messenger reuse) are unaffected; a caller that omits this gets
    *  exactly the old ack-after-run behavior. */
-  on_accepted?: (ack: { turn_id: string }) => void;
+  on_accepted?: (ack: import('@recued/contracts').ChatTurnAcceptance) => void;
 }
 
 export interface ChatTurnAck {
@@ -1318,21 +1334,18 @@ export interface LlmGatewayPostEffectOutcome {
   readonly dispatched_tool_calls: number;
 }
 
-/** D-160 A.8 step 6 — the input a `messenger` turn runs over.
- *
- *  The caller — the downstream BYO Slack/Telegram transport + verified
- *  webhook-inbound wiring (DEFERRED; outside this chat-files lane, the same
- *  way the s5 `getScopeSearchInput` producer was a deferred seam) — builds
- *  the messenger `Channel` from `@recued/messenger` over a `connection.
- *  notification` token and registers `onInbound(runMessengerTurn)`. The
- *  channel's `ingest` produces the framework-shaped `inbound` (the
- *  `messenger-<vendor>` surface + the `(messenger × actor)` `ExecutionSource`
- *  + the I-7 `dispatch_depth` hop token) and records the user row into the
- *  shared session store; the orchestrator then drives the turn over the SAME
- *  `streamRegistry` (the s5 hooks) + the SAME `runChatTurn` mechanics as chat
- *  — that IS the step-6 reuse. The framework's post-`update` `out.message`
- *  delivers the final answer over the channel's transport. */
+/** Verified Messenger input. The production composer admits an encrypted command
+ * before acknowledging ingress and reconstructs this host-only execution input
+ * only after the shared worker owns its turn. */
 export interface MessengerTurnInput {
+  queue_turn_id?: string;
+  assert_active?: (() => void) | undefined;
+  complete_turn?: (() => void) | undefined;
+  model_routing_snapshot?: ChatSession['model_routing'] | undefined;
+  native_reply_to?: string;
+  native_reply_vendor?: string;
+  native_thread_id?: string;
+  native_reply_context?: { message_id: string; role: string; text: string } | undefined;
   /** The caller-built messenger `Channel` (over a BYO transport). The
    *  framework delivers the final assistant `message` over it (token /
    *  transparency / done events are dropped by the messenger surface). */
@@ -1901,6 +1914,8 @@ export interface OrchestratorDispatch {
 
 
 export interface ChatOrchestrator {
+  messengerBridge?: import('./chat-messenger-bridge.js').ChatMessengerBridge;
+  turnQueue?: import('./chat-turn-queue.js').ChatTurnQueue;
   /** Start a turn — persists the user message, mints a turn_id, and
    *  emits a `chat.message_complete` placeholder once the turn loop
    *  completes (P1.2 ships an empty-assistant immediate ack; P1.3 fills
@@ -3242,6 +3257,7 @@ export const createChatOrchestrator = (
   // channel drops `token` events and delivers only the final `message` via
   // its transport (the framework's post-`update` `out.message`).
   const buildTurnDriver = (params: {
+    readonly assert_active?: (() => void) | undefined;
     readonly session_id: string;
     readonly turn_id: string;
     readonly continuation_of_turn_id?: string;
@@ -3384,6 +3400,7 @@ export const createChatOrchestrator = (
     // dedup exists to prevent.
 
     const turnExecutor: TurnExecutor = async (ctx): Promise<TurnOutput> => {
+      params.assert_active?.();
       // ENACT (N.9): read the before-turn hooks' decisions. The
       // `correction-learning` hook contributed its flat "recent
       // corrections — …" summary to the prompt draft (filter to its
@@ -3613,6 +3630,9 @@ export const createChatOrchestrator = (
           // captured once at wire time, so flipping it in Settings takes effect
           // on the next turn instead of at the next restart.
           rollingBriefEnabled: () => deps.chatStore.getRollingBriefEnabled(),
+          // D-269 — likewise read PER TURN, not captured: under `follows_host`
+          // the answer is the host clock, which moves with the machine.
+          ...(deps.serverTimeZone ? { serverTimeZone: deps.serverTimeZone } : {}),
           // ⛔⛔ THE BRIEF'S DURABLE HOME. Without this the carry lives in a
           //   module-level Map that does not survive a restart — and the feature
           //   now ships ON by default, so a supervisor respawn or an applied
@@ -3634,13 +3654,15 @@ export const createChatOrchestrator = (
             },
             clear: (sid) => { deps.chatStore.deleteSessionBrief(sid); },
           },
-          dispatchTool: (call) =>
-            dispatchTool({
+          dispatchTool: (call) => {
+            params.assert_active?.();
+            return dispatchTool({
               ...call,
               ...(params.read_only === true ? { read_only: true } : {}),
               turn_state: streamState,
               get_retained_candidates: () => [...retainedCandidates.values()],
-            }),
+            });
+          },
           ...(deps.getExecutionCaseProposalCritic
             ? {
                 critiqueProposal: (calls) =>
@@ -3730,7 +3752,10 @@ export const createChatOrchestrator = (
   };
 
   const runTurnWithId = async (input: ChatTurnInput, turn_id: string): Promise<ChatTurnAck> => {
-    const session = deps.chatStore.getSession(input.session_id);
+    input.assert_active?.();
+    const liveSession = deps.chatStore.getSession(input.session_id);
+    const session = liveSession && input.model_routing_snapshot
+      ? { ...liveSession, model_routing: input.model_routing_snapshot } : liveSession;
     if (!session) {
       throw new Error(
         `chat-orchestrator: session ${input.session_id} not found (create a session first via chat.session.create)`,
@@ -3810,11 +3835,13 @@ export const createChatOrchestrator = (
     /** Held so a reply written in the SAME millisecond can order itself
      *  strictly after this row — see the wordless-drop short-circuit below. */
     const userTs = now();
-    await deps.chatStore.appendMessage({
+    const committedUser = await deps.chatStore.appendMessage({
+      assert_active: input.assert_active,
       id: userMessageId,
       session_id: input.session_id,
       role: 'user',
       content: turnMessage,
+      ...(input.reply_to_message_id ? { reply_to: { message_id: input.reply_to_message_id } } : {}),
       target_server: picker_target,
       picker_at_send: pickerAtSend,
       model_used: modelUsed,
@@ -3828,6 +3855,9 @@ export const createChatOrchestrator = (
         ? { attachments: [...input.attachments] }
         : {}),
     });
+    safeBroadcast(deps.broadcast, { kind: 'chat.session_changed', session_id: input.session_id,
+      field: 'message', value: committedUser });
+    if (committedUser.attachments?.length) input = { ...input, attachments: committedUser.attachments };
     void safeLogActivity(
       deps.auditLog,
       'chat_message_sent',
@@ -3888,9 +3918,11 @@ export const createChatOrchestrator = (
         input.attachments.map((a) => a.file_id),
       ) ?? new Map<string, string>();
       await deps.chatStore.appendMessage({
+      assert_active: input.assert_active,
         id: mintId(),
         session_id: input.session_id,
         role: 'assistant',
+      on_committed: input.complete_turn,
         content: voiceTranscriptionFailed
           ? voiceTranscriptionFailedAffordance(input.attachments, names)
           : wordlessDropAffordance(input.attachments, names),
@@ -3965,10 +3997,21 @@ export const createChatOrchestrator = (
     // put the const in its temporal dead zone for every one of those writes.
     // The write is wrapped in try/catch, so the failure mode was not a crash
     // but a silent "no handle on any marker": the feature off, tests green.
+    let modelMessage = turnMessage;
+    if (input.reply_to_message_id) {
+      try {
+        const page = await deps.chatStore.listMessagePage(input.session_id, 1, undefined, { around_message_id: input.reply_to_message_id });
+        const reference = page.messages.find((message) => message.id === input.reply_to_message_id
+          && (message.role === 'user' || message.role === 'assistant'));
+        if (!reference) throw new Error('The original reply target is no longer retained.');
+        modelMessage = JSON.stringify({ reply_to: { message_id: reference.id, role: reference.role, text: reference.content }, message: turnMessage });
+      } catch (error) { failPendingUserSource(); throw error; }
+    }
     const assistantMessageId = mintId();
     let turnDriver: ReturnType<typeof buildTurnDriver>;
     try {
       turnDriver = buildTurnDriver({
+        assert_active: input.assert_active,
         session_id: input.session_id,
         turn_id,
         ...(input.continuation_of_turn_id !== undefined
@@ -3992,12 +4035,12 @@ export const createChatOrchestrator = (
           // BEFORE this message is appended, so a file attached to THIS turn
           // is not in it. Without this the marker would fire one turn late.
           user_message: input.attachments && input.attachments.length > 0
-            ? `${turnMessage}${renderAttachmentMarker(
+            ? `${modelMessage}${renderAttachmentMarker(
               input.attachments,
               deps.resolveFileNames?.(input.attachments.map((a) => a.file_id))
                 ?? new Map<string, string>(),
             )}`
-            : turnMessage,
+            : modelMessage,
           chat_tail: builtChatTail.messages,
         }),
         visible_recall_item_ids: [
@@ -4238,6 +4281,7 @@ export const createChatOrchestrator = (
               if (call && call.state !== 'succeeded' && call.state !== 'failed') {
                 const outcome = entry.result as ChatDispatchResult;
                 await deps.chatStore.appendMessage({
+      assert_active: input.assert_active,
                   id: `${entry.message_id}:result`, session_id: input.session_id,
                   turn_id, role: 'tool', pair_id: call.run_id ?? entry.message_id,
                   content: renderToolRow(entry.tool_name, undefined, entry.result),
@@ -4262,6 +4306,7 @@ export const createChatOrchestrator = (
         }
         try {
           await deps.chatStore.appendMessage({
+      assert_active: input.assert_active,
             id: `${assistantMessageId}:tool:${index}`,
             session_id: input.session_id,
             role: 'tool',
@@ -4288,9 +4333,11 @@ export const createChatOrchestrator = (
       }
     }
     const assistantMessage = await deps.chatStore.appendMessage({
+      assert_active: input.assert_active,
       id: assistantMessageId,
       session_id: input.session_id,
       role: 'assistant',
+      on_committed: input.complete_turn,
       content: assistantContent,
       target_server: picker_target,
       picker_at_send: pickerAtSend,
@@ -4396,7 +4443,7 @@ export const createChatOrchestrator = (
   };
 
   const runTurn = async (input: ChatTurnInput): Promise<ChatTurnAck> => {
-    const turn_id = mintId();
+    const turn_id = input.queue_turn_id ?? mintId();
     try { return await runTurnWithId(input, turn_id); }
     finally {
       // Any early result whose candidate pass never finished remains owner-
@@ -4416,51 +4463,17 @@ export const createChatOrchestrator = (
   // its transport by the framework's post-`update` `out.message`; token
   // deltas + transparency notes are dropped by the messenger channel.
   //
-  // Slim finalize (user-confirmed seam scope): the framework + the messenger
-  // channel own delivery (transport.send) + session-store recording; there is
-  // NO chat rich finalize. The s5 hooks run unchanged over the same registry,
-  // so their after-turn results simply are not surfaced here (the slim cut).
-  //
-  // Two boundaries the same-registry reuse inherits, documented honestly
-  // (Codex review folds — neither is a regression this slice introduces):
-  //  · PII: the always-on `pii-protect` / `pii-restore` bookends EXECUTE on a
-  //    messenger turn but DECIDE inactive — D-163 `owns_llm_egress` classifies
-  //    a `messenger-*` surface as external-egress (`shouldAliasForEgress` →
-  //    false; `packages/gateway/.../egress-aliasing.ts`), so the turn passes
-  //    real values to the LLM, the documented external-egress behavior (same
-  //    as a raw MCP data-tool). A messenger turn is therefore NOT PII-aliased
-  //    today. The one thing the prefetch wiring must respect: the SPECULATIVE
-  //    entity prefetch (`createPromptCacheSource`) is gated OFF on an inactive
-  //    plan (it renders only when `plan.active`), so a messenger turn never adds
-  //    UNREQUESTED warehouse PII to the external-egress packet — only the user's
-  //    own explicit content + tool results flow raw, as designed.
-  //    The D-160 messenger channel DOES restore + deliver via Recued's
-  //    own transport, so whether to flip `owns_llm_egress` true for it (alias
-  //    the LLM yet still restore on delivery) is a deliberate D-163/D-167
-  //    follow-on — NOT decided in this chat-files lane (the gate lives in
-  //    `packages/gateway/`). No real PII leaks meanwhile: no live messenger
-  //    transport is wired (the deferred downstream consumer).
-  //  · Dispatch: tool / recipe dispatch reuses chat's `dispatchTool` — and
-  //    (the D-160 P3 thread-through, landed with the messenger
-  //    execution-source threading slice) carries the turn's REAL identity:
-  //    the channel-minted `(messenger × user_self)` inbound source + the
-  //    I-7 `dispatch_depth` hop token ride `buildTurnDriver` →
-  //    `runChatTurn` → `dispatchTool` → `buildInternalDispatchCtx`, so a
-  //    tool dispatched FROM a messenger turn is policy-evaluated on the
-  //    MESSENGER cell (execute-handler `POLICY_GATED_USER_CHANNELS`),
-  //    session-granted per `messenger:<vendor>:<from>` thread, and
-  //    depth-bounded by the Gateway ceiling on re-entrant fires.
-  //
-  // Durable ChatStore persistence of messenger turns + the webclient "second
-  // window" `chat.message_complete` (the full "one conversation, two windows"
-  // UX) are likewise DEFERRED to the downstream transport wiring; this slice
-  // proves the reuse.
+  // D-265: Messenger retains both roles with original Messenger provenance and
+  // shares live transcript/tool events with paired webclients. Native delivery
+  // receives the already-committed final text. The Messenger policy cell and
+  // its existing PII egress classification still govern model/tool dispatch.
   const runMessengerTurn = async (
     input: MessengerTurnInput,
   ): Promise<ChatTurnAck> => {
+    input.assert_active?.();
     const { inbound } = input;
     const session_id = inbound.session_id;
-    const turn_id = mintId();
+    const turn_id = input.queue_turn_id ?? mintId();
     // A messenger turn is always a Self turn — the user is messaging their
     // own server over an external app; there is no peer-server picker. The
     // catalog hook builds the Self Tier 1/2/3 union.
@@ -4470,7 +4483,9 @@ export const createChatOrchestrator = (
     // messenger has no chat session, so default to `local`
     // (`resolveModelPref(null)`) and NEVER throw — unlike chat's `runTurn`, a
     // messenger turn must not require a pre-created session.
-    const session = deps.chatStore.getSession(session_id);
+    const liveSession = deps.chatStore.getSession(session_id);
+    const session = liveSession && input.model_routing_snapshot
+      ? { ...liveSession, model_routing: input.model_routing_snapshot } : liveSession;
     const modelLayer = resolveModelPref(session, input.model_pref);
     const modelHint = resolveModelHint(session, input.model_pref);
     const modelSourceId = resolveModelSourceId(session, input.model_pref);
@@ -4490,6 +4505,7 @@ export const createChatOrchestrator = (
       deps.resolveFileNames,
     );
     const pickerAtSend = buildPickerAtSend(picker_target);
+    if (!session && input.assert_active) throw new Error('Conversation deleted.');
     if (!session) {
       deps.chatStore.createSession({
         id: session_id,
@@ -4497,9 +4513,10 @@ export const createChatOrchestrator = (
         picker_state: { current: picker_target },
       });
     }
-    const userAttachments = inbound.media;
+    input.assert_active?.();
+    let userAttachments = inbound.media && (deps.chatStore.retainTurnAttachments?.(session_id, turn_id, inbound.media) ?? inbound.media);
     let userText = inbound.text;
-    let effectiveInbound = inbound;
+    let effectiveInbound = userAttachments ? { ...inbound, media: userAttachments } : inbound;
     let voiceTranscribed = false;
     if (userText.trim().length === 0 && userAttachments && isVoiceOnlyMedia(userAttachments)) {
       const transcript = await transcribeMessengerVoiceOnly(
@@ -4514,11 +4531,17 @@ export const createChatOrchestrator = (
     }
 
     const userMessageId = mintId();
-    await deps.chatStore.appendMessage({
+    const committedUser = await deps.chatStore.appendMessage({
+      assert_active: input.assert_active,
       id: userMessageId,
       session_id,
       role: 'user',
       content: userText,
+      ...(input.native_reply_to ? { reply_to: {
+        ...(input.native_reply_context ? { message_id: input.native_reply_context.message_id } : {}),
+        vendor: input.native_reply_vendor ?? inbound.surface.replace(/^messenger-/, ''),
+        native_message_id: input.native_reply_to,
+      } } : {}),
       target_server: picker_target,
       picker_at_send: pickerAtSend,
       model_used: modelUsed,
@@ -4529,6 +4552,25 @@ export const createChatOrchestrator = (
         ? { attachments: userAttachments }
         : {}),
     });
+    safeBroadcast(deps.broadcast, { kind: 'chat.session_changed', session_id, field: 'message', value: committedUser });
+    if (committedUser.attachments?.length) {
+      userAttachments = committedUser.attachments;
+      effectiveInbound = { ...effectiveInbound, media: committedUser.attachments };
+    }
+    // Replace the cache with committed history before prompt middleware reads.
+    await streamSessionStore.preload(session_id);
+    const persistAssistant = async (text: string, result?: ReturnType<typeof getCapturedResult>): Promise<void> => {
+      const message = await deps.chatStore.appendMessage({
+        assert_active: input.assert_active, on_committed: input.complete_turn,
+        id: mintId(), session_id, role: 'assistant', content: text,
+        target_server: picker_target, picker_at_send: pickerAtSend, model_used: modelUsed,
+        execution_source: inbound.source, turn_id, ts: Math.max(now(), inbound.ts + 1),
+        ...(result?.tool_calls ? { tool_calls: result.tool_calls } : {}),
+        ...(result?.provenance ? { provenance: result.provenance } : {}),
+      });
+      await Promise.resolve(deps.planApprovalStore?.linkTurnToMessage?.(session_id, turn_id, message.id)).catch(() => {});
+      safeBroadcast(deps.broadcast, { kind: 'chat.message_complete', session_id, turn_id, final: message });
+    };
     void safeLogActivity(
       deps.auditLog,
       'chat_message_sent',
@@ -4542,29 +4584,26 @@ export const createChatOrchestrator = (
     );
 
     if (!voiceTranscribed && userText.trim().length === 0 && userAttachments && userAttachments.length > 0) {
-      await input.channel.deliver({
-        kind: 'message',
-        session_id,
-        turn_id,
-        text: mediaOnlyAffordance(
-          userAttachments,
-          deps.resolveFileNames?.(userAttachments.map((a) => a.file_id))
-            ?? new Map<string, string>(),
-        ),
-      });
+      const text = mediaOnlyAffordance(userAttachments,
+        deps.resolveFileNames?.(userAttachments.map((a) => a.file_id)) ?? new Map<string, string>());
+      await persistAssistant(text);
+      await input.channel.deliver({ kind: 'message', session_id, turn_id, text });
       return { turn_id };
     }
 
-    // Reuse the SAME executor core + `streamRegistry`. The messenger surface
-    // renders neither token deltas nor transparency notes (N.6), so the rich
-    // SI / tool-call emits route to a no-op `emit`; the final answer reaches
-    // the user via the framework's `out.message` → the messenger transport.
+    const modelMessage = input.native_reply_to ? JSON.stringify({
+      reply_to: input.native_reply_context ?? { native_message_id: input.native_reply_to, retained: false },
+      message: userText,
+    }) : userText;
+    // Native surfaces receive completed text; paired webclients also receive
+    // the live tool/provenance events from this same executor.
     const {
       streamState,
       turnExecutor,
       getCapturedResult,
       getPlannerRounds,
     } = buildTurnDriver({
+      assert_active: input.assert_active,
       session_id,
       turn_id,
       picker_target,
@@ -4592,12 +4631,12 @@ export const createChatOrchestrator = (
         // ⚠ Applied to the MODEL's copy only. `userText` is what was appended
         // to the store above, and it stays exactly what the person sent.
         user_message: userAttachments && userAttachments.length > 0
-          ? `${userText}${renderAttachmentMarker(
+          ? `${modelMessage}${renderAttachmentMarker(
             userAttachments,
             deps.resolveFileNames?.(userAttachments.map((a) => a.file_id))
               ?? new Map<string, string>(),
           )}`
-          : userText,
+          : modelMessage,
         chat_tail: builtChatTail.messages,
       }),
       // ⛔ D-213 WAS CHAT-ONLY, AND THAT WAS A GAP, NOT A SCOPE DECISION. The
@@ -4615,20 +4654,24 @@ export const createChatOrchestrator = (
       model_layer: modelLayer,
       ...(modelHint ? { model_hint: modelHint } : {}),
       ...(modelSourceId ? { model_source_id: modelSourceId } : {}),
-      emit: () => {},
+      emit: (event) => safeBroadcast(deps.broadcast, event),
     });
 
     // Drive the turn through the framework loop over the INJECTED messenger
     // channel + the verified inbound (its `dispatch_depth` is the I-7 hop
     // token the channel stamped — the gateway bounds a
     // `messenger`→trigger→`messenger` loop on it, D-160 P3). The channel
-    // already recorded the inbound user row on `ingest`, so the framework
-    // reads a consistent history without a preload (the base session store
-    // exposes no `preload`; durable hydration is the caller's concern).
+    // inbound user row is now durable and the framework reads the preloaded
+    // canonical transcript, independent of the transport cache.
+    let finalText: string | undefined;
+    const retainedChannel: Channel = { surface: input.channel.surface,
+      onInbound: (handler) => input.channel.onInbound(handler),
+      deliver: async (event) => { if (event.kind === 'message') finalText = event.text; },
+    };
     await runStream({
       registry: streamRegistry,
-      channel: input.channel,
-      sessionStore: input.sessionStore,
+      channel: retainedChannel,
+      sessionStore: streamSessionStore,
       inbound: effectiveInbound,
       runTurn: turnExecutor,
       capacity: chatCapacity(),
@@ -4647,10 +4690,13 @@ export const createChatOrchestrator = (
       rounds: getPlannerRounds(),
     });
     const turnResult = getCapturedResult() ?? { assistant_content: '' };
+    await persistAssistant(finalText ?? turnResult.assistant_content, turnResult);
+    await input.channel.deliver({ kind: 'message', session_id, turn_id,
+      text: finalText ?? turnResult.assistant_content });
     const totalUsage = turnResult.usage;
     // A minimal audit row keeps the messenger turn traceable (surface-tagged
     // so Memory / the benchmark tell the surfaces apart). Counts only; never
-    // user content. Durable ChatStore persistence is the deferred follow-on.
+    // user content; the complete message is retained above.
     void safeLogActivity(
       deps.auditLog,
       'chat_message_sent',

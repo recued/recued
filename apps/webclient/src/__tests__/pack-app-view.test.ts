@@ -1129,7 +1129,7 @@ describe('pack app business lifecycle', () => {
       installedRecipes: [taskEntry],
       openRunModal: (_entry, callback) => { onRan = callback; },
     });
-    expect(rig.root.innerHTML).toContain('Choose an action below to get started.');
+    expect(rig.root.innerHTML).toContain('Pick something below to start.');
     expect(execute).not.toHaveBeenCalled();
 
     emitPackControl(rig.root, PACK_APP_OPERATION_ATTR, taskEntry.recipe_id);
@@ -1174,7 +1174,7 @@ describe('pack app reactive defaults', () => {
       installedRecipes: [reactiveEntry],
     });
 
-    expect(rig.root.innerHTML).toContain('Manage this pack’s trigger-driven recipes below.');
+    expect(rig.root.innerHTML).toContain('Look after the Recipes this Pack starts on its own, below.');
     expect(rig.root.innerHTML).toContain('These recipes wait for their own triggers.');
     expect(rig.root.innerHTML).toContain(
       `${PACK_APP_AUTOMATION_ATTR}="sync-provider-events"`,

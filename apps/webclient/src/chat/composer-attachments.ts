@@ -14,8 +14,9 @@
  *  `upload.*` control plane, no borrowed layout.
  *
  *  ── What it holds ─────────────────────────────────────────────────
- *  Finalized `data.file` ids ONLY. Bytes go up the binary socket and are never
- *  held here; reading them back is the separately-gated `data-file-read`. The
+ *  Finalized `data.file` ids ONLY. Existing files reuse those ids and carry a
+ *  selection revision until Send. New bytes go up the binary socket and are
+ *  never held here; reading them back is the separately-gated `data-file-read`. The
  *  ids ride on `chat.send`, and from there the orchestrator persists them on
  *  the user row and names them on the model's copy of the turn.
  *
@@ -30,8 +31,8 @@ import { Upload } from '@recued/ui-shared';
 import type { ChatMessageAttachment } from '@recued/contracts';
 
 export interface ComposerAttachmentsDeps {
-  callers: Upload.UploadCallers;
-  connect: Upload.UploadConnectFactory;
+  callers?: Upload.UploadCallers;
+  connect?: Upload.UploadConnectFactory;
   /** Fired whenever the pending set or an in-flight upload changes, so the
    *  host repaints. */
   onChange: () => void;
@@ -49,6 +50,7 @@ export interface ComposerAttachmentRow {
   /** Present once finalized — this is the id that rides on `chat.send`. */
   file_id?: string;
   media_class: string;
+  selection_revision?: string;
   phase: 'uploading' | 'attached' | 'failed';
   /** 0–1, for the in-flight bar. */
   progress: number;
@@ -57,6 +59,8 @@ export interface ComposerAttachmentRow {
 
 export interface ComposerAttachments {
   attach(file: File): void;
+  /** Reuse retained selections, recovered drafts or withdrawn attachments. */
+  restore(files: readonly ChatMessageAttachment[]): void;
   /** Rows to render, in the order they were added. */
   rows(): readonly ComposerAttachmentRow[];
   /** What rides on `chat.send` — finalized ids only. */
@@ -106,6 +110,7 @@ export const createComposerAttachments = (
 
   return {
     attach(file) {
+      if (!deps.callers || !deps.connect) return;
       const id = nextId++;
       rows.push({
         id,
@@ -142,12 +147,24 @@ export const createComposerAttachments = (
       engine.start(file);
       deps.onChange();
     },
+    restore(files) {
+      for (const file of files) {
+        if (rows.some(row => row.file_id === file.file_id && row.selection_revision === file.selection_revision)) continue;
+        rows.push({ id: nextId++, file_id: file.file_id,
+          filename: file.filename ?? (file.media_class === 'image' ? 'Image attachment'
+            : file.media_class === 'voice' ? 'Audio attachment' : 'Attachment'),
+          ...(file.selection_revision !== undefined ? { selection_revision: file.selection_revision } : {}),
+          media_class: file.media_class, phase: 'attached', progress: 1 });
+      }
+      deps.onChange();
+    },
     rows: () => rows,
     payload: () =>
       rows
         .filter((r): r is ComposerAttachmentRow & { file_id: string } =>
           r.phase === 'attached' && typeof r.file_id === 'string')
-        .map((r) => ({ file_id: r.file_id, media_class: r.media_class })),
+        .map((r) => ({ file_id: r.file_id, media_class: r.media_class, filename: r.filename,
+          ...(r.selection_revision !== undefined ? { selection_revision: r.selection_revision } : {}) })),
     hasInFlight: () => rows.some((r) => r.phase === 'uploading'),
     remove(id) {
       const at = rows.findIndex((r) => r.id === id);

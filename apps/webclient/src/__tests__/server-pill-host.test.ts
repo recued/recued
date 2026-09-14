@@ -530,7 +530,7 @@ describe('webclient server pill — master pause control (D-188)', () => {
       phase: 'pending',
     });
     expect(parts().popoverHost?.innerHTML).toContain(
-      'Pause is still awaiting a server response.',
+      'Pause is still waiting for your server to answer.',
     );
 
     mount.closeControls();
@@ -540,7 +540,7 @@ describe('webclient server pill — master pause control (D-188)', () => {
       onReceipt: nextReceipts,
     })).toBe('opened');
     expect(parts().popoverHost?.innerHTML).toContain(
-      'controls stay unavailable until it settles',
+      'controls stay off until it settles',
     );
     expect(parts().popoverHost?.innerHTML).toContain(
       'disabled aria-busy="true"',
@@ -553,7 +553,7 @@ describe('webclient server pill — master pause control (D-188)', () => {
 
     resolvePause({ ok: true, active_since: 1 });
     await flush();
-    expect(parts().popoverHost?.innerHTML).toContain('Execution paused');
+    expect(parts().popoverHost?.innerHTML).toContain('Every door is shut');
     expect(parts().popoverHost?.innerHTML).not.toContain(
       'still awaiting a server response',
     );
@@ -660,7 +660,7 @@ describe('webclient server pill — master pause control (D-188)', () => {
       action: 'pause',
       phase: 'unconfirmed',
       currentState: 'running',
-      detail: 'The connection dropped before this finished, so its result is unknown.',
+      detail: 'The connection dropped before this finished, so Recued does not know what happened.',
     });
     mount.dispose();
   });
@@ -969,7 +969,7 @@ describe('webclient server pill — restart + crash-halt (D-188)', () => {
     );
     parts().pillHost?.fire('click', pillClick);
     const html = parts().popoverHost?.innerHTML ?? '';
-    expect(html).toContain('Crash loop detected');
+    expect(html).toContain('Your server keeps crashing');
     expect(html).toContain('server-control-status--crash');
     expect(html).toContain('Restart'); // honest recovery
     expect(html).not.toContain('Pause server'); // a fault, not a pause/resume-as-fix
@@ -983,7 +983,7 @@ describe('webclient server pill — restart + crash-halt (D-188)', () => {
     );
     parts().pillHost?.fire('click', pillClick);
     const html = parts().popoverHost?.innerHTML ?? '';
-    expect(html).toContain('Crash loop detected');
+    expect(html).toContain('Your server keeps crashing');
     expect(html).not.toContain('Restart');
     mount.dispose();
   });

@@ -122,37 +122,37 @@ const KEY_CLASS_INFO: Record<KeyClass, { label: string; description: string }> =
   server_identity_key: {
     label: 'Server identity key',
     description:
-      'The Ed25519 keypair that signs this server’s identity. Every paired client pins it; rotating it re-pairs them all.',
+      'The key that proves this is your server. Every paired device remembers it. Replacing it makes them all pair again.',
   },
   tls_private_key: {
     label: 'TLS certificate key',
     description:
-      'The private key behind the HTTPS certificate clients connect over. Rotating it is a certificate renewal.',
+      'The private key behind your https certificate. Replacing it means getting a new certificate.',
   },
   master_dek: {
     label: 'Master encryption key',
     description:
-      'The master data-encryption key. Every other key + all data at rest is encrypted under it; rotating it re-encrypts the whole warehouse.',
+      'The main key that locks everything. Every other key, and everything you have stored, is locked with it. Replacing it locks all of it again with the new one.',
   },
   sub_dek: {
     label: 'Derived encryption keys',
     description:
-      'Per-domain keys derived from the master encryption key. They rotate with it — there is no separate control.',
+      'Keys made from the main key. They are replaced when it is. There is nothing separate to do.',
   },
   publisher_identity_key: {
     label: 'Publisher identity key',
     description:
-      'Signs the recipes you publish to the marketplace. Rotating it re-signs every published recipe under the new key.',
+      'Signs the Recipes you share in the Marketplace. Replacing it signs them all again with the new key.',
   },
   webclient_token: {
     label: 'Client tokens',
     description:
-      'Per-device bearer credentials for your paired bridges + webclients.',
+      'The sign-in for each device you have paired.',
   },
   webhook_secret: {
     label: 'Webhook secrets',
     description:
-      'Per-vendor HMAC secrets that verify inbound webhooks before they are processed.',
+      'The secret each service uses so Recued knows a message really came from them.',
   },
 };
 
@@ -170,8 +170,8 @@ const KEY_HEALTH_DISPLAY_ORDER: ReadonlyArray<KeyClass> = [
 
 /** Where a `managed_elsewhere` class is actually rotated. */
 const WHERE_MANAGED: Partial<Record<KeyClass, string>> = {
-  tls_private_key: 'Renew the certificate from the TLS panel under Certificates.',
-  webclient_token: 'Rotate a paired client from Settings → Devices.',
+  tls_private_key: 'Get a new certificate under Certificates.',
+  webclient_token: 'Replace a device’s sign-in under Settings, then Devices.',
 };
 
 /** The no-selector rotate op for each class that exposes a "Rotate now"
@@ -201,17 +201,17 @@ const ROTATE_OP_FOR_CLASS: Partial<Record<KeyClass, ArgFreeRotateOp>> = {
 const COPY = {
   intro_heading: 'Key Health',
   intro_body:
-    'Every key this server holds, and what you can do with it. Rotations run on the server and are audit-logged; some keys are renewed elsewhere or are not loaded on this machine.',
+    'Every key this server holds, and what you can do with each one. Replacing a key happens on the server and is written down. Some keys are handled elsewhere, or are not on this machine at all.',
   loading: 'Loading key health…',
-  load_error_heading: 'Couldn’t load key health.',
+  load_error_heading: 'Recued could not load your keys.',
   busy: 'Rotating…',
   unavailable_note:
-    'Not loaded on this server, so it can’t be rotated here.',
+    'This key is not on this server, so you cannot replace it here.',
   depair_warning:
-    'This includes the client you are using right now — you will be signed out and must re-pair every device with the CLI + your 24-word recovery key.',
-  depair_done_heading: 'Server identity rotated.',
+    'That includes the browser you are using now. You will be signed out, and every device will have to pair again using the terminal and your 24 words.',
+  depair_done_heading: 'Your server has a new identity key.',
   depair_done_body:
-    'Every client — including this one — must now re-pair using the CLI + your 24-word recovery key. This session is no longer trusted.',
+    'Every device, including this one, has to pair again using the terminal and your 24 words. This browser is no longer trusted.',
 } as const;
 
 // ════════════════════════════════════════════════════════════════
@@ -555,7 +555,7 @@ export const mountKeyHealthPanel = (
       banner.setAttribute('role', 'alert');
       banner.className = 'key-health-compromise-banner';
       banner.textContent =
-        'Marked compromised. Rotate this key (or resolve it manually if it can’t rotate here) to clear the alert.';
+        'You said this key may have leaked. Replace it to clear the warning. If you cannot replace it here, sort it out yourself.';
       card.appendChild(banner);
     }
 
@@ -566,7 +566,7 @@ export const mountKeyHealthPanel = (
       const rotateOp = ROTATE_OP_FOR_CLASS[key_class];
       if (rotateOp !== undefined) {
         const rotateButton = makeButton(
-          'Rotate now',
+          'Replace it now',
           KEY_HEALTH_ROTATE_BTN_ATTR,
           key_class,
           'primary',
@@ -583,7 +583,7 @@ export const mountKeyHealthPanel = (
         actions.appendChild(rotateButton);
       }
       const compromiseButton = makeButton(
-        'Mark compromised',
+        'Say it may have leaked',
         KEY_HEALTH_COMPROMISE_BTN_ATTR,
         key_class,
         'danger',
@@ -606,7 +606,7 @@ export const mountKeyHealthPanel = (
       note.className = 'key-health-card-note';
       note.textContent =
         availability === 'managed_elsewhere'
-          ? WHERE_MANAGED[key_class] ?? 'Managed on another surface.'
+          ? WHERE_MANAGED[key_class] ?? 'Looked after somewhere else.'
           : COPY.unavailable_note;
       actions.appendChild(note);
     }
@@ -636,8 +636,8 @@ export const mountKeyHealthPanel = (
     const desc = doc.createElement('p');
     desc.className = 'key-health-card-desc';
     desc.textContent =
-      'The file this server unwraps its own vault key from at boot — what '
-      + 'protects every key below it.';
+      'The file this server uses to unlock its own keys when it starts. It '
+      + 'protects every key below.';
     card.appendChild(desc);
 
     const meta = doc.createElement('div');
@@ -693,7 +693,7 @@ export const mountKeyHealthPanel = (
     heading.textContent = COPY.load_error_heading;
     const hint = doc.createElement('p');
     hint.className = 'key-health-help';
-    hint.textContent = loadErrorMessage || 'Check the server connection + retry.';
+    hint.textContent = loadErrorMessage || 'Check the server is connected, then try again.';
     const actions = doc.createElement('div');
     actions.className = 'key-health-actions';
     actions.appendChild(
@@ -809,7 +809,7 @@ export const mountKeyHealthPanel = (
     const result = lastSuccess;
     heading.textContent = result ? ROTATION_COPY[result.op].success_title : 'Done.';
     body.textContent =
-      'The rotation completed + was recorded in the audit log.';
+      'Done, and written down.';
     wrapper.appendChild(heading);
     wrapper.appendChild(body);
 

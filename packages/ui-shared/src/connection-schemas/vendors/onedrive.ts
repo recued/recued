@@ -38,7 +38,7 @@ const ONEDRIVE_FIELDS: readonly ConnectionField[] = [
     key: 'name',
     label: 'Name',
     type: 'identifier',
-    help: 'Lowercase identifier used in recipes (e.g. `onedrive`, `onedrive-work`).',
+    help: 'A short lower-case name you use in Recipes, such as `onedrive`, `onedrive-work`).',
     placeholder: 'onedrive',
   },
   {
@@ -52,7 +52,7 @@ const ONEDRIVE_FIELDS: readonly ConnectionField[] = [
     key: 'config.vendor',
     label: 'Vendor',
     type: 'text',
-    help: 'OneDrive vendor identifier — locked at enrollment.',
+    help: 'OneDrive sets this when you connect. You cannot change it.',
     placeholder: 'onedrive',
     hidden: true,
   },
@@ -70,14 +70,14 @@ const ONEDRIVE_FIELDS: readonly ConnectionField[] = [
   // (Graph's /delta feed has no server-side path filter).
   {
     key: 'config.import_scope',
-    label: 'Scope to a subtree (optional)',
+    label: 'Just part of it, if you want',
     type: 'text',
     optional: true,
     placeholder: 'Work/**',
     help:
-      'Optional path glob to limit which files are mirrored — e.g. `Work/**` '
+      'A pattern limiting which files Recued brings in, such as `Work/**` '
       + '(a folder) or `**/*.pdf` (a pattern). Leave blank to mirror the whole '
-      + 'drive. Sync mirrors metadata only; contents are fetched lazily only '
+      + 'drive. Recued brings in only the details, not the files themselves. It fetches a file only '
       + 'when you explicitly read a file.',
   },
   // Optional — target a specific (non-default / SharePoint) drive. The leaf
@@ -126,8 +126,8 @@ const ONEDRIVE_FIELDS: readonly ConnectionField[] = [
     type: 'text',
     optional: true,
     help:
-      'OAuth scopes requested at authorization. Pre-filled from Microsoft\'s '
-      + 'defaults plus the scopes your installed packs need — edit to add or trim.',
+      'What Recued asks permission for. Filled in from Microsoft\'s '
+      + 'own defaults, plus whatever your installed Packs need. You can add or remove.',
   },
   {
     key: 'auth.token_endpoint',

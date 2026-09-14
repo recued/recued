@@ -29,6 +29,11 @@ import { submitBoards, type BoardSubmitterDeps } from './metrics/board-submitter
 import { createMetricSnapshotStore } from './metrics/snapshot-store.js';
 
 export interface MetricRpcDeps {
+  /** D-250 — how the daily batch reaches a recipe-defined board's pending result. A narrow
+   *  reader rather than the `SharedStore` itself: this surface needs one value by key, and
+   *  the store's write / delete / search reach has no business here. Supplied by the
+   *  composition root, which is the only place that holds a built store. */
+  readPendingBoardResult?: (key: string) => Promise<unknown>;
   db: Database.Database;
   now?: () => number;
   /** § B3.3 — everything the daily batch needs that this module cannot derive: the
@@ -88,7 +93,18 @@ export const handleMetricRead = async (deps: MetricRpcDeps): Promise<MetricReadO
     artifacts: artifact.entries().filter((e) => e.kind !== 'once'),
     // § D4 — what this server opted into publishing. Empty is the default AND the
     // normal state: computing is automatic, publishing never is.
-    publications: createBoardPublicationStore(deps.db).list().map((p) => ({
+    // ⛔ METRIC PUBLICATIONS ONLY, AND THE FILTER IS A PLACEHOLDER WITH A DATE ON IT. The
+    // store can now hold a RECIPE-defined publication (an eval board), but
+    // `MetricPublicationEntry` is a SHIPPED rpc type whose `metric_id` is non-nullable, and
+    // widening it is a contract change every paired client reads — not something to slip in
+    // under a store change.
+    // ⚠ NOTHING IS HIDDEN TODAY: `metric.board.publish` cannot create a recipe publication
+    // (its args still require `metric_id`), so this filter matches nothing. It exists so the
+    // day something can, the owner sees a gap rather than a crash — and so this line is what
+    // a grep for the unfinished half finds.
+    publications: createBoardPublicationStore(deps.db).list()
+      .filter((p): p is typeof p & { metric_id: string } => p.metric_id !== null)
+      .map((p) => ({
       tag: p.tag,
       metric_id: p.metric_id,
       season_id: p.season_id,
@@ -128,6 +144,10 @@ export const handleMetricPublish = async (
   }
   const now = deps.now?.() ?? Date.now();
   const p = createBoardPublicationStore(deps.db).grant(args, now);
+  // ⚠ `args` still carries `metric_id`, so this branch cannot produce a recipe publication;
+  // the assertion is what makes that assumption fail loudly if the rpc is ever widened
+  // without this mapping being revisited.
+  if (p.metric_id === null) throw new Error('metric.board.publish produced a recipe publication');
   return { ok: true, publication: {
     tag: p.tag, metric_id: p.metric_id, season_id: p.season_id,
     state: p.state, granted_at: p.granted_at,
@@ -144,7 +164,9 @@ export const handleMetricUnpublish = async (
 ): Promise<{ ok: true; publication: MetricPublicationEntry | null }> => {
   const now = deps.now?.() ?? Date.now();
   const p = createBoardPublicationStore(deps.db).revoke(args.tag, now);
-  return { ok: true, publication: p === undefined ? null : {
+  // ⚠ A recipe publication revokes fine in the STORE; it simply has no rpc shape to come
+  // back in yet, and `null` already means "there was nothing to withdraw" to every caller.
+  return { ok: true, publication: p === undefined || p.metric_id === null ? null : {
     tag: p.tag, metric_id: p.metric_id, season_id: p.season_id,
     state: p.state, granted_at: p.granted_at,
   } };
@@ -175,6 +197,14 @@ export const handleMetricSubmit = async (
     ...wiring,
     publications: createBoardPublicationStore(deps.db),
     snapshot: createMetricSnapshotStore(deps.db),
+    // ⚠ INJECTED, NOT BUILT HERE. `createSharedStore` needs a CAS blob root as well as a db
+    // handle, so this module cannot make one from `deps.db` — and reaching around the store
+    // into its SQLite would bypass the encryption and revision rules it exists to hold.
+    // ⚠ Absent on a boot with no shared store; an eval board is then simply not submittable,
+    // which reads as "no result yet" rather than as a fault.
+    ...(deps.readPendingBoardResult === undefined
+      ? {}
+      : { readPending: deps.readPendingBoardResult }),
     now: deps.now ?? (() => Date.now()),
   });
   return res.sent

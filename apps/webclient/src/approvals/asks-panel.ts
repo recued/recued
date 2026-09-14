@@ -253,7 +253,7 @@ export const mountAsksPanel = (
       appendLine(
         ASKS_PANEL_ERROR_ATTR,
         'asks-error',
-        `Could not load approvals: ${state.listError}`,
+        `Recued could not load your approvals: ${state.listError}`,
       );
     }
 
@@ -287,7 +287,7 @@ export const mountAsksPanel = (
           ASKS_PANEL_EMPTY_ATTR,
           'asks-empty',
           opts.emptyCopy
-            ?? 'No pending approvals. Approvals waiting on you appear here.',
+            ?? 'Nothing to approve. Anything waiting for you shows up here.',
         );
       }
     }

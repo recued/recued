@@ -96,11 +96,11 @@ describe('mountPostPairStartupRecovery', () => {
     });
 
     expect(dom.getHtml()).toContain(POST_PAIR_STARTUP_RECOVERY_ATTR);
-    expect(dom.getHtml()).toContain('Secure access saved');
+    expect(dom.getHtml()).toContain('Sign-in saved');
     expect(dom.getHtml()).toContain(
       'You do not need to pair this browser again.',
     );
-    expect(dom.getHtml()).toContain('exact page and unsent Chat draft');
+    expect(dom.getHtml()).toContain('page and the Chat message you had not sent');
     expect(dom.getHtml()).toContain('Try opening Recued again');
     expect(dom.getHtml()).toContain('aria-busy="false"');
     expect(dom.getHtml()).not.toContain('<form');
@@ -122,11 +122,11 @@ describe('mountPostPairStartupRecovery', () => {
       onRetry: async () => undefined,
     });
 
-    expect(dom.getHtml()).toContain('Access saved in another tab');
+    expect(dom.getHtml()).toContain('Sign-in saved in another tab');
     expect(dom.getHtml()).toContain('Finish opening this tab');
-    expect(dom.getHtml()).toContain('Another tab finished saving');
-    expect(dom.getHtml()).toContain('Pairing is already finished.');
-    expect(dom.getHtml()).toContain('page you opened is still selected');
+    expect(dom.getHtml()).toContain('Another tab saved the sign-in');
+    expect(dom.getHtml()).toContain('This browser is already paired.');
+    expect(dom.getHtml()).toContain('page you opened is still chosen');
     expect(dom.getHtml()).toContain('Try opening this tab again');
     expect(dom.getHtml()).not.toContain('Browser paired');
     expect(dom.getHtml()).not.toContain('Reconnected');

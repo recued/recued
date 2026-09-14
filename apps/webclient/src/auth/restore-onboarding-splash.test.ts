@@ -179,7 +179,7 @@ describe('mountRestoreOnboardingSplash — status phases', () => {
 
     onb.emit(baseState({ phase: 'done' }));
     expect(phaseOf(splash.getHtml())).toBe('done');
-    expect(splash.getHtml()).toContain('starting Recued');
+    expect(splash.getHtml()).toContain('Starting Recued');
   });
 
   it('renders the upload progress bar with a clamped percentage', () => {
@@ -267,11 +267,11 @@ describe('mountRestoreOnboardingSplash — preview', () => {
 
   it('two-tap confirm: first tap arms, second tap commits', () => {
     const { splash, onb } = mountWith(preview);
-    expect(splash.getHtml()).toContain('Restore this backup');
+    expect(splash.getHtml()).toContain('Put this backup back');
 
     splash.fireClick('restore-splash-confirm'); // arm
     expect(onb.confirm).not.toHaveBeenCalled();
-    expect(splash.getHtml()).toContain('Tap again to restore');
+    expect(splash.getHtml()).toContain('Tap again to put it back');
     expect(splash.getHtml()).toContain('is-armed');
 
     splash.fireClick('restore-splash-confirm'); // commit
@@ -286,7 +286,7 @@ describe('mountRestoreOnboardingSplash — preview', () => {
     onb.emit(baseState({ phase: 'restoring' }));
     onb.emit(preview);
     expect(splash.getHtml()).not.toContain('is-armed');
-    expect(splash.getHtml()).toContain('Restore this backup');
+    expect(splash.getHtml()).toContain('Put this backup back');
   });
 
   it('blocked (schema_too_new) preview shows the upgrade block + Cancel only', () => {

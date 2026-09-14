@@ -206,7 +206,7 @@ describe('D-220 Slice B — mountTemplatesBrowser: the pack section', () => {
       onClose: vi.fn(),
     });
     const out = getHtml();
-    expect(out).toContain('From your installed packs');
+    expect(out).toContain('From the Packs you have');
     expect(out).toContain(`data-template-ref="${PACK_REF}"`);
     expect(out).toContain('data-pack-slug="job-status-board"');
     expect(out).toContain('Job drop-off');
@@ -224,7 +224,7 @@ describe('D-220 Slice B — mountTemplatesBrowser: the pack section', () => {
       onUseTemplate: vi.fn(),
       onClose: vi.fn(),
     });
-    expect(getHtml()).not.toContain('From your installed packs');
+    expect(getHtml()).not.toContain('From the Packs you have');
     expect(getHtml()).not.toContain('could not be loaded');
     mount.dispose();
   });
@@ -282,7 +282,7 @@ describe('D-220 Slice B — mountTemplatesBrowser: the pack section', () => {
     expect(out).toContain('1 pack template could not be loaded');
     expect(out).toContain('pack:recued-core/queue-desk/intake/join (pack_template_forbidden_field_name)');
     // No cards ⇒ no section, but the note still renders.
-    expect(out).not.toContain('From your installed packs');
+    expect(out).not.toContain('From the Packs you have');
     mount.dispose();
   });
 });

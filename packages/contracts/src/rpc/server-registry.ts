@@ -12,6 +12,7 @@
  */
 
 import type { RpcMethodSpec } from './types.js';
+import type { MissedSchedulePolicy } from '../missed-schedule-policy.js';
 import type { RecipeSimulationRequest, RecipeSimulationResult } from '../recipe-simulation.js';
 import type { MailDraft, MailDraftSummary, MailDraftCreateRequest, MailDraftUpdateRequest, MailDraftDeleteRequest } from '../mail-drafts.js';
 import type {
@@ -642,6 +643,18 @@ export interface ServerSchedule {
   /** Absent means legacy recurring cron schedule. */
   mode?: 'recurring' | 'one_shot';
   cron_expression: string;
+  /** D-269 — the IANA zone the cron expression is READ IN.
+   *
+   *  ⛔⛔ ABSENT MEANS "THE SERVER'S DECLARED ZONE", NOT "UTC" AND NOT "THE
+   *  HOST". Every schedule written before D-269 lacks this field, and they are
+   *  resolved at EVALUATION time rather than backfilled — so an owner who later
+   *  corrects their server timezone fixes their old schedules too, which a
+   *  migration that froze a value at upgrade could not.
+   *
+   *  ⚠ Until D-269 there was no zone at all: `cronMatchesAt` read the host's
+   *  local getters, so `0 9 * * *` meant 9am wherever the process happened to
+   *  be — 09:00Z on a UTC box, 01:00Z on a Hong Kong one. */
+  time_zone?: string;
   /** One-shot schedules fire once at this absolute Unix-ms timestamp. */
   run_at?: number;
   enabled: boolean;
@@ -655,13 +668,86 @@ export interface ServerSchedule {
   next_run_at: number | null;
   last_status: 'success' | 'error' | 'skipped' | null;
   last_error: string | null;
+  /** D-268 — failures since the last success. Non-zero on a DISABLED schedule
+   *  is the one signal that separates "the server stopped this" from "the owner
+   *  paused this": an owner arm/disarm clears it in both directions, so only a
+   *  self-disarm leaves it set.
+   *
+   *  ⛔ THE SURFACE NEEDED THIS BECAUSE THE TWO STATES RENDERED IDENTICALLY, AND
+   *  THE ONE NEEDING ACTION WAS THE ONE THAT LOOKED HANDLED. `ArmedState`
+   *  already carries `'tripped'` and the trigger row already renders it as
+   *  "Auto-disabled"; the schedule row derived only `on | off | waiting`, so a
+   *  self-stopped schedule read as "Paused".
+   *
+   *  ⚠ Optional: an older server omits it, and an older client ignores it. */
+  consecutive_failures?: number;
   instance_id?: string;
+  /** D-266 — what the owner wants done about a cycle missed while the
+   *  machine was off. Absent ⇒ `'auto'` (pre-D-266 behaviour). */
+  missed_policy?: MissedSchedulePolicy;
+  /** D-266 — set while an owner's answer about a missed run is still
+   *  outstanding. Read-only diagnostic; clients change it through
+   *  `schedules.answerMissed`, never by writing this back. */
+  missed_answer?: { at: number; answer: 'run' | 'skip' };
+  /** D-266 — the run BEFORE `last_run_at`. The forensic half of a
+   *  stale-or-errored schedule: `last_run_at` says when it stopped,
+   *  this says whether it was running normally before it did.
+   *
+   *  ⚠ It had been riding the server's row spread onto the wire without
+   *  being declared here — accepted, never advertised, so no client
+   *  could rely on it. Declared now that a surface reads it.
+   *
+   *  ⛔ NOT A CADENCE SOURCE. The pair spans any outage (nothing ran in
+   *  between), which is exactly why the missed-cycle measure stopped
+   *  dividing by it. */
+  prev_run_at?: number | null;
+  /** D-266 — cron occurrences missed BEYOND the one a catch-up would
+   *  fire, as of the moment this list was read.
+   *
+   *  ⚠ PRESENT ONLY WHEN THE SCHEDULE IS ACTUALLY BEHIND, and absent
+   *  otherwise — absent means "not behind", never "unknown". The count
+   *  walks the window, so computing it for every schedule on every list
+   *  would put a real scan on a hot read; the gate is the free one
+   *  (`next_run_at` in the past).
+   *
+   *  ⚠ Same name as `ServerMissedRunEntry.missed_cycles` and a
+   *  DIFFERENT granularity: that one is per RECIPE (the largest across
+   *  its waiting schedules), this is this schedule alone. */
+  missed_cycles?: number | 'unknown';
   /** D-179 P2 — standing dish this schedule dispatches as. */
   dish_id?: string;
   /** D-179 — the config the schedule's headless fires use, read from the
    *  bound dish at list time (absent ⇒ fires on recipe defaults). Surfaced
    *  so the run modal's per-row Config editor can pre-fill the widgets. */
   config_overlay?: Record<string, unknown>;
+}
+
+/** D-266 — one line of the missed-run card. Keyed by RECIPE, not by
+ *  schedule: two schedules of one recipe that both missed produce one
+ *  line and, on `run`, one fire. */
+export interface ServerMissedRunEntry {
+  recipe_id: string;
+  /** Display name when the recipe is still installed; absent when it
+   *  is not, in which case the card shows the id. */
+  recipe_name?: string;
+  /** Every schedule of this recipe waiting on an answer. */
+  schedule_ids: string[];
+  /** Full cycles missed BEYOND the single catch-up on offer. The count
+   *  is the record of the outage, not the number of runs offered. */
+  missed_cycles: number | 'unknown';
+  /** The count stopped at its scan limit — render "N+", never N. */
+  missed_cycles_capped?: boolean;
+  /** When this recipe last actually ran. */
+  last_run_at: number;
+}
+
+export interface ServerMissedRunReport {
+  /** Start of the outage window — the oldest `last_run_at` among the
+   *  entries; null when there are none. */
+  outage_from: number | null;
+  /** The clock the report was computed against. */
+  outage_to: number;
+  entries: ServerMissedRunEntry[];
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -848,6 +934,25 @@ export interface ServerRecentNotification {
  *  read-only; Slice 3 wires the interactive approval card +
  *  `notification.submitAnswer`. `ask_id` is the stable dedup key against
  *  the live `notification.ask` / `notification.ask_closed` bus frames. */
+/** D-270 — one resolved label→value row of an ask's "what will happen" block.
+ *
+ *  Structurally mirrors the READ-ONLY half of the notification package's
+ *  `AskLandingDetail` without importing it — the same posture `AskCardModel`
+ *  already takes for `link_url` and `note_prompt`, and required here because
+ *  `@recued/contracts` is the root every other package imports FROM.
+ *
+ *  `value` is DISPLAY TEXT, already final, resolved server-side. The reason is
+ *  the landing contract's and it holds verbatim: deciding what a `datetime` arg
+ *  reads as (and in which named zone), what an absent value reads as, and where
+ *  a long value is cut *"are all claims about the held operation — they belong
+ *  with the side that can resolve the operation."* A client that re-derived them
+ *  would be a second surface answering differently, and the one that is wrong is
+ *  the one nobody is looking at. */
+export interface ServerPendingAskDetail {
+  readonly label: string;
+  readonly value: string;
+}
+
 export interface ServerPendingAsk {
   ask_id: string;
   /** Protected future review. Generic notification answers cannot decide it. */
@@ -874,6 +979,32 @@ export interface ServerPendingAsk {
    *  no-ops — the answer looks sent, the ask stays open, and nothing reports a
    *  fault. Naming it here is what makes the client able to collect it at all. */
   note_prompt?: 'optional' | 'required';
+  /** D-270 — the resolved "what will happen" rows, so the decision is made with
+   *  the VALUES in view rather than from the prose alone. The `/ask` landing page
+   *  has had this since D-210 A.8 3d-2b; the card rendered only prose, a
+   *  collapsed body and the options, which made the surface the owner uses most
+   *  the one with the least information.
+   *
+   *  ⛔ READ-ONLY BY SHAPE, NOT BY A FLAG. There is deliberately no `edit`
+   *  member: the landing page's own resolver warns that *"an editable control the
+   *  submit path cannot honour is the worst of both — the owner retimes the slot,
+   *  approves, and the original value lands."* The card has no submit path for
+   *  edits (owner ruling: the link owns editing), so the shape cannot express one
+   *  and nobody can turn one on by passing a boolean.
+   *
+   *  ⛔ ALL-OR-NOTHING. Absent ⇒ the card renders exactly as it did before —
+   *  prose, body, options, link — with no notice and no empty block. A PARTIAL
+   *  block is a lie about completeness: the rows promise "what this approval
+   *  commits to", and a reader who sees three of four values has no way to know a
+   *  fourth exists. Absent sends them to the link; partial tells them they have
+   *  already read it.
+   *
+   *  ⚠ Bounded by the operation's pack-declared `editable_args` allowlist (D-170
+   *  N.7), NOT by the raw held args — which is what makes it safe to resolve for
+   *  a non-reception hold. A `RawOpCheckpoint`'s `op_args` are frozen AS
+   *  DISPATCHED and the checkpoint's own note says args are retained
+   *  un-redacted; only the reviewed allowlist is ever projected here. */
+  details?: readonly ServerPendingAskDetail[];
   /** D-234 § 234.4f — the document the answerer reads before deciding.
    *
    *  ⛔ THIS RPC IS PAIR-AUTHENTICATED, WHICH IS WHY THE BODY MAY BE HERE AT
@@ -1265,6 +1396,8 @@ export type ServerRpcRegistry = {
       enabled?: boolean;
       /** D-179 P2 — standing dish this schedule dispatches as. */
       dish_id?: string;
+      /** D-266 — missed-schedule policy. Absent ⇒ `'auto'`. */
+      missed_policy?: MissedSchedulePolicy;
       /** D-179 — config overlay for the headless fires this schedule
        *  drives. Non-empty + no explicit `dish_id` ⇒ the server mints a
        *  managed dish to hold it (dissolved on `schedules.delete`). */
@@ -1278,6 +1411,8 @@ export type ServerRpcRegistry = {
       schedule_id: string;
       cron_expression?: unknown;
       enabled?: unknown;
+      /** D-266 — change the missed-schedule policy in place. */
+      missed_policy?: unknown;
       /** D-179 — edit the config the schedule's headless fires use. A
        *  changed overlay mints a new managed dish + dissolves the prior
        *  (immutable — one `dish_id` = one config); `{}` clears. */
@@ -1286,6 +1421,22 @@ export type ServerRpcRegistry = {
     { schedule: ServerSchedule }
   >;
   'schedules.delete': RpcMethodSpec<{ schedule_id: string }, { deleted: true }>;
+  /** D-266 — the one-per-wake missed-run card, RECOMPUTED on every
+   *  call. There is no stored ask behind this: the set of outstanding
+   *  misses is fully re-derivable from `last_run_at` + the cron + the
+   *  clock, so a durable row could only ever disagree with the world.
+   *  Lists only schedules whose owner chose `missed_policy: 'ask'`
+   *  and whose miss is stale enough to be worth a question. */
+  'schedules.missed': RpcMethodSpec<void, ServerMissedRunReport>;
+  /** D-266 — answer the card. `run` fires ONE catch-up per recipe (the
+   *  most recent cycle; a brief supersedes a brief) and records the
+   *  recipe's other waiting schedules as skipped; `skip` records them
+   *  all skipped. Omitting `recipe_ids` answers every entry, which is
+   *  what the card's [Run them] / [Skip them] buttons send. */
+  'schedules.answerMissed': RpcMethodSpec<
+    { answer: 'run' | 'skip'; recipe_ids?: string[] },
+    { ran: string[]; skipped: string[] }
+  >;
 
   // ── Dishes (D-179 P1 — execution instances) ─────────────────────
   /** List standing dishes, optionally filtered by recipe. Ephemeral
@@ -5215,6 +5366,16 @@ export type ServerRpcRegistry = {
       blob_hash: string;
     }
   >;
+  'data.file.attachments.preview': RpcMethodSpec<import('../file-lifecycle.js').FilePreviewRequest, import('../file-lifecycle.js').FilePreviewResult>;
+  'data.file.attachments.sources': RpcMethodSpec<undefined, { sources: import('../file-lifecycle.js').CloudFileSource[] }>;
+  'data.file.attachments.remote.list': RpcMethodSpec<import('../file-lifecycle.js').CloudFileListRequest, import('../file-lifecycle.js').CloudFileListResult>;
+  'data.file.attachments.remote.get': RpcMethodSpec<{ record_id: string }, import('../file-lifecycle.js').CloudFileSelection>;
+  'data.file.attachments.import': RpcMethodSpec<import('../file-lifecycle.js').CloudFileImportRequest, import('../file-lifecycle.js').FileAttachmentSelection>;
+  'data.file.attachments.conversation': RpcMethodSpec<import('../file-lifecycle.js').ConversationFileListRequest, import('../file-lifecycle.js').ConversationFileListResult>;
+  'data.file.attachments.list': RpcMethodSpec<import('../file-lifecycle.js').FileAttachmentListRequest, import('../file-lifecycle.js').FileAttachmentListResult>;
+  'data.file.attachments.get': RpcMethodSpec<{ record_id: string }, import('../file-lifecycle.js').FileAttachmentSelection>;
+  'data.file.usage': RpcMethodSpec<{ record_id: string }, import('../file-lifecycle.js').FileLifecyclePreview>;
+  'data.file.mutate': RpcMethodSpec<import('../file-lifecycle.js').FileLifecycleMutation, import('../file-lifecycle.js').FileLifecyclePreview>;
 
   // ── data.mirror.search read pair-RPC (D-174 #22 — feeds the mirror
   //    drill-down's name→entity_id picker). Keyword-searches the local
@@ -5540,6 +5701,12 @@ export type ServerRpcRegistry = {
       instances: Array<
         CollectionInstanceRow & {
           send_capable: boolean;
+          /** D-264 — can this mailbox hold a DRAFT? Independent of
+           *  `send_capable` in both directions (IMAP-without-SMTP can APPEND;
+           *  a `gmail.send`-only grant can send and not draft), so never read
+           *  one as a proxy for the other. `false` when no collection is
+           *  running for the slug. */
+          draft_capable: boolean;
           account_email: string;
         }
       >;
@@ -6081,16 +6248,32 @@ export type ServerRpcRegistry = {
   // handler-scaffold slice tightens to concrete request/response
   // shapes alongside the handler implementation.
   'chat.sessions.list': RpcMethodSpec<void, { sessions: unknown[] }>;
-  'chat.session.get': RpcMethodSpec<{ session_id: string }, unknown>;
-  'chat.session.create': RpcMethodSpec<{ title?: string }, { session_id: string }>;
+  'chat.messages.search': RpcMethodSpec<
+    import('../chat.js').ChatMessageSearchRequest,
+    import('../chat.js').ChatMessageSearchResult
+  >;
+  'chat.session.get': RpcMethodSpec<import('../chat.js').ChatSessionGetRequest, unknown>;
+  'chat.session.create': RpcMethodSpec<{ title?: string; creation_id?: string }, { session_id: string }>;
   'chat.session.delete': RpcMethodSpec<{ session_id: string }, { ok: true }>;
   'chat.session.mark_seen': RpcMethodSpec<{ session_id: string }, { ok: true }>;
   'chat.session.export': RpcMethodSpec<{ session_id: string }, unknown>;
   'chat.egress.get': RpcMethodSpec<{ session_id: string; message_id: string }, unknown>;
+  'chat.deliveries.list': RpcMethodSpec<import('../chat-delivery.js').ChatDeliveryListRequest, import('../chat-delivery.js').ChatDeliverySnapshot>;
+  'chat.delivery.retry': RpcMethodSpec<{ session_id: string; delivery_id: string; submission_id: string; accept_unknown?: boolean }, { ok: true }>;
+  'chat.delivery.skip': RpcMethodSpec<{ session_id: string; delivery_id: string; submission_id: string }, { ok: true }>;
+  'chat.messenger.connect': RpcMethodSpec<{ session_id: string; vendor: string }, { session_id: string }>;
+  'chat.turns.list': RpcMethodSpec<{ session_id: string }, import('../chat-turn-queue.js').ChatTurnQueueSnapshot>;
+  'chat.turn.withdraw': RpcMethodSpec<{ session_id: string; turn_id: string }, import('../chat-turn-queue.js').ChatWithdrawnDraft>;
+  'chat.turn.cancel': RpcMethodSpec<{ session_id: string; turn_id: string }, { ok: true }>;
+  'chat.turn.retry': RpcMethodSpec<{ session_id: string; turn_id: string; submission_id: string }, import('../chat-turn-queue.js').ChatTurnAcceptance>;
   'chat.send': RpcMethodSpec<
     {
       session_id: string;
       message: string;
+      submission_id?: string;
+      queue_generation?: string;
+      repeat?: boolean;
+      reply_to_message_id?: string;
       /** D-172 P2 — `data.file` records the owner attached to THIS turn,
        *  already uploaded and finalized (the webclient's resumable upload
        *  returns the `record_id`). Ids only: the bytes went up the binary
@@ -6101,7 +6284,7 @@ export type ServerRpcRegistry = {
        *  chat session — `attachments` was set on exactly one code path. The
        *  model-facing half (the tail marker, `file.search`) was already built
        *  and simply had nothing to see from the webclient. */
-      attachments?: Array<{ file_id: string; media_class: string }>;
+      attachments?: Array<{ file_id: string; media_class: string; selection_revision?: string }>;
       picker_state: { current: string };
       model_pref?: { current: string; source_id?: string };
       /** D-193 — the requesting user's IANA timezone (the webclient reads
@@ -6123,6 +6306,8 @@ export type ServerRpcRegistry = {
     },
     {
       turn_id: string;
+      status?: import('../chat-turn-queue.js').ChatQueuedTurnStatus;
+      disposition?: 'accepted' | 'duplicate' | 'replayed';
       /** Echo of the server-normalized durable grounding when this was a
        * guided diagnosis turn. Lets the accepting client paint the same
        * correlation state before the completed message arrives. */
@@ -7121,6 +7306,51 @@ export type ServerRpcRegistry = {
     import('../cli-reachability-rpc.js').CliReachabilitySetRequest,
     import('../cli-reachability-rpc.js').CliReachabilitySetResponse
   >;
+
+  /** D-269 step 1 — the server's own timezone: `fixed` (declared, stays put) or
+   *  `follows_host` (the machine travels with the owner). Read by every
+   *  wall-clock surface when no live client supplies a zone, and the reason the
+   *  chat packet's `current_date` is right for Slack / Telegram / sweep-initiated
+   *  turns instead of only for the webclient.
+   *
+   *  ⚠ `get` returns the stored setting PLUS `resolved_zone` and `host_zone`,
+   *  because a client cannot compute either — under `follows_host` the resolved
+   *  value IS the server's host reading, and a browser asking `Intl` would get
+   *  its OWN zone and think it had the answer. */
+  'server.timezone.get': RpcMethodSpec<
+    Record<string, never>,
+    import('../server-timezone.js').ServerTimeZoneGetResponse
+  >;
+  'server.timezone.set': RpcMethodSpec<
+    import('../server-timezone.js').ServerTimeZoneSetRequest,
+    import('../server-timezone.js').ServerTimeZoneSetResponse
+  >;
+
+  /** D-269 step 2 — the per-kind notification policy: whether the owner is told
+   *  about an anchored kind, and how far ahead. `offset_ms` replaces
+   *  `WORK_ENTITY_DUE_SOON_WINDOW_MS` as the due-status sweep's input.
+   *  ⚠ `get` always returns ALL anchored kinds, stored or defaulted. */
+  'notification.kind_policy.get': RpcMethodSpec<
+    Record<string, never>,
+    import('../notification-kind-policy.js').NotificationKindPolicyGetResponse
+  >;
+  'notification.kind_policy.set': RpcMethodSpec<
+    import('../notification-kind-policy.js').NotificationKindPolicySetRequest,
+    import('../notification-kind-policy.js').NotificationKindPolicySetResponse
+  >;
+
+  /** D-269 step 3 — the one quiet-hours window. ⚠ `get` carries `can_arm` and
+   *  `resolved_zone` because a client can compute neither: the window is wall
+   *  clock in the SERVER's zone, and under `follows_host` that zone is the
+   *  server's own host reading. */
+  'notification.quiet_hours.get': RpcMethodSpec<
+    Record<string, never>,
+    import('../quiet-hours.js').QuietHoursGetResponse
+  >;
+  'notification.quiet_hours.set': RpcMethodSpec<
+    import('../quiet-hours.js').QuietHoursSetRequest,
+    import('../quiet-hours.js').QuietHoursSetResponse
+  >;
 };
 
 /** D-148 follow-up #4 — structured details payload on
@@ -7177,6 +7407,8 @@ export const SERVER_RPC_METHODS = [
   'schedules.create',
   'schedules.update',
   'schedules.delete',
+  'schedules.missed',
+  'schedules.answerMissed',
   'dishes.list',
   'dishes.create',
   'dishes.createFromRun',
@@ -7645,6 +7877,16 @@ export const SERVER_RPC_METHODS = [
   'records.accounting.repair',
   'data.timeline',
   'data.file.read',
+  'data.file.attachments.preview',
+  'data.file.attachments.sources',
+  'data.file.attachments.remote.list',
+  'data.file.attachments.remote.get',
+  'data.file.attachments.import',
+  'data.file.attachments.conversation',
+  'data.file.attachments.list',
+  'data.file.attachments.get',
+  'data.file.usage',
+  'data.file.mutate',
   'data.mirror.search',
   'data.contact.engagements.list',
   'server.getBootstrap',
@@ -7767,12 +8009,18 @@ export const SERVER_RPC_METHODS = [
   // closed list shape; a ratchet in this file asserts the dispatcher's
   // known-method set carries every chat method.
   'chat.sessions.list',
+  'chat.messages.search',
   'chat.session.get',
   'chat.session.mark_seen',
   'chat.session.create',
   'chat.session.delete',
   'chat.session.export',
   'chat.egress.get',
+  'chat.deliveries.list', 'chat.delivery.retry', 'chat.delivery.skip', 'chat.messenger.connect',
+  'chat.turns.list',
+  'chat.turn.withdraw',
+  'chat.turn.cancel',
+  'chat.turn.retry',
   'chat.send',
   'chat.data_diagnosis.resolve',
   'chat.plans.pending.list',
@@ -7929,6 +8177,15 @@ export const SERVER_RPC_METHODS = [
   'cli.reachability.list',
   'cli.reachability.universe',
   'cli.reachability.set',
+  // D-269 step 1 — server timezone (mode + declared zone).
+  'server.timezone.get',
+  'server.timezone.set',
+  // D-269 step 2 — per-kind notification policy.
+  'notification.kind_policy.get',
+  'notification.kind_policy.set',
+  // D-269 step 3 — the one quiet-hours window.
+  'notification.quiet_hours.get',
+  'notification.quiet_hours.set',
 ] as const satisfies readonly (keyof ServerRpcRegistry)[];
 
 /** The same list as a Set for O(1) lookup. */

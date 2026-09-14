@@ -224,6 +224,23 @@ export const WORK_ENTITY_PAGE_STYLES = `
   border-radius: 9px;
   font-weight: 500;
 }
+/* D-267 follow-on — boundary badges. Same chip shape as the Source label they
+   sit beside; the warning tone is a stroke + weight, never a fill, per I-7's
+   fill budget (state is glyph/label/weight, danger the one surviving hue). */
+.work-entity-list-row-badge {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  padding: 1px 6px;
+  border-radius: 9px;
+  background: var(--surface-sunk);
+  color: var(--fg-muted);
+  font-weight: 500;
+}
+.work-entity-list-row-badge[data-warning] {
+  outline: 1px solid var(--border-strong);
+  color: var(--fg);
+  font-weight: 600;
+}
 .work-entity-list-row-meta {
   min-width: 0;
   overflow-wrap: anywhere;

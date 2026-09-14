@@ -123,20 +123,20 @@ const SPLASH_WRAPPER_ID = 'webclient-boot-splash';
  * pair. It confirms the durable browser-side outcome without holding the user
  * on the boot splash or stealing focus from the route they came to use. */
 export const PAIR_SUCCESS_RETURN_RECEIPT_COPY =
-  'Browser paired. Secure access is saved here, and your page is ready.';
+  'This browser is paired. Your sign-in is saved here, and your page is ready.';
 /** One-shot confirmation after the explicit replaced/reset-server path. It is
  * shown only after the new server passport has finalized and the replacement
  * shell has mounted, so “verified” never describes the pre-submit review. */
 export const REPLACEMENT_SERVER_RETURN_RECEIPT_COPY =
-  'Fresh pairing verified. Browser access is saved, and your page is ready. Data from the previous server was not restored.';
+  'The new link is checked and saved, and your page is ready. Nothing was brought over from the old server.';
 
 /** One-shot confirmations for an explicit startup retry that finally opens the
  * shell. These replace pairing/reconnect receipts from the failed attempt and
  * tell the user which locally-preserved work survived the recovery. */
 export const STARTUP_RECOVERY_RETURN_RECEIPT_COPY =
-  'Startup recovered. Secure access is still saved, and your page is ready.';
+  'Recued started up again. Your sign-in is still saved, and your page is ready.';
 export const STARTUP_RECOVERY_DRAFT_RETURN_RECEIPT_COPY =
-  'Startup recovered. Secure access is still saved, and your unsent Chat draft is ready.';
+  'Recued started up again. Your sign-in is still saved, and the Chat message you had not sent is ready.';
 
 const resolveDocument = (doc?: Document): Document | undefined =>
   doc ?? (globalThis as { document?: Document }).document;
@@ -160,19 +160,19 @@ interface PairHandoffCopyOptions {
 const pairHandoffCopy = (options: PairHandoffCopyOptions): string => {
   if (options.completedInAnotherTab) {
     if (!options.reconnecting) {
-      return 'Another tab finished pairing — opening this page…';
+      return 'Another tab finished pairing this browser. Opening your page…';
     }
     return options.draftPreserved
-      ? 'Another tab finished reconnecting — returning to your unsent Chat draft…'
-      : 'Another tab finished reconnecting — returning to your page…';
+      ? 'Another tab reconnected. Going back to the Chat message you had not sent…'
+      : 'Another tab reconnected. Going back to your page…';
   }
-  if (!options.reconnecting) return 'Pairing complete — starting Recued…';
+  if (!options.reconnecting) return 'This browser is paired. Starting Recued…';
   if (options.replacementServer) {
-    return 'Current server accepted the fresh pairing — verifying its identity and returning to your page…';
+    return 'Your server accepted the new link. Checking it really is your server, then going back to your page…';
   }
   return options.draftPreserved
-    ? 'Reconnected — returning to your unsent Chat draft…'
-    : 'Reconnected — returning to your page…';
+    ? 'Reconnected. Going back to the Chat message you had not sent…'
+    : 'Reconnected. Going back to your page…';
 };
 
 /** Own the short interval after a pair form disappears and before the exact
@@ -956,8 +956,10 @@ const installRecoveryDraftGuard = (
   snapshot: WebclientRecoverySnapshot,
 ): RecoveryDraftGuard | undefined => {
   if (
-    snapshot.chatDraft?.protected !== true
-    || snapshot.chatDraft.text.trim().length === 0
+    snapshot.chatDraft === undefined
+    || (snapshot.chatDraft.replyTo === undefined
+      && (snapshot.chatDraft.attachments?.length ?? 0) === 0
+      && (snapshot.chatDraft.protected !== true || snapshot.chatDraft.text.trim().length === 0))
   ) {
     return undefined;
   }
@@ -1235,8 +1237,8 @@ export const runBootstrapWithPairFallback = async (
         } catch (recoverErr) {
           setSplashMessage(
             cause === 'session_rejected'
-              ? 'Recued could not restart pairing after a server identity change. Reload to re-pair.'
-              : 'Recued could not restart pairing after saved access changed in another tab. Reload to re-pair.',
+              ? 'Your server is not the one this browser knew, and Recued could not start pairing again. Reload the page to pair this browser.'
+              : 'Another tab changed the saved sign-in, and Recued could not start pairing again. Reload the page to pair this browser.',
             deps.document,
           );
           console.error('webclient: credential recovery failed', recoverErr);
@@ -1843,8 +1845,8 @@ export const runBootstrapWithPairFallback = async (
         } catch (err) {
           setSplashMessage(
             deps.reauthRecovery !== undefined
-              ? 'Another tab finished reconnecting, but Recued could not open this page. Reload to continue.'
-              : 'Pairing finished in another tab, but Recued could not open this page. Reload to continue.',
+              ? 'Another tab reconnected, but Recued could not open this page. Reload the page to carry on.'
+              : 'Another tab finished pairing this browser, but Recued could not open this page. Reload the page to carry on.',
             deps.document,
           );
           console.error('webclient: sibling pair adoption failed', err);
@@ -2131,7 +2133,7 @@ export const runBootstrapWithPairFallback = async (
             // No surface to render the restore progress into (non-browser env)
             // — surface the failure rather than silently dropping the submit.
             setSplashMessage(
-              'Could not start the restore — no display surface available. Reload and try again.',
+              'Recued could not start putting your backup back. There was nowhere to show it. Reload the page and try again.',
               deps.document,
             );
             return;

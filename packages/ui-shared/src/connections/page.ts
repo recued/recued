@@ -223,7 +223,7 @@ const renderPackUsage = (
     .map((u) => {
       const c = u.coverage;
       const status = !c.known
-        ? 'scopes not verified'
+        ? 'Recued has not checked what it may do'
         : c.covered
           ? 'covered'
           : `missing ${c.missing.join(', ')}`;
@@ -254,10 +254,10 @@ const renderPackInventoryRecovery = (
       role="${retrying ? 'status' : 'alert'}"
       aria-live="polite" aria-atomic="true" aria-busy="${retrying ? 'true' : 'false'}">
       <div class="connections-pack-inventory-copy">
-        <strong>${retrying ? 'Restoring pack context' : 'Pack context unavailable'}</strong>
+        <strong>${retrying ? 'Getting the Pack details back' : 'Recued cannot read the Pack details'}</strong>
         <span>${retrying
-          ? 'Refreshing pack usage and setup suggestions…'
-          : `Connections remain usable, but pack usage and setup suggestions may be incomplete. ${e(recovery.message)}`}</span>
+          ? 'Loading how your Packs are used, and what to set up…'
+          : `Your connections still work. What Recued shows about Packs may be missing things. ${e(recovery.message)}`}</span>
       </div>
       <div class="connections-credential-recovery-action">
         <button type="button"
@@ -300,7 +300,7 @@ const renderRow = (
     : '';
   const engagementToggleLabel = engagementExpanded
     ? 'Hide health'
-    : 'Engagement health';
+    : 'How well it is working';
   return `
     <div class="connections-row-wrap" data-conn-key="${e(key)}">
       <div class="connections-row" data-conn-key="${e(key)}">
@@ -392,7 +392,7 @@ const mcpPackActionLabel = (action: NonNullable<McpPackBadge['action']>): string
   switch (action) {
     case 'generate': return 'Generate pack';
     case 'review': return 'Review tools';
-    case 'probe': return 'Probe now';
+    case 'probe': return 'Check it now';
   }
 };
 
@@ -544,76 +544,76 @@ const renderRecentProbe = (
     let detail: string;
     let action = '';
     if (resolution === 'checking') {
-      title = 'Checking the saved connection…';
-      detail = `The previous recovery stop for ${identity} stays closed while the paired server checks the credential that is currently saved.`;
+      title = 'Checking the connection you saved…';
+      detail = `The previous recovery stop for ${identity} stays closed while your server checks the key you have saved.`;
     } else if (resolution === 'resolved') {
-      title = 'Recovery verified';
-      detail = `The paired server checked the currently saved credential for ${identity}, and the provider accepted it. Recovery is complete; no credential was changed or replayed.${checked}${remainingDetail}`;
+      title = 'Checked, and it is sorted';
+      detail = `Your server checked the key you have saved for ${identity}, and the provider accepted it. Recovery is complete; no credential was changed or replayed.${checked}${remainingDetail}`;
       action = continueAction;
     } else if (resolution === 'reopen') {
       const hasCredentialCorrection = p.credential_correction !== undefined;
       title = hasCredentialCorrection
-        ? 'Saved credential still needs attention'
-        : 'Saved connection still needs attention';
-      detail = `A fresh paired-server check found that the provider still rejects the authentication currently saved for ${identity}. The acknowledged recovery stop remains closed; this is a new result with a clean correction path.${checked}`;
+        ? 'The key you saved still needs a look'
+        : 'The connection you saved still needs a look';
+      detail = `Your server checked again, and they still refuse the key you have saved for ${identity}. The acknowledged recovery stop remains closed; this is a new result with a clean correction path.${checked}`;
       action = button({
         label: hasCredentialCorrection
-          ? 'Review saved credential'
-          : 'Review connection',
+          ? 'Look at the key you saved'
+          : 'Look at the connection',
         size: 'sm',
         variant: 'secondary',
         action: 'connections-review-post-safe-stop',
         data: { kind: p.kind, name: p.name },
         ariaLabel: hasCredentialCorrection
-          ? `Review the currently saved credential for ${identity}${profileAria}`
-          : `Review the current authentication settings for ${identity}${profileAria}`,
+          ? `Look at the key you saved for ${identity}${profileAria}`
+          : `Look at the sign-in settings for ${identity}${profileAria}`,
       });
     } else if (resolution === 'changed') {
-      title = 'Connection changed during the check';
-      detail = `Recued preserved the newer saved version of ${identity} and did not apply the older check result to it. Check the current connection before deciding what to fix.`;
+      title = 'The connection changed while Recued was checking';
+      detail = `Recued kept the newer version of ${identity} and did not use the older result on it. Look at the connection as it is now before you decide what to fix.`;
       action = button({
-        label: 'Check current connection',
+        label: 'Check the connection now',
         size: 'sm',
         variant: 'secondary',
         action: 'connections-recheck-post-safe-stop',
         data: { kind: p.kind, name: p.name },
-        ariaLabel: `Check the current saved connection for ${identity}${profileAria}`,
+        ariaLabel: `Check the connection you have saved for ${identity}${profileAria}`,
       });
     } else if (resolution === 'removed') {
-      title = 'Connection no longer exists';
-      detail = `The paired server no longer has ${identity}. Its previous recovery stop remains closed, and there is no saved credential left to check.${remainingDetail}`;
+      title = 'That connection is gone';
+      detail = `Your server no longer has ${identity}. Its previous recovery stop remains closed, and there is no saved credential left to check.${remainingDetail}`;
       action = continueAction;
     } else if (resolution === 'unsupported') {
-      title = 'Server update needed for an exact check';
-      detail = `This paired server can check ${identity}, but it cannot prove which saved version it checked. Update and restart the paired server, then run the check once more. The previous recovery stop remains closed, and no credential was changed.`;
+      title = 'Your server needs updating before it can check this';
+      detail = `Your server can check ${identity}, but it cannot prove which saved version it checked. Update and restart the paired server, then run the check once more. The previous recovery stop remains closed, and no credential was changed.`;
       action = button({
-        label: 'Check after update',
+        label: 'Check once it is updated',
         size: 'sm',
         variant: 'secondary',
         action: 'connections-recheck-post-safe-stop',
         data: { kind: p.kind, name: p.name },
-        ariaLabel: `Check ${identity}${profileAria} after updating the paired server`,
+        ariaLabel: `Check ${identity}${profileAria} once you have updated your server`,
       });
     } else {
       title = p.status === 'pending'
-        ? 'Saved connection still needs a check'
+        ? 'The connection you saved still needs checking'
         : p.status === 'unreachable'
-          ? 'Provider could not be reached'
-          : 'Saved connection not yet verified';
+          ? 'Recued could not reach them'
+          : 'Recued has not checked this connection yet';
       detail = p.status === 'pending'
-        ? `The paired server recorded closure of the previous recovery stop for ${identity}, but no newer check of the saved credential is on record. Run one check to finish recovery.`
+        ? `Your server wrote down that the earlier problem is closed for ${identity}, but no newer check of the saved credential is on record. Run one check to finish recovery.`
         : p.status === 'unreachable'
-          ? `The paired server could not reach the provider for ${identity}. This does not prove the saved credential is wrong. Reconnect or check the provider, then run one fresh check.${checked}`
+          ? `Your server could not reach them for ${identity}. This does not prove the saved credential is wrong. Reconnect or check the provider, then run one fresh check.${checked}`
           : p.status === 'auth_failed'
-            ? `The paired server reported a credential rejection, but Recued could not bind that result to the latest saved version of ${identity}. Reload the current row, then check it again before replacing anything.${checked}`
-            : `The paired server could not authoritatively finish the saved-credential check for ${identity}. The previous recovery stop remains closed; reconnect, then try one fresh check.${checked}`;
+            ? `Your server said the key was refused, but Recued could not match that to the newest saved version of ${identity}. Reload the current row, then check it again before replacing anything.${checked}`
+            : `Your server could not finish checking the saved key for ${identity}. The previous recovery stop remains closed; reconnect, then try one fresh check.${checked}`;
       action = button({
         label: 'Check again',
         size: 'sm',
         variant: 'secondary',
         action: 'connections-recheck-post-safe-stop',
         data: { kind: p.kind, name: p.name },
-        ariaLabel: `Check the currently saved connection again for ${identity}${profileAria}`,
+        ariaLabel: `Check the connection you saved again, for ${identity}${profileAria}`,
       });
     }
     return `
@@ -629,17 +629,17 @@ const renderRecentProbe = (
   }
   if (p.purpose === 'credential_rotation' && p.status === 'verified') {
     const authType = p.auth_type === undefined
-      ? 'Replacement credential'
+      ? 'The new key'
       : ({
-          none: 'No-auth binding',
-          bearer: 'Bearer token',
+          none: 'No sign-in needed',
+          bearer: 'A key you paste in',
           basic: 'Username and password',
-          header: 'Header credential',
-          query: 'Query credential',
-          request_signature: 'Signing key pair',
-          body_field: 'Request-body credential',
-          oauth2_refresh: 'OAuth refresh credential',
-          oauth2_client_credentials: 'OAuth client credential',
+          header: 'A key sent in the request',
+          query: 'A key in the web address',
+          request_signature: 'A pair of signing keys',
+          body_field: 'A key sent with the request',
+          oauth2_refresh: 'An OAuth refresh key',
+          oauth2_client_credentials: 'An OAuth app key',
           atproto_session: 'AT Protocol app password',
         } as const)[p.auth_type];
     const checkedAt = formatUtcMinute(p.verified_at);
@@ -647,14 +647,14 @@ const renderRecentProbe = (
     const checked = checkedAt === null ? '' : ` Verified ${checkedAt}.`;
     const expiry = expiresAt === null ? '' : ` Access token valid until ${expiresAt}.`;
     const message = p.recovered
-      ? `${authType} replacement for ${p.kind}/${p.name} was verified and applied. This recovered receipt confirms that attempt; review the current connection state before making another change.${checked}${expiry}`
-      : `${authType} verified and now active for ${p.kind}/${p.name}. Future provider calls use the replacement.${checked}${expiry}`;
+      ? `${authType} replacement for ${p.kind}/${p.name} was checked and is now in use. That is what this says happened. Look at the connection as it is now before you change anything else.${checked}${expiry}`
+      : `${authType} checked, and now in use for ${p.kind}/${p.name}. Future provider calls use the replacement.${checked}${expiry}`;
     return `<div class="connections-credential-receipt" data-connection-credential-receipt="verified" role="status" aria-live="polite">${inlineOk(
       message,
     )}</div>`;
   }
   const tone = p.status === 'ok' ? 'ok' : p.status === 'unknown' ? 'hint' : 'warn';
-  const message = `Last probe for ${p.kind}/${p.name}: ${p.status}`;
+  const message = `Last checked for ${p.kind}/${p.name}: ${p.status}`;
   if (tone === 'ok') return inlineOk(message);
   if (tone === 'warn') return inlineError(message);
   return inlineHint(message);
@@ -672,13 +672,13 @@ const renderPostSafeStopProfileHandoff = (
   const sourceKnown = sourceLabel !== undefined && sourceLabel.length > 0;
   const source = sourceKnown ? sourceLabel : 'another server profile';
   const title = handoff.reason === 'unbound'
-    ? 'This recovery link needs a server check'
-    : 'This recovery belongs to another server';
+    ? 'Recued has to check this link against a server'
+    : 'This belongs to a different server';
   const detail = handoff.reason === 'unbound'
-    ? `This older or incomplete link does not identify which server profile created it. You are using ${activeLabel}. Recued did not open or check a same-named connection here.`
+    ? `This link is old, or missing something, and does not say which server made it. You are using ${activeLabel}. Recued did not open or check a same-named connection here.`
     : sourceKnown
-      ? `This handoff was created for ${source}, but you are using ${activeLabel}. Recued did not open or check a same-named connection on this server.`
-      : `This handoff was created for a different server profile that is not currently named in this browser. You are using ${activeLabel}. Recued did not open or check a same-named connection on this server.`;
+      ? `This was made for ${source}, but you are using ${activeLabel}. Recued did not open or check a same-named connection on this server.`
+      : `This was made for a different server profile that is not currently named in this browser. You are using ${activeLabel}. Recued did not open or check a same-named connection on this server.`;
   // Do not advertise a route-changing choice while another connection editor
   // owns the page. The controller deliberately refuses to replace a live
   // editor, so rendering this button here would create a focusable no-op.
@@ -690,17 +690,17 @@ const renderPostSafeStopProfileHandoff = (
         size: 'sm',
         variant: 'secondary',
         action: 'connections-review-active-post-safe-stop',
-        ariaLabel: `Review unresolved connection recovery on ${activeLabel}`,
+        ariaLabel: `Look at connections still to fix on ${activeLabel}`,
       });
   const openProfiles = handoff.serverProfilesAvailable
     ? button({
-        label: 'Open server profiles',
+        label: 'Open your servers',
         size: 'sm',
         variant: 'primary',
         action: 'connections-open-post-safe-stop-profile',
         ariaLabel: sourceKnown
-          ? `Open server profiles to find ${source}`
-          : 'Open server profiles to review the recovery destination',
+          ? `Open your servers to find ${source}`
+          : 'Open your servers to review the recovery destination',
       })
     : '';
   return `
@@ -717,7 +717,7 @@ const renderPostSafeStopProfileHandoff = (
           size: 'sm',
           variant: 'secondary',
           action: 'connections-dismiss-post-safe-stop-profile',
-          ariaLabel: 'Dismiss this server-profile recovery handoff',
+          ariaLabel: 'Put this aside',
         })}
       </div>
     </section>
@@ -728,25 +728,25 @@ const credentialRotationFailureCopy = (
   reason: NonNullable<ConnectionsPageState['credentialRotationRecovery']>['failureReason'],
 ): string => {
   if (reason === 'auth_failed') {
-    return 'The provider rejected the replacement. The saved credential was preserved.';
+    return 'They refused the new key. Recued kept the old key.';
   }
   if (reason === 'unreachable') {
-    return 'The provider check could not finish. The saved credential was preserved.';
+    return 'The check did not finish. Recued kept the old key.';
   }
   if (reason === 'inconclusive') {
-    return 'The provider could not prove the replacement was valid. The saved credential was preserved.';
+    return 'They could not confirm the new key works. Recued kept the old key.';
   }
   if (reason === 'conflict') {
-    return 'This connection changed during verification, so the replacement was not applied.';
+    return 'The connection changed while Recued was checking, so the new key was not used.';
   }
-  return 'The replacement did not complete. The saved credential was preserved.';
+  return 'That did not finish. Recued kept the old key.';
 };
 
 const serverUpdateTriageReasonCopy = (
   triage: ConnectionsServerUpdateTriage,
 ): string => {
-  const current = triage.currentVersion ?? 'an unconfirmed version';
-  const baseline = triage.baselineVersion ?? 'the earlier unconfirmed version';
+  const current = triage.currentVersion ?? 'a version nobody has confirmed';
+  const baseline = triage.baselineVersion ?? 'the earlier version nobody confirmed';
   if (triage.reason === 'update_still_available') {
     const target = triage.availableVersion === undefined
       ? 'an available update'
@@ -756,38 +756,38 @@ const serverUpdateTriageReasonCopy = (
       && triage.currentVersion !== undefined
       && triage.currentVersion !== triage.baselineVersion
     ) {
-      return `The selected server moved from version ${baseline} to ${current}, but its signed update check still offers ${target}. An update landed, yet this server is not at the available release and the required capability remains absent.`;
+      return `Your server went from version ${baseline} to ${current}, but its signed update check still offers ${target}. An update landed, yet this server is not at the available release and the required capability remains absent.`;
     }
-    return `The selected server still reports version ${current}, and its signed update check still offers ${target}. The available release is not running on this server.`;
+    return `Your server still says it is on version ${current}, and its signed update check still offers ${target}. The available release is not running on this server.`;
   }
   if (triage.reason === 'running_version_unchanged') {
-    return `The selected server still reports version ${current}, the same running version seen before the update detour. Restart or redeploy the actual server used by this profile before retrying.`;
+    return `Your server still says it is on version ${current}, the same running version seen before the update detour. Restart or redeploy the actual server used by this profile before retrying.`;
   }
   if (triage.reason === 'running_version_changed') {
-    return `The selected server moved from version ${baseline} to ${current}, but the required safe-preflight capability is still absent. Verify that this profile received the complete server image or package, then restart that instance.`;
+    return `Your server went from version ${baseline} to ${current}, but the required safe-preflight capability is still absent. Verify that this profile received the complete server image or package, then restart that instance.`;
   }
   if (triage.reason === 'launcher_update_required') {
-    return `The selected server reports version ${current}, but its signed update check says the launcher is too old. Update the launcher or deployment wrapper before retrying.`;
+    return `Your server says it is on version ${current}, but its signed update check says the launcher is too old. Update the launcher or deployment wrapper before retrying.`;
   }
   if (triage.reason === 'self_update_unavailable') {
-    return `The selected server reports version ${current}, but in-app updates are not configured for this install. Update its package, image, or deployment outside Recued, then restart the selected instance.`;
+    return `Your server says it is on version ${current}, but in-app updates are not configured for this install. Update its package, image, or deployment outside Recued, then restart the selected instance.`;
   }
   if (triage.reason === 'current_build_missing_capability') {
-    return `The selected server reports version ${current} and says its ${triage.channel ?? 'current'} channel is up to date, but the required safe-preflight capability is absent. Verify the deployed release artifact and selected server profile before retrying.`;
+    return `Your server says it is on version ${current} and says its ${triage.channel ?? 'current'} is up to date, but the safety check it needs is missing. Check what you actually installed, and that you picked the right server, before trying again.`;
   }
   if (triage.checkStatus === 'bad-signature') {
-    return `The selected server reports version ${current}, but it rejected the release manifest signature. Do not apply from that feed; verify the server’s trusted release key and signed manifest before retrying.`;
+    return `Your server says it is on version ${current}, but it rejected the release manifest signature. Do not apply from that feed; verify the server’s trusted release key and signed manifest before retrying.`;
   }
   if (triage.checkStatus === 'replay') {
-    return `The selected server reports version ${current}, but it rejected an older signed release manifest. Restore a current release feed before retrying.`;
+    return `Your server says it is on version ${current}, but it rejected an older signed release manifest. Restore a current release feed before retrying.`;
   }
   if (triage.checkStatus === 'stale-feed') {
-    return `The selected server reports version ${current}, but it is on an older release check that ignores the current feed. Re-run the installer on that server to update it.`;
+    return `Your server says it is on version ${current}, but it is on an older release check that ignores the current feed. Re-run the installer on that server to update it.`;
   }
   if (triage.checkStatus === 'fetch-failed') {
-    return `The selected server reports version ${current}, but it could not fetch its release feed. Check this server’s outbound access and configured feed endpoint before retrying.`;
+    return `Your server says it is on version ${current}, but it could not fetch its release feed. Check this server’s outbound access and configured feed endpoint before retrying.`;
   }
-  return 'The required safe-preflight capability is absent, and Recued could not complete a signed update check. Verify the selected profile, server reachability, and release-feed configuration before retrying.';
+  return 'The safety check it needs is missing, and Recued could not check for updates. Check you picked the right server, that Recued can reach it, and that its update settings are right.';
 };
 
 const serverUpdateTriageEvidenceCopy = (
@@ -806,20 +806,20 @@ const serverUpdateTriageEvidenceCopy = (
   if (triage.baselineVersion !== undefined) {
     evidence.push(`before update ${triage.baselineVersion}`);
   }
-  return `Server evidence: ${evidence.join(' · ')}.`;
+  return `What the server said: ${evidence.join(' · ')}.`;
 };
 
 const serverUpdateBaselinePostureCopy: Readonly<
   Record<ReleaseCheckStatus, string>
 > = {
-  'update-available': 'a newer release is available',
-  'up-to-date': 'the release feed reports this version is current',
+  'update-available': 'a newer version is ready',
+  'up-to-date': 'this is the newest version',
   'not-configured': 'in-place release checks are not configured',
-  'stale-feed': 'this server is on an older release check that ignores the current feed',
-  'launcher-outdated': 'the launcher must be updated first',
-  replay: 'an older release manifest was ignored',
-  'fetch-failed': 'the running version is known; the release feed is unreachable',
-  'bad-signature': 'the running version is known; the release manifest was rejected',
+  'stale-feed': 'this server checks for updates in an old way and misses new ones',
+  'launcher-outdated': 'the launcher has to be updated first',
+  replay: 'an older update was ignored',
+  'fetch-failed': 'the running version is known; Recued cannot reach the update service',
+  'bad-signature': 'Recued knows the version it is running, but the update did not pass its checks',
 };
 
 const renderCredentialRotationRecovery = (
@@ -846,7 +846,7 @@ const renderCredentialRotationRecovery = (
             : hasRepeatedRejectionTriage
             ? 'Resolve repeated rejection'
             : 'Correct replacement'
-          : 'Review connection'
+          : 'Look at the connection'
         : 'Dismiss',
     ariaLabel: props.loading
       ? `Loading connection ${identity}`
@@ -875,7 +875,7 @@ const renderCredentialRotationRecovery = (
         : verification?.phase === 'waiting'
           ? verification.reason === 'restart_pending'
             ? `The paired server says this ${operation} is still finishing its restart. Recued will check the exact receipt again automatically; ${identity} and all server controls stay paused meanwhile. The receipt and raw server details are never shown or stored in this recovery view.`
-            : `Recued could not confirm this ${operation} receipt yet and will retry automatically. ${identity} and all server controls stay paused unless the paired server resolves the exact receipt. Raw errors and the receipt are never shown or stored in this recovery view.`
+            : `Recued could not confirm this ${operation} receipt yet. It will try again by itself. ${identity} and all server controls stay paused unless the paired server resolves the exact receipt. Raw errors and the receipt are never shown or stored in this recovery view.`
         : verification?.phase === 'retryable'
           ? `Recued could not confirm this ${operation} after several safe checks. ${identity} and all server controls remain paused. Open Server Updates or Account to retry; switching servers cannot count as proof of this result.`
         : verification?.phase === 'reviewing_closure'
@@ -885,7 +885,7 @@ const renderCredentialRotationRecovery = (
         : verification?.phase === 'closed'
           ? `The selected server durably closed this receipt as unresolved without claiming the ${operation} succeeded or failed. Confirm its current version, release posture, and ${identity} activity in Server Updates or Account before another server change.`
         : verification?.phase === 'checking_baseline'
-          ? `Recued is freshly reading the selected server’s running version, release posture, and ${identity} activity. The original ${operation} outcome remains unknown and all server controls stay paused.`
+          ? `Recued is freshly reading the selected server’s running version, release posture, and ${identity} activity. The original ${operation} result is still unknown and all server controls stay paused.`
         : verification?.phase === 'baseline_retryable'
           ? `The selected server’s current state could not be confirmed. ${identity} and all server controls remain paused; reconnect if needed, then retry the current-state check in Server Updates or Account.`
         : verification?.phase === 'baseline_confirmed'
@@ -906,17 +906,17 @@ const renderCredentialRotationRecovery = (
                 verification.reason === 'finish_unavailable'
                   ? ' The exact browser latch could not be retired; retry Finish recovery there. No server action will repeat.'
                   : ' Review and finish recovery there.';
-              return `Current state confirmed: running ${baseline.currentVersion} on the ${baseline.channel} channel; ${serverUpdateBaselinePostureCopy[baseline.updateStatus]}; ${connectionCopy}. Open Server Updates or Account.${finishCopy} The original ${operation} outcome remains unknown.`;
+              return `Current state confirmed: running ${baseline.currentVersion} on the ${baseline.channel} channel; ${serverUpdateBaselinePostureCopy[baseline.updateStatus]}; ${connectionCopy}. Open Server Updates or Account.${finishCopy} The original ${operation} result is still unknown.`;
             })()
         : verification?.phase === 'finishing'
-          ? `The reviewed current-state baseline is confirmed and this tab is retiring only its browser latch. ${identity} stays paused until that local finish completes; the original ${operation} outcome remains unknown.`
+          ? `The reviewed current-state baseline is confirmed and this tab is retiring only its browser latch. ${identity} stays paused until that local finish completes; the original ${operation} result is still unknown.`
         : verification?.phase === 'unknown'
           ? verification.reason === 'operation_mismatch'
             ? `The paired server resolved this receipt as a different action than the expected ${operation}. ${identity} and all server controls remain paused. Confirm the selected server profile in Account, then use the privacy-safe diagnostic before retrying.`
             : verification.reason === 'closure_in_flight'
-              ? `The server refused unresolved closure because another release transition is active. ${identity} and all server controls remain paused; wait for that change to settle, then retry the receipt check.`
+              ? `The server refused unresolved closure because another release transition is active. ${identity} and all server controls remain paused; wait for that change to settle, then retry the result again.`
               : verification.reason === 'closure_unavailable'
-                ? `The selected server could not record an authoritative unresolved closure. ${identity} and all server controls remain paused; retry the receipt check or use the privacy-safe administrator handoff.`
+                ? `The selected server could not record an authoritative unresolved closure. ${identity} and all server controls remain paused; retry the result again or use the privacy-safe administrator handoff.`
                 : `The paired server did not recognize this ${operation} receipt. ${identity} and all server controls remain paused. Confirm the selected server profile in Account, then retry, use the privacy-safe diagnostic, or review server-authoritative closure in Server Updates.`
         : `The server accepted the ${operation} in an open Recued tab. This tab will stay on ${identity} while the paired server verifies the exact opaque receipt before offering the credential check. Tabs share only an opaque ID for the selected server profile, the operation, phase, start time, and opaque server receipt; no credential, endpoint, connection detail, form value, version, or raw error is shared.`;
   } else if (recovery.phase === 'checking') {
@@ -997,20 +997,20 @@ const renderCredentialRotationRecovery = (
         recovery.name,
       );
     if (exactCleanEditorOpen) {
-      message = `The read-only safety check finished and the clean credential editor for ${identity} is ready. No field value or credential was restored. Enter a replacement below; Recued will recheck ownership before sending.`;
+      message = `The read-only safety check finished and the fresh key editor for ${identity} is ready. No field value or credential was restored. Enter a replacement below; Recued will recheck ownership before sending.`;
     } else {
-      message = `The clean credential editor for ${identity} closed before any field changed. Resume when ready; Recued will repeat the current activity and saved-connection checks before reopening it. No field value, credential, or server-recovery receipt will be restored.`;
+      message = `The fresh key editor for ${identity} closed before any field changed. Resume when ready; Recued will repeat the current activity and saved-connection checks before reopening it. No field value, credential, or server-recovery receipt will be restored.`;
       action = button({
         label: props.loading
           ? 'Loading connection…'
           : canReview
-            ? 'Resume clean editor'
+            ? 'Reopen the fresh editor'
             : 'Dismiss',
         ariaLabel: props.loading
           ? `Loading connection ${identity}`
           : canReview
-            ? `Resume the clean credential editor for ${identity} after repeating its safety check`
-            : `Dismiss clean credential editor recovery for ${identity}`,
+            ? `Reopen the fresh key editor for ${identity} after running its safety check again`
+            : `Dismiss fresh key editor recovery for ${identity}`,
         size: 'xs',
         action: canReview
           ? 'connections-start-fresh-credential-rotation'
@@ -1132,7 +1132,7 @@ const renderCredentialRotationRecovery = (
       data: { kind: recovery.kind, name: recovery.name },
     })}`;
   } else if (recovery.phase === 'restart_resolved') {
-    message = `A fresh, read-only check confirmed that this server can safely check a credential replacement for ${identity}. You stayed on this page and no credential form opened. Continue here when you are ready; Recued will re-read the server and exact saved connection before opening a clean replacement form.`;
+    message = `A look-only check says this server can safely check a new key for ${identity}. You stayed on this page and no credential form opened. Continue here when you are ready; Recued will re-read the server and exact saved connection before opening a clean replacement form.`;
     action = `${button({
       label: props.loading
         ? 'Loading connection…'
@@ -1142,7 +1142,7 @@ const renderCredentialRotationRecovery = (
       ariaLabel: props.loading
         ? `Loading connection ${identity}`
         : canReview
-          ? `Continue the credential replacement check for ${identity} in this tab`
+          ? `Carry on checking the new key for ${identity} in this tab`
           : `Dismiss resolved server capability for ${identity}`,
       variant: canReview ? 'primary' : 'secondary',
       size: 'xs',
@@ -1199,7 +1199,7 @@ const renderCredentialRotationRecovery = (
       : `It confirmed running ${baseline.currentVersion} on the ${baseline.channel} channel; ${serverUpdateBaselinePostureCopy[baseline.updateStatus]}.`;
     message =
       `Server recovery is finished and server-change controls are unlocked. ${currentState} `
-      + `The original ${recoveryVerification.operation} outcome remains unknown. `
+      + `The original ${recoveryVerification.operation} result is still unknown. `
       + message;
   }
   const recoveryBusy = (
@@ -2014,12 +2014,12 @@ const visibleCredentialCorrectionFields = (
 
 const GUIDE_AUTH_LABELS: Record<string, string> = {
   none: 'No authentication',
-  bearer: 'Bearer token',
+  bearer: 'A key you paste in',
   basic: 'Username and password',
   header: 'Credential headers',
   query: 'Query parameter',
   oauth2_refresh: 'OAuth with refresh token',
-  oauth2_client_credentials: 'OAuth client credentials',
+  oauth2_client_credentials: 'An OAuth app keys',
   atproto_session: 'AT Protocol app password',
 };
 
@@ -2954,7 +2954,7 @@ const renderCredentialSafeStopClosureNotice = (
     : 'No credential was restored in this tab. Return to the connection list, then run one explicit check of the saved connection.';
   const action = notice.nextStep === 'check_saved_connection'
     ? button({
-        label: 'Return and check connection',
+        label: 'Go back and check connection',
         size: 'sm',
         variant: 'secondary',
         action: 'connections-check-saved-after-safe-stop',

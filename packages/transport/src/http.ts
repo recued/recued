@@ -53,7 +53,14 @@ export interface HttpGetBytesOptions {
 export type HttpPostOutcome =
   | { ok: true; status: number; json: unknown }
   | { ok: false; kind: 'timeout' | 'network'; detail: string }
-  | { ok: false; kind: 'http_error'; status: number; detail: string; json?: unknown };
+  | { ok: false; kind: 'http_error'; status: number; detail: string; json?: unknown; retry_after_ms?: number };
+
+/** Slack/Discord Retry-After and Telegram response parameters use seconds. */
+export const retryAfterSeconds = (value: unknown): number | undefined => {
+  if (typeof value !== 'number' && (typeof value !== 'string' || value.trim() === '')) return undefined;
+  const ms = Math.ceil(Number(value) * 1000);
+  return Number.isSafeInteger(ms) && ms >= 0 && ms <= Number.MAX_SAFE_INTEGER - Date.now() ? ms : undefined;
+};
 
 export interface HttpGetJsonOptions {
   headers?: Record<string, string>;
@@ -178,7 +185,8 @@ const requestJson = async (
   opts: {
     method: 'GET' | 'POST' | 'PATCH';
     headers?: Record<string, string>;
-    body?: string;
+    body?: string | FormData | Blob;
+    responseText?: boolean;
     timeoutMs: number;
     fetchImpl: typeof fetch;
     maxResponseBytes?: number;
@@ -229,12 +237,14 @@ const requestJson = async (
       } catch {
         errJson = undefined;
       }
+      const retryAfter = retryAfterSeconds(response.headers?.get('retry-after'));
       return {
         ok: false,
         kind: 'http_error',
         status: response.status,
         detail: `${response.status} ${response.statusText}`.trim(),
         ...(errJson !== undefined ? { json: errJson } : {}),
+        ...(retryAfter !== undefined ? { retry_after_ms: retryAfter } : {}),
       };
     }
 
@@ -242,7 +252,8 @@ const requestJson = async (
     // therefore a real transport failure, never a silent `null` success.
     let json: unknown;
     try {
-      json = await readBoundedJson(response, maxResponseBytes);
+      json = opts.responseText ? await readBoundedResponseText(response, maxResponseBytes)
+        : await readBoundedJson(response, maxResponseBytes);
     } catch (e) {
       const err = e as { name?: string; message?: string };
       if (err?.name === 'AbortError') {
@@ -281,6 +292,14 @@ export const postJson = (
       ? { maxResponseBytes: opts.maxResponseBytes }
       : {}),
   });
+
+/** Stream a multipart or raw file body with the same redirect, timeout and
+ * bounded-response protections as control requests. Slack's upload host
+ * acknowledges raw bytes with text; its control endpoints still require JSON. */
+export const postFileBody = (url: string, opts: Omit<HttpPostOptions, 'body'> & {
+  body: FormData | Blob;
+  responseText?: boolean;
+}): Promise<HttpPostOutcome> => requestJson(url, { ...opts, method: 'POST' });
 
 /** GET a JSON body — the read-side twin. Added for WhatsApp's two-step media fetch
  *  (resolve a media id to a short-lived bearer-authenticated URL, then stream it);
@@ -387,6 +406,7 @@ export const getBytes = async (
 
 export interface HttpDownloadOptions {
   headers?: Record<string, string>;
+  redirect?: 'error';
   /** Destination temp path the body is streamed into. The CALLER owns this
    *  file's lifecycle (delete after consuming). On any failure this helper
    *  unlinks the partial dest itself. */
@@ -437,6 +457,7 @@ export const downloadToFile = async (
         method: 'GET',
         headers: opts.headers ?? {},
         signal: controller.signal,
+        ...(opts.redirect ? { redirect: opts.redirect } : {}),
       });
     } catch (e) {
       const err = e as { name?: string; message?: string };

@@ -795,7 +795,13 @@ const buildDropAttachment = (
  *  `approved_target` (the catalog gate's `operation_id` / fallback
  *  `ingredient_slug`), else a synthetic `<recipe>.<gated_step>` id. The
  *  resolver keys the editable-args allowlist on this. */
-const heldOperationId = (anchor: AuditEntry, checkpoint: Checkpoint): string =>
+/** ⚠ EXPORTED FOR D-270. The approval card's detail resolver must derive the
+ *  SAME operation id this does, because that id selects the `editable_args`
+ *  allowlist — and two derivations drifting would mean the card and the `/ask`
+ *  page resolve DIFFERENT allowlists for the same hold, each confident. A
+ *  four-line function is exactly the size that gets copied and then edited on
+ *  one side only. */
+export const heldOperationId = (anchor: AuditEntry, checkpoint: Checkpoint): string =>
   checkpoint.approved_target?.operation_id
   ?? checkpoint.approved_target?.ingredient_slug
   ?? `${anchor.recipe_id}.${checkpoint.gated_step_id}`;

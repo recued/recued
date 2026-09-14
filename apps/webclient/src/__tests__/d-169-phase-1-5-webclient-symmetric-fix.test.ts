@@ -406,7 +406,7 @@ describe('D-169 pair-code-success — read failures and Web Locks', () => {
 
   it('PAIR_CODE_SUCCESS_ERROR_COPY covers pair_code_success_already_paired', () => {
     expect(PAIR_CODE_SUCCESS_ERROR_COPY.pair_code_success_already_paired).toContain(
-      'Another tab finished pairing',
+      'Another tab paired this browser',
     );
   });
 });
@@ -784,7 +784,7 @@ describe('D-169 pair-code-input-host — lock and preflight integration', () => 
     expect(onAfterPair).not.toHaveBeenCalled();
     expect(fake.getStatus()?.dataset.error).toBe('pair_code_input_already_paired');
     expect(fake.getStatus()?.textContent).toBe(
-      'Another tab finished pairing while this form was open. Reload to use the existing pair, or clear this browser from Settings to pair a new server.',
+      'Another tab paired this browser while this form was open. Reload the page to use it. To pair a different server, clear this browser in Settings first.',
     );
   });
 
@@ -809,7 +809,7 @@ describe('D-169 pair-code-input-host — lock and preflight integration', () => 
       'pair_code_input_server_unknown_error',
     );
     expect(fake.getStatus()?.textContent).toMatch(
-      /^Pre-pair check failed: IDB unavailable/,
+      /^The check before pairing failed: IDB unavailable/,
     );
   });
 });
@@ -837,12 +837,12 @@ describe('D-169 pair-code-input-host — post-submit lifecycle', () => {
       'pair_code_input_finalize_interrupted',
     );
     expect(fake.getStatus()?.textContent).toContain(
-      'Saving access here was interrupted: bootstrap failed.',
+      'Saving the sign-in here was cut short: bootstrap failed.',
     );
     expect(fake.getStatus()?.textContent).toContain(
-      'without sending another pairing request',
+      'It will not ask to pair again',
     );
-    expect(fake.getSubmitBtn()?.textContent).toBe('Finish saving access');
+    expect(fake.getSubmitBtn()?.textContent).toBe('Finish saving your sign-in');
     expect(fetchFake.calls).toHaveLength(1);
     expect(onAfterPair).not.toHaveBeenCalled();
   });
@@ -912,7 +912,7 @@ describe('D-169 pair-code-input-host — post-submit lifecycle', () => {
       'pair_code_input_server_unknown_error',
     );
     expect(fake.getStatus()?.textContent).toBe(
-      'Paired, but post-pair startup failed: restart failed',
+      'Paired, but Recued could not start afterwards: restart failed',
     );
   });
 
@@ -945,7 +945,7 @@ describe('D-169 pair-code-input-host — post-submit lifecycle', () => {
 
   it('PAIR_CODE_INPUT_ERROR_COPY covers pair_code_input_already_paired', () => {
     expect(PAIR_CODE_INPUT_ERROR_COPY.pair_code_input_already_paired).toBe(
-      'Another tab finished pairing while this form was open. Reload to use the existing pair, or clear this browser from Settings to pair a new server.',
+      'Another tab paired this browser while this form was open. Reload the page to use it. To pair a different server, clear this browser in Settings first.',
     );
   });
 });

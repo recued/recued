@@ -588,8 +588,14 @@ describe('D-138 P1 — MCP catalog ratchet (Reviewer #12)', () => {
       'auto_run.',
       'bridge.',
       // D-214 — owner-only explicit execution feedback.
+      'chat.deliveries.',
+      'chat.delivery.',
       'chat.execution.',
       'chat.inbound_token.',
+      'chat.messages.',
+      'chat.messenger.',
+      'chat.turn.',
+      'chat.turns.',
       // D-182 §7.2 — cli reachability grid rpc (owner-only; authors a
       // connection-less cli tool's per-contract reachability allowlist).
       'cli.reachability.',
@@ -614,6 +620,9 @@ describe('D-138 P1 — MCP catalog ratchet (Reviewer #12)', () => {
       // clients; external agents reach engagement evidence only through the
       // body-stripped `recued_contactEngagementsList` tool.
       'data.contact.engagements.',
+      // a57f7304e — the owner's retained-file chooser (not this arc's; the
+      // ratchet simply had not been updated with the const).
+      'data.file.attachments.',
       // Saved Data views are owner navigation settings, outside agent capabilities.
       'data_views.',
       // R27 delta-B — user-initiated DDNS pause/resume (`ddns.setEnabled` /
@@ -648,6 +657,13 @@ describe('D-138 P1 — MCP catalog ratchet (Reviewer #12)', () => {
       // read (the server's own bind addresses); an MCP agent has no need to
       // enumerate them.
       'network.',
+      // ⛔ D-269 step 2 — the per-kind reminder policy. An agent that could write
+      // it decides what its owner gets to notice; reserved for READ too, on the
+      // same ground as `pii.`. ⚠ `notification.` is deliberately NOT reserved
+      // wholesale — `notification.recent` / `.pending_asks` are Bridge reads.
+      'notification.kind_policy.',
+      // ⛔ D-269 step 3 — an agent that could write this silences its owner.
+      'notification.quiet_hours.',
       'notifications.',
       'packs.',
       'pair.',
@@ -673,6 +689,13 @@ describe('D-138 P1 — MCP catalog ratchet (Reviewer #12)', () => {
       // D-196 S2 — seller cockpit read model (owner-only; exposes customer
       // roster, seller settings, readiness, and usage rollups).
       'server.seller.',
+      // ⛔ D-269 step 1 — the server's own timezone. An agent that could set it
+      // would move the wall clock every wall-clock POLICY resolves through, and
+      // once quiet hours can be opted in for approvals, moving the clock is how
+      // an agent arranges not to be ASKED about its own next action. Reserved
+      // for READ too: whether this machine travels with its owner is a
+      // deployment fact, not an agent's to learn.
+      'server.timezone.',
       // Supervision feature — cli-daemon keep-alive (owner-only; an MCP-channel
       // agent must never enrol / flip / start / stop a supervised daemon).
       'supervision.',

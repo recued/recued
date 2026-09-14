@@ -18,6 +18,8 @@ const definitions: SavedDataViewDefinition[] = [
     task_filters: { completion: 'open', due: 'overdue', sort: 'due_asc' } },
   { tab: 'mail', collection_slug: 'work-mail' },
   { tab: 'records', owner: { publisher: 'vendor', pack_slug: 'shop' }, entity: 'order' },
+  { tab: 'records', owner: { publisher: 'vendor', pack_slug: 'shop' }, entity: 'order',
+    filters: { amount: { op: 'gte', value: '10.2500' }, paid: { op: 'eq', value: false }, status: { op: 'in', value: ['open', 'held'] } }, sort: '-amount' },
   { tab: 'memory', origin: 'user_self' },
   { tab: 'annotation' },
   { tab: 'today' },

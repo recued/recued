@@ -75,12 +75,12 @@ const apiErrorMessage = (body: unknown, status: number): string => {
     if (message) return message;
     if (code) return code;
   }
-  return `diagnostics probe failed: HTTP ${status}`;
+  return `the check failed: HTTP ${status}`;
 };
 
 const readApiData = <T>(body: unknown): T => {
   if (isRecord(body) && 'data' in body) return body.data as T;
-  throw new Error('diagnostics probe returned an invalid response envelope');
+  throw new Error('Recued could not read the answer to its check');
 };
 
 const normalizeBaseUrl = (baseUrl: string): string =>
@@ -92,7 +92,7 @@ const diagnosticProbeUrl = (baseUrl: string): string =>
 const defaultFetch: FetchLike = async (input, init) => {
   const f = (globalThis as { fetch?: FetchLike }).fetch;
   if (typeof f !== 'function') {
-    throw new Error('diagnostics probe fetch is unavailable');
+    throw new Error('Recued cannot run the check from here');
   }
   return f(input, init);
 };
@@ -108,20 +108,20 @@ const defaultFetch: FetchLike = async (input, init) => {
  *  Settings UI never shows a silent blank fallback when the doctor
  *  emits a Reception finding. */
 export const REMEDIATION_COPY: Record<ReachabilityRecommendationCode, string> = {
-  tls_renewal_overdue: 'Trigger an ACME renewal via Settings → Server → Key Health → Renew TLS.',
-  tls_renewal_imminent: 'Renewal will run automatically within the next 14 days. No action required.',
-  ddns_ip_mismatch: 'Trigger a DDNS refresh via Settings → Server → DDNS → Refresh.',
-  webhook_inbound_silent: 'Verify port-forwarding + signing secret in Settings → Connections.',
-  webhook_hmac_failure: 'Re-pair the connection from Settings → Connections; signing secret may have rotated.',
-  bridge_offline: 'Check the bridge extension is installed + enabled in the user\'s Chromium browser.',
-  cert_fingerprint_mismatch: 'Possible MITM. Re-pair every client and rotate the cert via Settings → Server → Key Health.',
-  path_unreachable_from_cloud: 'Verify NAT / port-forwarding for the public listener. Switch to LAN-only if unavailable.',
-  nat_traversal_required: 'Configure manual port-forwarding on the gateway. UPnP unavailable on this network.',
-  exposure_resolution_inconsistent: 'Re-apply a preset from Settings → Server → Exposure, or check the per-path toggle grid for drift.',
-  reception_listener_silent: 'Reception port is listening but has had no traffic recently. Verify the share URLs land on a reachable host, or revoke unused endpoints in Settings → Server → Reception.',
-  reception_endpoint_unreachable: 'A synthetic probe of an enabled Reception endpoint failed. Check Settings → Server → Reception for the affected endpoint, then re-share the URL or rotate the token.',
-  reception_cert_san_missing_hostname: 'TLS cert SAN list does not cover the Reception port hostname. Reissue the cert (Pro: Settings → Server → DDNS → Renew; BYO: re-run certbot/Caddy) so the Reception hostname is in the SAN list.',
-  tls_chain_invalid_for_domain: 'A per-domain cert\'s chain no longer terminates at a system trust root (intermediate CA expired, or trust-store update removed it). Re-upload the cert + the issuer\'s intermediate chain via Settings → Server → TLS Certificates.',
+  tls_renewal_overdue: 'Get a new certificate: Settings, Server, Key Health, Renew.',
+  tls_renewal_imminent: 'Recued will renew this by itself within 14 days. You do not need to do anything.',
+  ddns_ip_mismatch: 'Refresh your web address: Settings, Server, then Refresh.',
+  webhook_inbound_silent: 'Check your router lets traffic through, and check the shared secret, under Settings, Connections.',
+  webhook_hmac_failure: 'Connect it again under Settings, Connections. The shared secret may have changed.',
+  bridge_offline: 'Check the Browser Bridge is installed and switched on in their browser.',
+  cert_fingerprint_mismatch: 'Somebody may be listening in. Pair every device again, and get a new certificate under Settings, Server, Key Health.',
+  path_unreachable_from_cloud: 'Check your router lets traffic through to this server. If it cannot, switch to your own network only.',
+  nat_traversal_required: 'Set your router to let traffic through by hand. It cannot do it automatically on this network.',
+  exposure_resolution_inconsistent: 'Pick a preset again under Settings, Server, Exposure. Or check the list below it for anything out of place.',
+  reception_listener_silent: 'Your Reception page is open, but nobody has been. Check the links you shared really work, or switch off the ones you are not using, under Settings, Server, Reception.',
+  reception_endpoint_unreachable: 'Recued tested one of your Reception links and it did not work. Find it under Settings, Server, Reception, then share it again or give it a new key.',
+  reception_cert_san_missing_hostname: 'Your certificate does not cover the name your Reception page uses. Get a new one that does. With Pro: Settings, Server, Refresh. Otherwise run your own certificate tool again.',
+  tls_chain_invalid_for_domain: 'One of your certificates no longer traces back to anyone your computer trusts. Upload the certificate again, along with the chain from whoever issued it, under Settings, Server, TLS Certificates.',
 };
 
 /** Severity sort order matching the rpc projection. Errors first
@@ -395,14 +395,14 @@ const formatDiagnosticPayload = (result: DiagnosticResult): string => {
     case 'detected_public_ip':
       return payload.ip
         ? `${payload.ip}${payload.ip_version ? ` (IPv${payload.ip_version})` : ''}`
-        : 'No public IP observed';
+        : 'Recued saw no public address';
     case 'port_reachability':
       return `Port ${payload.port}: ${payload.outcome}${
         payload.latency_ms !== undefined ? ` (${payload.latency_ms} ms)` : ''
       }`;
     case 'dns_resolution':
       return `${payload.resolved_ips.length > 0 ? payload.resolved_ips.join(', ') : 'No records'}; ${
-        payload.matches_expected_ip ? 'matches expected IP' : 'does not match expected IP'
+        payload.matches_expected_ip ? 'matches the address Recued expected' : 'does not match the address Recued expected'
       }`;
     case 'tls_handshake':
       return `cert ${
@@ -482,7 +482,7 @@ const renderReachabilityPanel = (
     : '';
   const summary = model
     ? `<dl class="reachability-summary">
-        <div><dt>Hostname</dt><dd>${escapeHtml(model.network_summary.handle ?? 'Not configured')}</dd></div>
+        <div><dt>Hostname</dt><dd>${escapeHtml(model.network_summary.handle ?? 'Not set up')}</dd></div>
         <div><dt>Public IP</dt><dd>${escapeHtml(model.network_summary.public_ip ?? 'Unknown')}</dd></div>
         <div><dt>TLS</dt><dd>${escapeHtml(model.tls_summary.issuer)} / ${model.tls_summary.days_until_expiry} day(s)</dd></div>
       </dl>`
@@ -501,7 +501,7 @@ const renderReachabilityPanel = (
           data-action="${RUN_EXTERNAL_PROBE_ACTION}"
           ${REACHABILITY_RUN_EXTERNAL_PROBE_BTN_ATTR}
           ${disabled}
-        >${state.status === 'running' ? 'Running...' : 'Run external probe'}</button>
+        >${state.status === 'running' ? 'Running...' : 'Check from the outside'}</button>
       </div>
       ${renderExternalProbeResults(state)}
     </div>`;

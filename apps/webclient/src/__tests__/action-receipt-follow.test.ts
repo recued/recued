@@ -123,7 +123,7 @@ describe('followActionReceipts', () => {
     await vi.waitFor(() => expect(present).toHaveBeenCalledTimes(1));
     expect(getAction).toHaveBeenCalledTimes(2);
     expect(present).toHaveBeenCalledWith({
-      title: 'Approved actions partially completed',
+      title: 'Some of what you allowed is done',
       text: '2 of 3 approved items completed or were handed off.',
     });
 
@@ -165,7 +165,7 @@ describe('followActionReceipts', () => {
     await vi.waitFor(() => expect(getAction).toHaveBeenCalledTimes(2));
     expect(present).toHaveBeenCalledTimes(1);
     expect(present).toHaveBeenCalledWith({
-      title: 'Approved actions completed',
+      title: 'Everything you allowed is done',
       text: '2 approved items completed.',
     });
   });
@@ -189,7 +189,7 @@ describe('followActionReceipts', () => {
 
     await vi.waitFor(() => expect(present).toHaveBeenCalledTimes(1));
     expect(present).toHaveBeenCalledWith({
-      title: 'Approved action dispatched',
+      title: 'What you allowed was sent',
       text: '1 approved operation handed off.',
     });
   });
@@ -551,7 +551,7 @@ describe('followActionReceipts', () => {
 
     timers[0]!.handler();
     await vi.waitFor(() => expect(present).toHaveBeenCalledWith({
-      title: 'Approved action dispatched',
+      title: 'What you allowed was sent',
       text: 'The approved operation was handed off.',
     }));
     expect(listActions).toHaveBeenCalledTimes(2);
@@ -965,7 +965,7 @@ describe('followActionReceipts', () => {
 
     expect(present).toHaveBeenCalledOnce();
     expect(present).toHaveBeenCalledWith({
-      title: 'Approved action failed',
+      title: 'What you allowed failed',
       text: 'The restored action failed.',
     });
     second.dispose();
@@ -1062,7 +1062,7 @@ describe('followActionReceipts', () => {
 
     expect(recoveredPresent).toHaveBeenCalledOnce();
     expect(recoveredPresent).toHaveBeenCalledWith({
-      title: 'Approved action failed',
+      title: 'What you allowed failed',
       text: 'After restore failed.',
     });
     recovered.dispose();

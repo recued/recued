@@ -339,7 +339,7 @@ describe('mountUpdatesPage', () => {
     expect(find(
       siblingProgress,
       UPDATES_TAB_PROGRESS_PRIVACY_ATTR,
-    )?.textContent).toMatch(/credentials.*endpoints.*raw errors/i);
+    )?.textContent).toMatch(/keys.*addresses.*raw errors/i);
     expect(find(
       secondHost.el,
       UPDATES_APPLY_BTN_ATTR,
@@ -557,7 +557,7 @@ describe('mountUpdatesPage', () => {
       startedAt: 100,
     });
     expect(recovery.getAttribute('aria-busy')).toBe('true');
-    expect(allText(recovery)).toMatch(/verifying no release transition is active/i);
+    expect(allText(recovery)).toMatch(/checking.*no update is under way/i);
 
     setVerification({
       phase: 'closed',
@@ -571,7 +571,7 @@ describe('mountUpdatesPage', () => {
     );
     const finish = find(recovery, UPDATES_RECEIPT_CLOSURE_FINISH_ATTR)!;
     expect(finish.hasAttribute('hidden')).toBe(false);
-    expect(finish.textContent).toBe('Confirm current server state');
+    expect(finish.textContent).toBe('Check how the server is');
     fire(finish, 'click');
     expect(finishClosure).toHaveBeenCalledOnce();
 
@@ -582,7 +582,7 @@ describe('mountUpdatesPage', () => {
       reason: 'server_closed_unresolved',
     });
     expect(recovery.getAttribute('aria-busy')).toBe('true');
-    expect(finish.textContent).toBe('Confirming current state…');
+    expect(finish.textContent).toBe('Checking how the server is…');
     expect(finish.hasAttribute('disabled')).toBe(true);
 
     setVerification({
@@ -592,7 +592,7 @@ describe('mountUpdatesPage', () => {
       reason: 'baseline_unavailable',
     });
     expect(recovery.getAttribute('aria-busy')).toBeNull();
-    expect(finish.textContent).toBe('Retry current-state check');
+    expect(finish.textContent).toBe('Check how the server is again');
     expect(allText(recovery)).toMatch(/current server state is not confirmed/i);
     expect(allText(recovery)).toMatch(
       /current server state could not be read after closure/i,
@@ -618,7 +618,7 @@ describe('mountUpdatesPage', () => {
     expect(baseline.hasAttribute('hidden')).toBe(false);
     expect(allText(baseline)).toMatch(/running 26\.8\.1.*stable channel/i);
     expect(allText(baseline)).toMatch(
-      /release feed is unreachable.*github-main.*no credential verification.*original update outcome remains unknown/is,
+      /cannot reach the update service.*github-main.*no credential verification.*original update result is still unknown/is,
     );
     expect(finish.textContent).toBe('Finish recovery');
     fire(finish, 'click');
@@ -642,7 +642,7 @@ describe('mountUpdatesPage', () => {
     });
     expect(finish.textContent).toBe('Retry finish recovery');
     expect(allText(recovery)).toMatch(
-      /browser could not retire the exact recovery latch.*does not contact the server.*repeat/i,
+      /browser could not finish tidying up.*does not contact the server.*repeat/i,
     );
     fire(finish, 'click');
     expect(finishClosure).toHaveBeenCalledTimes(3);
@@ -668,7 +668,7 @@ describe('mountUpdatesPage', () => {
     });
     expect(recovery.getAttribute('data-phase')).toBe('completed');
     expect(allText(recovery)).toMatch(
-      /recovery finished.*controls are available again.*one-shot.*will not replay.*original update.*unknown/is,
+      /all sorted.*controls work again.*one-off note.*gone after a reload.*original update.*unknown/is,
     );
     expect(find(h.el, UPDATES_VERSION_ATTR)?.textContent)
       .toBe('Current version 26.8.1 · stable channel');
@@ -752,7 +752,7 @@ describe('mountUpdatesPage', () => {
       UPDATES_RECEIPT_CLOSURE_FINISH_ATTR,
     )!;
     expect(finish.textContent).toBe(
-      'Finish and return to api/github-main',
+      'Finish and go back to api/github-main',
     );
     verification = {
       ...verification,
@@ -760,13 +760,13 @@ describe('mountUpdatesPage', () => {
     };
     for (const listener of [...listeners]) listener({ ...verification });
     expect(finish.textContent).toBe(
-      'Retry finish and return to api/github-main',
+      'Try finishing again and go back to api/github-main',
     );
     expect(allText(find(
       firstHost.el,
       UPDATES_RECEIPT_RECOVERY_ATTR,
     )!)).toMatch(
-      /retry finish and return to api\/github-main.*does not contact the server or repeat/i,
+      /try finishing again and go back to api\/github-main.*does not contact the server or repeat/i,
     );
     fire(finish, 'click');
     expect(finishClosure).toHaveBeenCalledOnce();
@@ -1395,7 +1395,7 @@ describe('mountUpdatesPage', () => {
     expect(find(card, UPDATES_CREDENTIAL_RETRY_IDENTITY_ATTR)?.textContent)
       .toBe('api/github-main');
     expect(find(card, UPDATES_CREDENTIAL_RETRY_STATUS_ATTR)?.textContent)
-      .toMatch(/authoritative check/i);
+      .toMatch(/come back and let it check for itself/i);
     expect(find(card, UPDATES_CREDENTIAL_RETRY_PRIVACY_ATTR)?.textContent)
       .toMatch(/keep this tab open/i);
 
@@ -1439,7 +1439,7 @@ describe('mountUpdatesPage', () => {
     expect(find(card, UPDATES_CREDENTIAL_RETRY_RETURN_ATTR)?.hasAttribute('disabled'))
       .toBe(false);
     expect(find(card, UPDATES_CREDENTIAL_RETRY_STATUS_ATTR)?.textContent)
-      .toMatch(/server reconnected/i);
+      .toMatch(/the server is back/i);
 
     fire(find(card, UPDATES_CREDENTIAL_RETRY_DISMISS_ATTR)!, 'click');
     expect(continuity.read()).toBeNull();
@@ -1486,13 +1486,13 @@ describe('mountUpdatesPage', () => {
     const dismissButton = find(card, UPDATES_CREDENTIAL_RETRY_DISMISS_ATTR)!;
     expect(card.getAttribute('data-phase')).toBe('checking_return');
     expect(card.getAttribute('aria-busy')).toBe('true');
-    expect(card.children[0]?.textContent).toBe('Credential check underway');
+    expect(card.children[0]?.textContent).toBe('Checking the key');
     expect(find(card, UPDATES_CREDENTIAL_RETRY_STATUS_ATTR)?.textContent)
       .toMatch(/will not start a duplicate check/i);
-    expect(returnButton.textContent).toBe('Check underway…');
+    expect(returnButton.textContent).toBe('Checking…');
     expect(returnButton.hasAttribute('disabled')).toBe(true);
     expect(returnButton.getAttribute('aria-label')).toMatch(
-      /already underway in connections/i,
+      /already running under connections/i,
     );
     expect(dismissButton.hasAttribute('disabled')).toBe(true);
     fire(returnButton, 'click');
@@ -1502,10 +1502,10 @@ describe('mountUpdatesPage', () => {
 
     continuity.interruptExactReturn(target);
     expect(card.hasAttribute('aria-busy')).toBe(false);
-    expect(card.children[0]?.textContent).toBe('Resume credential check');
+    expect(card.children[0]?.textContent).toBe('Carry on checking the key');
     expect(find(card, UPDATES_CREDENTIAL_RETRY_STATUS_ATTR)?.textContent)
-      .toMatch(/interrupted before both authoritative reads finished/i);
-    expect(returnButton.textContent).toBe('Resume exact check');
+      .toMatch(/stopped before Recued finished its checks/i);
+    expect(returnButton.textContent).toBe('Carry on checking');
     expect(returnButton.hasAttribute('disabled')).toBe(false);
     expect(dismissButton.hasAttribute('disabled')).toBe(false);
     fire(returnButton, 'click');
@@ -1562,13 +1562,13 @@ describe('mountUpdatesPage', () => {
     const returnButton = find(card, UPDATES_CREDENTIAL_RETRY_RETURN_ATTR)!;
     expect(card.getAttribute('data-phase')).toBe('editor_ready');
     expect(card.children[0]?.textContent).toBe(
-      'Resume credential replacement',
+      'Carry on replacing the key',
     );
     expect(find(card, UPDATES_CREDENTIAL_RETRY_STATUS_ATTR)?.textContent)
       .toMatch(/clean editor.*closed before any field changed/i);
     expect(find(card, UPDATES_CREDENTIAL_RETRY_PRIVACY_ATTR)?.textContent)
-      .toMatch(/no credential.*recovery receipt was stored/i);
-    expect(returnButton.textContent).toBe('Resume clean editor');
+      .toMatch(/No key.*no\s+receipt was kept/i);
+    expect(returnButton.textContent).toBe('Reopen the fresh editor');
     expect(allText(card)).not.toMatch(/recovery finished|running 26\.8\.1/i);
 
     fire(returnButton, 'click');
@@ -1619,15 +1619,15 @@ describe('mountUpdatesPage', () => {
 
     const card = find(h.el, UPDATES_CREDENTIAL_RETRY_ATTR)!;
     expect(find(card, UPDATES_CREDENTIAL_RETRY_STATUS_ATTR)?.textContent)
-      .toMatch(/still lacks.*safe preflight/i);
+      .toMatch(/still cannot do the safety check/i);
     expect(find(card, UPDATES_CREDENTIAL_RETRY_STATUS_ATTR)?.textContent)
-      .toMatch(/run the capability check again/i);
+      .toMatch(/run the check again/i);
     expect(find(card, UPDATES_CREDENTIAL_RETRY_PRIVACY_ATTR)?.textContent)
-      .toMatch(/privacy-safe server version\/update evidence/i);
+      .toMatch(/safe notes about the server version and update/i);
     expect(find(card, UPDATES_CREDENTIAL_RETRY_RETURN_ATTR)?.textContent)
-      .toBe('Check server again');
+      .toBe('Check the server again');
     expect(find(card, UPDATES_CREDENTIAL_RETRY_RETURN_ATTR)?.getAttribute('aria-label'))
-      .toMatch(/check the server capability again/i);
+      .toMatch(/check the server features again/i);
     fire(find(card, UPDATES_CREDENTIAL_RETRY_RETURN_ATTR)!, 'click');
     expect(onReturnToCredentialRotationRetry).toHaveBeenCalledWith(target);
     expect(continuity.read()?.phase).toBe('triage');
@@ -1670,15 +1670,15 @@ describe('mountUpdatesPage', () => {
     expect(continuity.markCapabilityResolvedElsewhere(target)).toBe(true);
     const card = find(h.el, UPDATES_CREDENTIAL_RETRY_ATTR)!;
     expect(card.getAttribute('data-phase')).toBe('resolved_elsewhere');
-    expect(card.children[0]?.textContent).toBe('Credential check is ready');
+    expect(card.children[0]?.textContent).toBe('The key check is ready');
     expect(find(card, UPDATES_CREDENTIAL_RETRY_STATUS_ATTR)?.textContent)
-      .toMatch(/fresh, read-only check confirmed.*stayed on server updates/i);
+      .toMatch(/look-only check says.*stayed on Server Updates/i);
     expect(find(card, UPDATES_CREDENTIAL_RETRY_PRIVACY_ATTR)?.textContent)
-      .toMatch(/one-time confirmation.*will not replay after reload/i);
+      .toMatch(/kept only in this tab and is gone after a reload/i);
     const continueButton = find(card, UPDATES_CREDENTIAL_RETRY_RETURN_ATTR)!;
     expect(continueButton.textContent).toBe('Continue in this tab');
     expect(continueButton.getAttribute('aria-label')).toMatch(
-      /continue.*api\/github-main.*this tab/i,
+      /carry on checking the new key for api\/github-main/i,
     );
     expect(onReturnToCredentialRotationRetry).not.toHaveBeenCalled();
 

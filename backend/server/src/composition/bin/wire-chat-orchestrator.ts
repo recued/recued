@@ -1,3 +1,5 @@
+import { withQueuedChatTurns } from '../../chat-turn-queue.js';
+import { createChatMessengerBridge } from '../../chat-messenger-bridge.js';
 /** D-137 — boot composer for the AI Chat substrate.
  *
  *  Wires the per-pair chat surface end-to-end:
@@ -33,6 +35,8 @@
  */
 
 import type Database from 'better-sqlite3';
+import { createServerTimeZoneStore } from '../../storage/server-timezone-store.js';
+import { resolveServerTimeZone } from '@recued/contracts';
 import { canonicalOpToolsForConnections } from '../../canonical-op-tool-catalog.js';
 import { resolveConnectionVendor } from '../../storage/connection-store.js';
 import {
@@ -149,6 +153,8 @@ import { backfillInboundTokenContracts } from '../../storage/inbound-token-contr
 import type { WorkEntityResolver } from '../../work-entity-resolver.js';
 import type { WorkEntityEdgeStore } from '../../storage/work-entity-edge-store.js';
 import type { WorkEntityTargetedReadDeps } from '../../work-entity-write-executor.js';
+import type { WorkEntityCrudRpcDeps } from '../../work-entity-crud-handler.js';
+import type { CalendarWriteDeps } from '../../chat-tool-handlers.js';
 import { createGatedReadGrantResolver } from '../../read-grant-checker.js';
 import {
   deriveBoundCrmMirrorSources,
@@ -324,6 +330,11 @@ export interface ComposeChatOrchestratorDeps {
    *  local-only degradation. */
   getWorkEntityResolver?: () => WorkEntityResolver | undefined;
   getWorkEntityTargetedReadDeps?: () => WorkEntityTargetedReadDeps | undefined;
+  /** Slice 1 — the LOCAL work-entity write deps behind the Tier-1
+   *  `work.create` tool. Same late-bound shape as the read deps above. */
+  getWorkEntityCrudDeps?: () => WorkEntityCrudRpcDeps | undefined;
+  /** Slice 2 — the calendar write dispatchers. */
+  getCalendarWriteDeps?: () => CalendarWriteDeps | undefined;
   /** D-192 P5 edges — backs `work.read`'s `include_related`. */
   getWorkEntityEdgeStore?: () => Pick<WorkEntityEdgeStore, 'listByOwner'> | undefined;
 }
@@ -398,6 +409,8 @@ export const composeChatOrchestrator = (
     getContractStore,
     getWorkEntityResolver,
     getWorkEntityTargetedReadDeps,
+    getWorkEntityCrudDeps,
+    getCalendarWriteDeps,
     getWorkEntityEdgeStore,
   } = deps;
 
@@ -809,6 +822,8 @@ export const composeChatOrchestrator = (
     // pass-through of the app-context late-bound refs).
     ...(getWorkEntityResolver ? { getWorkEntityResolver } : {}),
     ...(getWorkEntityTargetedReadDeps ? { getWorkEntityTargetedReadDeps } : {}),
+    ...(getWorkEntityCrudDeps ? { getWorkEntityCrudDeps } : {}),
+    ...(getCalendarWriteDeps ? { getCalendarWriteDeps } : {}),
     ...(getWorkEntityEdgeStore ? { getWorkEntityEdgeStore } : {}),
     // D-188 + the D-192 admission seam — a caller-triggered vendor
     // escalation never traverses the op-admission gate on the invoke
@@ -1239,8 +1254,20 @@ export const composeChatOrchestrator = (
   // as they run, and `chatDeps` reports the set on `chat.sessions.list`.
   const sessionBusy = createChatSessionBusyRegistry(broadcast);
 
-  const orchestrator = withChatSessionBusy(createChatOrchestrator({
+  // D-269 step 1 — the server's own zone for the `current_date` anchor. Built
+  // here off the same `db` the chat store uses rather than threaded from the
+  // storage context, because this module is also the one a db-less harness
+  // skips: no db, no store, no dep, unchanged behaviour.
+  const serverTimeZoneStore = createServerTimeZoneStore(db);
+
+  const executionOrchestrator = withChatSessionBusy(createChatOrchestrator({
     chatStore,
+    // ⚠ Resolved PER TURN, not captured. Under `follows_host` the answer is the
+    // host clock, so a laptop that flew overnight anchors on where it woke up.
+    serverTimeZone: (): string => resolveServerTimeZone(
+      serverTimeZoneStore.read(),
+      Intl.DateTimeFormat().resolvedOptions().timeZone,
+    ),
     // D-259 §7.4.2 — read the singleton registry at TURN time. The source is
     // host-minted; deriving the same channel-session key used at registration
     // keeps a concurrent chat/messenger turn scoped to its own live work.
@@ -1567,6 +1594,9 @@ export const composeChatOrchestrator = (
       () => liveVendorRegistry(getExecuteDeps()?.localManifestStore),
     ),
   }), sessionBusy);
+
+  const messengerBridge = createChatMessengerBridge({ db, store: chatStore, getKey: chatKeyProvider, broadcast });
+  const orchestrator = withQueuedChatTurns(executionOrchestrator, { db, store: chatStore, getKey: chatKeyProvider, broadcast, messengerBridge });
 
   const chatDeps: ChatRpcDeps = {
     store: chatStore,

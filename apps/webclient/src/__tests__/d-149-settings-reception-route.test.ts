@@ -777,7 +777,7 @@ describe('D-220 Slice B — mountReceptionRoute: pack templates', () => {
     await flush();
     await flush();
     page.click({ action: 'reception-open-templates' });
-    expect(modal.getHtml()).toContain('From your installed packs');
+    expect(modal.getHtml()).toContain('From the Packs you have');
     expect(modal.getHtml()).toContain(`data-template-ref="${PACK_TEMPLATE_REF}"`);
     expect(modal.getHtml()).toContain('From Job Status Board (v4)');
     // "Use template" on the pack card: the route's resolver must find the
@@ -803,7 +803,7 @@ describe('D-220 Slice B — mountReceptionRoute: pack templates', () => {
     await flush();
     page.click({ action: 'reception-open-templates' });
     expect(modal.getHtml()).toContain('Client inquiry');
-    expect(modal.getHtml()).not.toContain('From your installed packs');
+    expect(modal.getHtml()).not.toContain('From the Packs you have');
     route.dispose();
   });
 });

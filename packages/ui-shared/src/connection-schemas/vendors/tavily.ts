@@ -18,7 +18,7 @@ const TAVILY_FIELDS: readonly ConnectionField[] = [
     key: 'name',
     label: 'Name',
     type: 'identifier',
-    help: 'Lowercase identifier used in recipes (for example `tavily`).',
+    help: 'A short lower-case name you use in Recipes, such as `tavily`).',
     placeholder: 'tavily',
   },
   {
@@ -31,7 +31,7 @@ const TAVILY_FIELDS: readonly ConnectionField[] = [
     key: 'config.vendor',
     label: 'Vendor',
     type: 'text',
-    help: 'Tavily vendor identifier — locked at enrollment.',
+    help: 'Tavily sets this when you connect. You cannot change it.',
     hidden: true,
   },
   {

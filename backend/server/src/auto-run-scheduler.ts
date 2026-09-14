@@ -41,7 +41,17 @@ import type { RecipeStore } from './recipe-store.js';
 import type { ExecuteHandlerDeps } from './execute-handler.js';
 import { handleExecute } from './execute-handler.js';
 import type { ExecuteRequest, ExecuteResponse } from './types.js';
+import type { NotificationMessage } from '@recued/notification';
+import {
+  CIRCUIT_BREAKER_THRESHOLD,
+  deriveRunYield,
+  runYieldIsTotalRefusal,
+} from '@recued/contracts';
 import { presentAutomationFailure } from './automation-failure.js';
+import {
+  decideAutomationFailure,
+  type AutomationUnitRef,
+} from './automation-failure-reporter.js';
 import {
   assertPreapprovalLegacyEnable, initializePreapprovalLifecycle, mutatePreapprovalResource,
   notePreapprovalOwnerMutation, preapprovalLogicalEnabled,
@@ -257,6 +267,13 @@ export interface ServerAutoRunConfig {
    *  boot wires `emitReactiveFire` so paired clients' Automation /
    *  Runs surfaces refresh live. Throws are swallowed. */
   onFired?: (recipe_id: string) => void;
+  /** D-268 — deliver one owner notice about a failed unattended fire: the first
+   *  failure of an episode, and the disarm. Absent ⇒ failures stay on the
+   *  circuit row and reach nobody, which is the pre-D-268 behaviour.
+   *
+   *  ⚠ Synchronous and fire-and-forget: an owner channel must never be able to
+   *  delay a fire's finalization, which runs inside the shutdown gate. */
+  onAutomationFailure?: (notice: NotificationMessage, unit: AutomationUnitRef) => void;
   /** Clock override for tests. */
   now?: () => number;
   mintProcessId?: () => string;
@@ -446,6 +463,13 @@ export const createServerAutoRunScheduler = (
     let outcome: AutoRunOutcome = 'failed';
     let nextRunHint: number | undefined;
     let failureReason: string | undefined;
+    // D-268 — what KIND of failure it was, which decides whether waiting for the
+    // breaker buys anything at all.
+    let failureCode: string | undefined;
+    let totalRefusal = false;
+    /** D-268 — the run reported an error the recipe DECIDED to raise. Nothing
+     *  about the circuit changed, so nothing about the circuit is written. */
+    let notAFailure = false;
     const visibleFailure = (failure: unknown): string => {
       const presented = presentAutomationFailure(failure);
       if (presented.redacted) {
@@ -524,22 +548,90 @@ export const createServerAutoRunScheduler = (
         } else if (heldForAnswer) {
           outcome = 'held';
         } else if (result.success) {
-          outcome = 'success';
+          // D-268 — a `foreach` is continue-on-error, so a run whose every item
+          // was refused reports `success: true` and writes no error. D-237's
+          // predicate is the only thing that can tell the two apart; until now
+          // its only consumers were the D-214 case compiler, so nothing
+          // notified and nothing stopped.
+          // ⛔ The OUTCOME stays `'failed'` for the counter's sake but the run
+          // genuinely completed — nothing here may rewrite its anchor status.
+          if (runYieldIsTotalRefusal(deriveRunYield(result.steps))) {
+            outcome = 'failed';
+            totalRefusal = true;
+            failureReason = 'This run attempted items and every one was refused.';
+          } else {
+            outcome = 'success';
+          }
         } else {
           outcome = 'failed';
-          const first = result.errors[0] as { message?: string } | undefined;
+          const first = result.errors[0] as { message?: string; code?: string } | undefined;
+          failureCode = typeof first?.code === 'string' ? first.code : undefined;
           failureReason = visibleFailure(first?.message ?? 'execution failed');
         }
       } catch (e) {
         outcome = 'failed';
+        const code = (e as { code?: unknown } | null)?.code;
+        failureCode = typeof code === 'string' ? code : undefined;
         failureReason = visibleFailure(e);
       }
 
       // Finalization is part of the in-flight unit. In particular, keep the
       // shutdown gate raised through the SQLite circuit write; releasing it
       // after `execute` but before this write lets close_db race the store.
-      scheduler.markFinished(recipe_id, outcome, nextRunHint, now());
-      persistCircuitState(recipe_id, now(), failureReason);
+      // D-268 — classify BEFORE `markFinished`, because the prior counter is the
+      // episode boundary and `markFinished` is what moves it.
+      const priorFailures = scheduler.roster.get(recipe_id)?.consecutive_failures ?? 0;
+      let disarmNow = false;
+      if (outcome === 'failed') {
+        const unit: AutomationUnitRef = {
+          kind: 'auto_run',
+          id: recipe_id,
+          recipe_id,
+        };
+        const report = decideAutomationFailure({
+          unit,
+          code: failureCode,
+          total_refusal: totalRefusal,
+          reason: failureReason ?? 'execution failed',
+          prior_consecutive_failures: priorFailures,
+          threshold: CIRCUIT_BREAKER_THRESHOLD,
+        });
+        // ⚠ A `conditional` code reaching here means the run reported an error
+        // the recipe DECIDED to raise — a tripped guard. It is not evidence the
+        // recipe is broken, so it must not touch the counter either.
+        if (report.not_a_failure) {
+          outcome = 'skipped';
+          // ⛔ AND THE REASON GOES WITH IT. `persistCircuitState` writes
+          // `last_failure_reason` whenever a reason is truthy, and re-stamps
+          // `last_failure_at` whenever the counter is non-zero — so a tripped
+          // guard arriving after a REAL failure would overwrite that failure's
+          // reason and time with a non-failure's, on the row every kill-switch
+          // surface reads.
+          //
+          // ⛔ AND CLEARING THE REASON IS NOT THE FIX — IT ERASES THE PRIOR ONE.
+          // `persistCircuitState` writes a WHOLE ROW with the reason omitted
+          // when falsy, so blanking it leaves `consecutive_failures: 1` beside
+          // no reason at all. "Nothing happened" has to mean the row is not
+          // rewritten, which is what `notAFailure` below buys.
+          notAFailure = true;
+        } else {
+          disarmNow = report.disarm && report.consecutive_failures < CIRCUIT_BREAKER_THRESHOLD;
+          if (report.notice) {
+            try {
+              config.onAutomationFailure?.(report.notice, unit);
+            } catch {
+              // Telling the owner is best-effort; a broken consumer must not
+              // turn a recorded failure into a failed fire.
+            }
+          }
+        }
+      }
+      scheduler.markFinished(recipe_id, outcome, nextRunHint, now(),
+        ...(disarmNow ? [{ disarmNow: true }] as const : []));
+      // ⚠ A tripped guard skips the persist entirely. Every other outcome still
+      // writes, including `skipped` / `held` — unchanged, and out of scope here:
+      // a `trigger_skipped` tick has always rewritten this row without a reason.
+      if (!notAFailure) persistCircuitState(recipe_id, now(), failureReason);
       try {
         config.onFired?.(recipe_id);
       } catch {

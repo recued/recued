@@ -8,12 +8,14 @@
  *       contact-graph IO; the host wires the resolver against
  *       `data.contact.<email>`).
  *    2. Substrate-level validators (`to` non-empty, subject non-empty,
- *       body non-empty, sender_source non-empty + send_capable, no
+ *       body non-empty, sender_source non-empty + capability-gated, no
  *       sender ≠ self-send-loop on `to`).
- *    3. Sender-source send-capability gate via a host-supplied
+ *    3. Sender-source capability gate via a host-supplied
  *       `findSenderSource` lookup (returns the matching
  *       `MailSenderSourceOption` so the gate runs against fresh state
- *       not the snapshot the dialog opened from).
+ *       not the snapshot the dialog opened from). D-264: WHICH capability
+ *       depends on `mode` — `send` demands `send_capable`, `draft` accepts
+ *       `send_capable || draft_capable`. Nothing else differs between them.
  *
  *  Returns either `{ ok: true; payload }` (caller dispatches) or
  *  `{ ok: false; errors }` (caller paints inline errors). The structured
@@ -24,6 +26,16 @@
 
 import { MAIL_MESSAGE_SUBJECT_MAX } from '../mail.js';
 import type { MailComposeValues, MailSenderSourceOption } from './types.js';
+
+/** D-264 — which gate the sender Source must clear.
+ *
+ *  `'send'` is the outbound rule and the DEFAULT, so a caller that forgets
+ *  gets the stricter of the two. `'draft'` accepts a Source that can park the
+ *  message in its Drafts folder even when it cannot send it — the one rule
+ *  that differs between parking a message and dispatching it. Every other
+ *  validator (recipients, subject, body, the self-loop guard) is identical:
+ *  a draft is the same message, held. */
+export type ComposeDispatchMode = 'send' | 'draft';
 
 /** Output of `composeStateToSendPayload`. The success branch carries
  *  the rpc's input verbatim; the failure branch carries an
@@ -70,6 +82,13 @@ export interface ComposeMailSendPayload {
  *  so the approval is bound to those exact files — swap one and it is a
  *  different action needing fresh approval. */
 export const SEND_COMPOSED_MAIL_RECIPE_ID = 'send-composed-mail';
+
+/** D-264 — the compose window's path to `core.mail.draft.save-to-mailbox`.
+ *
+ *  ⛔ A RUN, not an rpc, for the same reason Send is: this is an action that
+ *  reaches the owner's mail account, and every action is gated at the one
+ *  enforcement boundary. An rpc would be a second door onto the same provider. */
+export const SAVE_COMPOSED_DRAFT_TO_MAILBOX_RECIPE_ID = 'save-composed-draft-to-mailbox';
 
 /** Payload → the `execute` config for `SEND_COMPOSED_MAIL_RECIPE_ID`.
  *
@@ -132,21 +151,36 @@ const normalizeEmail = (email: string): string => email.trim().toLowerCase();
 export const composeStateToSendPayload = (
   values: MailComposeValues,
   hooks: ComposeDispatchHooks,
+  mode: ComposeDispatchMode = 'send',
 ): ComposeDispatchResult => {
   const errors: Record<string, string> = {};
 
-  // sender_source — must resolve + must be send_capable.
+  // sender_source — must resolve, and must clear THIS mode's capability gate.
+  //
+  // ⛔ The two modes are one rule at one end, not two rules that happen to
+  // agree: `draft` widens the SAME check rather than re-implementing it, so a
+  // later change to what a sender must satisfy cannot hold on one path and
+  // lapse on the other.
   let senderOption: MailSenderSourceOption | null = null;
   if (values.sender_source.trim().length === 0) {
-    errors.sender_source = 'Choose a Source to send from.';
+    errors.sender_source = mode === 'draft'
+      ? 'Choose a Source to save this draft in.'
+      : 'Choose a Source to send from.';
   } else {
     senderOption = hooks.findSenderSource(values.sender_source);
+    const capable = senderOption !== null && (senderOption.send_capable === true
+      // A send-capable Source can always hold the draft it is about to send,
+      // and the two grants are independent — so `draft` accepts EITHER, never
+      // `draft_capable` alone. Stored drafts predate this field and belong to
+      // send-capable instances; requiring the new flag would invalidate them.
+      || (mode === 'draft' && senderOption.draft_capable === true));
     if (senderOption === null) {
       errors.sender_source =
         'Sender Source not found — pick a connected mail Source.';
-    } else if (senderOption.send_capable !== true) {
-      errors.sender_source =
-        'Sender Source is not configured for outbound send.';
+    } else if (!capable) {
+      errors.sender_source = mode === 'draft'
+        ? 'This mail Source can neither send nor save drafts.'
+        : 'Sender Source is not configured for outbound send.';
     } else if (senderOption.mail_instance_slug.trim().length === 0) {
       errors.sender_source =
         'Sender Source is missing a mail-instance slug — re-enroll the mail Source.';

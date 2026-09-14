@@ -341,8 +341,8 @@ export const parseChatSessionAddress = (
   return sessionId.length > 0 ? { sessionId } : null;
 };
 
-/** Durable route to one assistant answer. The explicit `answer` marker keeps
- * future session subviews unambiguous. */
+/** Durable route to one retained message. Keep the existing `answer` marker
+ * for compatibility with saved links; History can also target a user message. */
 export const serializeChatAnswerAddress = (
   address: ChatAnswerAddress,
 ): string => serializeShellRoute(

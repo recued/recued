@@ -21,10 +21,10 @@ export const RECOVERY_INTENT_RESUME_WINDOW_MS = 30_000;
 const RECOVERY_INTENT_CUE_COPY: Record<RecoveryLandingIntent, string> = {
   continue: 'Continue here.',
   choose_again: 'Choose again here.',
-  review: 'Review this status before continuing.',
+  review: 'Check this before you carry on.',
 };
 const RECOVERY_INTENT_INVALIDATED_COPY =
-  'This changed. Review this status before continuing.';
+  'This changed. Check this before you carry on.';
 const RECOVERY_INTENT_RESUMED_COPY: Record<
   Exclude<RecoveryLandingIntent, 'review'>,
   string

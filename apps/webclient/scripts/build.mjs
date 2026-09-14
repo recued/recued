@@ -53,6 +53,7 @@ import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { copyFilePreviewAssets } from './file-preview-assets.mjs';
 
 /** D-152 § A.16 — must match `WEBCLIENT_BUNDLE_MANIFEST_FILENAME` in
  *  `packages/contracts/src/webclient-bundle.ts`. Hardcoded because this
@@ -75,6 +76,7 @@ mkdirSync(OUT, { recursive: true });
 
 console.log('[build-webclient] copying public/ → build/');
 cpSync(PUBLIC_DIR, OUT, { recursive: true });
+copyFilePreviewAssets(OUT);
 
 // D-174 — copy the canonical design tokens (single source of truth in
 // @recued/ui-shared) into build/ so index.html can <link> them. Not committed

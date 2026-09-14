@@ -7,6 +7,7 @@
  */
 
 import type { RunPaletteOptions } from '../chat/run-palette.js';
+import { activeBlockingModal } from './blocking-modal.js';
 import {
   wireRunPalette,
   type RunPaletteHandle,
@@ -63,30 +64,6 @@ const shortcutDisplay = (doc: Document): string => {
   return /Mac|iPhone|iPad|iPod/i.test(platform) ? '⌘K' : 'Ctrl K';
 };
 
-const blockingModal = (doc: Document): Element | null => {
-  const queryAll = (doc as Document & {
-    querySelectorAll?: (selector: string) => Iterable<Element>;
-  }).querySelectorAll;
-  if (typeof queryAll !== 'function') return null;
-  for (const candidate of queryAll.call(doc, '[aria-modal="true"]')) {
-    if (
-      candidate.hasAttribute('hidden')
-      || candidate.getAttribute('aria-hidden') === 'true'
-    ) continue;
-    const getClientRects = (candidate as Element & {
-      getClientRects?: () => { readonly length: number };
-    }).getClientRects;
-    // Real DOM: exclude route-owned dialog shells that remain mounted under
-    // display:none. Minimal test DOMs without layout treat a present modal as
-    // active, which is the conservative fallback.
-    if (
-      typeof getClientRects !== 'function'
-      || getClientRects.call(candidate).length > 0
-    ) return candidate;
-  }
-  return null;
-};
-
 export const mountGlobalRunPalette = (
   opts: GlobalRunPaletteOptions,
 ): GlobalRunPaletteHandle => {
@@ -97,11 +74,11 @@ export const mountGlobalRunPalette = (
   const trigger = doc.createElement('button');
   trigger.type = 'button';
   trigger.setAttribute(GLOBAL_RUN_PALETTE_TRIGGER_ATTR, '');
-  trigger.setAttribute('aria-label', 'Run a recipe');
+  trigger.setAttribute('aria-label', 'Run a Recipe');
   trigger.setAttribute('aria-haspopup', 'dialog');
   trigger.setAttribute('aria-keyshortcuts', GLOBAL_RUN_PALETTE_SHORTCUT);
   const shortcut = shortcutDisplay(doc);
-  trigger.setAttribute('title', `Run a recipe (${shortcut})`);
+  trigger.setAttribute('title', `Run a Recipe (${shortcut})`);
 
   const glyph = doc.createElement('span');
   glyph.className = 'webclient-global-run-glyph';
@@ -134,7 +111,7 @@ export const mountGlobalRunPalette = (
     }
     // A modal already owns focus and Escape. Non-modal Account/Attention
     // popovers close naturally when the palette takes focus.
-    if (blockingModal(doc) !== null) return false;
+    if (activeBlockingModal(doc) !== null) return false;
     opts.prepareOpen?.();
     palette = wireRunPalette({
       document: doc,

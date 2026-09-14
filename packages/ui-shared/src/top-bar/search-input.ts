@@ -22,7 +22,7 @@ export const renderTopBarSearchInput = (state: SearchInputState): string => `
     ${textInput({
       extraClass: 'top-bar-search-input',
       data: { field: 'recipe-filter' },
-      placeholder: 'Search recipes…',
+      placeholder: 'Search Recipes…',
       value: state.query ?? '',
       ariaLabel: 'Search recipes',
     })}
