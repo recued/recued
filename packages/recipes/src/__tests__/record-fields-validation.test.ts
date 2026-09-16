@@ -114,6 +114,40 @@ describe('table output section — the optional entity binding', () => {
     expect(issuesFor({ ...TABLE, entity: 'job', columns: [] }))
       .toContain('output_section_unknown_key');
   });
+
+  describe('group_by — the row field that buckets the rows', () => {
+    it('accepts a grouped table, with or without an entity', () => {
+      expect(issuesFor({ ...TABLE, group_by: 'status' })).toEqual([]);
+      expect(issuesFor({ ...TABLE, entity: 'job', group_by: 'status' })).toEqual([]);
+    });
+
+    it('does not require the grouping field to be a shown column', () => {
+      // Grouping BY status while not showing it is the ordinary case — the
+      // heading already says which bucket you are in.
+      expect(issuesFor({ ...TABLE, entity: 'job', fields: ['title'], group_by: 'status' }))
+        .toEqual([]);
+    });
+
+    it('refuses a group_by that is not a field name', () => {
+      expect(issuesFor({ ...TABLE, group_by: '' })).toContain('table_group_by_invalid');
+      expect(issuesFor({ ...TABLE, group_by: '   ' })).toContain('table_group_by_invalid');
+      expect(issuesFor({ ...TABLE, group_by: ['status'] })).toContain('table_group_by_invalid');
+    });
+
+    it('refuses group_by beside edit — no bucket is defined for an added row', () => {
+      // ⛔ THE COMBINATION WITH NO ANSWER. An editable grid submits one ordered
+      // set bound to `edit.into`; grouping reorders it into buckets and nothing
+      // says which bucket a newly added row joins, nor what a `fixed` grid's row
+      // identity means once shown order is no longer submitted order. Refused at
+      // authoring time rather than rendered into a grid whose submission quietly
+      // means something other than it looks like.
+      expect(issuesFor({
+        ...TABLE,
+        group_by: 'status',
+        edit: { into: 'rows', submit: 'Save', columns: ['title'] },
+      })).toContain('table_group_by_with_edit');
+    });
+  });
 });
 
 describe('record_ref variable — the picker must know what it searches', () => {

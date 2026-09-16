@@ -32,8 +32,8 @@
       "cloud_api_guide": {
         "kind": "official_markdown",
         "url": "https://www.cockroachlabs.com/docs/cockroachcloud/cloud-api.md",
-        "bytes": 36088,
-        "sha256": "d6ce46636f5daa26534d16a958ee38b25b53a413c981737c8fd9a946bb146216",
+        "bytes": 36089,
+        "sha256": "cf2faff7518cd7f559ff4412f0d6d0f67fc1da76c6795af4f7f4e575463cbb59",
         "retrieved_on": "2026-07-20",
         "proves": [
           "v1_api_version_2024_09_16",
@@ -44,7 +44,7 @@
           "audit_log_next_starting_from",
           "sql_user_next_page"
         ],
-        "verified_bytes": 36088
+        "verified_bytes": 36089
       }
     },
     "official_operation_count": 144,
@@ -134,9 +134,9 @@
     },
     "composition_bytes": {
       "cockroachdb-cloud-scim": 47576,
-      "cockroachdb-cloud-access-organization": 64315,
+      "cockroachdb-cloud-access-organization": 64316,
       "cockroachdb-cloud-clusters-data": 96803,
-      "cockroachdb-cloud-networking-observability": 90818
+      "cockroachdb-cloud-networking-observability": 90824
     },
     "body_mode_counts": {
       "none": 85,

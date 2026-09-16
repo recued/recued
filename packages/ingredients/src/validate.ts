@@ -53,6 +53,8 @@ import {
   QUEUE_KINDS,
   QUEUE_POLL_TIMEOUT_CAP_MS,
   CATALOG_SCHEMA_SOURCE_SHA256_REGEX,
+  OPENAPI_ABSENT_REASONS,
+  OPENAPI_ABSENT_REASON_SET,
   CONNECTOR_TRANSPORTS,
   CONNECTOR_AUTH_METHODS,
   RECONNECT_POLICIES,
@@ -107,7 +109,7 @@ import {
   KERNEL_GRANT_PREFIX,
   declaredOperationIdReservedPrefix,
 } from '@recued/contracts';
-import type { ConnectorRuntimeSpec } from '@recued/contracts';
+import type { ConnectorRuntimeSpec, OpenApiAbsentReason } from '@recued/contracts';
 import { RISK_TIER_SET, isRiskTier } from '@recued/contracts';
 import { MIN_TIMEOUT_MS, MAX_TIMEOUT_MS, SOFT_TIMEOUT_CEILING_MS } from './timeout.js';
 // cli `argv_template` SAFETY — the shared single source the authoring layer also
@@ -1820,6 +1822,40 @@ const validateApiBindingShape = (
         add('error', 'CATALOG_BINDING_INVALID', `${bPath}.openapi_path`,
           `rest binding for '${opKey}' openapi_path must be a non-empty path starting with '/' when present`);
       }
+      // D-271 — `openapi_absent`: this op is not in the pinned document and the
+      // reason is structural. Gated hard, because the whole value of an
+      // exemption is that a reviewer can check it: a CLOSED reason, an https
+      // `evidence` URL, no extra keys, and never alongside `openapi_path`.
+      if (binding.openapi_absent !== undefined) {
+        const absent = binding.openapi_absent;
+        if (!isObjectRecord(absent)) {
+          add('error', 'CATALOG_BINDING_INVALID', `${bPath}.openapi_absent`,
+            `rest binding for '${opKey}' openapi_absent must be an object { reason, evidence }`);
+        } else {
+          if (!isNonEmptyStr(absent.reason)
+            || !OPENAPI_ABSENT_REASON_SET.has(absent.reason as OpenApiAbsentReason)) {
+            add('error', 'CATALOG_BINDING_INVALID', `${bPath}.openapi_absent.reason`,
+              `rest binding for '${opKey}' openapi_absent.reason must be one of: ${OPENAPI_ABSENT_REASONS.join(', ')}`);
+          }
+          // ⛔ https ONLY, and required. An exemption is a claim that the vendor
+          // documents this elsewhere; without a URL a reviewer can open, the
+          // claim is unfalsifiable and the field degrades into "skip the gate".
+          if (!isNonEmptyStr(absent.evidence) || !(absent.evidence as string).startsWith('https://')) {
+            add('error', 'CATALOG_BINDING_INVALID', `${bPath}.openapi_absent.evidence`,
+              `rest binding for '${opKey}' openapi_absent.evidence must be an https:// URL naming the vendor documentation that defines this operation`);
+          }
+          const extra = Object.keys(absent).filter((k) => k !== 'reason' && k !== 'evidence');
+          if (extra.length > 0) {
+            add('error', 'CATALOG_BINDING_INVALID', `${bPath}.openapi_absent`,
+              `rest binding for '${opKey}' openapi_absent has unknown key(s): ${extra.join(', ')}`);
+          }
+        }
+        // Incoherent, not merely redundant — see the contract note.
+        if (binding.openapi_path !== undefined) {
+          add('error', 'CATALOG_BINDING_INVALID', `${bPath}.openapi_absent`,
+            `rest binding for '${opKey}' declares both openapi_path and openapi_absent — one says the document proves this op at a given path, the other that the document cannot prove it at all`);
+        }
+      }
       const openapiParamExpansions = binding.openapi_path_param_expansions;
       if (openapiParamExpansions !== undefined) {
         if (!isNonEmptyStr(binding.openapi_path)) {
@@ -2336,26 +2372,47 @@ const validateApiSurface = (
     }
     // D-192 CORE #8a — shape-gate the optional `path_alias` (honored by the
     // OpenAPI op-prover only; harmless on graphql/discovery pins).
+    // D-271 widens it to an ORDERED LIST of scoped rules (see `applyPathAlias`);
+    // a bare object is still exactly one rule and is gated identically.
     if (src.path_alias !== undefined) {
-      if (!isObjectRecord(src.path_alias)) {
+      const rawRules: unknown[] = Array.isArray(src.path_alias) ? src.path_alias : [src.path_alias];
+      if (Array.isArray(src.path_alias) && src.path_alias.length === 0) {
         add('error', 'CATALOG_SURFACE_INVALID', `surfaces.api.${srcKey}.path_alias`,
-          `surfaces.api.${srcKey}.path_alias must be an object { wire_prefix?, doc_base?, strip_suffix? }`);
-      } else {
+          `surfaces.api.${srcKey}.path_alias must not be an empty list — omit it instead`);
+      }
+      rawRules.forEach((rule, i) => {
+        // Name the index only in the list form, so the 100 single-object packs
+        // keep byte-identical messages.
+        const at = Array.isArray(src.path_alias) ? `[${i}]` : '';
+        if (!isObjectRecord(rule)) {
+          add('error', 'CATALOG_SURFACE_INVALID', `surfaces.api.${srcKey}.path_alias${at}`,
+            `surfaces.api.${srcKey}.path_alias${at} must be an object { wire_prefix?, doc_base?, strip_suffix? }`);
+          return;
+        }
         for (const k of ['wire_prefix', 'doc_base', 'strip_suffix'] as const) {
-          const v = src.path_alias[k];
+          const v = rule[k];
           if (v !== undefined && !isNonEmptyStr(v)) {
-            add('error', 'CATALOG_SURFACE_INVALID', `surfaces.api.${srcKey}.path_alias.${k}`,
-              `surfaces.api.${srcKey}.path_alias.${k} must be a non-empty string when present`);
+            add('error', 'CATALOG_SURFACE_INVALID', `surfaces.api.${srcKey}.path_alias${at}.${k}`,
+              `surfaces.api.${srcKey}.path_alias${at}.${k} must be a non-empty string when present`);
           }
         }
         // `strip_suffix` must be a DOTTED format extension (`.json`), never a
         // bare substring like `s` that would mis-strip `/users` → `/user`.
-        const suffix = src.path_alias.strip_suffix;
+        const suffix = rule.strip_suffix;
         if (isNonEmptyStr(suffix) && !/^\.[^./]+$/.test(suffix)) {
-          add('error', 'CATALOG_SURFACE_INVALID', `surfaces.api.${srcKey}.path_alias.strip_suffix`,
-            `surfaces.api.${srcKey}.path_alias.strip_suffix must be a dotted format extension like '.json' (not a bare substring)`);
+          add('error', 'CATALOG_SURFACE_INVALID', `surfaces.api.${srcKey}.path_alias${at}.strip_suffix`,
+            `surfaces.api.${srcKey}.path_alias${at}.strip_suffix must be a dotted format extension like '.json' (not a bare substring)`);
         }
-      }
+        // ⛔ A rule that claims EVERY op (no `wire_prefix`) makes every LATER rule
+        // unreachable, and a silently-dead rule is the failure this list form
+        // invites — the author writes a scoped rule, puts the catch-all above it,
+        // and the suite stays green while the scoped one never runs.
+        if (Array.isArray(src.path_alias) && i < rawRules.length - 1
+          && !isNonEmptyStr(rule.wire_prefix)) {
+          add('error', 'CATALOG_SURFACE_INVALID', `surfaces.api.${srcKey}.path_alias${at}`,
+            `surfaces.api.${srcKey}.path_alias${at} has no wire_prefix, so it claims every op and makes rule(s) after it unreachable — a catch-all must come last`);
+        }
+      });
     }
   }
 
@@ -4189,7 +4246,7 @@ const unifyBraceStyle = (segment: string): string =>
  *  Prefix/base parts are normalized + trailing-slash-trimmed so brace or slash
  *  divergence never blocks the match. Pure; deterministic — a wrong alias yields
  *  a path the doc lacks and still fails the gate. */
-const applyPathAlias = (
+const applyPathAliasRule = (
   normWirePath: string,
   alias: { wire_prefix?: unknown; doc_base?: unknown; strip_suffix?: unknown } | undefined,
 ): string => {
@@ -4197,10 +4254,11 @@ const applyPathAlias = (
   let p = normWirePath;
   if (typeof alias.wire_prefix === 'string' && alias.wire_prefix.length > 0) {
     const pfx = normalizePathTemplate(alias.wire_prefix).replace(/\/$/, '');
-    // SEGMENT-BOUNDARY only: strip when `pfx` is the whole path or is followed
-    // by `/`, so `/api/v1` never strips `/api/v1beta/…` (a false match).
-    if (p === pfx) p = '/';
-    else if (p.startsWith(`${pfx}/`)) p = p.slice(pfx.length);
+    // SEGMENT-BOUNDARY only, so `/api/v1` never strips `/api/v1beta/…` (a false
+    // match). ⚠ `p === pfx` is NOT handled here and must not be: `applyPathAlias`
+    // only reaches this rule for a STRICT descendant, and a second, laxer notion
+    // of "matches" living one call down is how the two would drift apart.
+    if (p.startsWith(`${pfx}/`)) p = p.slice(pfx.length);
   }
   // DOTTED extension only (`.json`) — never a bare substring like `s` that would
   // turn `/users` into `/user`. The shape gate rejects non-dotted suffixes too;
@@ -4214,6 +4272,52 @@ const applyPathAlias = (
     p = base + (p.startsWith('/') ? p : `/${p}`);
   }
   return p;
+};
+
+/** D-271 — a surface `path_alias` may be a LIST of rules, and the FIRST whose
+ *  `wire_prefix` matches wins; an op no rule claims is left ALONE.
+ *
+ *  🔑 WHY A LIST, WHEN ONE RULE ALREADY WORKED FOR 100 PACKS. Those 100 all say
+ *  the same kind of thing — "strip the version/gateway prefix from every op"
+ *  (`/v1`, `/api/1.0`, `/ex/jira/{cloud_id}`), which is uniform by nature. A
+ *  vendor whose document addresses ONE sub-tree differently needs a rule that
+ *  applies to that sub-tree and to nothing else. Microsoft Graph is the case:
+ *  `/me/drive/...` and `/sites/{}/drive/...` are OData singleton shortcuts for
+ *  the same resource the document keys under `/drives/{drive-id}/...`, while the
+ *  SAME catalog's `/me` and `/sites/{}/lists/...` are documented verbatim. A
+ *  single uniform rule cannot say that — applied to everything it would graft
+ *  `/drives/{drive-id}` onto `/me`, breaking the ops that already proved. ⇒ the
+ *  missing axis is SCOPE, not a new kind of rewrite.
+ *
+ *  ⛔ A RULE CLAIMS STRICT DESCENDANTS ONLY — `pfx + '/'`, never `pfx` itself.
+ *  The singleton is usually documented even when its children are not (Graph has
+ *  `/me/drive` and `/sites/{site-id}/drive`, but NOTHING below either), so
+ *  rewriting the prefix itself would break the one op in the family that needed
+ *  no help. Verified against the corpus rather than assumed: of 100 catalogs
+ *  carrying a `wire_prefix` today, ZERO declare an op whose path equals that
+ *  prefix, so this is a strict narrowing that changes no shipped pack.
+ *
+ *  A bare object stays exactly what it was — one rule, tried the same way. */
+const applyPathAlias = (
+  normWirePath: string,
+  alias: unknown,
+): string => {
+  if (alias === undefined || alias === null) return normWirePath;
+  const rules = Array.isArray(alias) ? alias : [alias];
+  for (const rule of rules) {
+    if (!isObjectRecord(rule)) continue;
+    const wirePrefix = rule.wire_prefix;
+    if (typeof wirePrefix === 'string' && wirePrefix.length > 0) {
+      const pfx = normalizePathTemplate(wirePrefix).replace(/\/$/, '');
+      // STRICT descendants: `pfx` itself is not claimed — see the ⛔ above.
+      if (!normWirePath.startsWith(`${pfx}/`)) continue;
+    }
+    // A rule with no `wire_prefix` claims every op — that is zendesk's
+    // `{strip_suffix:'.json'}`, uniform by construction — so it matches here and
+    // any rule after it is unreachable. Deliberate: a catch-all belongs last.
+    return applyPathAliasRule(normWirePath, rule);
+  }
+  return normWirePath;
 };
 
 /** D-192 CORE #8a — may a per-op `openapi_path` override prove the wire path
@@ -4502,6 +4606,7 @@ export const crossCheckCatalogOpenApi = (
     rawMethod: string;
     openapiPath?: string;
     openapiPathParamExpansions?: unknown;
+    absentReason?: string;
   }> = [];
   for (const [opKey, rawBinding] of Object.entries(api.executes)) {
     if (!isObjectRecord(rawBinding) || rawBinding.kind !== 'rest') continue;
@@ -4513,6 +4618,16 @@ export const crossCheckCatalogOpenApi = (
     const openapiPath = typeof rawBinding.openapi_path === 'string' && rawBinding.openapi_path.length > 0
       ? rawBinding.openapi_path : undefined;
     const openapiPathParamExpansions = rawBinding.openapi_path_param_expansions;
+    // D-271 — carried only when the SHAPE is valid. A malformed `openapi_absent`
+    // already raised in `validateIngredient`, and honouring it here too would let
+    // a typo'd reason buy the very exemption the gate just refused.
+    const rawAbsent = rawBinding.openapi_absent;
+    const absentReason = isObjectRecord(rawAbsent)
+      && typeof rawAbsent.reason === 'string'
+      && OPENAPI_ABSENT_REASON_SET.has(rawAbsent.reason as OpenApiAbsentReason)
+      && typeof rawAbsent.evidence === 'string'
+      && rawAbsent.evidence.startsWith('https://')
+      ? rawAbsent.reason : undefined;
     restBindings.push({
       opKey,
       method: rawMethod.toLowerCase(),
@@ -4520,6 +4635,7 @@ export const crossCheckCatalogOpenApi = (
       rawMethod,
       openapiPath,
       ...(openapiPathParamExpansions !== undefined ? { openapiPathParamExpansions } : {}),
+      ...(absentReason !== undefined ? { absentReason } : {}),
     });
   }
 
@@ -4527,10 +4643,52 @@ export const crossCheckCatalogOpenApi = (
   // bindings collected above; missing, non-REST (GraphQL/webhook/queue/push),
   // or malformed bindings are all unprovable → fail closed for Source ops.
   const restBoundOpKeys = new Set(restBindings.map((b) => b.opKey));
+  const exemptReasonByOpKey = new Map(restBindings
+    .filter((b) => b.absentReason !== undefined)
+    .map((b) => [b.opKey, b.absentReason as string]));
   for (const ref of sourceOpRefs) {
     if (!restBoundOpKeys.has(ref.opKey)) {
       add('error', 'CATALOG_OPENAPI_SOURCE_OP_UNPROVABLE', ref.path,
         `work-entity Source operation '${ref.opKey}' has no provable REST execution binding (missing, non-REST, or malformed) — a Source op must be provable against the pinned OpenAPI document`);
+    } else if (exemptReasonByOpKey.has(ref.opKey)) {
+      const reason = exemptReasonByOpKey.get(ref.opKey);
+      // D-271, AMENDED. The first version of this rule refused EVERY exemption on
+      // a Source, reasoning that "sync / freshness / tombstone trust rests on this
+      // op existing, and an exemption establishes exactly the opposite."
+      //
+      // ⛔ THAT OVERSTATED WHAT THE PROOF BUYS. `crossCheckCatalogOpenApi`
+      // establishes `(method, path)` and NOTHING ELSE — the pack-audit guide says
+      // so outright, and a phantom field path is ungated by design. So the proof a
+      // Source had to pass never covered `remote.version.field`, `hash_fields`,
+      // the projection paths or pagination — which is everything sync actually
+      // drifts on. The rule was guarding route existence and claiming to guard
+      // sync trust.
+      //
+      // 🔑 AND THE COST WAS A CAPABILITY THAT COULD NEVER EXIST. Atlassian
+      // documents the Bitbucket issue tracker in its REST reference and publishes
+      // it in NO machine-readable spec — verified across three Atlassian sources,
+      // all 171 paths, zero `issue` paths, operationIds or schemas. Under the
+      // original rule a real, documented, working Source was permanently
+      // unexpressible because of the vendor's publishing practice.
+      //
+      // ⇒ A Source op MAY be exempted, but only on `undocumented_in_spec`. The
+      // structural reasons (`odata_*`) describe a CONVERSION ARTEFACT — a property
+      // of the vendor's tooling, which a different pin or profile might not share
+      // — whereas `undocumented_in_spec` is a claim about the vendor's own
+      // publishing, backed by the https evidence every exemption already carries.
+      // For the highest-trust binding, require the reason that names the vendor's
+      // documentation as the authority rather than a generator's limitation.
+      if (reason !== 'undocumented_in_spec') {
+        add('error', 'CATALOG_OPENAPI_SOURCE_OP_UNPROVABLE', ref.path,
+          `work-entity Source operation '${ref.opKey}' declares openapi_absent with reason '${reason}' — a Source may only be exempted as 'undocumented_in_spec', because the other reasons describe a document that a different pin could still prove. Repin, or stop declaring this op as a Source`);
+      } else {
+        // ⚠ LOUD, NOT SILENT. A Source resting on a human attestation instead of a
+        // machine proof is exactly the thing a reader must be able to find, so it
+        // is reported at `warn` — one severity above the ordinary op exemption —
+        // and counted separately by `audit:pack-pins`.
+        add('warn', 'CATALOG_OPENAPI_SOURCE_OP_EXEMPT', ref.path,
+          `work-entity Source operation '${ref.opKey}' rests on an openapi_absent attestation rather than a document proof — the vendor documents it, its own specification does not`);
+      }
     }
   }
 
@@ -4572,11 +4730,26 @@ export const crossCheckCatalogOpenApi = (
   // parameter as an exact ordered run of wire params. Proving-only — neither
   // declaration changes the runtime call.
   const openapiSource = isObjectRecord(api.openapi_source) ? api.openapi_source : undefined;
-  const pathAlias = openapiSource && isObjectRecord(openapiSource.path_alias)
-    ? openapiSource.path_alias : undefined;
+  // D-271 — an ARRAY is the scoped-rule form and `isObjectRecord` rejects arrays
+  // by design, so both shapes must be admitted here. ⚠ This guard is why the
+  // list form was inert on its first run: the alias parsed, the shape gate
+  // accepted it, and the prover silently saw `undefined`.
+  const rawPathAlias = openapiSource?.path_alias;
+  const pathAlias = isObjectRecord(rawPathAlias) || Array.isArray(rawPathAlias)
+    ? rawPathAlias : undefined;
 
   for (const b of restBindings) {
     if (discoveryClaimedOps.has(b.opKey)) continue;
+    // D-271 — declared absent from this document, with a checked reason and an
+    // https evidence URL. ⚠ `continue`, NOT a silent pass: the op is reported
+    // apart by `crossCheckCatalogOpenApi`'s caller (`exempt_ops`), because an
+    // exemption folded into the proven count would make the corpus read better
+    // than it is — the one outcome worse than the red it replaces.
+    if (b.absentReason !== undefined) {
+      add('info', 'CATALOG_OPENAPI_OP_EXEMPT', `surfaces.api.executes.${b.opKey}`,
+        `operation '${b.opKey}' (${b.rawMethod} ${b.pathTemplate}) is declared absent from the pinned OpenAPI document: ${b.absentReason}`);
+      continue;
+    }
     const bPath = `surfaces.api.executes.${b.opKey}`;
     const normWire = normalizePathTemplate(b.pathTemplate);
     let docRel: string;

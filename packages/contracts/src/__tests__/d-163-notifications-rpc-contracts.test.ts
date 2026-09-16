@@ -14,7 +14,10 @@
 import { describe, expect, expectTypeOf, it } from 'vitest';
 
 import {
+  CHANNEL_ROLES,
+  findApprovalWithoutNotification,
   NOTIFICATION_VERIFICATION_PHRASE_MAX_LENGTH,
+  type ChannelRoles,
   type NotificationChannelCapability,
   type NotificationChannelName,
   type NotificationChannelToggleView,
@@ -201,6 +204,43 @@ describe('D-163 Slice C — notifications rpc contracts', () => {
   describe('NOTIFICATION_VERIFICATION_PHRASE_MAX_LENGTH', () => {
     it('is 80 (mirrors the @recued/notification block constant; ratchet asserted backend-side)', () => {
       expect(NOTIFICATION_VERIFICATION_PHRASE_MAX_LENGTH).toBe(80);
+    });
+  });
+
+  describe('approval implies notification (send-privilege ordering)', () => {
+    // ⛔ An ask is an unprompted send PLUS a way to answer it, so `approval`
+    // strictly contains `notification`. A channel declaring approval without
+    // notification has nowhere for the ask to depart from — and the failure is
+    // silent: it enrolls, settings offer it, the fan-out counts it delivered.
+    // Sibling of the `notify-only` + `approval: true` refusal in
+    // `d-192-m1-messenger-vendors.test.ts`: that one refuses a channel that
+    // cannot RENDER an ask, this one a channel that cannot DELIVER one.
+    it('names the offending channel when one declares approval without notification', () => {
+      const bad: Record<string, ChannelRoles> = {
+        fine: { notification: true, approval: true, messenger: true },
+        unreachable: { notification: false, approval: true, messenger: true },
+      };
+      expect(findApprovalWithoutNotification(bad)).toEqual(['unreachable']);
+    });
+
+    it('permits notification without approval — the ordering is one-way', () => {
+      // `bridge` is exactly this shape in the shipped map; the check must not
+      // read the implication backwards and reject it.
+      const notifyOnly: Record<string, ChannelRoles> = {
+        bridge: { notification: true, approval: false, messenger: false },
+      };
+      expect(findApprovalWithoutNotification(notifyOnly)).toEqual([]);
+    });
+
+    it('holds across every shipped channel, vendors and literals alike', () => {
+      // ⚠ This assertion can never catch a live violator: the boot check throws
+      // at IMPORT, so a violating CHANNEL_ROLES fails this file before any test
+      // runs (verified by mutation — flipping `email` to notification: false
+      // yields "Tests: no tests", not a red assertion). What it actually guards
+      // is the GUARD: delete the throw in `notifications.ts` and this is what
+      // still fails. Keep both.
+      expect(findApprovalWithoutNotification(CHANNEL_ROLES)).toEqual([]);
+      expect(Object.keys(CHANNEL_ROLES).length).toBeGreaterThanOrEqual(8);
     });
   });
 });

@@ -3,8 +3,8 @@
     "vendor": "Samsara",
     "product": "Samsara API",
     "url": "https://developers.samsara.com/openapi/samsara-api.json",
-    "bytes": 4021497,
-    "sha256": "2ae4a795fb0da91607355fc252a2bb0e9ba116bbdb03b53ca81f5288a881649a",
+    "bytes": 4479471,
+    "sha256": "76a8c3fe65a4a5ba153d14f4c2e4c6d48fb6f5b6ed53637f28027f041e514af6",
     "openapi_version": "3.0.1",
     "api_version": "2025-10-23",
     "retrieved_on": "2026-08-03",
@@ -16,10 +16,10 @@
     "authentication": "AccessTokenHeader HTTP bearer"
   },
   "inventory": {
-    "paths": 259,
-    "operations": 371,
-    "selected_operations": 356,
-    "excluded_operations": 15,
+    "paths": 266,
+    "operations": 389,
+    "selected_operations": 366,
+    "excluded_operations": 23,
     "by_pack": {
       "samsara-admin-platform": 28,
       "samsara-assets-organization": 42,
@@ -27,37 +27,37 @@
       "samsara-forms-documents": 14,
       "samsara-hubs-logistics": 31,
       "samsara-industrial-readings": 31,
-      "samsara-maintenance-work-orders": 43,
+      "samsara-maintenance-work-orders": 53,
       "samsara-routing-dispatch": 27,
       "samsara-telematics-safety": 51,
       "samsara-vehicles-equipment": 35
     },
     "by_method": {
-      "DELETE": 35,
-      "GET": 204,
-      "PATCH": 43,
-      "POST": 83,
+      "DELETE": 37,
+      "GET": 209,
+      "PATCH": 48,
+      "POST": 89,
       "PUT": 6
     },
     "by_release_stage": {
-      "beta": 108,
-      "legacy": 41,
-      "preview": 8,
-      "stable": 199
+      "beta": 90,
+      "legacy": 43,
+      "preview": 7,
+      "stable": 226
     },
     "by_risk": {
       "admin": 16,
-      "destructive": 43,
-      "read": 207,
-      "write": 90
+      "destructive": 45,
+      "read": 210,
+      "write": 95
     },
-    "paginated_operations": 146,
+    "paginated_operations": 149,
     "comma_separated_query_arrays": 195,
     "exploded_query_arrays": 18,
-    "response_int64_operations": 146,
+    "response_int64_operations": 154,
     "raw_nested_int64_requests": 4,
-    "raw_json_request_bodies": 31,
-    "required_optional_raw_requests": 26,
+    "raw_json_request_bodies": 34,
+    "required_optional_raw_requests": 29,
     "workflows": 35
   },
   "authentication": {
@@ -78,6 +78,14 @@
     "sources": "Issues and Work Orders are plausible task Sources, but declaration is deferred for the repository-mandated human field-path verification gate."
   },
   "exclusions": {
+    "cancelSharedAssetsBatch": "Beta: batch cancellation of shared-asset agreements, admitted when the vendor stabilises the tag.",
+    "createMaintenanceSite": "Beta: maintenance-site administration, admitted when the vendor stabilises the tag.",
+    "createVendor": "Beta: maintenance-vendor administration, admitted when the vendor stabilises the tag.",
+    "listIssues": "Beta: ground-intelligence issue feed, admitted when the vendor stabilises the tag.",
+    "listMaintenanceSites": "Beta: maintenance-site administration, admitted when the vendor stabilises the tag.",
+    "updateGroundIntelligenceIssue": "Beta: ground-intelligence issue mutation, admitted when the vendor stabilises the tag.",
+    "updateMaintenanceSite": "Beta: maintenance-site administration, admitted when the vendor stabilises the tag.",
+    "updateVendor": "Beta: maintenance-vendor administration, admitted when the vendor stabilises the tag.",
     "authToken": "Driver authentication-token issuance is credential lifecycle and remains connection-owned.",
     "createDriverAuthToken": "Preview driver authentication-token issuance is credential lifecycle and remains connection-owned.",
     "createFunction": "Samsara Functions accepts executable code and is outside the bounded business-API pack surface.",
@@ -99,7 +107,7 @@
       "kind": "task",
       "eligible": true,
       "declared": false,
-      "evidence": "Samsara Issues and Work Orders are plausible task Sources with stable identifiers and update surfaces. Declaration is deferred because the authoring process requires a separate human field-path verification gate before commit."
+      "evidence": "Samsara Issues and Work Orders are plausible task Sources with stable identifiers and update surfaces. Declaration is deferred because the work-entity Sources authoring brief requires a separate human field-path verification gate before commit."
     },
     {
       "kind": "note",
@@ -7918,8 +7926,8 @@
       "method": "GET",
       "path": "/driver-efficiency/drivers",
       "operation_id": "getDriverEfficiencyByDrivers",
-      "tag": "Fuel and Energy",
-      "release_stage": "stable",
+      "tag": "Legacy APIs",
+      "release_stage": "legacy",
       "selected": true,
       "exclusion_reason": null,
       "pack": "samsara-telematics-safety",
@@ -8141,8 +8149,8 @@
       "method": "GET",
       "path": "/driver-efficiency/vehicles",
       "operation_id": "getDriverEfficiencyByVehicles",
-      "tag": "Fuel and Energy",
-      "release_stage": "stable",
+      "tag": "Legacy APIs",
+      "release_stage": "legacy",
       "selected": true,
       "exclusion_reason": null,
       "pack": "samsara-telematics-safety",
@@ -9836,6 +9844,50 @@
       "risk": "write",
       "approval": "always",
       "idempotency": "non_idempotent"
+    },
+    {
+      "method": "POST",
+      "path": "/fleet/asset-sharing/agreements/assets/cancel/batch",
+      "operation_id": "cancelSharedAssetsBatch",
+      "tag": "Beta APIs",
+      "release_stage": "beta",
+      "selected": false,
+      "exclusion_reason": "Beta: batch cancellation of shared-asset agreements, admitted when the vendor stabilises the tag.",
+      "pack": "samsara-assets-organization",
+      "op": null,
+      "security": [
+        "AccessTokenHeader"
+      ],
+      "scopes": [
+        "Write Asset Sharing"
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_mode": null,
+      "request_body_required": true,
+      "request_body_type": "object",
+      "request_read_only_paths": [],
+      "request_int64_paths": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_type": "object",
+      "response_int64_paths": [
+        "responses[].status"
+      ],
+      "parameters": [],
+      "emitted_args": [],
+      "request_schema": null,
+      "request_json": null,
+      "response_json": null,
+      "result_path": null,
+      "pagination": null,
+      "risk": null,
+      "approval": null,
+      "idempotency": null
     },
     {
       "method": "POST",
@@ -12560,6 +12612,18 @@
           "emitted_key": "query.vehicleIds"
         },
         {
+          "name": "sourceName",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.sourceName"
+        },
+        {
           "name": "driverTagIds",
           "in": "query",
           "required": false,
@@ -12640,6 +12704,12 @@
           "affects_target": true
         },
         {
+          "key": "query.sourceName",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
           "key": "query.driverTagIds",
           "type": "string",
           "required": false,
@@ -12683,6 +12753,11 @@
           "query.vehicleIds": {
             "type": "string",
             "maxLength": 16384
+          },
+          "query.sourceName": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
           },
           "query.driverTagIds": {
             "type": "string",
@@ -18039,6 +18114,103 @@
       "risk": "read",
       "approval": "ask",
       "idempotency": "safe"
+    },
+    {
+      "method": "PATCH",
+      "path": "/fleet/maintenance/vendors",
+      "operation_id": "updateVendor",
+      "tag": "Beta APIs",
+      "release_stage": "beta",
+      "selected": false,
+      "exclusion_reason": "Beta: maintenance-vendor administration, admitted when the vendor stabilises the tag.",
+      "pack": "samsara-maintenance-work-orders",
+      "op": null,
+      "security": [
+        "AccessTokenHeader"
+      ],
+      "scopes": [
+        "Write Work Orders"
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_mode": null,
+      "request_body_required": true,
+      "request_body_type": "object",
+      "request_read_only_paths": [],
+      "request_int64_paths": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_type": "object",
+      "response_int64_paths": [],
+      "parameters": [
+        {
+          "name": "id",
+          "in": "query",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": null
+        }
+      ],
+      "emitted_args": [],
+      "request_schema": null,
+      "request_json": null,
+      "response_json": null,
+      "result_path": null,
+      "pagination": null,
+      "risk": null,
+      "approval": null,
+      "idempotency": null
+    },
+    {
+      "method": "POST",
+      "path": "/fleet/maintenance/vendors",
+      "operation_id": "createVendor",
+      "tag": "Beta APIs",
+      "release_stage": "beta",
+      "selected": false,
+      "exclusion_reason": "Beta: maintenance-vendor administration, admitted when the vendor stabilises the tag.",
+      "pack": "samsara-maintenance-work-orders",
+      "op": null,
+      "security": [
+        "AccessTokenHeader"
+      ],
+      "scopes": [
+        "Write Work Orders"
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_mode": null,
+      "request_body_required": true,
+      "request_body_type": "object",
+      "request_read_only_paths": [],
+      "request_int64_paths": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_type": "object",
+      "response_int64_paths": [],
+      "parameters": [],
+      "emitted_args": [],
+      "request_schema": null,
+      "request_json": null,
+      "response_json": null,
+      "result_path": null,
+      "pagination": null,
+      "risk": null,
+      "approval": null,
+      "idempotency": null
     },
     {
       "method": "GET",
@@ -29455,6 +29627,30 @@
           "serialization": "scalar",
           "pagination_owned": false,
           "emitted_key": null
+        },
+        {
+          "name": "prefix",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": null
+        },
+        {
+          "name": "groupByFolder",
+          "in": "query",
+          "required": false,
+          "schema_type": "boolean",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": null
         }
       ],
       "emitted_args": [],
@@ -30249,6 +30445,214 @@
       "idempotency": "non_idempotent"
     },
     {
+      "method": "GET",
+      "path": "/ground-intelligence/issues",
+      "operation_id": "listIssues",
+      "tag": "Beta APIs",
+      "release_stage": "beta",
+      "selected": false,
+      "exclusion_reason": "Beta: ground-intelligence issue feed, admitted when the vendor stabilises the tag.",
+      "pack": "samsara-telematics-safety",
+      "op": null,
+      "security": [
+        "AccessTokenHeader"
+      ],
+      "scopes": [
+        "Read Ground Intelligence Issues"
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_mode": null,
+      "request_body_required": false,
+      "request_body_type": null,
+      "request_read_only_paths": [],
+      "request_int64_paths": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_type": "object",
+      "response_int64_paths": [
+        "data[].observationCount"
+      ],
+      "parameters": [
+        {
+          "name": "ids",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": null
+        },
+        {
+          "name": "types",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": null
+        },
+        {
+          "name": "statuses",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": null
+        },
+        {
+          "name": "severities",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": null
+        },
+        {
+          "name": "endTime",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": null
+        },
+        {
+          "name": "queryByTimeField",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": null
+        },
+        {
+          "name": "startTime",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": null
+        },
+        {
+          "name": "after",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": null
+        },
+        {
+          "name": "limit",
+          "in": "query",
+          "required": false,
+          "schema_type": "number",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": null
+        }
+      ],
+      "emitted_args": [],
+      "request_schema": null,
+      "request_json": null,
+      "response_json": null,
+      "result_path": null,
+      "pagination": null,
+      "risk": null,
+      "approval": null,
+      "idempotency": null
+    },
+    {
+      "method": "PATCH",
+      "path": "/ground-intelligence/issues",
+      "operation_id": "updateGroundIntelligenceIssue",
+      "tag": "Beta APIs",
+      "release_stage": "beta",
+      "selected": false,
+      "exclusion_reason": "Beta: ground-intelligence issue mutation, admitted when the vendor stabilises the tag.",
+      "pack": "samsara-telematics-safety",
+      "op": null,
+      "security": [
+        "AccessTokenHeader"
+      ],
+      "scopes": [
+        "Write Ground Intelligence Issues"
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_mode": null,
+      "request_body_required": true,
+      "request_body_type": "object",
+      "request_read_only_paths": [],
+      "request_int64_paths": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_type": "object",
+      "response_int64_paths": [
+        "data.observationCount"
+      ],
+      "parameters": [
+        {
+          "name": "id",
+          "in": "query",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": null
+        }
+      ],
+      "emitted_args": [],
+      "request_schema": null,
+      "request_json": null,
+      "response_json": null,
+      "result_path": null,
+      "pagination": null,
+      "risk": null,
+      "approval": null,
+      "idempotency": null
+    },
+    {
       "method": "PATCH",
       "path": "/ground-intelligence/watchpoints",
       "operation_id": "updateWatchpoint",
@@ -30486,8 +30890,8 @@
       "method": "PATCH",
       "path": "/hos/daily-logs/log-meta-data",
       "operation_id": "updateShippingDocs",
-      "tag": "Beta APIs",
-      "release_stage": "beta",
+      "tag": "LogMetaData",
+      "release_stage": "stable",
       "selected": true,
       "exclusion_reason": null,
       "pack": "samsara-drivers-compliance",
@@ -36396,8 +36800,8 @@
       "method": "DELETE",
       "path": "/maintenance/parts",
       "operation_id": "deletePart",
-      "tag": "Beta APIs",
-      "release_stage": "beta",
+      "tag": "Maintenance",
+      "release_stage": "stable",
       "selected": true,
       "exclusion_reason": null,
       "pack": "samsara-maintenance-work-orders",
@@ -36468,8 +36872,8 @@
       "method": "GET",
       "path": "/maintenance/parts",
       "operation_id": "listParts",
-      "tag": "Beta APIs",
-      "release_stage": "beta",
+      "tag": "Maintenance",
+      "release_stage": "stable",
       "selected": true,
       "exclusion_reason": null,
       "pack": "samsara-maintenance-work-orders",
@@ -36645,8 +37049,8 @@
       "method": "PATCH",
       "path": "/maintenance/parts",
       "operation_id": "updatePart",
-      "tag": "Beta APIs",
-      "release_stage": "beta",
+      "tag": "Maintenance",
+      "release_stage": "stable",
       "selected": true,
       "exclusion_reason": null,
       "pack": "samsara-maintenance-work-orders",
@@ -36734,8 +37138,8 @@
       "method": "POST",
       "path": "/maintenance/parts",
       "operation_id": "createPart",
-      "tag": "Beta APIs",
-      "release_stage": "beta",
+      "tag": "Maintenance",
+      "release_stage": "stable",
       "selected": true,
       "exclusion_reason": null,
       "pack": "samsara-maintenance-work-orders",
@@ -36770,7 +37174,19 @@
           "affects_target": true
         },
         {
+          "key": "body.barcodeType",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
           "key": "body.description",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body.externalId",
           "type": "string",
           "required": false,
           "affects_target": true
@@ -36778,6 +37194,12 @@
         {
           "key": "body.isInventoryTracked",
           "type": "boolean",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body.manufacturerName",
+          "type": "string",
           "required": false,
           "affects_target": true
         },
@@ -36800,6 +37222,18 @@
           "affects_target": true
         },
         {
+          "key": "body.preferredVendorId",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body.preferredVendorPartNumber",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
           "key": "body.unitCost",
           "type": "object",
           "required": false,
@@ -36819,12 +37253,24 @@
             "type": "string",
             "maxLength": 65536
           },
+          "body.barcodeType": {
+            "type": "string",
+            "maxLength": 65536
+          },
           "body.description": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "body.externalId": {
             "type": "string",
             "maxLength": 65536
           },
           "body.isInventoryTracked": {
             "type": "boolean"
+          },
+          "body.manufacturerName": {
+            "type": "string",
+            "maxLength": 65536
           },
           "body.manufacturerPartNumber": {
             "type": "string",
@@ -36835,6 +37281,14 @@
             "maxLength": 65536
           },
           "body.partNumber": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "body.preferredVendorId": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "body.preferredVendorPartNumber": {
             "type": "string",
             "maxLength": 65536
           },
@@ -36878,8 +37332,8 @@
       "method": "GET",
       "path": "/maintenance/parts/inventory-location",
       "operation_id": "listPartInventory",
-      "tag": "Beta APIs",
-      "release_stage": "beta",
+      "tag": "Maintenance",
+      "release_stage": "stable",
       "selected": true,
       "exclusion_reason": null,
       "pack": "samsara-maintenance-work-orders",
@@ -37033,8 +37487,8 @@
       "method": "PATCH",
       "path": "/maintenance/parts/inventory-location",
       "operation_id": "updatePartInventoryLocation",
-      "tag": "Beta APIs",
-      "release_stage": "beta",
+      "tag": "Maintenance",
+      "release_stage": "stable",
       "selected": true,
       "exclusion_reason": null,
       "pack": "samsara-maintenance-work-orders",
@@ -37143,8 +37597,8 @@
       "method": "POST",
       "path": "/maintenance/parts/inventory-location",
       "operation_id": "createPartInventoryLocation",
-      "tag": "Beta APIs",
-      "release_stage": "beta",
+      "tag": "Maintenance",
+      "release_stage": "stable",
       "selected": true,
       "exclusion_reason": null,
       "pack": "samsara-maintenance-work-orders",
@@ -37253,8 +37707,8 @@
       "method": "POST",
       "path": "/maintenance/parts/stock-movements",
       "operation_id": "createStockMovement",
-      "tag": "Beta APIs",
-      "release_stage": "beta",
+      "tag": "Maintenance",
+      "release_stage": "stable",
       "selected": true,
       "exclusion_reason": null,
       "pack": "samsara-maintenance-work-orders",
@@ -37436,11 +37890,214 @@
       "idempotency": "non_idempotent"
     },
     {
+      "method": "GET",
+      "path": "/maintenance/parts/transactions",
+      "operation_id": "listPartTransactions",
+      "tag": "Maintenance",
+      "release_stage": "stable",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "samsara-maintenance-work-orders",
+      "op": "list_part_transactions",
+      "security": [
+        "AccessTokenHeader"
+      ],
+      "scopes": [
+        "Read Parts"
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_mode": null,
+      "request_body_required": false,
+      "request_body_type": null,
+      "request_read_only_paths": [],
+      "request_int64_paths": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_type": "object",
+      "response_int64_paths": [],
+      "parameters": [
+        {
+          "name": "happenedAtTimeStart",
+          "in": "query",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.happenedAtTimeStart"
+        },
+        {
+          "name": "happenedAtTimeEnd",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.happenedAtTimeEnd"
+        },
+        {
+          "name": "partSamsaraIds",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.partSamsaraIds"
+        },
+        {
+          "name": "placeIds",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.placeIds"
+        },
+        {
+          "name": "transactionTypeIn",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.transactionTypeIn"
+        },
+        {
+          "name": "after",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": true,
+          "emitted_key": null
+        },
+        {
+          "name": "limit",
+          "in": "query",
+          "required": false,
+          "schema_type": "number",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": true,
+          "emitted_key": null
+        }
+      ],
+      "emitted_args": [
+        {
+          "key": "query.happenedAtTimeStart",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query.happenedAtTimeEnd",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "query.partSamsaraIds",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "query.placeIds",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "query.transactionTypeIn",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        }
+      ],
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "query.happenedAtTimeStart": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "query.happenedAtTimeEnd": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "query.partSamsaraIds": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "query.placeIds": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "query.transactionTypeIn": {
+            "type": "string",
+            "maxLength": 65536
+          }
+        },
+        "required": [
+          "query.happenedAtTimeStart"
+        ],
+        "additionalProperties": false
+      },
+      "request_json": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "result_path": "data",
+      "pagination": {
+        "style": "query_token",
+        "page_size": {
+          "placement": "query",
+          "param": "limit",
+          "value": 100,
+          "max": 200
+        },
+        "token_from": "pagination.endCursor",
+        "token_to": {
+          "placement": "query",
+          "param": "after"
+        },
+        "done_when": {
+          "path": "pagination.hasNextPage",
+          "equals": false
+        }
+      },
+      "risk": "read",
+      "approval": "ask",
+      "idempotency": "safe"
+    },
+    {
       "method": "POST",
       "path": "/maintenance/preventive/resolve",
       "operation_id": "resolvePreventiveMaintenance",
-      "tag": "Beta APIs",
-      "release_stage": "beta",
+      "tag": "Preventive Maintenance",
+      "release_stage": "stable",
       "selected": true,
       "exclusion_reason": null,
       "pack": "samsara-maintenance-work-orders",
@@ -37552,8 +38209,8 @@
       "method": "GET",
       "path": "/maintenance/preventive/schedules",
       "operation_id": "listPreventiveMaintenanceSchedules",
-      "tag": "Beta APIs",
-      "release_stage": "beta",
+      "tag": "Preventive Maintenance",
+      "release_stage": "stable",
       "selected": true,
       "exclusion_reason": null,
       "pack": "samsara-maintenance-work-orders",
@@ -37668,8 +38325,8 @@
       "method": "GET",
       "path": "/maintenance/preventive/upcoming",
       "operation_id": "listUpcomingPreventiveMaintenance",
-      "tag": "Beta APIs",
-      "release_stage": "beta",
+      "tag": "Preventive Maintenance",
+      "release_stage": "stable",
       "selected": true,
       "exclusion_reason": null,
       "pack": "samsara-maintenance-work-orders",
@@ -37812,8 +38469,8 @@
       "method": "PATCH",
       "path": "/maintenance/preventive/upcoming",
       "operation_id": "updateUpcomingPreventiveMaintenance",
-      "tag": "Beta APIs",
-      "release_stage": "beta",
+      "tag": "Preventive Maintenance",
+      "release_stage": "stable",
       "selected": true,
       "exclusion_reason": null,
       "pack": "samsara-maintenance-work-orders",
@@ -38038,7 +38695,9 @@
       "selected_response_media": "application/json",
       "response_type": "object",
       "response_int64_paths": [
-        "data[].parts[].coreCharge.recoverabilityPolicy.relativeWindowDuration"
+        "data[].parts[].coreCharge.recoverabilityPolicy.relativeWindowDuration",
+        "data[].parts[].tax.basisPoints",
+        "data[].tax.basisPoints"
       ],
       "parameters": [
         {
@@ -38239,7 +38898,9 @@
       "request_body_type": "object",
       "request_read_only_paths": [],
       "request_int64_paths": [
-        "parts[].coreCharge.recoverabilityPolicy.relativeWindowDuration"
+        "parts[].coreCharge.recoverabilityPolicy.relativeWindowDuration",
+        "parts[].tax.basisPoints",
+        "tax.basisPoints"
       ],
       "response_media": [
         "application/json"
@@ -38247,7 +38908,9 @@
       "selected_response_media": "application/json",
       "response_type": "object",
       "response_int64_paths": [
-        "data.parts[].coreCharge.recoverabilityPolicy.relativeWindowDuration"
+        "data.parts[].coreCharge.recoverabilityPolicy.relativeWindowDuration",
+        "data.parts[].tax.basisPoints",
+        "data.tax.basisPoints"
       ],
       "parameters": [
         {
@@ -38332,7 +38995,9 @@
       "request_body_type": "object",
       "request_read_only_paths": [],
       "request_int64_paths": [
-        "parts[].coreCharge.recoverabilityPolicy.relativeWindowDuration"
+        "parts[].coreCharge.recoverabilityPolicy.relativeWindowDuration",
+        "parts[].tax.basisPoints",
+        "tax.basisPoints"
       ],
       "response_media": [
         "application/json"
@@ -38340,7 +39005,9 @@
       "selected_response_media": "application/json",
       "response_type": "object",
       "response_int64_paths": [
-        "data.parts[].coreCharge.recoverabilityPolicy.relativeWindowDuration"
+        "data.parts[].coreCharge.recoverabilityPolicy.relativeWindowDuration",
+        "data.parts[].tax.basisPoints",
+        "data.tax.basisPoints"
       ],
       "parameters": [],
       "emitted_args": [
@@ -38393,6 +39060,12 @@
           "affects_target": true
         },
         {
+          "key": "body.tax",
+          "type": "object",
+          "required": false,
+          "affects_target": true
+        },
+        {
           "key": "body.trackingNumber",
           "type": "string",
           "required": false,
@@ -38422,7 +39095,20 @@
           },
           "body.orderStatus": {
             "type": "string",
-            "maxLength": 65536
+            "enum": [
+              "Unknown",
+              "Draft",
+              "Open",
+              "InReview",
+              "Approved",
+              "Rejected",
+              "SentToVendor",
+              "PartiallyReceived",
+              "FullyReceived",
+              "Returned",
+              "Cancelled",
+              "Closed"
+            ]
           },
           "body.otherCost": {
             "type": "object",
@@ -38452,7 +39138,12 @@
                   "type": "object",
                   "properties": {
                     "coreChargeStatus": {
-                      "type": "string"
+                      "type": "string",
+                      "enum": [
+                        "Unknown",
+                        "Active",
+                        "RemovedOrDisabled"
+                      ]
                     },
                     "corePartSamsaraId": {
                       "type": "string"
@@ -38494,6 +39185,20 @@
                   "type": "number",
                   "format": "double"
                 },
+                "tax": {
+                  "type": "object",
+                  "properties": {
+                    "basisPoints": {
+                      "type": "number",
+                      "format": "int64"
+                    },
+                    "money": {
+                      "type": "object",
+                      "additionalProperties": true
+                    }
+                  },
+                  "additionalProperties": true
+                },
                 "unitCost": {
                   "type": "object",
                   "properties": {
@@ -38511,7 +39216,31 @@
                   "additionalProperties": true
                 },
                 "unitOfMeasureType": {
-                  "type": "string"
+                  "type": "string",
+                  "enum": [
+                    "Unknown",
+                    "Each",
+                    "Set",
+                    "Pack",
+                    "Box",
+                    "Pound",
+                    "Kilogram",
+                    "Ounce",
+                    "Liter",
+                    "Milliliter",
+                    "Gallon",
+                    "Quart",
+                    "FluidOunce",
+                    "Inch",
+                    "Foot",
+                    "Meter",
+                    "Yard",
+                    "SquareFoot",
+                    "SquareMeter",
+                    "Pint",
+                    "Hundred",
+                    "Roll"
+                  ]
                 }
               },
               "required": [
@@ -38530,6 +39259,32 @@
           "body.poNumberSuffix": {
             "type": "string",
             "maxLength": 65536
+          },
+          "body.tax": {
+            "type": "object",
+            "properties": {
+              "basisPoints": {
+                "type": "number",
+                "format": "int64"
+              },
+              "money": {
+                "type": "object",
+                "properties": {
+                  "amount": {
+                    "type": "string"
+                  },
+                  "currency": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "amount",
+                  "currency"
+                ],
+                "additionalProperties": true
+              }
+            },
+            "additionalProperties": true
           },
           "body.trackingNumber": {
             "type": "string",
@@ -38675,6 +39430,216 @@
     },
     {
       "method": "GET",
+      "path": "/maintenance/sites",
+      "operation_id": "listMaintenanceSites",
+      "tag": "Beta APIs",
+      "release_stage": "beta",
+      "selected": false,
+      "exclusion_reason": "Beta: maintenance-site administration, admitted when the vendor stabilises the tag.",
+      "pack": "samsara-maintenance-work-orders",
+      "op": null,
+      "security": [
+        "AccessTokenHeader"
+      ],
+      "scopes": [
+        "Read Maintenance Sites"
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_mode": null,
+      "request_body_required": false,
+      "request_body_type": null,
+      "request_read_only_paths": [],
+      "request_int64_paths": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_type": "object",
+      "response_int64_paths": [],
+      "parameters": [
+        {
+          "name": "ids",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": null
+        },
+        {
+          "name": "isArchived",
+          "in": "query",
+          "required": false,
+          "schema_type": "boolean",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": null
+        },
+        {
+          "name": "placeIds",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": null
+        },
+        {
+          "name": "after",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": null
+        },
+        {
+          "name": "limit",
+          "in": "query",
+          "required": false,
+          "schema_type": "number",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": null
+        },
+        {
+          "name": "includeExternalIds",
+          "in": "query",
+          "required": false,
+          "schema_type": "boolean",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": null
+        }
+      ],
+      "emitted_args": [],
+      "request_schema": null,
+      "request_json": null,
+      "response_json": null,
+      "result_path": null,
+      "pagination": null,
+      "risk": null,
+      "approval": null,
+      "idempotency": null
+    },
+    {
+      "method": "PATCH",
+      "path": "/maintenance/sites",
+      "operation_id": "updateMaintenanceSite",
+      "tag": "Beta APIs",
+      "release_stage": "beta",
+      "selected": false,
+      "exclusion_reason": "Beta: maintenance-site administration, admitted when the vendor stabilises the tag.",
+      "pack": "samsara-maintenance-work-orders",
+      "op": null,
+      "security": [
+        "AccessTokenHeader"
+      ],
+      "scopes": [
+        "Write Maintenance Sites"
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_mode": null,
+      "request_body_required": true,
+      "request_body_type": "object",
+      "request_read_only_paths": [],
+      "request_int64_paths": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_type": "object",
+      "response_int64_paths": [],
+      "parameters": [
+        {
+          "name": "id",
+          "in": "query",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": null
+        }
+      ],
+      "emitted_args": [],
+      "request_schema": null,
+      "request_json": null,
+      "response_json": null,
+      "result_path": null,
+      "pagination": null,
+      "risk": null,
+      "approval": null,
+      "idempotency": null
+    },
+    {
+      "method": "POST",
+      "path": "/maintenance/sites",
+      "operation_id": "createMaintenanceSite",
+      "tag": "Beta APIs",
+      "release_stage": "beta",
+      "selected": false,
+      "exclusion_reason": "Beta: maintenance-site administration, admitted when the vendor stabilises the tag.",
+      "pack": "samsara-maintenance-work-orders",
+      "op": null,
+      "security": [
+        "AccessTokenHeader"
+      ],
+      "scopes": [
+        "Write Maintenance Sites"
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_mode": null,
+      "request_body_required": true,
+      "request_body_type": "object",
+      "request_read_only_paths": [],
+      "request_int64_paths": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_type": "object",
+      "response_int64_paths": [],
+      "parameters": [],
+      "emitted_args": [],
+      "request_schema": null,
+      "request_json": null,
+      "response_json": null,
+      "result_path": null,
+      "pagination": null,
+      "risk": null,
+      "approval": null,
+      "idempotency": null
+    },
+    {
+      "method": "GET",
       "path": "/maintenance/time-entries/stream",
       "operation_id": "listTimeEntries",
       "tag": "Beta APIs",
@@ -38809,6 +39774,1765 @@
       "risk": "read",
       "approval": "ask",
       "idempotency": "safe"
+    },
+    {
+      "method": "DELETE",
+      "path": "/maintenance/warranties",
+      "operation_id": "deleteWarranty",
+      "tag": "Warranties",
+      "release_stage": "stable",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "samsara-maintenance-work-orders",
+      "op": "delete_warranty",
+      "security": [
+        "AccessTokenHeader"
+      ],
+      "scopes": [
+        "Write Warranties"
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_mode": null,
+      "request_body_required": false,
+      "request_body_type": null,
+      "request_read_only_paths": [],
+      "request_int64_paths": [],
+      "response_media": [],
+      "selected_response_media": null,
+      "response_type": null,
+      "response_int64_paths": [],
+      "parameters": [
+        {
+          "name": "id",
+          "in": "query",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.id"
+        }
+      ],
+      "emitted_args": [
+        {
+          "key": "query.id",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "query.id": {
+            "type": "string",
+            "maxLength": 65536
+          }
+        },
+        "required": [
+          "query.id"
+        ],
+        "additionalProperties": false
+      },
+      "request_json": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "result_path": null,
+      "pagination": null,
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent"
+    },
+    {
+      "method": "GET",
+      "path": "/maintenance/warranties",
+      "operation_id": "listWarranties",
+      "tag": "Warranties",
+      "release_stage": "stable",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "samsara-maintenance-work-orders",
+      "op": "list_warranties",
+      "security": [
+        "AccessTokenHeader"
+      ],
+      "scopes": [
+        "Read Warranties"
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_mode": null,
+      "request_body_required": false,
+      "request_body_type": null,
+      "request_read_only_paths": [],
+      "request_int64_paths": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_type": "object",
+      "response_int64_paths": [
+        "data[].baseCoverage.durationDays",
+        "data[].baseCoverage.durationMonths",
+        "data[].baseCoverage.engineDurationHours",
+        "data[].baseCoverage.odometerDistanceMeters",
+        "data[].baseCoverage.startEngineHours",
+        "data[].baseCoverage.startOdometerMeters",
+        "data[].coverages[].durationDays",
+        "data[].coverages[].durationMonths",
+        "data[].coverages[].engineDurationHours",
+        "data[].coverages[].odometerDistanceMeters",
+        "data[].coverages[].startEngineHours",
+        "data[].coverages[].startOdometerMeters",
+        "data[].durationDays",
+        "data[].durationMonths",
+        "data[].engineDurationHours",
+        "data[].odometerDistanceMeters"
+      ],
+      "parameters": [
+        {
+          "name": "warrantyIds",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.warrantyIds"
+        },
+        {
+          "name": "name",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.name"
+        },
+        {
+          "name": "after",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": true,
+          "emitted_key": null
+        },
+        {
+          "name": "limit",
+          "in": "query",
+          "required": false,
+          "schema_type": "number",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": true,
+          "emitted_key": null
+        },
+        {
+          "name": "includeExternalIds",
+          "in": "query",
+          "required": false,
+          "schema_type": "boolean",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.includeExternalIds"
+        }
+      ],
+      "emitted_args": [
+        {
+          "key": "query.warrantyIds",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "query.name",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "query.includeExternalIds",
+          "type": "boolean",
+          "required": false,
+          "affects_target": true
+        }
+      ],
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "query.warrantyIds": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "query.name": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "query.includeExternalIds": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
+      "request_json": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "result_path": "data",
+      "pagination": {
+        "style": "query_token",
+        "page_size": {
+          "placement": "query",
+          "param": "limit",
+          "value": 100,
+          "max": 200
+        },
+        "token_from": "pagination.endCursor",
+        "token_to": {
+          "placement": "query",
+          "param": "after"
+        },
+        "done_when": {
+          "path": "pagination.hasNextPage",
+          "equals": false
+        }
+      },
+      "risk": "read",
+      "approval": "ask",
+      "idempotency": "safe"
+    },
+    {
+      "method": "PATCH",
+      "path": "/maintenance/warranties",
+      "operation_id": "updateWarranty",
+      "tag": "Warranties",
+      "release_stage": "stable",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "samsara-maintenance-work-orders",
+      "op": "update_warranty",
+      "security": [
+        "AccessTokenHeader"
+      ],
+      "scopes": [
+        "Write Warranties"
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_mode": "raw_required_optional_object",
+      "request_body_required": true,
+      "request_body_type": "object",
+      "request_read_only_paths": [],
+      "request_int64_paths": [
+        "baseCoverage.durationDays",
+        "baseCoverage.durationMonths",
+        "baseCoverage.engineDurationHours",
+        "baseCoverage.odometerDistanceMeters",
+        "baseCoverage.startEngineHours",
+        "baseCoverage.startOdometerMeters",
+        "coverages[].durationDays",
+        "coverages[].durationMonths",
+        "coverages[].engineDurationHours",
+        "coverages[].odometerDistanceMeters",
+        "coverages[].startEngineHours",
+        "coverages[].startOdometerMeters",
+        "durationDays",
+        "durationMonths",
+        "engineDurationHours",
+        "odometerDistanceMeters"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_type": "object",
+      "response_int64_paths": [
+        "data.baseCoverage.durationDays",
+        "data.baseCoverage.durationMonths",
+        "data.baseCoverage.engineDurationHours",
+        "data.baseCoverage.odometerDistanceMeters",
+        "data.baseCoverage.startEngineHours",
+        "data.baseCoverage.startOdometerMeters",
+        "data.coverages[].durationDays",
+        "data.coverages[].durationMonths",
+        "data.coverages[].engineDurationHours",
+        "data.coverages[].odometerDistanceMeters",
+        "data.coverages[].startEngineHours",
+        "data.coverages[].startOdometerMeters",
+        "data.durationDays",
+        "data.durationMonths",
+        "data.engineDurationHours",
+        "data.odometerDistanceMeters"
+      ],
+      "parameters": [
+        {
+          "name": "id",
+          "in": "query",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.id"
+        }
+      ],
+      "emitted_args": [
+        {
+          "key": "query.id",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "query.id": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "body_raw": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 1048576,
+            "pattern": "^\\s*\\{[\\s\\S]*\\}\\s*$"
+          }
+        },
+        "required": [
+          "query.id",
+          "body_raw"
+        ],
+        "additionalProperties": false
+      },
+      "request_json": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "result_path": "data",
+      "pagination": null,
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "idempotent"
+    },
+    {
+      "method": "POST",
+      "path": "/maintenance/warranties",
+      "operation_id": "createWarranty",
+      "tag": "Warranties",
+      "release_stage": "stable",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "samsara-maintenance-work-orders",
+      "op": "create_warranty",
+      "security": [
+        "AccessTokenHeader"
+      ],
+      "scopes": [
+        "Write Warranties"
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_mode": "projected_top_level",
+      "request_body_required": true,
+      "request_body_type": "object",
+      "request_read_only_paths": [],
+      "request_int64_paths": [
+        "baseCoverage.durationDays",
+        "baseCoverage.durationMonths",
+        "baseCoverage.engineDurationHours",
+        "baseCoverage.odometerDistanceMeters",
+        "baseCoverage.startEngineHours",
+        "baseCoverage.startOdometerMeters",
+        "coverages[].durationDays",
+        "coverages[].durationMonths",
+        "coverages[].engineDurationHours",
+        "coverages[].odometerDistanceMeters",
+        "coverages[].startEngineHours",
+        "coverages[].startOdometerMeters",
+        "durationDays",
+        "durationMonths",
+        "engineDurationHours",
+        "odometerDistanceMeters"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_type": "object",
+      "response_int64_paths": [
+        "data.baseCoverage.durationDays",
+        "data.baseCoverage.durationMonths",
+        "data.baseCoverage.engineDurationHours",
+        "data.baseCoverage.odometerDistanceMeters",
+        "data.baseCoverage.startEngineHours",
+        "data.baseCoverage.startOdometerMeters",
+        "data.coverages[].durationDays",
+        "data.coverages[].durationMonths",
+        "data.coverages[].engineDurationHours",
+        "data.coverages[].odometerDistanceMeters",
+        "data.coverages[].startEngineHours",
+        "data.coverages[].startOdometerMeters",
+        "data.durationDays",
+        "data.durationMonths",
+        "data.engineDurationHours",
+        "data.odometerDistanceMeters"
+      ],
+      "parameters": [],
+      "emitted_args": [
+        {
+          "key": "body.baseCoverage",
+          "type": "object",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body.coverages",
+          "type": "array",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body.description",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body.durationDays",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body.durationMonths",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body.engineDurationHours",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body.externalIds",
+          "type": "array",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body.name",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body.odometerDistanceMeters",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body.vendorId",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body.warrantyType",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        }
+      ],
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "body.baseCoverage": {
+            "type": "object",
+            "properties": {
+              "description": {
+                "type": "string"
+              },
+              "durationDays": {
+                "type": "number",
+                "format": "int64"
+              },
+              "durationMonths": {
+                "type": "number",
+                "format": "int64"
+              },
+              "engineDurationHours": {
+                "type": "number",
+                "format": "int64"
+              },
+              "exclusions": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "itemType": {
+                      "type": "string",
+                      "enum": [
+                        "unknown",
+                        "vmrsCode",
+                        "serviceTask"
+                      ]
+                    },
+                    "vmrsCode": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "itemType"
+                  ],
+                  "additionalProperties": true
+                }
+              },
+              "inclusions": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "itemType": {
+                      "type": "string",
+                      "enum": [
+                        "unknown",
+                        "vmrsCode",
+                        "serviceTask"
+                      ]
+                    },
+                    "vmrsCode": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "itemType"
+                  ],
+                  "additionalProperties": true
+                }
+              },
+              "isOdometerDistanceUnlimited": {
+                "type": "boolean"
+              },
+              "name": {
+                "type": "string"
+              },
+              "notes": {
+                "type": "string"
+              },
+              "odometerDistanceMeters": {
+                "type": "number",
+                "format": "int64"
+              },
+              "startEngineHours": {
+                "type": "number",
+                "format": "int64"
+              },
+              "startOdometerMeters": {
+                "type": "number",
+                "format": "int64"
+              },
+              "startTime": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "name"
+            ],
+            "additionalProperties": true
+          },
+          "body.coverages": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "description": {
+                  "type": "string"
+                },
+                "durationDays": {
+                  "type": "number",
+                  "format": "int64"
+                },
+                "durationMonths": {
+                  "type": "number",
+                  "format": "int64"
+                },
+                "engineDurationHours": {
+                  "type": "number",
+                  "format": "int64"
+                },
+                "exclusions": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": true
+                  }
+                },
+                "inclusions": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": true
+                  }
+                },
+                "isOdometerDistanceUnlimited": {
+                  "type": "boolean"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "notes": {
+                  "type": "string"
+                },
+                "odometerDistanceMeters": {
+                  "type": "number",
+                  "format": "int64"
+                },
+                "startEngineHours": {
+                  "type": "number",
+                  "format": "int64"
+                },
+                "startOdometerMeters": {
+                  "type": "number",
+                  "format": "int64"
+                },
+                "startTime": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name"
+              ],
+              "additionalProperties": true
+            }
+          },
+          "body.description": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "body.durationDays": {
+            "type": "string",
+            "pattern": "^-?(?:0|[1-9][0-9]*)$",
+            "maxLength": 40
+          },
+          "body.durationMonths": {
+            "type": "string",
+            "pattern": "^-?(?:0|[1-9][0-9]*)$",
+            "maxLength": 40
+          },
+          "body.engineDurationHours": {
+            "type": "string",
+            "pattern": "^-?(?:0|[1-9][0-9]*)$",
+            "maxLength": 40
+          },
+          "body.externalIds": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "key": {
+                  "type": "string"
+                },
+                "value": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "key",
+                "value"
+              ],
+              "additionalProperties": true
+            }
+          },
+          "body.name": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "body.odometerDistanceMeters": {
+            "type": "string",
+            "pattern": "^-?(?:0|[1-9][0-9]*)$",
+            "maxLength": 40
+          },
+          "body.vendorId": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "body.warrantyType": {
+            "type": "string",
+            "enum": [
+              "unknown",
+              "manufacturer",
+              "extended",
+              "other"
+            ]
+          }
+        },
+        "required": [
+          "body.name"
+        ],
+        "additionalProperties": true
+      },
+      "request_json": {
+        "decimal_integer_fields": [
+          "durationDays",
+          "durationMonths",
+          "engineDurationHours",
+          "odometerDistanceMeters"
+        ]
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "result_path": "data",
+      "pagination": null,
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "non_idempotent"
+    },
+    {
+      "method": "GET",
+      "path": "/maintenance/warranties/assets",
+      "operation_id": "listWarrantyAssetAssignments",
+      "tag": "Warranties",
+      "release_stage": "stable",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "samsara-maintenance-work-orders",
+      "op": "list_warranty_asset_assignments",
+      "security": [
+        "AccessTokenHeader"
+      ],
+      "scopes": [
+        "Read Warranties"
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_mode": null,
+      "request_body_required": false,
+      "request_body_type": null,
+      "request_read_only_paths": [],
+      "request_int64_paths": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_type": "object",
+      "response_int64_paths": [
+        "data[].startEngineHours",
+        "data[].startOdometerMeters"
+      ],
+      "parameters": [
+        {
+          "name": "warrantyId",
+          "in": "query",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.warrantyId"
+        },
+        {
+          "name": "after",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": true,
+          "emitted_key": null
+        },
+        {
+          "name": "limit",
+          "in": "query",
+          "required": false,
+          "schema_type": "number",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": true,
+          "emitted_key": null
+        }
+      ],
+      "emitted_args": [
+        {
+          "key": "query.warrantyId",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "query.warrantyId": {
+            "type": "string",
+            "maxLength": 65536
+          }
+        },
+        "required": [
+          "query.warrantyId"
+        ],
+        "additionalProperties": false
+      },
+      "request_json": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "result_path": "data",
+      "pagination": {
+        "style": "query_token",
+        "page_size": {
+          "placement": "query",
+          "param": "limit",
+          "value": 100,
+          "max": 200
+        },
+        "token_from": "pagination.endCursor",
+        "token_to": {
+          "placement": "query",
+          "param": "after"
+        },
+        "done_when": {
+          "path": "pagination.hasNextPage",
+          "equals": false
+        }
+      },
+      "risk": "read",
+      "approval": "ask",
+      "idempotency": "safe"
+    },
+    {
+      "method": "POST",
+      "path": "/maintenance/warranties/assets/replace",
+      "operation_id": "replaceWarrantyAssetAssignments",
+      "tag": "Warranties",
+      "release_stage": "stable",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "samsara-maintenance-work-orders",
+      "op": "replace_warranty_asset_assignments",
+      "security": [
+        "AccessTokenHeader"
+      ],
+      "scopes": [
+        "Write Warranties"
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_mode": "raw_required_optional_object",
+      "request_body_required": true,
+      "request_body_type": "object",
+      "request_read_only_paths": [],
+      "request_int64_paths": [
+        "assets[].startEngineHours",
+        "assets[].startOdometerMeters"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_type": "object",
+      "response_int64_paths": [
+        "data.data[].startEngineHours",
+        "data.data[].startOdometerMeters"
+      ],
+      "parameters": [
+        {
+          "name": "warrantyId",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.warrantyId"
+        }
+      ],
+      "emitted_args": [
+        {
+          "key": "query.warrantyId",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "query.warrantyId": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "body_raw": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 1048576,
+            "pattern": "^\\s*\\{[\\s\\S]*\\}\\s*$"
+          }
+        },
+        "required": [
+          "body_raw"
+        ],
+        "additionalProperties": false
+      },
+      "request_json": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "result_path": "data.data",
+      "pagination": null,
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "non_idempotent"
+    },
+    {
+      "method": "DELETE",
+      "path": "/maintenance/warranty-claims",
+      "operation_id": "deleteWarrantyClaim",
+      "tag": "Warranty Claims",
+      "release_stage": "stable",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "samsara-maintenance-work-orders",
+      "op": "delete_warranty_claim",
+      "security": [
+        "AccessTokenHeader"
+      ],
+      "scopes": [
+        "Write Warranties"
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_mode": null,
+      "request_body_required": false,
+      "request_body_type": null,
+      "request_read_only_paths": [],
+      "request_int64_paths": [],
+      "response_media": [],
+      "selected_response_media": null,
+      "response_type": null,
+      "response_int64_paths": [],
+      "parameters": [
+        {
+          "name": "id",
+          "in": "query",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.id"
+        }
+      ],
+      "emitted_args": [
+        {
+          "key": "query.id",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "query.id": {
+            "type": "string",
+            "maxLength": 65536
+          }
+        },
+        "required": [
+          "query.id"
+        ],
+        "additionalProperties": false
+      },
+      "request_json": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "result_path": null,
+      "pagination": null,
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent"
+    },
+    {
+      "method": "GET",
+      "path": "/maintenance/warranty-claims",
+      "operation_id": "listWarrantyClaims",
+      "tag": "Warranty Claims",
+      "release_stage": "stable",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "samsara-maintenance-work-orders",
+      "op": "list_warranty_claims",
+      "security": [
+        "AccessTokenHeader"
+      ],
+      "scopes": [
+        "Read Warranties"
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_mode": null,
+      "request_body_required": false,
+      "request_body_type": null,
+      "request_read_only_paths": [],
+      "request_int64_paths": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_type": "object",
+      "response_int64_paths": [
+        "data[].claimEngineHours",
+        "data[].claimOdometerMeters",
+        "data[].parts[].quantity"
+      ],
+      "parameters": [
+        {
+          "name": "warrantyClaimIds",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.warrantyClaimIds"
+        },
+        {
+          "name": "assetIds",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.assetIds"
+        },
+        {
+          "name": "claimStatus",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.claimStatus"
+        },
+        {
+          "name": "warrantyIds",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.warrantyIds"
+        },
+        {
+          "name": "after",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": true,
+          "emitted_key": null
+        },
+        {
+          "name": "limit",
+          "in": "query",
+          "required": false,
+          "schema_type": "number",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": true,
+          "emitted_key": null
+        },
+        {
+          "name": "includeExternalIds",
+          "in": "query",
+          "required": false,
+          "schema_type": "boolean",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.includeExternalIds"
+        }
+      ],
+      "emitted_args": [
+        {
+          "key": "query.warrantyClaimIds",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "query.assetIds",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "query.claimStatus",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "query.warrantyIds",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "query.includeExternalIds",
+          "type": "boolean",
+          "required": false,
+          "affects_target": true
+        }
+      ],
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "query.warrantyClaimIds": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "query.assetIds": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "query.claimStatus": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "query.warrantyIds": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "query.includeExternalIds": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
+      "request_json": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "result_path": "data",
+      "pagination": {
+        "style": "query_token",
+        "page_size": {
+          "placement": "query",
+          "param": "limit",
+          "value": 100,
+          "max": 200
+        },
+        "token_from": "pagination.endCursor",
+        "token_to": {
+          "placement": "query",
+          "param": "after"
+        },
+        "done_when": {
+          "path": "pagination.hasNextPage",
+          "equals": false
+        }
+      },
+      "risk": "read",
+      "approval": "ask",
+      "idempotency": "safe"
+    },
+    {
+      "method": "PATCH",
+      "path": "/maintenance/warranty-claims",
+      "operation_id": "updateWarrantyClaim",
+      "tag": "Warranty Claims",
+      "release_stage": "stable",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "samsara-maintenance-work-orders",
+      "op": "update_warranty_claim",
+      "security": [
+        "AccessTokenHeader"
+      ],
+      "scopes": [
+        "Write Warranties"
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_mode": "raw_required_optional_object",
+      "request_body_required": true,
+      "request_body_type": "object",
+      "request_read_only_paths": [],
+      "request_int64_paths": [
+        "claimEngineHours",
+        "claimOdometerMeters",
+        "parts[].quantity"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_type": "object",
+      "response_int64_paths": [
+        "data.claimEngineHours",
+        "data.claimOdometerMeters",
+        "data.parts[].quantity"
+      ],
+      "parameters": [
+        {
+          "name": "id",
+          "in": "query",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.id"
+        }
+      ],
+      "emitted_args": [
+        {
+          "key": "query.id",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "query.id": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "body_raw": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 1048576,
+            "pattern": "^\\s*\\{[\\s\\S]*\\}\\s*$"
+          }
+        },
+        "required": [
+          "query.id",
+          "body_raw"
+        ],
+        "additionalProperties": false
+      },
+      "request_json": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "result_path": "data",
+      "pagination": null,
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "idempotent"
+    },
+    {
+      "method": "POST",
+      "path": "/maintenance/warranty-claims",
+      "operation_id": "createWarrantyClaim",
+      "tag": "Warranty Claims",
+      "release_stage": "stable",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "samsara-maintenance-work-orders",
+      "op": "create_warranty_claim",
+      "security": [
+        "AccessTokenHeader"
+      ],
+      "scopes": [
+        "Write Warranties"
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_mode": "projected_top_level",
+      "request_body_required": true,
+      "request_body_type": "object",
+      "request_read_only_paths": [],
+      "request_int64_paths": [
+        "claimEngineHours",
+        "claimOdometerMeters",
+        "parts[].quantity"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_type": "object",
+      "response_int64_paths": [
+        "data.claimEngineHours",
+        "data.claimOdometerMeters",
+        "data.parts[].quantity"
+      ],
+      "parameters": [],
+      "emitted_args": [
+        {
+          "key": "body.assetId",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body.cause",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body.claimEngineHours",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body.claimOdometerMeters",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body.claimStatus",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body.componentInstanceIds",
+          "type": "array",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body.concern",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body.correction",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body.externalIds",
+          "type": "array",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body.labor",
+          "type": "array",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body.linkedWarrantyId",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body.linkedWorkOrderIds",
+          "type": "array",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body.mediaItemIds",
+          "type": "array",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body.otherCost",
+          "type": "object",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body.parts",
+          "type": "array",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body.reimbursedAtTime",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body.reimbursements",
+          "type": "array",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body.repairCompletedAtTime",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body.resolutionAtTime",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body.submittedAtTime",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body.warrantyVendorId",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        }
+      ],
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "body.assetId": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "body.cause": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "body.claimEngineHours": {
+            "type": "string",
+            "pattern": "^-?(?:0|[1-9][0-9]*)$",
+            "maxLength": 40
+          },
+          "body.claimOdometerMeters": {
+            "type": "string",
+            "pattern": "^-?(?:0|[1-9][0-9]*)$",
+            "maxLength": 40
+          },
+          "body.claimStatus": {
+            "type": "string",
+            "enum": [
+              "unknown",
+              "created",
+              "submitted",
+              "inReview",
+              "approved",
+              "rejected",
+              "resubmitted",
+              "reimbursed"
+            ]
+          },
+          "body.componentInstanceIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "body.concern": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "body.correction": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "body.externalIds": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "key": {
+                  "type": "string"
+                },
+                "value": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "key",
+                "value"
+              ],
+              "additionalProperties": true
+            }
+          },
+          "body.labor": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "cost": {
+                  "type": "object",
+                  "properties": {
+                    "amount": {
+                      "type": "string"
+                    },
+                    "currency": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "amount",
+                    "currency"
+                  ],
+                  "additionalProperties": true
+                },
+                "description": {
+                  "type": "string"
+                },
+                "serviceTaskId": {
+                  "type": "string"
+                },
+                "sourceWorkOrderId": {
+                  "type": "string"
+                },
+                "vmrsCode": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": true
+            }
+          },
+          "body.linkedWarrantyId": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "body.linkedWorkOrderIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "body.mediaItemIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "body.otherCost": {
+            "type": "object",
+            "properties": {
+              "amount": {
+                "type": "string"
+              },
+              "currency": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "amount",
+              "currency"
+            ],
+            "additionalProperties": true
+          },
+          "body.parts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "cost": {
+                  "type": "object",
+                  "properties": {
+                    "amount": {
+                      "type": "string"
+                    },
+                    "currency": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "amount",
+                    "currency"
+                  ],
+                  "additionalProperties": true
+                },
+                "description": {
+                  "type": "string"
+                },
+                "partDefinitionId": {
+                  "type": "string"
+                },
+                "partId": {
+                  "type": "string"
+                },
+                "quantity": {
+                  "type": "number",
+                  "format": "int64"
+                },
+                "serviceTaskId": {
+                  "type": "string"
+                },
+                "sourceWorkOrderId": {
+                  "type": "string"
+                },
+                "vmrsCode": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "partDefinitionId"
+              ],
+              "additionalProperties": true
+            }
+          },
+          "body.reimbursedAtTime": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "body.reimbursements": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "reimbursement": {
+                  "type": "object",
+                  "properties": {
+                    "amount": {
+                      "type": "string"
+                    },
+                    "currency": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "amount",
+                    "currency"
+                  ],
+                  "additionalProperties": true
+                },
+                "workOrderId": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": true
+            }
+          },
+          "body.repairCompletedAtTime": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "body.resolutionAtTime": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "body.submittedAtTime": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "body.warrantyVendorId": {
+            "type": "string",
+            "maxLength": 65536
+          }
+        },
+        "required": [
+          "body.assetId"
+        ],
+        "additionalProperties": true
+      },
+      "request_json": {
+        "decimal_integer_fields": [
+          "claimEngineHours",
+          "claimOdometerMeters"
+        ]
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "result_path": "data",
+      "pagination": null,
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "non_idempotent"
     },
     {
       "method": "GET",
@@ -39149,6 +41873,12 @@
       "parameters": [],
       "emitted_args": [
         {
+          "key": "body.archivedAtTime",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
           "key": "body.assignedUserId",
           "type": "string",
           "required": false,
@@ -39251,6 +41981,12 @@
           "affects_target": true
         },
         {
+          "key": "body.startedAtTime",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
           "key": "body.status",
           "type": "string",
           "required": false,
@@ -39272,6 +42008,10 @@
       "request_schema": {
         "type": "object",
         "properties": {
+          "body.archivedAtTime": {
+            "type": "string",
+            "maxLength": 65536
+          },
           "body.assignedUserId": {
             "type": "string",
             "maxLength": 65536
@@ -39473,6 +42213,10 @@
               "additionalProperties": true
             }
           },
+          "body.startedAtTime": {
+            "type": "string",
+            "maxLength": 65536
+          },
           "body.status": {
             "type": "string",
             "enum": [
@@ -39590,6 +42334,12 @@
       "parameters": [],
       "emitted_args": [
         {
+          "key": "body.archivedAtTime",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
           "key": "body.assetId",
           "type": "string",
           "required": true,
@@ -39603,6 +42353,12 @@
         },
         {
           "key": "body.category",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body.completedAtTime",
           "type": "string",
           "required": false,
           "affects_target": true
@@ -39680,6 +42436,18 @@
           "affects_target": true
         },
         {
+          "key": "body.startedAtTime",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body.status",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
           "key": "body.tax",
           "type": "object",
           "required": false,
@@ -39695,6 +42463,10 @@
       "request_schema": {
         "type": "object",
         "properties": {
+          "body.archivedAtTime": {
+            "type": "string",
+            "maxLength": 65536
+          },
           "body.assetId": {
             "type": "string",
             "maxLength": 65536
@@ -39704,6 +42476,10 @@
             "maxLength": 65536
           },
           "body.category": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "body.completedAtTime": {
             "type": "string",
             "maxLength": 65536
           },
@@ -39887,6 +42663,26 @@
               ],
               "additionalProperties": true
             }
+          },
+          "body.startedAtTime": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "body.status": {
+            "type": "string",
+            "enum": [
+              "Assigned",
+              "Cancelled",
+              "Closed",
+              "Completed",
+              "Estimate",
+              "In Progress",
+              "On Hold",
+              "Open",
+              "Pending Approval",
+              "Pending Parts",
+              "Planning"
+            ]
           },
           "body.tax": {
             "type": "object",
@@ -40249,7 +43045,7 @@
         {
           "name": "placeId",
           "in": "query",
-          "required": true,
+          "required": false,
           "schema_type": "number",
           "schema_format": "int64",
           "style": null,
@@ -40257,13 +43053,31 @@
           "serialization": "scalar",
           "pagination_owned": false,
           "emitted_key": "query.placeId"
+        },
+        {
+          "name": "externalId",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.externalId"
         }
       ],
       "emitted_args": [
         {
           "key": "query.placeId",
           "type": "string",
-          "required": true,
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "query.externalId",
+          "type": "string",
+          "required": false,
           "affects_target": true
         }
       ],
@@ -40274,11 +43088,12 @@
             "type": "string",
             "maxLength": 40,
             "pattern": "^-?(?:0|[1-9][0-9]*)$"
+          },
+          "query.externalId": {
+            "type": "string",
+            "maxLength": 65536
           }
         },
-        "required": [
-          "query.placeId"
-        ],
         "additionalProperties": false
       },
       "request_json": null,
@@ -40444,6 +43259,18 @@
           "serialization": "scalar",
           "pagination_owned": false,
           "emitted_key": "query.name"
+        },
+        {
+          "name": "hubIds",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.hubIds"
         }
       ],
       "emitted_args": [
@@ -40494,6 +43321,12 @@
           "type": "string",
           "required": false,
           "affects_target": true
+        },
+        {
+          "key": "query.hubIds",
+          "type": "string",
+          "required": false,
+          "affects_target": true
         }
       ],
       "request_schema": {
@@ -40526,6 +43359,10 @@
             "maxLength": 65536
           },
           "query.name": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "query.hubIds": {
             "type": "string",
             "maxLength": 65536
           }
@@ -40730,6 +43567,18 @@
           "affects_target": true
         },
         {
+          "key": "body.addressLatitude",
+          "type": "number",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body.addressLongitude",
+          "type": "number",
+          "required": false,
+          "affects_target": true
+        },
+        {
           "key": "body.businessContacts",
           "type": "object",
           "required": false,
@@ -40820,6 +43669,12 @@
           "body.address": {
             "type": "string",
             "maxLength": 65536
+          },
+          "body.addressLatitude": {
+            "type": "number"
+          },
+          "body.addressLongitude": {
+            "type": "number"
           },
           "body.businessContacts": {
             "type": "object",
@@ -41800,8 +44655,8 @@
       "method": "DELETE",
       "path": "/preferred-stations",
       "operation_id": "deletePreferredStation",
-      "tag": "Beta APIs",
-      "release_stage": "beta",
+      "tag": "Fuel and Energy",
+      "release_stage": "stable",
       "selected": true,
       "exclusion_reason": null,
       "pack": "samsara-telematics-safety",
@@ -41872,8 +44727,8 @@
       "method": "GET",
       "path": "/preferred-stations",
       "operation_id": "listPreferredStations",
-      "tag": "Beta APIs",
-      "release_stage": "beta",
+      "tag": "Fuel and Energy",
+      "release_stage": "stable",
       "selected": true,
       "exclusion_reason": null,
       "pack": "samsara-telematics-safety",
@@ -41983,8 +44838,8 @@
       "method": "PATCH",
       "path": "/preferred-stations",
       "operation_id": "patchPreferredStation",
-      "tag": "Beta APIs",
-      "release_stage": "beta",
+      "tag": "Fuel and Energy",
+      "release_stage": "stable",
       "selected": true,
       "exclusion_reason": null,
       "pack": "samsara-telematics-safety",
@@ -42072,8 +44927,8 @@
       "method": "POST",
       "path": "/preferred-stations",
       "operation_id": "postPreferredStation",
-      "tag": "Beta APIs",
-      "release_stage": "beta",
+      "tag": "Fuel and Energy",
+      "release_stage": "stable",
       "selected": true,
       "exclusion_reason": null,
       "pack": "samsara-telematics-safety",
@@ -42371,8 +45226,8 @@
       "method": "GET",
       "path": "/preferred-stations/{id}",
       "operation_id": "getPreferredStation",
-      "tag": "Beta APIs",
-      "release_stage": "beta",
+      "tag": "Fuel and Energy",
+      "release_stage": "stable",
       "selected": true,
       "exclusion_reason": null,
       "pack": "samsara-telematics-safety",
@@ -43223,209 +46078,6 @@
       "risk": "destructive",
       "approval": "always",
       "idempotency": "idempotent"
-    },
-    {
-      "method": "GET",
-      "path": "/preview/maintenance/parts/transactions",
-      "operation_id": "listPartTransactions",
-      "tag": "Preview APIs",
-      "release_stage": "preview",
-      "selected": true,
-      "exclusion_reason": null,
-      "pack": "samsara-maintenance-work-orders",
-      "op": "list_part_transactions",
-      "security": [
-        "AccessTokenHeader"
-      ],
-      "scopes": [
-        "Read Parts"
-      ],
-      "request_media": [],
-      "selected_request_media": null,
-      "request_body_mode": null,
-      "request_body_required": false,
-      "request_body_type": null,
-      "request_read_only_paths": [],
-      "request_int64_paths": [],
-      "response_media": [
-        "application/json"
-      ],
-      "selected_response_media": "application/json",
-      "response_type": "object",
-      "response_int64_paths": [],
-      "parameters": [
-        {
-          "name": "happenedAtTimeStart",
-          "in": "query",
-          "required": true,
-          "schema_type": "string",
-          "schema_format": null,
-          "style": null,
-          "explode": null,
-          "serialization": "scalar",
-          "pagination_owned": false,
-          "emitted_key": "query.happenedAtTimeStart"
-        },
-        {
-          "name": "happenedAtTimeEnd",
-          "in": "query",
-          "required": false,
-          "schema_type": "string",
-          "schema_format": null,
-          "style": null,
-          "explode": null,
-          "serialization": "scalar",
-          "pagination_owned": false,
-          "emitted_key": "query.happenedAtTimeEnd"
-        },
-        {
-          "name": "partSamsaraIds",
-          "in": "query",
-          "required": false,
-          "schema_type": "string",
-          "schema_format": null,
-          "style": null,
-          "explode": null,
-          "serialization": "scalar",
-          "pagination_owned": false,
-          "emitted_key": "query.partSamsaraIds"
-        },
-        {
-          "name": "placeIds",
-          "in": "query",
-          "required": false,
-          "schema_type": "string",
-          "schema_format": null,
-          "style": null,
-          "explode": null,
-          "serialization": "scalar",
-          "pagination_owned": false,
-          "emitted_key": "query.placeIds"
-        },
-        {
-          "name": "transactionTypeIn",
-          "in": "query",
-          "required": false,
-          "schema_type": "string",
-          "schema_format": null,
-          "style": null,
-          "explode": null,
-          "serialization": "scalar",
-          "pagination_owned": false,
-          "emitted_key": "query.transactionTypeIn"
-        },
-        {
-          "name": "after",
-          "in": "query",
-          "required": false,
-          "schema_type": "string",
-          "schema_format": null,
-          "style": null,
-          "explode": null,
-          "serialization": "scalar",
-          "pagination_owned": true,
-          "emitted_key": null
-        },
-        {
-          "name": "limit",
-          "in": "query",
-          "required": false,
-          "schema_type": "number",
-          "schema_format": null,
-          "style": null,
-          "explode": null,
-          "serialization": "scalar",
-          "pagination_owned": true,
-          "emitted_key": null
-        }
-      ],
-      "emitted_args": [
-        {
-          "key": "query.happenedAtTimeStart",
-          "type": "string",
-          "required": true,
-          "affects_target": true
-        },
-        {
-          "key": "query.happenedAtTimeEnd",
-          "type": "string",
-          "required": false,
-          "affects_target": true
-        },
-        {
-          "key": "query.partSamsaraIds",
-          "type": "string",
-          "required": false,
-          "affects_target": true
-        },
-        {
-          "key": "query.placeIds",
-          "type": "string",
-          "required": false,
-          "affects_target": true
-        },
-        {
-          "key": "query.transactionTypeIn",
-          "type": "string",
-          "required": false,
-          "affects_target": true
-        }
-      ],
-      "request_schema": {
-        "type": "object",
-        "properties": {
-          "query.happenedAtTimeStart": {
-            "type": "string",
-            "maxLength": 65536
-          },
-          "query.happenedAtTimeEnd": {
-            "type": "string",
-            "maxLength": 65536
-          },
-          "query.partSamsaraIds": {
-            "type": "string",
-            "maxLength": 65536
-          },
-          "query.placeIds": {
-            "type": "string",
-            "maxLength": 65536
-          },
-          "query.transactionTypeIn": {
-            "type": "string",
-            "maxLength": 65536
-          }
-        },
-        "required": [
-          "query.happenedAtTimeStart"
-        ],
-        "additionalProperties": false
-      },
-      "request_json": null,
-      "response_json": {
-        "unsafe_integers": "string"
-      },
-      "result_path": "data",
-      "pagination": {
-        "style": "query_token",
-        "page_size": {
-          "placement": "query",
-          "param": "limit",
-          "value": 100,
-          "max": 200
-        },
-        "token_from": "pagination.endCursor",
-        "token_to": {
-          "placement": "query",
-          "param": "after"
-        },
-        "done_when": {
-          "path": "pagination.hasNextPage",
-          "equals": false
-        }
-      },
-      "risk": "read",
-      "approval": "ask",
-      "idempotency": "safe"
     },
     {
       "method": "DELETE",
@@ -47461,6 +50113,7 @@
                 "HighSpeedSuddenDisconnect",
                 "HosViolation",
                 "Idling",
+                "ImproperEgress",
                 "Invalid",
                 "LaneDeparture",
                 "LateResponse",
@@ -47530,6 +50183,7 @@
                 "HighSpeedSuddenDisconnect",
                 "HosViolation",
                 "Idling",
+                "ImproperEgress",
                 "Invalid",
                 "LaneDeparture",
                 "LateResponse",
@@ -47575,14 +50229,23 @@
                 "Coupling/Uncoupling",
                 "Cyclist/Motorcyclist",
                 "Defensive",
+                "Facing Away From Vehicle",
                 "Fog",
                 "Improper Seat Belt",
+                "Items in Hand",
                 "Lead Car",
                 "Light Traffic",
                 "Moderate Traffic",
                 "Moderately Drowsy",
                 "Mounted Phone",
                 "Night",
+                "No Boots",
+                "No Coveralls",
+                "No Face Shield",
+                "No Gloves",
+                "No Hard Hat",
+                "No Hi-Vis Vest",
+                "No Safety Glasses",
                 "Parking Lot",
                 "Passenger Mobile Usage",
                 "Passenger Sleeping",
@@ -47611,14 +50274,23 @@
                 "Coupling/Uncoupling",
                 "Cyclist/Motorcyclist",
                 "Defensive",
+                "Facing Away From Vehicle",
                 "Fog",
                 "Improper Seat Belt",
+                "Items in Hand",
                 "Lead Car",
                 "Light Traffic",
                 "Moderate Traffic",
                 "Moderately Drowsy",
                 "Mounted Phone",
                 "Night",
+                "No Boots",
+                "No Coveralls",
+                "No Face Shield",
+                "No Gloves",
+                "No Hard Hat",
+                "No Hi-Vis Vest",
+                "No Safety Glasses",
                 "Parking Lot",
                 "Passenger Mobile Usage",
                 "Passenger Sleeping",
@@ -50141,6 +52813,7 @@
       "response_type": "object",
       "response_int64_paths": [
         "data[].endLocation.headingDegrees",
+        "data[].finalDistanceMeters",
         "data[].startLocation.headingDegrees"
       ],
       "parameters": [
@@ -54707,6 +57380,7 @@
                 "SuddenFuelLevelRise",
                 "VehicleCreated",
                 "VehicleUpdated",
+                "VisualSearchMatch",
                 "WorkOrderCreatedOrChanged"
               ]
             }
@@ -55424,7 +58098,7 @@
     {
       "slug": "samsara-assets-organization",
       "operations": 42,
-      "composition_bytes": 109656
+      "composition_bytes": 109646
     },
     {
       "slug": "samsara-vehicles-equipment",
@@ -55434,22 +58108,22 @@
     {
       "slug": "samsara-telematics-safety",
       "operations": 51,
-      "composition_bytes": 170712
+      "composition_bytes": 171019
     },
     {
       "slug": "samsara-drivers-compliance",
       "operations": 54,
-      "composition_bytes": 159826
+      "composition_bytes": 159897
     },
     {
       "slug": "samsara-routing-dispatch",
       "operations": 27,
-      "composition_bytes": 83957
+      "composition_bytes": 84817
     },
     {
       "slug": "samsara-maintenance-work-orders",
-      "operations": 43,
-      "composition_bytes": 139671
+      "operations": 53,
+      "composition_bytes": 179507
     },
     {
       "slug": "samsara-forms-documents",
@@ -55459,12 +58133,12 @@
     {
       "slug": "samsara-industrial-readings",
       "operations": 31,
-      "composition_bytes": 75627
+      "composition_bytes": 75684
     },
     {
       "slug": "samsara-admin-platform",
       "operations": 28,
-      "composition_bytes": 73825
+      "composition_bytes": 73905
     },
     {
       "slug": "samsara-hubs-logistics",

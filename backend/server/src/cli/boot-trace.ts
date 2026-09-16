@@ -17,6 +17,10 @@ export type BootCommandProfile =
   | 'report-boot-failure'
   | 'revert-release'
   | 'self-test'
+  /** Owner-facing diagnosis of an install that will not start or will not pair.
+   *  Its own profile for the same reason as its siblings above: it must run when
+   *  the server cannot boot, so it may boot nothing itself. */
+  | 'doctor'
   | 'update-lease'
   | 'release-floor'
   | 'mcp'
@@ -100,6 +104,7 @@ export const classifyBootProfile = (input: BootProfileInput): BootCommandProfile
   // it must boot nothing — the whole point is to load ONE thing and see if it
   // works.
   if (input.subcommand === 'self-test') return 'self-test';
+  if (input.subcommand === 'doctor') return 'doctor';
   if (input.subcommand === 'update-lease') return 'update-lease';
   if (input.subcommand === 'release-floor') return 'release-floor';
   return 'command';

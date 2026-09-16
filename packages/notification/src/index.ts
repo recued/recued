@@ -774,6 +774,29 @@ export const createNotificationBlock = (
   };
 
   const block: NotificationBlock = {
+    /** ⛔⛔⛔ `notify` HAS NO QUIET-HOURS GATE, AND THAT IS LOAD-BEARING BY
+     *  OMISSION — DO NOT "FIX" IT BY ADDING ONE.
+     *
+     *  Quiet hours lives in the `ask` path below, never here. The consequence
+     *  nobody wrote down: D-268's unattended-failure notice — the message that
+     *  says an automation STOPPED — reaches the owner through `notify`
+     *  (`backend/server/src/automation-failure-reporter.ts`), so it bypasses
+     *  silence today. It does so BY OMISSION, not by rule, which means the
+     *  first person who wires quiet hours through `notify` for consistency will
+     *  silently mask stopped automations and nothing will fail.
+     *
+     *  ⚠ `QUIET_HOURS_APPLIES_TO` INCLUDES `'notification'`, so the DECLARATION
+     *  reads as though this path is already covered. It is not; suppression is
+     *  applied at the reminder sweep. A round-17 territory reported the disarm
+     *  notice as HELD by quiet hours on exactly that reading — from the closed
+     *  list rather than the call path — and a cross-check of `notify` found no
+     *  gate at all. The declaration and the behaviour disagree; the behaviour is
+     *  what ships.
+     *
+     *  ⇒ If a quiet-hours gate is ever wanted here, the disarm/stop class must
+     *  be exempted FIRST and explicitly. A silence window that can swallow the
+     *  one message proving the automation is dead is the correction destroying
+     *  the detector. */
     async notify(message, channels, extras) {
       const { channels: targets, bridgeNotify } =
         await resolveNotifyChannels(channels);

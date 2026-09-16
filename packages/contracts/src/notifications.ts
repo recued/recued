@@ -125,6 +125,40 @@ if (_rolelessChannels.length > 0) {
   );
 }
 
+/** The send-privilege ordering, enforced. `approval` is `notification` PLUS an
+ *  interactive affordance — Recued asks you unprompted and collects the answer —
+ *  so a channel that cannot be reached unprompted cannot carry an ask either.
+ *  Declaring `approval` without `notification` describes nothing a transport can
+ *  actually be: the ask has nowhere to depart from.
+ *
+ *  ⚠ Guarded here rather than in the vendor validator because this is a pure
+ *  `ChannelRoles` fact, and this is the only scope where the LITERAL channels
+ *  (`ui` / `bridge` / `email`) are in view alongside the spliced registry. The
+ *  vendor-side check at `messenger-vendors.ts` would leave those three unguarded.
+ *
+ *  The sibling of the `notify-only` pairing: that one refuses a channel that
+ *  cannot RENDER an ask, this one refuses a channel that cannot DELIVER one.
+ *  Both failures are silent without a load-time check — the channel enrolls,
+ *  settings offer it, an ask fans out, and it is counted delivered by a path
+ *  that never had anywhere to send it. All five shipped vendors and all three
+ *  literals satisfy this today; nothing but this made it true.
+ *
+ *  The predicate is exported so a test can prove it CATCHES a violator; the
+ *  throw below is what proves the shipped map does not contain one, and it runs
+ *  on every import of this package, so the whole suite re-verifies it. */
+export const findApprovalWithoutNotification = (
+  roles: Readonly<Record<string, ChannelRoles>>,
+): string[] => Object.keys(roles).filter((c) => roles[c].approval && !roles[c].notification);
+
+const _approvalWithoutNotification = findApprovalWithoutNotification(CHANNEL_ROLES);
+if (_approvalWithoutNotification.length > 0) {
+  throw new Error(
+    `CHANNEL_ROLES boot validation failed — channel(s) declaring approval without notification: ${
+      _approvalWithoutNotification.join(', ')
+    }. An ask is an unprompted send plus a way to answer it; a channel Recued cannot reach unprompted cannot carry one.`,
+  );
+}
+
 /** D-163 N.1 — three capability classes. DEFINED in the `channel-roles.ts` leaf
  *  (see its header) because `messenger-vendors.ts` validates a per-vendor
  *  `capability` and this module spreads that registry — defining it here would

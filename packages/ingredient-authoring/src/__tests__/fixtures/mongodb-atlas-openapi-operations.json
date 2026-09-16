@@ -3,13 +3,13 @@
     "source": {
       "kind": "official_openapi",
       "url": "https://www.mongodb.com/docs/api/doc/atlas-admin-api-v2.json",
-      "bytes": 4632047,
-      "sha256": "3189596ea9271ba6d4334e4f833f65e8ce6bb7336ae4eeebc3e270d9be983f91",
+      "bytes": 4801497,
+      "sha256": "610f6bcc8fd07eb06eb2c2f6ccdfefbeaea29b1d9a2428496269b229db8909c1",
       "openapi": "3.0.1",
       "title": "MongoDB Atlas Administration API",
       "api_version": "2.0",
-      "x_xgen_sha": "fc3d0cd3ee15dbeb0d36ecc03631786d41036a9d",
-      "official_path_count": 308,
+      "x_xgen_sha": "555e3e3c2ba30d91aeb0670326bc12fae4e53135",
+      "official_path_count": 319,
       "retrieved_on": "2026-07-20",
       "mutability": "The vendor-hosted URL is mutable. Generation fails closed unless the bytes and SHA-256 match this reviewed contract.",
       "declared_server": [
@@ -18,22 +18,22 @@
         }
       ]
     },
-    "official_operation_count": 490,
-    "admitted_operation_count": 432,
-    "deprecated_operation_count": 58,
+    "official_operation_count": 509,
+    "admitted_operation_count": 456,
+    "deprecated_operation_count": 53,
     "official_method_counts": {
-      "DELETE": 72,
-      "GET": 243,
-      "PATCH": 62,
-      "POST": 104,
-      "PUT": 9
+      "DELETE": 76,
+      "GET": 250,
+      "PATCH": 66,
+      "POST": 107,
+      "PUT": 10
     },
     "admitted_method_counts": {
-      "DELETE": 65,
-      "GET": 216,
-      "PATCH": 52,
-      "POST": 92,
-      "PUT": 7
+      "DELETE": 69,
+      "GET": 227,
+      "PATCH": 56,
+      "POST": 96,
+      "PUT": 8
     },
     "official_tag_counts": {
       "Access Tracking": 2,
@@ -45,11 +45,11 @@
       "Atlas Search": 18,
       "Auditing": 2,
       "AWS Clusters DNS": 2,
-      "Cloud Backups": 44,
+      "Cloud Backups": 39,
       "Cloud Migration Service": 8,
       "Cloud Provider Access": 5,
       "Cluster Outage Simulation": 3,
-      "Clusters": 21,
+      "Clusters": 22,
       "Collection Level Metrics": 9,
       "Custom Database Roles": 5,
       "Data Federation": 14,
@@ -61,15 +61,17 @@
       "Flex Restore Jobs": 3,
       "Flex Snapshots": 3,
       "Global Clusters": 5,
-      "Invoices": 12,
+      "Invoices": 13,
       "LDAP Configuration": 5,
       "Legacy Backup": 11,
       "Maintenance Windows": 5,
+      "Metric Integrations": 5,
       "MongoDB Cloud Users": 19,
       "Monitoring and Logs": 14,
       "Network Peering": 13,
       "Online Archive": 6,
-      "Organizations": 17,
+      "Organizations": 20,
+      "Overload Protection Simulation": 4,
       "Performance Advisor": 11,
       "Private Endpoint Services": 10,
       "Programmatic API Keys": 14,
@@ -78,6 +80,7 @@
       "Push-Based Log Export": 9,
       "Query Shape Insights": 5,
       "Rate Limiting": 2,
+      "Remote MCP Configurations": 10,
       "Resource Policies": 7,
       "Rolling Index": 1,
       "Root": 2,
@@ -103,7 +106,7 @@
       "Cloud Migration Service": 8,
       "Cloud Provider Access": 5,
       "Cluster Outage Simulation": 3,
-      "Clusters": 19,
+      "Clusters": 20,
       "Collection Level Metrics": 9,
       "Custom Database Roles": 5,
       "Data Federation": 14,
@@ -115,14 +118,16 @@
       "Flex Restore Jobs": 3,
       "Flex Snapshots": 3,
       "Global Clusters": 5,
-      "Invoices": 12,
+      "Invoices": 13,
       "LDAP Configuration": 5,
       "Maintenance Windows": 5,
+      "Metric Integrations": 5,
       "MongoDB Cloud Users": 16,
       "Monitoring and Logs": 14,
       "Network Peering": 11,
       "Online Archive": 6,
-      "Organizations": 10,
+      "Organizations": 13,
+      "Overload Protection Simulation": 4,
       "Performance Advisor": 9,
       "Private Endpoint Services": 10,
       "Programmatic API Keys": 14,
@@ -131,6 +136,7 @@
       "Push-Based Log Export": 5,
       "Query Shape Insights": 5,
       "Rate Limiting": 2,
+      "Remote MCP Configurations": 10,
       "Resource Policies": 7,
       "Rolling Index": 1,
       "Root": 2,
@@ -141,38 +147,38 @@
       "X.509 Authentication": 3
     },
     "pack_operation_counts": {
-      "mongodb-atlas-organizations-projects": 64,
-      "mongodb-atlas-credentials-access": 52,
+      "mongodb-atlas-organizations-projects": 68,
+      "mongodb-atlas-credentials-access": 62,
       "mongodb-atlas-identity-governance": 51,
-      "mongodb-atlas-clusters-compute": 49,
+      "mongodb-atlas-clusters-compute": 54,
       "mongodb-atlas-networking-integrations": 36,
       "mongodb-atlas-backups-archive": 51,
-      "mongodb-atlas-observability": 65,
+      "mongodb-atlas-observability": 70,
       "mongodb-atlas-search-streams": 64
     },
     "composition_bytes": {
-      "mongodb-atlas-organizations-projects": 148072,
-      "mongodb-atlas-credentials-access": 115835,
+      "mongodb-atlas-organizations-projects": 155318,
+      "mongodb-atlas-credentials-access": 137217,
       "mongodb-atlas-identity-governance": 115112,
-      "mongodb-atlas-clusters-compute": 110818,
-      "mongodb-atlas-networking-integrations": 82742,
-      "mongodb-atlas-backups-archive": 128172,
-      "mongodb-atlas-observability": 168258,
-      "mongodb-atlas-search-streams": 152646
+      "mongodb-atlas-clusters-compute": 122173,
+      "mongodb-atlas-networking-integrations": 82795,
+      "mongodb-atlas-backups-archive": 128151,
+      "mongodb-atlas-observability": 180511,
+      "mongodb-atlas-search-streams": 153646
     },
     "body_mode_counts": {
-      "none": 293,
-      "raw_json": 139
+      "none": 309,
+      "raw_json": 147
     },
     "body_shape_counts": {
       "array": 6,
-      "object": 133
+      "object": 141
     },
     "success_status_counts": {
-      "200": 335,
-      "201": 23,
-      "202": 16,
-      "204": 58
+      "200": 351,
+      "201": 27,
+      "202": 17,
+      "204": 61
     },
     "selected_response_media_counts": {
       "application/vnd.atlas.2023-01-01+csv": 1,
@@ -188,24 +194,24 @@
       "application/vnd.atlas.2024-11-13+json": 19,
       "application/vnd.atlas.2025-02-19+json": 16,
       "application/vnd.atlas.2025-03-12+gzip": 1,
-      "application/vnd.atlas.2025-03-12+json": 53
+      "application/vnd.atlas.2025-03-12+json": 77
     },
     "risk_counts": {
-      "admin": 100,
-      "destructive": 110,
-      "read": 222
+      "admin": 109,
+      "destructive": 115,
+      "read": 232
     },
     "approval_counts": {
-      "always": 210,
-      "never": 222
+      "always": 224,
+      "never": 232
     },
     "idempotency_counts": {
-      "idempotent": 124,
-      "non_idempotent": 88,
-      "safe": 220
+      "idempotent": 133,
+      "non_idempotent": 93,
+      "safe": 230
     },
     "pagination": {
-      "automatic_operation_count": 72,
+      "automatic_operation_count": 76,
       "contract_gap_count": 1,
       "automatic_operation_keys": [
         "GET /api/atlas/v2/clusters",
@@ -233,6 +239,7 @@
         "GET /api/atlas/v2/groups/{groupId}/clusters/{clusterName}/collectionRestoreJobs",
         "GET /api/atlas/v2/groups/{groupId}/clusters/{clusterName}/collectionRestoreJobs/{jobId}/collections",
         "GET /api/atlas/v2/groups/{groupId}/clusters/{clusterName}/onlineArchives",
+        "GET /api/atlas/v2/groups/{groupId}/clusters/{clusterName}/overloadSimulations",
         "GET /api/atlas/v2/groups/{groupId}/clusters/{clusterName}/queryShapes",
         "GET /api/atlas/v2/groups/{groupId}/containers",
         "GET /api/atlas/v2/groups/{groupId}/containers/all",
@@ -245,6 +252,8 @@
         "GET /api/atlas/v2/groups/{groupId}/flexClusters/{name}/backup/snapshots",
         "GET /api/atlas/v2/groups/{groupId}/integrations",
         "GET /api/atlas/v2/groups/{groupId}/logIntegrations",
+        "GET /api/atlas/v2/groups/{groupId}/mcpConfigs",
+        "GET /api/atlas/v2/groups/{groupId}/metricIntegrations",
         "GET /api/atlas/v2/groups/{groupId}/mongoDBVersions",
         "GET /api/atlas/v2/groups/{groupId}/peers",
         "GET /api/atlas/v2/groups/{groupId}/privateNetworkSettings/endpointIds",
@@ -272,6 +281,7 @@
         "GET /api/atlas/v2/orgs/{orgId}/invoices",
         "GET /api/atlas/v2/orgs/{orgId}/invoices/{invoiceId}/lineItems:search",
         "GET /api/atlas/v2/orgs/{orgId}/invoices/{invoiceId}/reports",
+        "GET /api/atlas/v2/orgs/{orgId}/mcpConfigs",
         "GET /api/atlas/v2/orgs/{orgId}/serviceAccounts",
         "GET /api/atlas/v2/orgs/{orgId}/serviceAccounts/{clientId}/accessList",
         "GET /api/atlas/v2/orgs/{orgId}/serviceAccounts/{clientId}/groups",
@@ -297,7 +307,7 @@
     "auth": {
       "selected": "OAuth2 service-account bearer access token supplied only by the enrolled mongodb_atlas connection",
       "official_documentation_model": "OAuth2 client-credentials service accounts recommended; one-hour bearer access token; legacy HTTP Digest API keys also documented but unsupported by this pack",
-      "oauth_or_digest_operation_count": 431,
+      "oauth_or_digest_operation_count": 455,
       "no_auth_requirement_operation_count": 1,
       "no_auth_requirement_operation_keys": [
         "GET /api/atlas/v2/unauth/controlPlaneIPAddresses"
@@ -309,8 +319,8 @@
     "authority_notes": {
       "exact_path_parameter_contract": true,
       "operation_id_uniqueness": true,
-      "versioned_accept_media_operation_count": 432,
-      "versioned_content_type_operation_count": 139,
+      "versioned_accept_media_operation_count": 456,
+      "versioned_content_type_operation_count": 147,
       "dynamic_header_parameters": [
         "GET /api/atlas/v2/groups/{groupId}/clusters/{clusterName}:Use-Effective-Fields-Replication-Specs",
         "GET /api/atlas/v2/groups/{groupId}/clusters/{clusterName}:Use-Effective-Instance-Fields",
@@ -320,7 +330,7 @@
         "POST /api/atlas/v2/groups/{groupId}/clusters:Use-Effective-Fields-Replication-Specs",
         "POST /api/atlas/v2/groups/{groupId}/clusters:Use-Effective-Instance-Fields"
       ],
-      "canonical_response_query_omission_count": 784,
+      "canonical_response_query_omission_count": 820,
       "exact_decimal_string_parameters": [
         "GET /api/atlas/v2/groups/{groupId}/clusters/{clusterName}/backup/snapshots:oplogInc",
         "GET /api/atlas/v2/groups/{groupId}/clusters/{clusterName}/backup/snapshots:oplogTs",
@@ -354,7 +364,9 @@
         "GET /api/atlas/v2/groups/{groupId}/streams/{tenantName}/auditLogs:endDate",
         "GET /api/atlas/v2/groups/{groupId}/streams/{tenantName}/auditLogs:startDate",
         "GET /api/atlas/v2/groups/{groupId}/streams/{tenantName}:downloadOperationalLogs:endDate",
-        "GET /api/atlas/v2/groups/{groupId}/streams/{tenantName}:downloadOperationalLogs:startDate"
+        "GET /api/atlas/v2/groups/{groupId}/streams/{tenantName}:downloadOperationalLogs:startDate",
+        "GET /api/atlas/v2/orgs/{orgId}/associatedInvoices:month",
+        "GET /api/atlas/v2/orgs/{orgId}/associatedInvoices:year"
       ],
       "scalarized_query_array_parameters": [
         "GET /api/atlas/v2/federationSettings/{federationSettingsId}/identityProviders:idpType",
@@ -402,7 +414,6 @@
         "GET /api/atlas/v2/orgs/{orgId}/invoices/{invoiceId}/csv"
       ],
       "semantic_read_post_operations": [
-        "POST /api/atlas/v2/groups/{groupId}/clusterConfigurations:validate",
         "POST /api/atlas/v2/groups/{groupId}/flexClusters/{name}/backup/download",
         "POST /api/atlas/v2/groups/{groupId}/liveMigrations/validate",
         "POST /api/atlas/v2/groups/{groupId}/userSecurity/ldap/verify",
@@ -444,7 +455,7 @@
       ],
       "optional_request_body_count": 2,
       "array_request_body_count": 6,
-      "unsafe_integer_response_union_operation_count": 133
+      "unsafe_integer_response_union_operation_count": 140
     },
     "source_decision": {
       "admitted": false,
@@ -893,7 +904,7 @@
         "approval": "never"
       }
     ],
-    "operation_ids_sha256": "cb21f2c895b62a023bc0fc667e4e923bfeb4bff74573a6477ac55f2e61b43d08"
+    "operation_ids_sha256": "a9d0a7768173c12d14c944c065a752286f77ac169bd53b40dcda20d6331412ee"
   },
   "official_operations": [
     {
@@ -3354,39 +3365,6 @@
       "op": "cloud_provider_access.authorize_group_cloud_provider_access_role"
     },
     {
-      "key": "POST /api/atlas/v2/groups/{groupId}/clusterConfigurations:validate",
-      "method": "POST",
-      "path": "/api/atlas/v2/groups/{groupId}/clusterConfigurations:validate",
-      "operation_id": "validateGroupClusterConfigurations",
-      "tag": "Clusters",
-      "summary": "Validate One Cluster Configuration",
-      "deprecated": false,
-      "security": [
-        {
-          "ServiceAccounts": []
-        },
-        {
-          "DigestAuth": []
-        }
-      ],
-      "request_media": [
-        "application/vnd.atlas.2025-03-12+json"
-      ],
-      "request_body_required": true,
-      "request_body_types": [
-        "object"
-      ],
-      "success_status": "200",
-      "response_media": [
-        "application/vnd.atlas.2025-03-12+json"
-      ],
-      "selected": true,
-      "exclusion": null,
-      "exclusion_reason": null,
-      "pack": "mongodb-atlas-clusters-compute",
-      "op": "clusters.validate_group_cluster_configurations"
-    },
-    {
       "key": "GET /api/atlas/v2/groups/{groupId}/clusters",
       "method": "GET",
       "path": "/api/atlas/v2/groups/{groupId}/clusters",
@@ -3633,6 +3611,68 @@
       "exclusion_reason": null,
       "pack": "mongodb-atlas-clusters-compute",
       "op": "clusters.delete_group_cluster"
+    },
+    {
+      "key": "GET /api/atlas/v2/groups/{groupId}/clusters/{clusterName}/adaptiveSettings",
+      "method": "GET",
+      "path": "/api/atlas/v2/groups/{groupId}/clusters/{clusterName}/adaptiveSettings",
+      "operation_id": "getGroupClusterAdaptiveSettings",
+      "tag": "Clusters",
+      "summary": "Return Adaptive Settings for One Cluster",
+      "deprecated": false,
+      "security": [
+        {
+          "ServiceAccounts": []
+        },
+        {
+          "DigestAuth": []
+        }
+      ],
+      "request_media": [],
+      "request_body_required": false,
+      "request_body_types": [],
+      "success_status": "200",
+      "response_media": [
+        "application/vnd.atlas.2025-03-12+json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "mongodb-atlas-clusters-compute",
+      "op": "clusters.get_group_cluster_adaptive_settings"
+    },
+    {
+      "key": "PATCH /api/atlas/v2/groups/{groupId}/clusters/{clusterName}/adaptiveSettings",
+      "method": "PATCH",
+      "path": "/api/atlas/v2/groups/{groupId}/clusters/{clusterName}/adaptiveSettings",
+      "operation_id": "updateGroupClusterAdaptiveSettings",
+      "tag": "Clusters",
+      "summary": "Update Adaptive Settings for One Cluster",
+      "deprecated": false,
+      "security": [
+        {
+          "ServiceAccounts": []
+        },
+        {
+          "DigestAuth": []
+        }
+      ],
+      "request_media": [
+        "application/vnd.atlas.2025-03-12+json"
+      ],
+      "request_body_required": true,
+      "request_body_types": [
+        "object"
+      ],
+      "success_status": "200",
+      "response_media": [
+        "application/vnd.atlas.2025-03-12+json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "mongodb-atlas-clusters-compute",
+      "op": "clusters.update_group_cluster_adaptive_settings"
     },
     {
       "key": "GET /api/atlas/v2/groups/{groupId}/clusters/{clusterName}/autoScalingConfiguration",
@@ -5267,6 +5307,126 @@
       "exclusion_reason": null,
       "pack": "mongodb-atlas-clusters-compute",
       "op": "cluster_outage_simulation.end_group_cluster_outage_simulation"
+    },
+    {
+      "key": "GET /api/atlas/v2/groups/{groupId}/clusters/{clusterName}/overloadSimulations",
+      "method": "GET",
+      "path": "/api/atlas/v2/groups/{groupId}/clusters/{clusterName}/overloadSimulations",
+      "operation_id": "listGroupClusterOverloadSimulations",
+      "tag": "Overload Protection Simulation",
+      "summary": "Return All Overload Protection Simulations",
+      "deprecated": false,
+      "security": [
+        {
+          "ServiceAccounts": []
+        },
+        {
+          "DigestAuth": []
+        }
+      ],
+      "request_media": [],
+      "request_body_required": false,
+      "request_body_types": [],
+      "success_status": "200",
+      "response_media": [
+        "application/vnd.atlas.2025-03-12+json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "mongodb-atlas-clusters-compute",
+      "op": "overload_protection_simulation.list_group_cluster_overload_simulations"
+    },
+    {
+      "key": "POST /api/atlas/v2/groups/{groupId}/clusters/{clusterName}/overloadSimulations",
+      "method": "POST",
+      "path": "/api/atlas/v2/groups/{groupId}/clusters/{clusterName}/overloadSimulations",
+      "operation_id": "createGroupClusterOverloadSimulation",
+      "tag": "Overload Protection Simulation",
+      "summary": "Create One Overload Protection Simulation",
+      "deprecated": false,
+      "security": [
+        {
+          "ServiceAccounts": []
+        },
+        {
+          "DigestAuth": []
+        }
+      ],
+      "request_media": [
+        "application/vnd.atlas.2025-03-12+json"
+      ],
+      "request_body_required": true,
+      "request_body_types": [
+        "object"
+      ],
+      "success_status": "201",
+      "response_media": [
+        "application/vnd.atlas.2025-03-12+json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "mongodb-atlas-clusters-compute",
+      "op": "overload_protection_simulation.create_group_cluster_overload_simulation"
+    },
+    {
+      "key": "GET /api/atlas/v2/groups/{groupId}/clusters/{clusterName}/overloadSimulations/{simulationId}",
+      "method": "GET",
+      "path": "/api/atlas/v2/groups/{groupId}/clusters/{clusterName}/overloadSimulations/{simulationId}",
+      "operation_id": "getGroupClusterOverloadSimulation",
+      "tag": "Overload Protection Simulation",
+      "summary": "Return One Overload Protection Simulation",
+      "deprecated": false,
+      "security": [
+        {
+          "ServiceAccounts": []
+        },
+        {
+          "DigestAuth": []
+        }
+      ],
+      "request_media": [],
+      "request_body_required": false,
+      "request_body_types": [],
+      "success_status": "200",
+      "response_media": [
+        "application/vnd.atlas.2025-03-12+json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "mongodb-atlas-clusters-compute",
+      "op": "overload_protection_simulation.get_group_cluster_overload_simulation"
+    },
+    {
+      "key": "DELETE /api/atlas/v2/groups/{groupId}/clusters/{clusterName}/overloadSimulations/{simulationId}",
+      "method": "DELETE",
+      "path": "/api/atlas/v2/groups/{groupId}/clusters/{clusterName}/overloadSimulations/{simulationId}",
+      "operation_id": "deleteGroupClusterOverloadSimulation",
+      "tag": "Overload Protection Simulation",
+      "summary": "Delete One Overload Protection Simulation",
+      "deprecated": false,
+      "security": [
+        {
+          "ServiceAccounts": []
+        },
+        {
+          "DigestAuth": []
+        }
+      ],
+      "request_media": [],
+      "request_body_required": false,
+      "request_body_types": [],
+      "success_status": "202",
+      "response_media": [
+        "application/vnd.atlas.2025-03-12+json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "mongodb-atlas-clusters-compute",
+      "op": "overload_protection_simulation.delete_group_cluster_overload_simulation"
     },
     {
       "key": "GET /api/atlas/v2/groups/{groupId}/clusters/{clusterName}/performanceAdvisor/dropIndexSuggestions",
@@ -9199,6 +9359,312 @@
       "op": "performance_advisor.enable_group_managed_slow_ms"
     },
     {
+      "key": "GET /api/atlas/v2/groups/{groupId}/mcpConfigs",
+      "method": "GET",
+      "path": "/api/atlas/v2/groups/{groupId}/mcpConfigs",
+      "operation_id": "listGroupMcpConfigs",
+      "tag": "Remote MCP Configurations",
+      "summary": "Return All MCP Configurations for One Project",
+      "deprecated": false,
+      "security": [
+        {
+          "ServiceAccounts": []
+        },
+        {
+          "DigestAuth": []
+        }
+      ],
+      "request_media": [],
+      "request_body_required": false,
+      "request_body_types": [],
+      "success_status": "200",
+      "response_media": [
+        "application/vnd.atlas.2025-03-12+json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "mongodb-atlas-credentials-access",
+      "op": "remote_mcp_configurations.list_group_mcp_configs"
+    },
+    {
+      "key": "POST /api/atlas/v2/groups/{groupId}/mcpConfigs",
+      "method": "POST",
+      "path": "/api/atlas/v2/groups/{groupId}/mcpConfigs",
+      "operation_id": "createGroupMcpConfig",
+      "tag": "Remote MCP Configurations",
+      "summary": "Create One MCP Configuration for One Project",
+      "deprecated": false,
+      "security": [
+        {
+          "ServiceAccounts": []
+        },
+        {
+          "DigestAuth": []
+        }
+      ],
+      "request_media": [
+        "application/vnd.atlas.2025-03-12+json"
+      ],
+      "request_body_required": true,
+      "request_body_types": [
+        "object"
+      ],
+      "success_status": "201",
+      "response_media": [
+        "application/vnd.atlas.2025-03-12+json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "mongodb-atlas-credentials-access",
+      "op": "remote_mcp_configurations.create_group_mcp_config"
+    },
+    {
+      "key": "GET /api/atlas/v2/groups/{groupId}/mcpConfigs/{mcpConfigId}",
+      "method": "GET",
+      "path": "/api/atlas/v2/groups/{groupId}/mcpConfigs/{mcpConfigId}",
+      "operation_id": "getGroupMcpConfig",
+      "tag": "Remote MCP Configurations",
+      "summary": "Return One MCP Configuration for One Project",
+      "deprecated": false,
+      "security": [
+        {
+          "ServiceAccounts": []
+        },
+        {
+          "DigestAuth": []
+        }
+      ],
+      "request_media": [],
+      "request_body_required": false,
+      "request_body_types": [],
+      "success_status": "200",
+      "response_media": [
+        "application/vnd.atlas.2025-03-12+json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "mongodb-atlas-credentials-access",
+      "op": "remote_mcp_configurations.get_group_mcp_config"
+    },
+    {
+      "key": "PATCH /api/atlas/v2/groups/{groupId}/mcpConfigs/{mcpConfigId}",
+      "method": "PATCH",
+      "path": "/api/atlas/v2/groups/{groupId}/mcpConfigs/{mcpConfigId}",
+      "operation_id": "updateGroupMcpConfig",
+      "tag": "Remote MCP Configurations",
+      "summary": "Update One MCP Configuration for One Project",
+      "deprecated": false,
+      "security": [
+        {
+          "ServiceAccounts": []
+        },
+        {
+          "DigestAuth": []
+        }
+      ],
+      "request_media": [
+        "application/vnd.atlas.2025-03-12+json"
+      ],
+      "request_body_required": true,
+      "request_body_types": [
+        "object"
+      ],
+      "success_status": "200",
+      "response_media": [
+        "application/vnd.atlas.2025-03-12+json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "mongodb-atlas-credentials-access",
+      "op": "remote_mcp_configurations.update_group_mcp_config"
+    },
+    {
+      "key": "DELETE /api/atlas/v2/groups/{groupId}/mcpConfigs/{mcpConfigId}",
+      "method": "DELETE",
+      "path": "/api/atlas/v2/groups/{groupId}/mcpConfigs/{mcpConfigId}",
+      "operation_id": "deleteGroupMcpConfig",
+      "tag": "Remote MCP Configurations",
+      "summary": "Delete One MCP Configuration for One Project",
+      "deprecated": false,
+      "security": [
+        {
+          "ServiceAccounts": []
+        },
+        {
+          "DigestAuth": []
+        }
+      ],
+      "request_media": [],
+      "request_body_required": false,
+      "request_body_types": [],
+      "success_status": "204",
+      "response_media": [
+        "application/vnd.atlas.2025-03-12+json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "mongodb-atlas-credentials-access",
+      "op": "remote_mcp_configurations.delete_group_mcp_config"
+    },
+    {
+      "key": "GET /api/atlas/v2/groups/{groupId}/metricIntegrations",
+      "method": "GET",
+      "path": "/api/atlas/v2/groups/{groupId}/metricIntegrations",
+      "operation_id": "listGroupMetricIntegrations",
+      "tag": "Metric Integrations",
+      "summary": "Return All Active Metric Integrations",
+      "deprecated": false,
+      "security": [
+        {
+          "ServiceAccounts": []
+        },
+        {
+          "DigestAuth": []
+        }
+      ],
+      "request_media": [],
+      "request_body_required": false,
+      "request_body_types": [],
+      "success_status": "200",
+      "response_media": [
+        "application/vnd.atlas.2025-03-12+json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "mongodb-atlas-observability",
+      "op": "metric_integrations.list_group_metric_integrations"
+    },
+    {
+      "key": "POST /api/atlas/v2/groups/{groupId}/metricIntegrations",
+      "method": "POST",
+      "path": "/api/atlas/v2/groups/{groupId}/metricIntegrations",
+      "operation_id": "createGroupMetricIntegration",
+      "tag": "Metric Integrations",
+      "summary": "Create One Metric Integration",
+      "deprecated": false,
+      "security": [
+        {
+          "ServiceAccounts": []
+        },
+        {
+          "DigestAuth": []
+        }
+      ],
+      "request_media": [
+        "application/vnd.atlas.2025-03-12+json"
+      ],
+      "request_body_required": true,
+      "request_body_types": [
+        "object"
+      ],
+      "success_status": "201",
+      "response_media": [
+        "application/vnd.atlas.2025-03-12+json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "mongodb-atlas-observability",
+      "op": "metric_integrations.create_group_metric_integration"
+    },
+    {
+      "key": "GET /api/atlas/v2/groups/{groupId}/metricIntegrations/{metricIntegrationId}",
+      "method": "GET",
+      "path": "/api/atlas/v2/groups/{groupId}/metricIntegrations/{metricIntegrationId}",
+      "operation_id": "getGroupMetricIntegration",
+      "tag": "Metric Integrations",
+      "summary": "Return One Metric Integration",
+      "deprecated": false,
+      "security": [
+        {
+          "ServiceAccounts": []
+        },
+        {
+          "DigestAuth": []
+        }
+      ],
+      "request_media": [],
+      "request_body_required": false,
+      "request_body_types": [],
+      "success_status": "200",
+      "response_media": [
+        "application/vnd.atlas.2025-03-12+json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "mongodb-atlas-observability",
+      "op": "metric_integrations.get_group_metric_integration"
+    },
+    {
+      "key": "PUT /api/atlas/v2/groups/{groupId}/metricIntegrations/{metricIntegrationId}",
+      "method": "PUT",
+      "path": "/api/atlas/v2/groups/{groupId}/metricIntegrations/{metricIntegrationId}",
+      "operation_id": "updateGroupMetricIntegration",
+      "tag": "Metric Integrations",
+      "summary": "Update One Metric Integration",
+      "deprecated": false,
+      "security": [
+        {
+          "ServiceAccounts": []
+        },
+        {
+          "DigestAuth": []
+        }
+      ],
+      "request_media": [
+        "application/vnd.atlas.2025-03-12+json"
+      ],
+      "request_body_required": true,
+      "request_body_types": [
+        "object"
+      ],
+      "success_status": "200",
+      "response_media": [
+        "application/vnd.atlas.2025-03-12+json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "mongodb-atlas-observability",
+      "op": "metric_integrations.update_group_metric_integration"
+    },
+    {
+      "key": "DELETE /api/atlas/v2/groups/{groupId}/metricIntegrations/{metricIntegrationId}",
+      "method": "DELETE",
+      "path": "/api/atlas/v2/groups/{groupId}/metricIntegrations/{metricIntegrationId}",
+      "operation_id": "deleteGroupMetricIntegration",
+      "tag": "Metric Integrations",
+      "summary": "Remove One Metric Integration",
+      "deprecated": false,
+      "security": [
+        {
+          "ServiceAccounts": []
+        },
+        {
+          "DigestAuth": []
+        }
+      ],
+      "request_media": [],
+      "request_body_required": false,
+      "request_body_types": [],
+      "success_status": "204",
+      "response_media": [
+        "application/vnd.atlas.2025-03-12+json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "mongodb-atlas-observability",
+      "op": "metric_integrations.delete_group_metric_integration"
+    },
+    {
       "key": "GET /api/atlas/v2/groups/{groupId}/mongoDBVersions",
       "method": "GET",
       "path": "/api/atlas/v2/groups/{groupId}/mongoDBVersions",
@@ -10616,155 +11082,6 @@
       "operation_id": "listGroupServerlessInstances",
       "tag": "Serverless Instances",
       "summary": "Return All Serverless Instances in One Project",
-      "deprecated": true,
-      "security": [
-        {
-          "ServiceAccounts": []
-        },
-        {
-          "DigestAuth": []
-        }
-      ],
-      "request_media": [],
-      "request_body_required": false,
-      "request_body_types": [],
-      "success_status": "200",
-      "response_media": [
-        "application/vnd.atlas.2023-01-01+json"
-      ],
-      "selected": false,
-      "exclusion": "provider_deprecated",
-      "exclusion_reason": "The official MongoDB Atlas OpenAPI marks this operation deprecated; the full current pack admits every nondeprecated operation instead.",
-      "pack": null,
-      "op": null
-    },
-    {
-      "key": "GET /api/atlas/v2/groups/{groupId}/serverless/{clusterName}/backup/restoreJobs",
-      "method": "GET",
-      "path": "/api/atlas/v2/groups/{groupId}/serverless/{clusterName}/backup/restoreJobs",
-      "operation_id": "listGroupServerlessBackupRestoreJobs",
-      "tag": "Cloud Backups",
-      "summary": "Return All Restore Jobs for One Serverless Instance",
-      "deprecated": true,
-      "security": [
-        {
-          "ServiceAccounts": []
-        },
-        {
-          "DigestAuth": []
-        }
-      ],
-      "request_media": [],
-      "request_body_required": false,
-      "request_body_types": [],
-      "success_status": "200",
-      "response_media": [
-        "application/vnd.atlas.2023-01-01+json"
-      ],
-      "selected": false,
-      "exclusion": "provider_deprecated",
-      "exclusion_reason": "The official MongoDB Atlas OpenAPI marks this operation deprecated; the full current pack admits every nondeprecated operation instead.",
-      "pack": null,
-      "op": null
-    },
-    {
-      "key": "POST /api/atlas/v2/groups/{groupId}/serverless/{clusterName}/backup/restoreJobs",
-      "method": "POST",
-      "path": "/api/atlas/v2/groups/{groupId}/serverless/{clusterName}/backup/restoreJobs",
-      "operation_id": "createGroupServerlessBackupRestoreJob",
-      "tag": "Cloud Backups",
-      "summary": "Create One Restore Job for One Serverless Instance",
-      "deprecated": true,
-      "security": [
-        {
-          "ServiceAccounts": []
-        },
-        {
-          "DigestAuth": []
-        }
-      ],
-      "request_media": [
-        "application/vnd.atlas.2023-01-01+json"
-      ],
-      "request_body_required": true,
-      "request_body_types": [
-        "object"
-      ],
-      "success_status": "200",
-      "response_media": [
-        "application/vnd.atlas.2023-01-01+json"
-      ],
-      "selected": false,
-      "exclusion": "provider_deprecated",
-      "exclusion_reason": "The official MongoDB Atlas OpenAPI marks this operation deprecated; the full current pack admits every nondeprecated operation instead.",
-      "pack": null,
-      "op": null
-    },
-    {
-      "key": "GET /api/atlas/v2/groups/{groupId}/serverless/{clusterName}/backup/restoreJobs/{restoreJobId}",
-      "method": "GET",
-      "path": "/api/atlas/v2/groups/{groupId}/serverless/{clusterName}/backup/restoreJobs/{restoreJobId}",
-      "operation_id": "getGroupServerlessBackupRestoreJob",
-      "tag": "Cloud Backups",
-      "summary": "Return One Restore Job for One Serverless Instance",
-      "deprecated": true,
-      "security": [
-        {
-          "ServiceAccounts": []
-        },
-        {
-          "DigestAuth": []
-        }
-      ],
-      "request_media": [],
-      "request_body_required": false,
-      "request_body_types": [],
-      "success_status": "200",
-      "response_media": [
-        "application/vnd.atlas.2023-01-01+json"
-      ],
-      "selected": false,
-      "exclusion": "provider_deprecated",
-      "exclusion_reason": "The official MongoDB Atlas OpenAPI marks this operation deprecated; the full current pack admits every nondeprecated operation instead.",
-      "pack": null,
-      "op": null
-    },
-    {
-      "key": "GET /api/atlas/v2/groups/{groupId}/serverless/{clusterName}/backup/snapshots",
-      "method": "GET",
-      "path": "/api/atlas/v2/groups/{groupId}/serverless/{clusterName}/backup/snapshots",
-      "operation_id": "listGroupServerlessBackupSnapshots",
-      "tag": "Cloud Backups",
-      "summary": "Return All Snapshots of One Serverless Instance",
-      "deprecated": true,
-      "security": [
-        {
-          "ServiceAccounts": []
-        },
-        {
-          "DigestAuth": []
-        }
-      ],
-      "request_media": [],
-      "request_body_required": false,
-      "request_body_types": [],
-      "success_status": "200",
-      "response_media": [
-        "application/vnd.atlas.2023-01-01+json"
-      ],
-      "selected": false,
-      "exclusion": "provider_deprecated",
-      "exclusion_reason": "The official MongoDB Atlas OpenAPI marks this operation deprecated; the full current pack admits every nondeprecated operation instead.",
-      "pack": null,
-      "op": null
-    },
-    {
-      "key": "GET /api/atlas/v2/groups/{groupId}/serverless/{clusterName}/backup/snapshots/{snapshotId}",
-      "method": "GET",
-      "path": "/api/atlas/v2/groups/{groupId}/serverless/{clusterName}/backup/snapshots/{snapshotId}",
-      "operation_id": "getGroupServerlessBackupSnapshot",
-      "tag": "Cloud Backups",
-      "summary": "Return One Snapshot of One Serverless Instance",
       "deprecated": true,
       "security": [
         {
@@ -13559,6 +13876,35 @@
       "op": "programmatic_api_keys.delete_org_api_key_access_list_entry"
     },
     {
+      "key": "GET /api/atlas/v2/orgs/{orgId}/associatedInvoices",
+      "method": "GET",
+      "path": "/api/atlas/v2/orgs/{orgId}/associatedInvoices",
+      "operation_id": "getOrgAssociatedInvoices",
+      "tag": "Invoices",
+      "summary": "Return Associated Invoices",
+      "deprecated": false,
+      "security": [
+        {
+          "ServiceAccounts": []
+        },
+        {
+          "DigestAuth": []
+        }
+      ],
+      "request_media": [],
+      "request_body_required": false,
+      "request_body_types": [],
+      "success_status": "200",
+      "response_media": [
+        "application/vnd.atlas.2025-03-12+json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "mongodb-atlas-organizations-projects",
+      "op": "invoices.get_org_associated_invoices"
+    },
+    {
       "key": "POST /api/atlas/v2/orgs/{orgId}/billing/costExplorer/usage",
       "method": "POST",
       "path": "/api/atlas/v2/orgs/{orgId}/billing/costExplorer/usage",
@@ -14316,6 +14662,250 @@
       "exclusion_reason": null,
       "pack": "mongodb-atlas-clusters-compute",
       "op": "cloud_migration_service.delete_org_live_migration_link_tokens"
+    },
+    {
+      "key": "GET /api/atlas/v2/orgs/{orgId}/maintenanceSettings",
+      "method": "GET",
+      "path": "/api/atlas/v2/orgs/{orgId}/maintenanceSettings",
+      "operation_id": "getOrgMaintenanceSettings",
+      "tag": "Organizations",
+      "summary": "Return Maintenance Settings for One Organization",
+      "deprecated": false,
+      "security": [
+        {
+          "ServiceAccounts": []
+        },
+        {
+          "DigestAuth": []
+        }
+      ],
+      "request_media": [],
+      "request_body_required": false,
+      "request_body_types": [],
+      "success_status": "200",
+      "response_media": [
+        "application/vnd.atlas.2025-03-12+json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "mongodb-atlas-organizations-projects",
+      "op": "organizations.get_org_maintenance_settings"
+    },
+    {
+      "key": "PATCH /api/atlas/v2/orgs/{orgId}/maintenanceSettings",
+      "method": "PATCH",
+      "path": "/api/atlas/v2/orgs/{orgId}/maintenanceSettings",
+      "operation_id": "updateOrgMaintenanceSettings",
+      "tag": "Organizations",
+      "summary": "Update Maintenance Settings for One Organization",
+      "deprecated": false,
+      "security": [
+        {
+          "ServiceAccounts": []
+        },
+        {
+          "DigestAuth": []
+        }
+      ],
+      "request_media": [
+        "application/vnd.atlas.2025-03-12+json"
+      ],
+      "request_body_required": true,
+      "request_body_types": [
+        "object"
+      ],
+      "success_status": "200",
+      "response_media": [
+        "application/vnd.atlas.2025-03-12+json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "mongodb-atlas-organizations-projects",
+      "op": "organizations.update_org_maintenance_settings"
+    },
+    {
+      "key": "POST /api/atlas/v2/orgs/{orgId}/maintenanceSettings:reset",
+      "method": "POST",
+      "path": "/api/atlas/v2/orgs/{orgId}/maintenanceSettings:reset",
+      "operation_id": "resetOrgMaintenanceSettings",
+      "tag": "Organizations",
+      "summary": "Reset Maintenance Settings for One Organization",
+      "deprecated": false,
+      "security": [
+        {
+          "ServiceAccounts": []
+        },
+        {
+          "DigestAuth": []
+        }
+      ],
+      "request_media": [],
+      "request_body_required": false,
+      "request_body_types": [],
+      "success_status": "200",
+      "response_media": [
+        "application/vnd.atlas.2025-03-12+json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "mongodb-atlas-organizations-projects",
+      "op": "organizations.reset_org_maintenance_settings"
+    },
+    {
+      "key": "GET /api/atlas/v2/orgs/{orgId}/mcpConfigs",
+      "method": "GET",
+      "path": "/api/atlas/v2/orgs/{orgId}/mcpConfigs",
+      "operation_id": "listOrgMcpConfigs",
+      "tag": "Remote MCP Configurations",
+      "summary": "Return All MCP Configurations for One Organization",
+      "deprecated": false,
+      "security": [
+        {
+          "ServiceAccounts": []
+        },
+        {
+          "DigestAuth": []
+        }
+      ],
+      "request_media": [],
+      "request_body_required": false,
+      "request_body_types": [],
+      "success_status": "200",
+      "response_media": [
+        "application/vnd.atlas.2025-03-12+json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "mongodb-atlas-credentials-access",
+      "op": "remote_mcp_configurations.list_org_mcp_configs"
+    },
+    {
+      "key": "POST /api/atlas/v2/orgs/{orgId}/mcpConfigs",
+      "method": "POST",
+      "path": "/api/atlas/v2/orgs/{orgId}/mcpConfigs",
+      "operation_id": "createOrgMcpConfig",
+      "tag": "Remote MCP Configurations",
+      "summary": "Create One MCP Configuration for One Organization",
+      "deprecated": false,
+      "security": [
+        {
+          "ServiceAccounts": []
+        },
+        {
+          "DigestAuth": []
+        }
+      ],
+      "request_media": [
+        "application/vnd.atlas.2025-03-12+json"
+      ],
+      "request_body_required": true,
+      "request_body_types": [
+        "object"
+      ],
+      "success_status": "201",
+      "response_media": [
+        "application/vnd.atlas.2025-03-12+json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "mongodb-atlas-credentials-access",
+      "op": "remote_mcp_configurations.create_org_mcp_config"
+    },
+    {
+      "key": "GET /api/atlas/v2/orgs/{orgId}/mcpConfigs/{mcpConfigId}",
+      "method": "GET",
+      "path": "/api/atlas/v2/orgs/{orgId}/mcpConfigs/{mcpConfigId}",
+      "operation_id": "getOrgMcpConfig",
+      "tag": "Remote MCP Configurations",
+      "summary": "Return One MCP Configuration for One Organization",
+      "deprecated": false,
+      "security": [
+        {
+          "ServiceAccounts": []
+        },
+        {
+          "DigestAuth": []
+        }
+      ],
+      "request_media": [],
+      "request_body_required": false,
+      "request_body_types": [],
+      "success_status": "200",
+      "response_media": [
+        "application/vnd.atlas.2025-03-12+json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "mongodb-atlas-credentials-access",
+      "op": "remote_mcp_configurations.get_org_mcp_config"
+    },
+    {
+      "key": "PATCH /api/atlas/v2/orgs/{orgId}/mcpConfigs/{mcpConfigId}",
+      "method": "PATCH",
+      "path": "/api/atlas/v2/orgs/{orgId}/mcpConfigs/{mcpConfigId}",
+      "operation_id": "updateOrgMcpConfig",
+      "tag": "Remote MCP Configurations",
+      "summary": "Update One MCP Configuration for One Organization",
+      "deprecated": false,
+      "security": [
+        {
+          "ServiceAccounts": []
+        },
+        {
+          "DigestAuth": []
+        }
+      ],
+      "request_media": [
+        "application/vnd.atlas.2025-03-12+json"
+      ],
+      "request_body_required": true,
+      "request_body_types": [
+        "object"
+      ],
+      "success_status": "200",
+      "response_media": [
+        "application/vnd.atlas.2025-03-12+json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "mongodb-atlas-credentials-access",
+      "op": "remote_mcp_configurations.update_org_mcp_config"
+    },
+    {
+      "key": "DELETE /api/atlas/v2/orgs/{orgId}/mcpConfigs/{mcpConfigId}",
+      "method": "DELETE",
+      "path": "/api/atlas/v2/orgs/{orgId}/mcpConfigs/{mcpConfigId}",
+      "operation_id": "deleteOrgMcpConfig",
+      "tag": "Remote MCP Configurations",
+      "summary": "Delete One MCP Configuration for One Organization",
+      "deprecated": false,
+      "security": [
+        {
+          "ServiceAccounts": []
+        },
+        {
+          "DigestAuth": []
+        }
+      ],
+      "request_media": [],
+      "request_body_required": false,
+      "request_body_types": [],
+      "success_status": "204",
+      "response_media": [
+        "application/vnd.atlas.2025-03-12+json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "mongodb-atlas-credentials-access",
+      "op": "remote_mcp_configurations.delete_org_mcp_config"
     },
     {
       "key": "GET /api/atlas/v2/orgs/{orgId}/nonCompliantResources",
@@ -17944,6 +18534,117 @@
         }
       ]
     },
+    "DELETE /api/atlas/v2/groups/{groupId}/clusters/{clusterName}/overloadSimulations/{simulationId}": {
+      "key": "DELETE /api/atlas/v2/groups/{groupId}/clusters/{clusterName}/overloadSimulations/{simulationId}",
+      "operation_id": "deleteGroupClusterOverloadSimulation",
+      "pack": "mongodb-atlas-clusters-compute",
+      "op": "overload_protection_simulation.delete_group_cluster_overload_simulation",
+      "method": "DELETE",
+      "path": "/api/atlas/v2/groups/{groupId}/clusters/{clusterName}/overloadSimulations/{simulationId}",
+      "wire_path": "/api/atlas/v2/groups/{groupId}/clusters/{clusterName}/overloadSimulations/{simulationId}",
+      "tag": "Overload Protection Simulation",
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "parameters": [
+        {
+          "in": "query",
+          "wire_name": "envelope",
+          "required": false,
+          "official_types": [
+            "boolean"
+          ],
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "omitted_to_lock_canonical_response_shape",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "query",
+          "wire_name": "pretty",
+          "required": false,
+          "official_types": [
+            "boolean"
+          ],
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "omitted_to_lock_canonical_response_shape",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "path",
+          "wire_name": "groupId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "groupId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "path",
+          "wire_name": "clusterName",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "clusterName",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "path",
+          "wire_name": "simulationId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "simulationId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        }
+      ],
+      "request_media": [],
+      "request_body_required": false,
+      "request_body_types": [],
+      "request_body_mode": "none",
+      "success_status": "202",
+      "response_media": [
+        "application/vnd.atlas.2025-03-12+json"
+      ],
+      "selected_response_media": "application/vnd.atlas.2025-03-12+json",
+      "result_path": null,
+      "pagination": null,
+      "pagination_contract_gap": null,
+      "response_capture": null,
+      "security": [
+        {
+          "ServiceAccounts": []
+        },
+        {
+          "DigestAuth": []
+        }
+      ]
+    },
     "DELETE /api/atlas/v2/groups/{groupId}/clusters/{clusterName}/search/deployment": {
       "key": "DELETE /api/atlas/v2/groups/{groupId}/clusters/{clusterName}/search/deployment",
       "operation_id": "deleteGroupClusterSearchDeployment",
@@ -19416,6 +20117,183 @@
         "application/vnd.atlas.2023-01-01+json"
       ],
       "selected_response_media": "application/vnd.atlas.2023-01-01+json",
+      "result_path": null,
+      "pagination": null,
+      "pagination_contract_gap": null,
+      "response_capture": null,
+      "security": [
+        {
+          "ServiceAccounts": []
+        },
+        {
+          "DigestAuth": []
+        }
+      ]
+    },
+    "DELETE /api/atlas/v2/groups/{groupId}/mcpConfigs/{mcpConfigId}": {
+      "key": "DELETE /api/atlas/v2/groups/{groupId}/mcpConfigs/{mcpConfigId}",
+      "operation_id": "deleteGroupMcpConfig",
+      "pack": "mongodb-atlas-credentials-access",
+      "op": "remote_mcp_configurations.delete_group_mcp_config",
+      "method": "DELETE",
+      "path": "/api/atlas/v2/groups/{groupId}/mcpConfigs/{mcpConfigId}",
+      "wire_path": "/api/atlas/v2/groups/{groupId}/mcpConfigs/{mcpConfigId}",
+      "tag": "Remote MCP Configurations",
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "groupId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "groupId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "path",
+          "wire_name": "mcpConfigId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "mcpConfigId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "query",
+          "wire_name": "cascading",
+          "required": false,
+          "official_types": [
+            "boolean"
+          ],
+          "admitted_key": "query.cascading",
+          "admitted_type": "boolean",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        }
+      ],
+      "request_media": [],
+      "request_body_required": false,
+      "request_body_types": [],
+      "request_body_mode": "none",
+      "success_status": "204",
+      "response_media": [
+        "application/vnd.atlas.2025-03-12+json"
+      ],
+      "selected_response_media": "application/vnd.atlas.2025-03-12+json",
+      "result_path": null,
+      "pagination": null,
+      "pagination_contract_gap": null,
+      "response_capture": null,
+      "security": [
+        {
+          "ServiceAccounts": []
+        },
+        {
+          "DigestAuth": []
+        }
+      ]
+    },
+    "DELETE /api/atlas/v2/groups/{groupId}/metricIntegrations/{metricIntegrationId}": {
+      "key": "DELETE /api/atlas/v2/groups/{groupId}/metricIntegrations/{metricIntegrationId}",
+      "operation_id": "deleteGroupMetricIntegration",
+      "pack": "mongodb-atlas-observability",
+      "op": "metric_integrations.delete_group_metric_integration",
+      "method": "DELETE",
+      "path": "/api/atlas/v2/groups/{groupId}/metricIntegrations/{metricIntegrationId}",
+      "wire_path": "/api/atlas/v2/groups/{groupId}/metricIntegrations/{metricIntegrationId}",
+      "tag": "Metric Integrations",
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "parameters": [
+        {
+          "in": "query",
+          "wire_name": "envelope",
+          "required": false,
+          "official_types": [
+            "boolean"
+          ],
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "omitted_to_lock_canonical_response_shape",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "path",
+          "wire_name": "groupId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "groupId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "query",
+          "wire_name": "pretty",
+          "required": false,
+          "official_types": [
+            "boolean"
+          ],
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "omitted_to_lock_canonical_response_shape",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "path",
+          "wire_name": "metricIntegrationId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "metricIntegrationId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        }
+      ],
+      "request_media": [],
+      "request_body_required": false,
+      "request_body_types": [],
+      "request_body_mode": "none",
+      "success_status": "204",
+      "response_media": [
+        "application/vnd.atlas.2025-03-12+json"
+      ],
+      "selected_response_media": "application/vnd.atlas.2025-03-12+json",
       "result_path": null,
       "pagination": null,
       "pagination_contract_gap": null,
@@ -21447,6 +22325,87 @@
         "application/vnd.atlas.2023-01-01+json"
       ],
       "selected_response_media": "application/vnd.atlas.2023-01-01+json",
+      "result_path": null,
+      "pagination": null,
+      "pagination_contract_gap": null,
+      "response_capture": null,
+      "security": [
+        {
+          "ServiceAccounts": []
+        },
+        {
+          "DigestAuth": []
+        }
+      ]
+    },
+    "DELETE /api/atlas/v2/orgs/{orgId}/mcpConfigs/{mcpConfigId}": {
+      "key": "DELETE /api/atlas/v2/orgs/{orgId}/mcpConfigs/{mcpConfigId}",
+      "operation_id": "deleteOrgMcpConfig",
+      "pack": "mongodb-atlas-credentials-access",
+      "op": "remote_mcp_configurations.delete_org_mcp_config",
+      "method": "DELETE",
+      "path": "/api/atlas/v2/orgs/{orgId}/mcpConfigs/{mcpConfigId}",
+      "wire_path": "/api/atlas/v2/orgs/{orgId}/mcpConfigs/{mcpConfigId}",
+      "tag": "Remote MCP Configurations",
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "orgId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "orgId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "path",
+          "wire_name": "mcpConfigId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "mcpConfigId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "query",
+          "wire_name": "cascading",
+          "required": false,
+          "official_types": [
+            "boolean"
+          ],
+          "admitted_key": "query.cascading",
+          "admitted_type": "boolean",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        }
+      ],
+      "request_media": [],
+      "request_body_required": false,
+      "request_body_types": [],
+      "request_body_mode": "none",
+      "success_status": "204",
+      "response_media": [
+        "application/vnd.atlas.2025-03-12+json"
+      ],
+      "selected_response_media": "application/vnd.atlas.2025-03-12+json",
       "result_path": null,
       "pagination": null,
       "pagination_contract_gap": null,
@@ -26706,6 +27665,102 @@
         }
       ]
     },
+    "GET /api/atlas/v2/groups/{groupId}/clusters/{clusterName}/adaptiveSettings": {
+      "key": "GET /api/atlas/v2/groups/{groupId}/clusters/{clusterName}/adaptiveSettings",
+      "operation_id": "getGroupClusterAdaptiveSettings",
+      "pack": "mongodb-atlas-clusters-compute",
+      "op": "clusters.get_group_cluster_adaptive_settings",
+      "method": "GET",
+      "path": "/api/atlas/v2/groups/{groupId}/clusters/{clusterName}/adaptiveSettings",
+      "wire_path": "/api/atlas/v2/groups/{groupId}/clusters/{clusterName}/adaptiveSettings",
+      "tag": "Clusters",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "query",
+          "wire_name": "envelope",
+          "required": false,
+          "official_types": [
+            "boolean"
+          ],
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "omitted_to_lock_canonical_response_shape",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "path",
+          "wire_name": "groupId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "groupId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "query",
+          "wire_name": "pretty",
+          "required": false,
+          "official_types": [
+            "boolean"
+          ],
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "omitted_to_lock_canonical_response_shape",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "path",
+          "wire_name": "clusterName",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "clusterName",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        }
+      ],
+      "request_media": [],
+      "request_body_required": false,
+      "request_body_types": [],
+      "request_body_mode": "none",
+      "success_status": "200",
+      "response_media": [
+        "application/vnd.atlas.2025-03-12+json"
+      ],
+      "selected_response_media": "application/vnd.atlas.2025-03-12+json",
+      "result_path": null,
+      "pagination": null,
+      "pagination_contract_gap": null,
+      "response_capture": null,
+      "security": [
+        {
+          "ServiceAccounts": []
+        },
+        {
+          "DigestAuth": []
+        }
+      ]
+    },
     "GET /api/atlas/v2/groups/{groupId}/clusters/{clusterName}/backup/exports": {
       "key": "GET /api/atlas/v2/groups/{groupId}/clusters/{clusterName}/backup/exports",
       "operation_id": "listGroupClusterBackupExports",
@@ -29695,6 +30750,257 @@
         "application/vnd.atlas.2023-01-01+json"
       ],
       "selected_response_media": "application/vnd.atlas.2023-01-01+json",
+      "result_path": null,
+      "pagination": null,
+      "pagination_contract_gap": null,
+      "response_capture": null,
+      "security": [
+        {
+          "ServiceAccounts": []
+        },
+        {
+          "DigestAuth": []
+        }
+      ]
+    },
+    "GET /api/atlas/v2/groups/{groupId}/clusters/{clusterName}/overloadSimulations": {
+      "key": "GET /api/atlas/v2/groups/{groupId}/clusters/{clusterName}/overloadSimulations",
+      "operation_id": "listGroupClusterOverloadSimulations",
+      "pack": "mongodb-atlas-clusters-compute",
+      "op": "overload_protection_simulation.list_group_cluster_overload_simulations",
+      "method": "GET",
+      "path": "/api/atlas/v2/groups/{groupId}/clusters/{clusterName}/overloadSimulations",
+      "wire_path": "/api/atlas/v2/groups/{groupId}/clusters/{clusterName}/overloadSimulations",
+      "tag": "Overload Protection Simulation",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "query",
+          "wire_name": "envelope",
+          "required": false,
+          "official_types": [
+            "boolean"
+          ],
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "omitted_to_lock_canonical_response_shape",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "query",
+          "wire_name": "itemsPerPage",
+          "required": false,
+          "official_types": [
+            "integer"
+          ],
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "owned_by_automatic_pagination",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "query",
+          "wire_name": "pageNum",
+          "required": false,
+          "official_types": [
+            "integer"
+          ],
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "owned_by_automatic_pagination",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "query",
+          "wire_name": "pretty",
+          "required": false,
+          "official_types": [
+            "boolean"
+          ],
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "omitted_to_lock_canonical_response_shape",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "path",
+          "wire_name": "groupId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "groupId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "path",
+          "wire_name": "clusterName",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "clusterName",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        }
+      ],
+      "request_media": [],
+      "request_body_required": false,
+      "request_body_types": [],
+      "request_body_mode": "none",
+      "success_status": "200",
+      "response_media": [
+        "application/vnd.atlas.2025-03-12+json"
+      ],
+      "selected_response_media": "application/vnd.atlas.2025-03-12+json",
+      "result_path": "results",
+      "pagination": {
+        "style": "offset",
+        "page_size": {
+          "placement": "query",
+          "param": "itemsPerPage",
+          "value": 500,
+          "max": 500
+        },
+        "param": {
+          "placement": "query",
+          "param": "pageNum"
+        },
+        "start": 1,
+        "increment": "page"
+      },
+      "pagination_contract_gap": null,
+      "response_capture": null,
+      "security": [
+        {
+          "ServiceAccounts": []
+        },
+        {
+          "DigestAuth": []
+        }
+      ]
+    },
+    "GET /api/atlas/v2/groups/{groupId}/clusters/{clusterName}/overloadSimulations/{simulationId}": {
+      "key": "GET /api/atlas/v2/groups/{groupId}/clusters/{clusterName}/overloadSimulations/{simulationId}",
+      "operation_id": "getGroupClusterOverloadSimulation",
+      "pack": "mongodb-atlas-clusters-compute",
+      "op": "overload_protection_simulation.get_group_cluster_overload_simulation",
+      "method": "GET",
+      "path": "/api/atlas/v2/groups/{groupId}/clusters/{clusterName}/overloadSimulations/{simulationId}",
+      "wire_path": "/api/atlas/v2/groups/{groupId}/clusters/{clusterName}/overloadSimulations/{simulationId}",
+      "tag": "Overload Protection Simulation",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "query",
+          "wire_name": "envelope",
+          "required": false,
+          "official_types": [
+            "boolean"
+          ],
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "omitted_to_lock_canonical_response_shape",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "query",
+          "wire_name": "pretty",
+          "required": false,
+          "official_types": [
+            "boolean"
+          ],
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "omitted_to_lock_canonical_response_shape",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "path",
+          "wire_name": "groupId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "groupId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "path",
+          "wire_name": "clusterName",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "clusterName",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "path",
+          "wire_name": "simulationId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "simulationId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        }
+      ],
+      "request_media": [],
+      "request_body_required": false,
+      "request_body_types": [],
+      "request_body_mode": "none",
+      "success_status": "200",
+      "response_media": [
+        "application/vnd.atlas.2025-03-12+json"
+      ],
+      "selected_response_media": "application/vnd.atlas.2025-03-12+json",
       "result_path": null,
       "pagination": null,
       "pagination_contract_gap": null,
@@ -36734,6 +38040,508 @@
         "application/vnd.atlas.2023-01-01+json"
       ],
       "selected_response_media": "application/vnd.atlas.2023-01-01+json",
+      "result_path": null,
+      "pagination": null,
+      "pagination_contract_gap": null,
+      "response_capture": null,
+      "security": [
+        {
+          "ServiceAccounts": []
+        },
+        {
+          "DigestAuth": []
+        }
+      ]
+    },
+    "GET /api/atlas/v2/groups/{groupId}/mcpConfigs": {
+      "key": "GET /api/atlas/v2/groups/{groupId}/mcpConfigs",
+      "operation_id": "listGroupMcpConfigs",
+      "pack": "mongodb-atlas-credentials-access",
+      "op": "remote_mcp_configurations.list_group_mcp_configs",
+      "method": "GET",
+      "path": "/api/atlas/v2/groups/{groupId}/mcpConfigs",
+      "wire_path": "/api/atlas/v2/groups/{groupId}/mcpConfigs",
+      "tag": "Remote MCP Configurations",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "query",
+          "wire_name": "envelope",
+          "required": false,
+          "official_types": [
+            "boolean"
+          ],
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "omitted_to_lock_canonical_response_shape",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "query",
+          "wire_name": "itemsPerPage",
+          "required": false,
+          "official_types": [
+            "integer"
+          ],
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "owned_by_automatic_pagination",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "query",
+          "wire_name": "includeCount",
+          "required": false,
+          "official_types": [
+            "boolean"
+          ],
+          "admitted_key": "query.includeCount",
+          "admitted_type": "boolean",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "query",
+          "wire_name": "pageNum",
+          "required": false,
+          "official_types": [
+            "integer"
+          ],
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "owned_by_automatic_pagination",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "query",
+          "wire_name": "pretty",
+          "required": false,
+          "official_types": [
+            "boolean"
+          ],
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "omitted_to_lock_canonical_response_shape",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "path",
+          "wire_name": "groupId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "groupId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        }
+      ],
+      "request_media": [],
+      "request_body_required": false,
+      "request_body_types": [],
+      "request_body_mode": "none",
+      "success_status": "200",
+      "response_media": [
+        "application/vnd.atlas.2025-03-12+json"
+      ],
+      "selected_response_media": "application/vnd.atlas.2025-03-12+json",
+      "result_path": "results",
+      "pagination": {
+        "style": "offset",
+        "page_size": {
+          "placement": "query",
+          "param": "itemsPerPage",
+          "value": 500,
+          "max": 500
+        },
+        "param": {
+          "placement": "query",
+          "param": "pageNum"
+        },
+        "start": 1,
+        "increment": "page"
+      },
+      "pagination_contract_gap": null,
+      "response_capture": null,
+      "security": [
+        {
+          "ServiceAccounts": []
+        },
+        {
+          "DigestAuth": []
+        }
+      ]
+    },
+    "GET /api/atlas/v2/groups/{groupId}/mcpConfigs/{mcpConfigId}": {
+      "key": "GET /api/atlas/v2/groups/{groupId}/mcpConfigs/{mcpConfigId}",
+      "operation_id": "getGroupMcpConfig",
+      "pack": "mongodb-atlas-credentials-access",
+      "op": "remote_mcp_configurations.get_group_mcp_config",
+      "method": "GET",
+      "path": "/api/atlas/v2/groups/{groupId}/mcpConfigs/{mcpConfigId}",
+      "wire_path": "/api/atlas/v2/groups/{groupId}/mcpConfigs/{mcpConfigId}",
+      "tag": "Remote MCP Configurations",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "query",
+          "wire_name": "envelope",
+          "required": false,
+          "official_types": [
+            "boolean"
+          ],
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "omitted_to_lock_canonical_response_shape",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "query",
+          "wire_name": "pretty",
+          "required": false,
+          "official_types": [
+            "boolean"
+          ],
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "omitted_to_lock_canonical_response_shape",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "path",
+          "wire_name": "groupId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "groupId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "path",
+          "wire_name": "mcpConfigId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "mcpConfigId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        }
+      ],
+      "request_media": [],
+      "request_body_required": false,
+      "request_body_types": [],
+      "request_body_mode": "none",
+      "success_status": "200",
+      "response_media": [
+        "application/vnd.atlas.2025-03-12+json"
+      ],
+      "selected_response_media": "application/vnd.atlas.2025-03-12+json",
+      "result_path": null,
+      "pagination": null,
+      "pagination_contract_gap": null,
+      "response_capture": null,
+      "security": [
+        {
+          "ServiceAccounts": []
+        },
+        {
+          "DigestAuth": []
+        }
+      ]
+    },
+    "GET /api/atlas/v2/groups/{groupId}/metricIntegrations": {
+      "key": "GET /api/atlas/v2/groups/{groupId}/metricIntegrations",
+      "operation_id": "listGroupMetricIntegrations",
+      "pack": "mongodb-atlas-observability",
+      "op": "metric_integrations.list_group_metric_integrations",
+      "method": "GET",
+      "path": "/api/atlas/v2/groups/{groupId}/metricIntegrations",
+      "wire_path": "/api/atlas/v2/groups/{groupId}/metricIntegrations",
+      "tag": "Metric Integrations",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "query",
+          "wire_name": "envelope",
+          "required": false,
+          "official_types": [
+            "boolean"
+          ],
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "omitted_to_lock_canonical_response_shape",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "path",
+          "wire_name": "groupId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "groupId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "query",
+          "wire_name": "includeCount",
+          "required": false,
+          "official_types": [
+            "boolean"
+          ],
+          "admitted_key": "query.includeCount",
+          "admitted_type": "boolean",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "query",
+          "wire_name": "itemsPerPage",
+          "required": false,
+          "official_types": [
+            "integer"
+          ],
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "owned_by_automatic_pagination",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "query",
+          "wire_name": "pageNum",
+          "required": false,
+          "official_types": [
+            "integer"
+          ],
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "owned_by_automatic_pagination",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "query",
+          "wire_name": "pretty",
+          "required": false,
+          "official_types": [
+            "boolean"
+          ],
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "omitted_to_lock_canonical_response_shape",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "query",
+          "wire_name": "integrationType",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "query.integrationType",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "query",
+          "wire_name": "providerType",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "query.providerType",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        }
+      ],
+      "request_media": [],
+      "request_body_required": false,
+      "request_body_types": [],
+      "request_body_mode": "none",
+      "success_status": "200",
+      "response_media": [
+        "application/vnd.atlas.2025-03-12+json"
+      ],
+      "selected_response_media": "application/vnd.atlas.2025-03-12+json",
+      "result_path": "results",
+      "pagination": {
+        "style": "offset",
+        "page_size": {
+          "placement": "query",
+          "param": "itemsPerPage",
+          "value": 500,
+          "max": 500
+        },
+        "param": {
+          "placement": "query",
+          "param": "pageNum"
+        },
+        "start": 1,
+        "increment": "page"
+      },
+      "pagination_contract_gap": null,
+      "response_capture": null,
+      "security": [
+        {
+          "ServiceAccounts": []
+        },
+        {
+          "DigestAuth": []
+        }
+      ]
+    },
+    "GET /api/atlas/v2/groups/{groupId}/metricIntegrations/{metricIntegrationId}": {
+      "key": "GET /api/atlas/v2/groups/{groupId}/metricIntegrations/{metricIntegrationId}",
+      "operation_id": "getGroupMetricIntegration",
+      "pack": "mongodb-atlas-observability",
+      "op": "metric_integrations.get_group_metric_integration",
+      "method": "GET",
+      "path": "/api/atlas/v2/groups/{groupId}/metricIntegrations/{metricIntegrationId}",
+      "wire_path": "/api/atlas/v2/groups/{groupId}/metricIntegrations/{metricIntegrationId}",
+      "tag": "Metric Integrations",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "query",
+          "wire_name": "envelope",
+          "required": false,
+          "official_types": [
+            "boolean"
+          ],
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "omitted_to_lock_canonical_response_shape",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "path",
+          "wire_name": "groupId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "groupId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "query",
+          "wire_name": "pretty",
+          "required": false,
+          "official_types": [
+            "boolean"
+          ],
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "omitted_to_lock_canonical_response_shape",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "path",
+          "wire_name": "metricIntegrationId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "metricIntegrationId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        }
+      ],
+      "request_media": [],
+      "request_body_required": false,
+      "request_body_types": [],
+      "request_body_mode": "none",
+      "success_status": "200",
+      "response_media": [
+        "application/vnd.atlas.2025-03-12+json"
+      ],
+      "selected_response_media": "application/vnd.atlas.2025-03-12+json",
       "result_path": null,
       "pagination": null,
       "pagination_contract_gap": null,
@@ -44477,6 +46285,102 @@
         }
       ]
     },
+    "GET /api/atlas/v2/orgs/{orgId}/associatedInvoices": {
+      "key": "GET /api/atlas/v2/orgs/{orgId}/associatedInvoices",
+      "operation_id": "getOrgAssociatedInvoices",
+      "pack": "mongodb-atlas-organizations-projects",
+      "op": "invoices.get_org_associated_invoices",
+      "method": "GET",
+      "path": "/api/atlas/v2/orgs/{orgId}/associatedInvoices",
+      "wire_path": "/api/atlas/v2/orgs/{orgId}/associatedInvoices",
+      "tag": "Invoices",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "orgId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "orgId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "query",
+          "wire_name": "month",
+          "required": false,
+          "official_types": [
+            "integer"
+          ],
+          "admitted_key": "query.month",
+          "admitted_type": "string",
+          "serialization": "exact_decimal_string",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": true,
+          "array_scalarized": false
+        },
+        {
+          "in": "query",
+          "wire_name": "year",
+          "required": false,
+          "official_types": [
+            "integer"
+          ],
+          "admitted_key": "query.year",
+          "admitted_type": "string",
+          "serialization": "exact_decimal_string",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": true,
+          "array_scalarized": false
+        },
+        {
+          "in": "query",
+          "wire_name": "includeLinkedOrgs",
+          "required": false,
+          "official_types": [
+            "boolean"
+          ],
+          "admitted_key": "query.includeLinkedOrgs",
+          "admitted_type": "boolean",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        }
+      ],
+      "request_media": [],
+      "request_body_required": false,
+      "request_body_types": [],
+      "request_body_mode": "none",
+      "success_status": "200",
+      "response_media": [
+        "application/vnd.atlas.2025-03-12+json"
+      ],
+      "selected_response_media": "application/vnd.atlas.2025-03-12+json",
+      "result_path": null,
+      "pagination": null,
+      "pagination_contract_gap": null,
+      "response_capture": null,
+      "security": [
+        {
+          "ServiceAccounts": []
+        },
+        {
+          "DigestAuth": []
+        }
+      ]
+    },
     "GET /api/atlas/v2/orgs/{orgId}/billing/costExplorer/usage/{token}": {
       "key": "GET /api/atlas/v2/orgs/{orgId}/billing/costExplorer/usage/{token}",
       "operation_id": "getOrgBillingCostExplorerUsage",
@@ -46131,6 +48035,323 @@
         "application/vnd.atlas.2023-01-01+json"
       ],
       "selected_response_media": "application/vnd.atlas.2023-01-01+json",
+      "result_path": null,
+      "pagination": null,
+      "pagination_contract_gap": null,
+      "response_capture": null,
+      "security": [
+        {
+          "ServiceAccounts": []
+        },
+        {
+          "DigestAuth": []
+        }
+      ]
+    },
+    "GET /api/atlas/v2/orgs/{orgId}/maintenanceSettings": {
+      "key": "GET /api/atlas/v2/orgs/{orgId}/maintenanceSettings",
+      "operation_id": "getOrgMaintenanceSettings",
+      "pack": "mongodb-atlas-organizations-projects",
+      "op": "organizations.get_org_maintenance_settings",
+      "method": "GET",
+      "path": "/api/atlas/v2/orgs/{orgId}/maintenanceSettings",
+      "wire_path": "/api/atlas/v2/orgs/{orgId}/maintenanceSettings",
+      "tag": "Organizations",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "query",
+          "wire_name": "envelope",
+          "required": false,
+          "official_types": [
+            "boolean"
+          ],
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "omitted_to_lock_canonical_response_shape",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "path",
+          "wire_name": "orgId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "orgId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "query",
+          "wire_name": "pretty",
+          "required": false,
+          "official_types": [
+            "boolean"
+          ],
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "omitted_to_lock_canonical_response_shape",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        }
+      ],
+      "request_media": [],
+      "request_body_required": false,
+      "request_body_types": [],
+      "request_body_mode": "none",
+      "success_status": "200",
+      "response_media": [
+        "application/vnd.atlas.2025-03-12+json"
+      ],
+      "selected_response_media": "application/vnd.atlas.2025-03-12+json",
+      "result_path": null,
+      "pagination": null,
+      "pagination_contract_gap": null,
+      "response_capture": null,
+      "security": [
+        {
+          "ServiceAccounts": []
+        },
+        {
+          "DigestAuth": []
+        }
+      ]
+    },
+    "GET /api/atlas/v2/orgs/{orgId}/mcpConfigs": {
+      "key": "GET /api/atlas/v2/orgs/{orgId}/mcpConfigs",
+      "operation_id": "listOrgMcpConfigs",
+      "pack": "mongodb-atlas-credentials-access",
+      "op": "remote_mcp_configurations.list_org_mcp_configs",
+      "method": "GET",
+      "path": "/api/atlas/v2/orgs/{orgId}/mcpConfigs",
+      "wire_path": "/api/atlas/v2/orgs/{orgId}/mcpConfigs",
+      "tag": "Remote MCP Configurations",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "query",
+          "wire_name": "envelope",
+          "required": false,
+          "official_types": [
+            "boolean"
+          ],
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "omitted_to_lock_canonical_response_shape",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "query",
+          "wire_name": "itemsPerPage",
+          "required": false,
+          "official_types": [
+            "integer"
+          ],
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "owned_by_automatic_pagination",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "query",
+          "wire_name": "includeCount",
+          "required": false,
+          "official_types": [
+            "boolean"
+          ],
+          "admitted_key": "query.includeCount",
+          "admitted_type": "boolean",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "query",
+          "wire_name": "pageNum",
+          "required": false,
+          "official_types": [
+            "integer"
+          ],
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "owned_by_automatic_pagination",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "query",
+          "wire_name": "pretty",
+          "required": false,
+          "official_types": [
+            "boolean"
+          ],
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "omitted_to_lock_canonical_response_shape",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "path",
+          "wire_name": "orgId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "orgId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        }
+      ],
+      "request_media": [],
+      "request_body_required": false,
+      "request_body_types": [],
+      "request_body_mode": "none",
+      "success_status": "200",
+      "response_media": [
+        "application/vnd.atlas.2025-03-12+json"
+      ],
+      "selected_response_media": "application/vnd.atlas.2025-03-12+json",
+      "result_path": "results",
+      "pagination": {
+        "style": "offset",
+        "page_size": {
+          "placement": "query",
+          "param": "itemsPerPage",
+          "value": 500,
+          "max": 500
+        },
+        "param": {
+          "placement": "query",
+          "param": "pageNum"
+        },
+        "start": 1,
+        "increment": "page"
+      },
+      "pagination_contract_gap": null,
+      "response_capture": null,
+      "security": [
+        {
+          "ServiceAccounts": []
+        },
+        {
+          "DigestAuth": []
+        }
+      ]
+    },
+    "GET /api/atlas/v2/orgs/{orgId}/mcpConfigs/{mcpConfigId}": {
+      "key": "GET /api/atlas/v2/orgs/{orgId}/mcpConfigs/{mcpConfigId}",
+      "operation_id": "getOrgMcpConfig",
+      "pack": "mongodb-atlas-credentials-access",
+      "op": "remote_mcp_configurations.get_org_mcp_config",
+      "method": "GET",
+      "path": "/api/atlas/v2/orgs/{orgId}/mcpConfigs/{mcpConfigId}",
+      "wire_path": "/api/atlas/v2/orgs/{orgId}/mcpConfigs/{mcpConfigId}",
+      "tag": "Remote MCP Configurations",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "query",
+          "wire_name": "envelope",
+          "required": false,
+          "official_types": [
+            "boolean"
+          ],
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "omitted_to_lock_canonical_response_shape",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "query",
+          "wire_name": "pretty",
+          "required": false,
+          "official_types": [
+            "boolean"
+          ],
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "omitted_to_lock_canonical_response_shape",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "path",
+          "wire_name": "orgId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "orgId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "path",
+          "wire_name": "mcpConfigId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "mcpConfigId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        }
+      ],
+      "request_media": [],
+      "request_body_required": false,
+      "request_body_types": [],
+      "request_body_mode": "none",
+      "success_status": "200",
+      "response_media": [
+        "application/vnd.atlas.2025-03-12+json"
+      ],
+      "selected_response_media": "application/vnd.atlas.2025-03-12+json",
       "result_path": null,
       "pagination": null,
       "pagination_contract_gap": null,
@@ -48427,7 +50648,7 @@
         "application/vnd.atlas.2023-11-15+json"
       ],
       "selected_response_media": "application/vnd.atlas.2023-11-15+json",
-      "result_path": null,
+      "result_path": "gateways",
       "pagination": null,
       "pagination_contract_gap": null,
       "response_capture": null,
@@ -49750,6 +51971,106 @@
         "application/vnd.atlas.2024-10-23+json"
       ],
       "selected_response_media": "application/vnd.atlas.2024-10-23+json",
+      "result_path": null,
+      "pagination": null,
+      "pagination_contract_gap": null,
+      "response_capture": null,
+      "security": [
+        {
+          "ServiceAccounts": []
+        },
+        {
+          "DigestAuth": []
+        }
+      ]
+    },
+    "PATCH /api/atlas/v2/groups/{groupId}/clusters/{clusterName}/adaptiveSettings": {
+      "key": "PATCH /api/atlas/v2/groups/{groupId}/clusters/{clusterName}/adaptiveSettings",
+      "operation_id": "updateGroupClusterAdaptiveSettings",
+      "pack": "mongodb-atlas-clusters-compute",
+      "op": "clusters.update_group_cluster_adaptive_settings",
+      "method": "PATCH",
+      "path": "/api/atlas/v2/groups/{groupId}/clusters/{clusterName}/adaptiveSettings",
+      "wire_path": "/api/atlas/v2/groups/{groupId}/clusters/{clusterName}/adaptiveSettings",
+      "tag": "Clusters",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "parameters": [
+        {
+          "in": "query",
+          "wire_name": "envelope",
+          "required": false,
+          "official_types": [
+            "boolean"
+          ],
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "omitted_to_lock_canonical_response_shape",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "path",
+          "wire_name": "groupId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "groupId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "query",
+          "wire_name": "pretty",
+          "required": false,
+          "official_types": [
+            "boolean"
+          ],
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "omitted_to_lock_canonical_response_shape",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "path",
+          "wire_name": "clusterName",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "clusterName",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        }
+      ],
+      "request_media": [
+        "application/vnd.atlas.2025-03-12+json"
+      ],
+      "request_body_required": true,
+      "request_body_types": [
+        "object"
+      ],
+      "request_body_mode": "raw_json",
+      "success_status": "200",
+      "response_media": [
+        "application/vnd.atlas.2025-03-12+json"
+      ],
+      "selected_response_media": "application/vnd.atlas.2025-03-12+json",
       "result_path": null,
       "pagination": null,
       "pagination_contract_gap": null,
@@ -51723,6 +54044,91 @@
         }
       ]
     },
+    "PATCH /api/atlas/v2/groups/{groupId}/mcpConfigs/{mcpConfigId}": {
+      "key": "PATCH /api/atlas/v2/groups/{groupId}/mcpConfigs/{mcpConfigId}",
+      "operation_id": "updateGroupMcpConfig",
+      "pack": "mongodb-atlas-credentials-access",
+      "op": "remote_mcp_configurations.update_group_mcp_config",
+      "method": "PATCH",
+      "path": "/api/atlas/v2/groups/{groupId}/mcpConfigs/{mcpConfigId}",
+      "wire_path": "/api/atlas/v2/groups/{groupId}/mcpConfigs/{mcpConfigId}",
+      "tag": "Remote MCP Configurations",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "parameters": [
+        {
+          "in": "query",
+          "wire_name": "pretty",
+          "required": false,
+          "official_types": [
+            "boolean"
+          ],
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "omitted_to_lock_canonical_response_shape",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "path",
+          "wire_name": "groupId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "groupId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "path",
+          "wire_name": "mcpConfigId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "mcpConfigId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        }
+      ],
+      "request_media": [
+        "application/vnd.atlas.2025-03-12+json"
+      ],
+      "request_body_required": true,
+      "request_body_types": [
+        "object"
+      ],
+      "request_body_mode": "raw_json",
+      "success_status": "200",
+      "response_media": [
+        "application/vnd.atlas.2025-03-12+json"
+      ],
+      "selected_response_media": "application/vnd.atlas.2025-03-12+json",
+      "result_path": null,
+      "pagination": null,
+      "pagination_contract_gap": null,
+      "response_capture": null,
+      "security": [
+        {
+          "ServiceAccounts": []
+        },
+        {
+          "DigestAuth": []
+        }
+      ]
+    },
     "PATCH /api/atlas/v2/groups/{groupId}/peers/{peerId}": {
       "key": "PATCH /api/atlas/v2/groups/{groupId}/peers/{peerId}",
       "operation_id": "updateGroupPeer",
@@ -53176,6 +55582,176 @@
           "admitted_key": null,
           "admitted_type": null,
           "serialization": "omitted_to_lock_canonical_response_shape",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        }
+      ],
+      "request_media": [
+        "application/vnd.atlas.2025-03-12+json"
+      ],
+      "request_body_required": true,
+      "request_body_types": [
+        "object"
+      ],
+      "request_body_mode": "raw_json",
+      "success_status": "200",
+      "response_media": [
+        "application/vnd.atlas.2025-03-12+json"
+      ],
+      "selected_response_media": "application/vnd.atlas.2025-03-12+json",
+      "result_path": null,
+      "pagination": null,
+      "pagination_contract_gap": null,
+      "response_capture": null,
+      "security": [
+        {
+          "ServiceAccounts": []
+        },
+        {
+          "DigestAuth": []
+        }
+      ]
+    },
+    "PATCH /api/atlas/v2/orgs/{orgId}/maintenanceSettings": {
+      "key": "PATCH /api/atlas/v2/orgs/{orgId}/maintenanceSettings",
+      "operation_id": "updateOrgMaintenanceSettings",
+      "pack": "mongodb-atlas-organizations-projects",
+      "op": "organizations.update_org_maintenance_settings",
+      "method": "PATCH",
+      "path": "/api/atlas/v2/orgs/{orgId}/maintenanceSettings",
+      "wire_path": "/api/atlas/v2/orgs/{orgId}/maintenanceSettings",
+      "tag": "Organizations",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "parameters": [
+        {
+          "in": "query",
+          "wire_name": "envelope",
+          "required": false,
+          "official_types": [
+            "boolean"
+          ],
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "omitted_to_lock_canonical_response_shape",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "path",
+          "wire_name": "orgId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "orgId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "query",
+          "wire_name": "pretty",
+          "required": false,
+          "official_types": [
+            "boolean"
+          ],
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "omitted_to_lock_canonical_response_shape",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        }
+      ],
+      "request_media": [
+        "application/vnd.atlas.2025-03-12+json"
+      ],
+      "request_body_required": true,
+      "request_body_types": [
+        "object"
+      ],
+      "request_body_mode": "raw_json",
+      "success_status": "200",
+      "response_media": [
+        "application/vnd.atlas.2025-03-12+json"
+      ],
+      "selected_response_media": "application/vnd.atlas.2025-03-12+json",
+      "result_path": null,
+      "pagination": null,
+      "pagination_contract_gap": null,
+      "response_capture": null,
+      "security": [
+        {
+          "ServiceAccounts": []
+        },
+        {
+          "DigestAuth": []
+        }
+      ]
+    },
+    "PATCH /api/atlas/v2/orgs/{orgId}/mcpConfigs/{mcpConfigId}": {
+      "key": "PATCH /api/atlas/v2/orgs/{orgId}/mcpConfigs/{mcpConfigId}",
+      "operation_id": "updateOrgMcpConfig",
+      "pack": "mongodb-atlas-credentials-access",
+      "op": "remote_mcp_configurations.update_org_mcp_config",
+      "method": "PATCH",
+      "path": "/api/atlas/v2/orgs/{orgId}/mcpConfigs/{mcpConfigId}",
+      "wire_path": "/api/atlas/v2/orgs/{orgId}/mcpConfigs/{mcpConfigId}",
+      "tag": "Remote MCP Configurations",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "parameters": [
+        {
+          "in": "query",
+          "wire_name": "pretty",
+          "required": false,
+          "official_types": [
+            "boolean"
+          ],
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "omitted_to_lock_canonical_response_shape",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "path",
+          "wire_name": "orgId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "orgId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "path",
+          "wire_name": "mcpConfigId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "mcpConfigId",
+          "admitted_type": "string",
+          "serialization": "scalar",
           "authority": "official_openapi_parameter",
           "dropped_pattern": false,
           "integer_as_decimal_string": false,
@@ -54965,91 +57541,6 @@
         }
       ]
     },
-    "POST /api/atlas/v2/groups/{groupId}/clusterConfigurations:validate": {
-      "key": "POST /api/atlas/v2/groups/{groupId}/clusterConfigurations:validate",
-      "operation_id": "validateGroupClusterConfigurations",
-      "pack": "mongodb-atlas-clusters-compute",
-      "op": "clusters.validate_group_cluster_configurations",
-      "method": "POST",
-      "path": "/api/atlas/v2/groups/{groupId}/clusterConfigurations:validate",
-      "wire_path": "/api/atlas/v2/groups/{groupId}/clusterConfigurations:validate",
-      "tag": "Clusters",
-      "risk": "read",
-      "approval": "never",
-      "idempotency": "safe",
-      "parameters": [
-        {
-          "in": "query",
-          "wire_name": "envelope",
-          "required": false,
-          "official_types": [
-            "boolean"
-          ],
-          "admitted_key": null,
-          "admitted_type": null,
-          "serialization": "omitted_to_lock_canonical_response_shape",
-          "authority": "official_openapi_parameter",
-          "dropped_pattern": false,
-          "integer_as_decimal_string": false,
-          "array_scalarized": false
-        },
-        {
-          "in": "query",
-          "wire_name": "pretty",
-          "required": false,
-          "official_types": [
-            "boolean"
-          ],
-          "admitted_key": null,
-          "admitted_type": null,
-          "serialization": "omitted_to_lock_canonical_response_shape",
-          "authority": "official_openapi_parameter",
-          "dropped_pattern": false,
-          "integer_as_decimal_string": false,
-          "array_scalarized": false
-        },
-        {
-          "in": "path",
-          "wire_name": "groupId",
-          "required": true,
-          "official_types": [
-            "string"
-          ],
-          "admitted_key": "groupId",
-          "admitted_type": "string",
-          "serialization": "scalar",
-          "authority": "official_openapi_parameter",
-          "dropped_pattern": false,
-          "integer_as_decimal_string": false,
-          "array_scalarized": false
-        }
-      ],
-      "request_media": [
-        "application/vnd.atlas.2025-03-12+json"
-      ],
-      "request_body_required": true,
-      "request_body_types": [
-        "object"
-      ],
-      "request_body_mode": "raw_json",
-      "success_status": "200",
-      "response_media": [
-        "application/vnd.atlas.2025-03-12+json"
-      ],
-      "selected_response_media": "application/vnd.atlas.2025-03-12+json",
-      "result_path": null,
-      "pagination": null,
-      "pagination_contract_gap": null,
-      "response_capture": null,
-      "security": [
-        {
-          "ServiceAccounts": []
-        },
-        {
-          "DigestAuth": []
-        }
-      ]
-    },
     "POST /api/atlas/v2/groups/{groupId}/clusters": {
       "key": "POST /api/atlas/v2/groups/{groupId}/clusters",
       "operation_id": "createGroupCluster",
@@ -56429,6 +58920,106 @@
         "application/vnd.atlas.2023-01-01+json"
       ],
       "selected_response_media": "application/vnd.atlas.2023-01-01+json",
+      "result_path": null,
+      "pagination": null,
+      "pagination_contract_gap": null,
+      "response_capture": null,
+      "security": [
+        {
+          "ServiceAccounts": []
+        },
+        {
+          "DigestAuth": []
+        }
+      ]
+    },
+    "POST /api/atlas/v2/groups/{groupId}/clusters/{clusterName}/overloadSimulations": {
+      "key": "POST /api/atlas/v2/groups/{groupId}/clusters/{clusterName}/overloadSimulations",
+      "operation_id": "createGroupClusterOverloadSimulation",
+      "pack": "mongodb-atlas-clusters-compute",
+      "op": "overload_protection_simulation.create_group_cluster_overload_simulation",
+      "method": "POST",
+      "path": "/api/atlas/v2/groups/{groupId}/clusters/{clusterName}/overloadSimulations",
+      "wire_path": "/api/atlas/v2/groups/{groupId}/clusters/{clusterName}/overloadSimulations",
+      "tag": "Overload Protection Simulation",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "parameters": [
+        {
+          "in": "query",
+          "wire_name": "envelope",
+          "required": false,
+          "official_types": [
+            "boolean"
+          ],
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "omitted_to_lock_canonical_response_shape",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "query",
+          "wire_name": "pretty",
+          "required": false,
+          "official_types": [
+            "boolean"
+          ],
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "omitted_to_lock_canonical_response_shape",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "path",
+          "wire_name": "groupId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "groupId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "path",
+          "wire_name": "clusterName",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "clusterName",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        }
+      ],
+      "request_media": [
+        "application/vnd.atlas.2025-03-12+json"
+      ],
+      "request_body_required": true,
+      "request_body_types": [
+        "object"
+      ],
+      "request_body_mode": "raw_json",
+      "success_status": "201",
+      "response_media": [
+        "application/vnd.atlas.2025-03-12+json"
+      ],
+      "selected_response_media": "application/vnd.atlas.2025-03-12+json",
       "result_path": null,
       "pagination": null,
       "pagination_contract_gap": null,
@@ -58348,6 +60939,146 @@
         "application/vnd.atlas.2023-01-01+json"
       ],
       "selected_response_media": "application/vnd.atlas.2023-01-01+json",
+      "result_path": null,
+      "pagination": null,
+      "pagination_contract_gap": null,
+      "response_capture": null,
+      "security": [
+        {
+          "ServiceAccounts": []
+        },
+        {
+          "DigestAuth": []
+        }
+      ]
+    },
+    "POST /api/atlas/v2/groups/{groupId}/mcpConfigs": {
+      "key": "POST /api/atlas/v2/groups/{groupId}/mcpConfigs",
+      "operation_id": "createGroupMcpConfig",
+      "pack": "mongodb-atlas-credentials-access",
+      "op": "remote_mcp_configurations.create_group_mcp_config",
+      "method": "POST",
+      "path": "/api/atlas/v2/groups/{groupId}/mcpConfigs",
+      "wire_path": "/api/atlas/v2/groups/{groupId}/mcpConfigs",
+      "tag": "Remote MCP Configurations",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "groupId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "groupId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        }
+      ],
+      "request_media": [
+        "application/vnd.atlas.2025-03-12+json"
+      ],
+      "request_body_required": true,
+      "request_body_types": [
+        "object"
+      ],
+      "request_body_mode": "raw_json",
+      "success_status": "201",
+      "response_media": [
+        "application/vnd.atlas.2025-03-12+json"
+      ],
+      "selected_response_media": "application/vnd.atlas.2025-03-12+json",
+      "result_path": null,
+      "pagination": null,
+      "pagination_contract_gap": null,
+      "response_capture": null,
+      "security": [
+        {
+          "ServiceAccounts": []
+        },
+        {
+          "DigestAuth": []
+        }
+      ]
+    },
+    "POST /api/atlas/v2/groups/{groupId}/metricIntegrations": {
+      "key": "POST /api/atlas/v2/groups/{groupId}/metricIntegrations",
+      "operation_id": "createGroupMetricIntegration",
+      "pack": "mongodb-atlas-observability",
+      "op": "metric_integrations.create_group_metric_integration",
+      "method": "POST",
+      "path": "/api/atlas/v2/groups/{groupId}/metricIntegrations",
+      "wire_path": "/api/atlas/v2/groups/{groupId}/metricIntegrations",
+      "tag": "Metric Integrations",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "parameters": [
+        {
+          "in": "query",
+          "wire_name": "envelope",
+          "required": false,
+          "official_types": [
+            "boolean"
+          ],
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "omitted_to_lock_canonical_response_shape",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "path",
+          "wire_name": "groupId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "groupId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "query",
+          "wire_name": "pretty",
+          "required": false,
+          "official_types": [
+            "boolean"
+          ],
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "omitted_to_lock_canonical_response_shape",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        }
+      ],
+      "request_media": [
+        "application/vnd.atlas.2025-03-12+json"
+      ],
+      "request_body_required": true,
+      "request_body_types": [
+        "object"
+      ],
+      "request_body_mode": "raw_json",
+      "success_status": "201",
+      "response_media": [
+        "application/vnd.atlas.2025-03-12+json"
+      ],
+      "selected_response_media": "application/vnd.atlas.2025-03-12+json",
       "result_path": null,
       "pagination": null,
       "pagination_contract_gap": null,
@@ -61295,6 +64026,142 @@
         }
       ]
     },
+    "POST /api/atlas/v2/orgs/{orgId}/maintenanceSettings:reset": {
+      "key": "POST /api/atlas/v2/orgs/{orgId}/maintenanceSettings:reset",
+      "operation_id": "resetOrgMaintenanceSettings",
+      "pack": "mongodb-atlas-organizations-projects",
+      "op": "organizations.reset_org_maintenance_settings",
+      "method": "POST",
+      "path": "/api/atlas/v2/orgs/{orgId}/maintenanceSettings:reset",
+      "wire_path": "/api/atlas/v2/orgs/{orgId}/maintenanceSettings:reset",
+      "tag": "Organizations",
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "parameters": [
+        {
+          "in": "query",
+          "wire_name": "envelope",
+          "required": false,
+          "official_types": [
+            "boolean"
+          ],
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "omitted_to_lock_canonical_response_shape",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "path",
+          "wire_name": "orgId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "orgId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "query",
+          "wire_name": "pretty",
+          "required": false,
+          "official_types": [
+            "boolean"
+          ],
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "omitted_to_lock_canonical_response_shape",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        }
+      ],
+      "request_media": [],
+      "request_body_required": false,
+      "request_body_types": [],
+      "request_body_mode": "none",
+      "success_status": "200",
+      "response_media": [
+        "application/vnd.atlas.2025-03-12+json"
+      ],
+      "selected_response_media": "application/vnd.atlas.2025-03-12+json",
+      "result_path": null,
+      "pagination": null,
+      "pagination_contract_gap": null,
+      "response_capture": null,
+      "security": [
+        {
+          "ServiceAccounts": []
+        },
+        {
+          "DigestAuth": []
+        }
+      ]
+    },
+    "POST /api/atlas/v2/orgs/{orgId}/mcpConfigs": {
+      "key": "POST /api/atlas/v2/orgs/{orgId}/mcpConfigs",
+      "operation_id": "createOrgMcpConfig",
+      "pack": "mongodb-atlas-credentials-access",
+      "op": "remote_mcp_configurations.create_org_mcp_config",
+      "method": "POST",
+      "path": "/api/atlas/v2/orgs/{orgId}/mcpConfigs",
+      "wire_path": "/api/atlas/v2/orgs/{orgId}/mcpConfigs",
+      "tag": "Remote MCP Configurations",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "orgId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "orgId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        }
+      ],
+      "request_media": [
+        "application/vnd.atlas.2025-03-12+json"
+      ],
+      "request_body_required": true,
+      "request_body_types": [
+        "object"
+      ],
+      "request_body_mode": "raw_json",
+      "success_status": "201",
+      "response_media": [
+        "application/vnd.atlas.2025-03-12+json"
+      ],
+      "selected_response_media": "application/vnd.atlas.2025-03-12+json",
+      "result_path": null,
+      "pagination": null,
+      "pagination_contract_gap": null,
+      "response_capture": null,
+      "security": [
+        {
+          "ServiceAccounts": []
+        },
+        {
+          "DigestAuth": []
+        }
+      ]
+    },
     "POST /api/atlas/v2/orgs/{orgId}/resourcePolicies": {
       "key": "POST /api/atlas/v2/orgs/{orgId}/resourcePolicies",
       "operation_id": "createOrgResourcePolicy",
@@ -63057,6 +65924,106 @@
             "string"
           ],
           "admitted_key": "id",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        }
+      ],
+      "request_media": [
+        "application/vnd.atlas.2025-03-12+json"
+      ],
+      "request_body_required": true,
+      "request_body_types": [
+        "object"
+      ],
+      "request_body_mode": "raw_json",
+      "success_status": "200",
+      "response_media": [
+        "application/vnd.atlas.2025-03-12+json"
+      ],
+      "selected_response_media": "application/vnd.atlas.2025-03-12+json",
+      "result_path": null,
+      "pagination": null,
+      "pagination_contract_gap": null,
+      "response_capture": null,
+      "security": [
+        {
+          "ServiceAccounts": []
+        },
+        {
+          "DigestAuth": []
+        }
+      ]
+    },
+    "PUT /api/atlas/v2/groups/{groupId}/metricIntegrations/{metricIntegrationId}": {
+      "key": "PUT /api/atlas/v2/groups/{groupId}/metricIntegrations/{metricIntegrationId}",
+      "operation_id": "updateGroupMetricIntegration",
+      "pack": "mongodb-atlas-observability",
+      "op": "metric_integrations.update_group_metric_integration",
+      "method": "PUT",
+      "path": "/api/atlas/v2/groups/{groupId}/metricIntegrations/{metricIntegrationId}",
+      "wire_path": "/api/atlas/v2/groups/{groupId}/metricIntegrations/{metricIntegrationId}",
+      "tag": "Metric Integrations",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "parameters": [
+        {
+          "in": "query",
+          "wire_name": "envelope",
+          "required": false,
+          "official_types": [
+            "boolean"
+          ],
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "omitted_to_lock_canonical_response_shape",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "path",
+          "wire_name": "groupId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "groupId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "query",
+          "wire_name": "pretty",
+          "required": false,
+          "official_types": [
+            "boolean"
+          ],
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "omitted_to_lock_canonical_response_shape",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "path",
+          "wire_name": "metricIntegrationId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "metricIntegrationId",
           "admitted_type": "string",
           "serialization": "scalar",
           "authority": "official_openapi_parameter",

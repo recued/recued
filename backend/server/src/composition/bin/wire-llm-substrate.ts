@@ -15,7 +15,8 @@
  *         coherent across surfaces)
  *       - `llmAdapterRegistry` (chat-style `complete()` adapters —
  *         Anthropic / OpenAI / Google / Groq / OpenRouter / Cerebras /
- *         Gemini / Mistral / GitHub Models / `openai-compatible`)
+ *         Gemini / Mistral / `openai-compatible`; GitHub Models was retired
+ *         by GitHub 2026-07-30 and is no longer reachable)
  *       - `llmEmbeddingsAdapterRegistry` (D-131 A.2 — `embed()` adapter
  *         registry; separate from chat because the adapter-method shape
  *         differs but shares the same `LLMConfig` + `QuotaTracker`)

@@ -5,41 +5,41 @@
       "cli": {
         "kind": "official_mutable_markdown_hash_locked",
         "url": "https://tailscale.com/docs/reference/tailscale-cli.md",
-        "bytes": 52642,
-        "sha256": "afb521a8d26192afefc9dac5da9a4dde8c0a601f23432bc1721f1180319d7d1e",
-        "last_validated": "2026-08-06",
+        "bytes": 53018,
+        "sha256": "85a1b3b1cd9d113072a3aee22a405efe9ff8bbf839c348ddb61175187c3f315f",
+        "last_validated": "2026-09-15",
         "retrieved_on": "2026-07-16"
       },
       "serve": {
         "kind": "official_mutable_markdown_hash_locked",
         "url": "https://tailscale.com/docs/reference/tailscale-cli/serve.md",
-        "bytes": 12940,
-        "sha256": "81159f9159d7dd6404bd854ce05488508a2d0fe91a97b87a0ae5046032d7d98e",
-        "last_validated": "2026-08-06",
+        "bytes": 13000,
+        "sha256": "c43433ce7917d368b830cf5edf527cfb1c539934aa8268aa1d2849a288ed741d",
+        "last_validated": "2026-09-15",
         "retrieved_on": "2026-07-16"
       },
       "funnel": {
         "kind": "official_mutable_markdown_hash_locked",
         "url": "https://tailscale.com/docs/reference/tailscale-cli/funnel.md",
-        "bytes": 9088,
-        "sha256": "d96631edcab3fd619eebe6c5c205c0148836439ae7af25814f9c603f5ebfc852",
-        "last_validated": "2026-08-06",
+        "bytes": 9093,
+        "sha256": "0396d9e7d7661194ee83fa853bc9e6286b517c2ec551bfcb310d78a5f45ac73e",
+        "last_validated": "2026-09-15",
         "retrieved_on": "2026-07-16"
       },
       "lock": {
         "kind": "official_mutable_markdown_hash_locked",
         "url": "https://tailscale.com/docs/reference/tailscale-cli/lock.md",
-        "bytes": 15627,
-        "sha256": "cf074704eb08ca069aa78b03ba603ff2acabbc6c83fa2960d519f726dc208ad2",
-        "last_validated": "2026-08-06",
+        "bytes": 15591,
+        "sha256": "8d5f77f427568f09e13635661a6c41afebfabfec3f0105f9c7a5d4b906467cac",
+        "last_validated": "2026-09-15",
         "retrieved_on": "2026-07-16"
       },
       "daemon": {
         "kind": "official_mutable_markdown_hash_locked",
         "url": "https://tailscale.com/docs/reference/tailscaled.md",
-        "bytes": 5637,
-        "sha256": "c036b6b7110ff7eeebabf0dda5eae73435adf1ba772db836cb3f38267b9b86ea",
-        "last_validated": "2026-08-06",
+        "bytes": 5870,
+        "sha256": "95831ad46f5e9494f21665063ad23658309bbceb84059c7e88af386dbb0cc255",
+        "last_validated": "2026-09-15",
         "retrieved_on": "2026-07-16"
       }
     },
@@ -47,7 +47,7 @@
     "admitted_command_root_count": 15,
     "excluded_command_root_count": 21,
     "operation_count": 18,
-    "composition_bytes": 18652,
+    "composition_bytes": 20917,
     "risk_counts": {
       "read": 18
     },
@@ -191,7 +191,7 @@
         "resolution": "Declare no work_entity_sources and bundle no automatic or chat workflow that could leak private local diagnostics."
       }
     ],
-    "operations_sha256": "53210db7b9883da84feee1ead52257d5df646de7b8951eb4f5158a4b4ea725af"
+    "operations_sha256": "bbc84952168700ec0544458c147ad7e27142b3c2ff92b9984f8e83d87ba817d8"
   },
   "official_commands": [
     {

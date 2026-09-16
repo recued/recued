@@ -210,6 +210,36 @@ describe('D-261 activation in actual automation stores', () => {
     expect(f.db.prepare('SELECT * FROM preapproval_activations').all()).toHaveLength(0);
   });
 
+  it('⛔ an EXPIRED approved execution records a `skipped` outcome — it used to leave no trace', async () => {
+    const f = connect(); f.schedules.set(schedule());
+    const approved = await approve(f);
+    // The schedule is parked while the activation is live — which is why neither
+    // D-266 (it skips disabled rows) nor the resumed schedule (retire advances
+    // `next_run_at` past the occurrence) can ever see this miss. Retirement is
+    // the only place it can be recorded.
+    expect(f.schedules.get(schedule().schedule_id)?.enabled).toBe(false);
+
+    f.state.now = 200_000;                 // past dispatch_deadline (90_000)
+    expect(f.repository.expire()).toBeGreaterThan(0);
+    expect(f.activations.retire(approved.future_execution_ref)).toBe(true);
+
+    const after = f.schedules.get(schedule().schedule_id)!;
+    expect(after.last_status).toBe('skipped');
+    expect(after.last_error).toBeTruthy();
+    expect(after.enabled).toBe(true);      // the owner's recurring rule is restored
+  });
+
+  it('⚠ a CANCELLED execution stays silent — the owner did that themselves', async () => {
+    const f = connect(); f.schedules.set(schedule());
+    const approved = await approve(f);
+    f.repository.cancelExecution(approved.future_execution_ref);
+    expect(f.activations.retire(approved.future_execution_ref)).toBe(true);
+    // Reporting a cancellation back to the person who cancelled it is noise, and
+    // the distinction is the whole reason this is keyed on execution STATE rather
+    // than on "did it run".
+    expect(f.schedules.get(schedule().schedule_id)?.last_status).toBeNull();
+  });
+
   it('the actual cron loop skips the cancelled occurrence after restoring the recurring rule', async () => {
     const f = connect(); f.schedules.set(schedule()); const approved = await approve(f);
     f.repository.cancelExecution(approved.future_execution_ref); f.activations.retire(approved.future_execution_ref);

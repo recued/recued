@@ -2,8 +2,8 @@
   "vendor": "GitBook",
   "generated_at": "2026-07-14",
   "url": "https://api.gitbook.com/openapi.json",
-  "sha256": "2027db2287bf00dce75032fcf757a890cf24ebb21b6add8d94fa81becc646d53",
-  "byte_length": 1538425,
+  "sha256": "e075be14cbd2cae0de6568d5ee6aba368d98b1a07e62c77dd2595020b7fb7cbd",
+  "byte_length": 1722427,
   "openapi": "3.1.0",
   "title": "GitBook API",
   "version": "0.0.1-beta",
@@ -15,49 +15,53 @@
       }
     }
   },
-  "path_count": 249,
-  "operation_count": 357,
-  "selected_operation_count": 336,
+  "path_count": 264,
+  "operation_count": 378,
+  "selected_operation_count": 357,
   "excluded_operation_count": 21,
   "selected_method_counts": {
-    "DELETE": 38,
-    "GET": 174,
-    "PATCH": 36,
-    "POST": 71,
-    "PUT": 17
+    "DELETE": 40,
+    "GET": 185,
+    "PATCH": 38,
+    "POST": 76,
+    "PUT": 18
   },
   "selected_pack_counts": {
-    "gitbook-content": 100,
-    "gitbook-organization": 76,
-    "gitbook-sites": 74,
-    "gitbook-intelligence": 39,
+    "gitbook-content": 65,
+    "gitbook-change-requests": 40,
+    "gitbook-organization": 85,
+    "gitbook-sites": 80,
+    "gitbook-intelligence": 40,
     "gitbook-platform": 47
   },
   "selected_primary_tag_counts": {
+    "billing": 1,
     "change-request-comments": 11,
     "change-request-content": 10,
     "change-request-contributors": 1,
     "change-request-conversations": 3,
     "change-request-reviewers": 3,
     "change-requests": 8,
-    "change-requests-reviews": 3,
+    "change-requests-reviews": 4,
     "collection-permissions": 7,
     "collections": 8,
-    "git": 9,
+    "git": 11,
     "glossary": 3,
-    "imports": 2,
+    "imports": 4,
     "integrations": 29,
     "openapi": 6,
     "openapi-versions": 6,
     "organization-ask": 2,
     "organization-invites": 6,
     "organization-members": 8,
-    "organizations": 10,
+    "organizations": 18,
     "site-ads": 3,
+    "site-agent-feedback": 1,
     "site-agent-settings": 2,
     "site-channels": 5,
     "site-context": 25,
     "site-customization": 5,
+    "site-external-links": 3,
     "site-insights": 4,
     "site-mcp-servers": 5,
     "site-permissions": 4,
@@ -71,7 +75,7 @@
     "site-spaces": 6,
     "site-structure": 1,
     "site-users": 4,
-    "sites": 15,
+    "sites": 18,
     "space-comment": 1,
     "space-comments": 10,
     "space-content": 25,
@@ -95,17 +99,18 @@
     "The operation returns an SSE stream, which the current static JSON REST composition does not represent.": 5
   },
   "pagination_counts": {
-    "none": 264,
-    "query_token": 69,
+    "none": 281,
+    "query_token": 73,
     "single_page": 3
   },
-  "unpaged_collection_count": 12,
+  "unpaged_collection_count": 13,
   "unpaged_collection_operation_ids": [
     "getContributorsByChangeRequestId",
     "listGitHubRepoBranchesForGitSyncInstallation",
     "listGitHubRepositoriesForGitSyncInstallation",
     "listGitLabProjectBranchesForGitSyncInstallation",
     "listGitLabProjectsForGitSyncInstallation",
+    "listOrganizationAuditEventActions",
     "listSSOProviderLoginsInOrganization",
     "listSiteAdaptiveTemplateConditions",
     "listSiteGitSyncInstallations",
@@ -442,7 +447,7 @@
     {
       "recipe_id": "change-request-review-gitbook",
       "operation_id": "listChangeRequestsForSpace",
-      "pack": "gitbook-content",
+      "pack": "gitbook-change-requests",
       "op": "change_request.list",
       "result_path": "items",
       "fields": {
@@ -713,7 +718,7 @@
     {
       "recipe_id": "create-change-request-intake-gitbook",
       "operation_id": "createChangeRequest",
-      "pack": "gitbook-content",
+      "pack": "gitbook-change-requests",
       "op": "change_request.create",
       "result_path": null,
       "fields": {
@@ -2407,6 +2412,14 @@
           "static_owned": false
         },
         {
+          "name": "cachedMetadata",
+          "in": "query",
+          "required": false,
+          "type": "boolean",
+          "pagination_owned": false,
+          "static_owned": false
+        },
+        {
           "name": "computed",
           "in": "query",
           "required": false,
@@ -2675,7 +2688,7 @@
         }
       ],
       "selected": true,
-      "pack": "gitbook-content",
+      "pack": "gitbook-change-requests",
       "op": "change_request.create",
       "result_path": null,
       "pagination": null,
@@ -2780,7 +2793,7 @@
         }
       ],
       "selected": true,
-      "pack": "gitbook-content",
+      "pack": "gitbook-change-requests",
       "op": "change_request.list",
       "result_path": "items",
       "pagination": {
@@ -2842,7 +2855,7 @@
         }
       ],
       "selected": true,
-      "pack": "gitbook-content",
+      "pack": "gitbook-change-requests",
       "op": "change_request.read",
       "result_path": null,
       "pagination": null,
@@ -2890,10 +2903,18 @@
           "type": "string",
           "pagination_owned": false,
           "static_owned": false
+        },
+        {
+          "name": "prefer",
+          "in": "header",
+          "required": false,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
         }
       ],
       "selected": true,
-      "pack": "gitbook-content",
+      "pack": "gitbook-change-requests",
       "op": "change_requests.update_change_request_by_id",
       "result_path": null,
       "pagination": null,
@@ -2942,7 +2963,7 @@
         }
       ],
       "selected": true,
-      "pack": "gitbook-content",
+      "pack": "gitbook-change-requests",
       "op": "change_requests.merge_change_request",
       "result_path": null,
       "pagination": null,
@@ -2991,7 +3012,7 @@
         }
       ],
       "selected": true,
-      "pack": "gitbook-content",
+      "pack": "gitbook-change-requests",
       "op": "change_requests.update_change_request",
       "result_path": null,
       "pagination": null,
@@ -3072,7 +3093,7 @@
         }
       ],
       "selected": true,
-      "pack": "gitbook-content",
+      "pack": "gitbook-change-requests",
       "op": "change_requests_reviews.get_reviews_by_change_request_id",
       "result_path": "items",
       "pagination": {
@@ -3136,13 +3157,70 @@
         }
       ],
       "selected": true,
-      "pack": "gitbook-content",
+      "pack": "gitbook-change-requests",
       "op": "change_requests_reviews.submit_change_request_review",
       "result_path": null,
       "pagination": null,
       "risk": "write",
       "approval": "always",
       "idempotency": "non_idempotent",
+      "reason": ""
+    },
+    {
+      "method": "GET",
+      "path": "/spaces/{spaceId}/change-requests/{changeRequestId}/reviews/stats",
+      "operation_id": "getReviewStatsByChangeRequestId",
+      "primary_tag": "change-requests-reviews",
+      "security": [
+        {
+          "user": []
+        },
+        {
+          "oauth": [
+            "space:read"
+          ]
+        }
+      ],
+      "request_media": [],
+      "response_media": [
+        "application/json"
+      ],
+      "request_body_required": false,
+      "body_mode": "none",
+      "parameters": [
+        {
+          "name": "spaceId",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
+        },
+        {
+          "name": "changeRequestId",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
+        },
+        {
+          "name": "outdated",
+          "in": "query",
+          "required": false,
+          "type": "boolean",
+          "pagination_owned": false,
+          "static_owned": false
+        }
+      ],
+      "selected": true,
+      "pack": "gitbook-change-requests",
+      "op": "change_requests_reviews.get_review_stats_by_change_request_id",
+      "result_path": null,
+      "pagination": null,
+      "risk": "read",
+      "approval": "ask",
+      "idempotency": "safe",
       "reason": ""
     },
     {
@@ -3201,7 +3279,7 @@
         }
       ],
       "selected": true,
-      "pack": "gitbook-content",
+      "pack": "gitbook-change-requests",
       "op": "change_requests_reviews.get_change_request_review_by_id",
       "result_path": null,
       "pagination": null,
@@ -3266,7 +3344,7 @@
         }
       ],
       "selected": true,
-      "pack": "gitbook-content",
+      "pack": "gitbook-change-requests",
       "op": "change_request_reviewers.get_requested_reviewers_by_change_request_id",
       "result_path": "items",
       "pagination": {
@@ -3330,7 +3408,7 @@
         }
       ],
       "selected": true,
-      "pack": "gitbook-content",
+      "pack": "gitbook-change-requests",
       "op": "change_request_reviewers.request_reviewers_for_change_request",
       "result_path": null,
       "pagination": null,
@@ -3385,7 +3463,7 @@
         }
       ],
       "selected": true,
-      "pack": "gitbook-content",
+      "pack": "gitbook-change-requests",
       "op": "change_request_reviewers.remove_requested_reviewer_from_change_request",
       "result_path": null,
       "pagination": null,
@@ -3450,7 +3528,7 @@
         }
       ],
       "selected": true,
-      "pack": "gitbook-content",
+      "pack": "gitbook-change-requests",
       "op": "change_request_conversations.list_change_request_conversations",
       "result_path": "items",
       "pagination": {
@@ -3522,7 +3600,7 @@
         }
       ],
       "selected": true,
-      "pack": "gitbook-content",
+      "pack": "gitbook-change-requests",
       "op": "change_request_conversations.update_change_request_conversation",
       "result_path": null,
       "pagination": null,
@@ -3572,7 +3650,7 @@
         }
       ],
       "selected": true,
-      "pack": "gitbook-content",
+      "pack": "gitbook-change-requests",
       "op": "change_request_conversations.delete_change_request_conversation",
       "result_path": null,
       "pagination": null,
@@ -3677,7 +3755,7 @@
         }
       ],
       "selected": true,
-      "pack": "gitbook-content",
+      "pack": "gitbook-change-requests",
       "op": "change_request_comments.list_comments_in_change_request",
       "result_path": "items",
       "pagination": {
@@ -3741,7 +3819,7 @@
         }
       ],
       "selected": true,
-      "pack": "gitbook-content",
+      "pack": "gitbook-change-requests",
       "op": "change_request_comments.post_comment_in_change_request",
       "result_path": null,
       "pagination": null,
@@ -3806,7 +3884,7 @@
         }
       ],
       "selected": true,
-      "pack": "gitbook-content",
+      "pack": "gitbook-change-requests",
       "op": "change_request_comments.get_comment_in_change_request",
       "result_path": null,
       "pagination": null,
@@ -3861,7 +3939,7 @@
         }
       ],
       "selected": true,
-      "pack": "gitbook-content",
+      "pack": "gitbook-change-requests",
       "op": "change_request_comments.delete_comment_in_change_request",
       "result_path": null,
       "pagination": null,
@@ -3920,7 +3998,7 @@
         }
       ],
       "selected": true,
-      "pack": "gitbook-content",
+      "pack": "gitbook-change-requests",
       "op": "change_request_comments.update_comment_in_change_request",
       "result_path": null,
       "pagination": null,
@@ -4001,7 +4079,7 @@
         }
       ],
       "selected": true,
-      "pack": "gitbook-content",
+      "pack": "gitbook-change-requests",
       "op": "change_request_comments.list_comment_replies_in_change_request",
       "result_path": "items",
       "pagination": {
@@ -4081,7 +4159,7 @@
         }
       ],
       "selected": true,
-      "pack": "gitbook-content",
+      "pack": "gitbook-change-requests",
       "op": "change_request_comments.post_comment_reply_in_change_request",
       "result_path": null,
       "pagination": null,
@@ -4154,7 +4232,7 @@
         }
       ],
       "selected": true,
-      "pack": "gitbook-content",
+      "pack": "gitbook-change-requests",
       "op": "change_request_comments.get_comment_reply_in_change_request",
       "result_path": null,
       "pagination": null,
@@ -4221,7 +4299,7 @@
         }
       ],
       "selected": true,
-      "pack": "gitbook-content",
+      "pack": "gitbook-change-requests",
       "op": "change_request_comments.update_comment_reply_in_change_request",
       "result_path": null,
       "pagination": null,
@@ -4284,7 +4362,7 @@
         }
       ],
       "selected": true,
-      "pack": "gitbook-content",
+      "pack": "gitbook-change-requests",
       "op": "change_request_comments.delete_comment_reply_in_change_request",
       "result_path": null,
       "pagination": null,
@@ -4333,7 +4411,7 @@
         }
       ],
       "selected": true,
-      "pack": "gitbook-content",
+      "pack": "gitbook-change-requests",
       "op": "change_request_contributors.get_contributors_by_change_request_id",
       "result_path": "items",
       "pagination": null,
@@ -4398,7 +4476,7 @@
         }
       ],
       "selected": true,
-      "pack": "gitbook-content",
+      "pack": "gitbook-change-requests",
       "op": "change_request_content.get_revision_of_change_request_by_id",
       "result_path": null,
       "pagination": null,
@@ -4446,10 +4524,18 @@
           "type": "string",
           "pagination_owned": false,
           "static_owned": false
+        },
+        {
+          "name": "compat",
+          "in": "query",
+          "required": false,
+          "type": "boolean",
+          "pagination_owned": false,
+          "static_owned": false
         }
       ],
       "selected": true,
-      "pack": "gitbook-content",
+      "pack": "gitbook-change-requests",
       "op": "change_request_content.update_change_request_content",
       "result_path": null,
       "pagination": null,
@@ -4514,7 +4600,7 @@
         }
       ],
       "selected": true,
-      "pack": "gitbook-content",
+      "pack": "gitbook-change-requests",
       "op": "change_request_content.list_pages_in_change_request",
       "result_path": "pages",
       "pagination": {
@@ -4597,7 +4683,7 @@
         }
       ],
       "selected": true,
-      "pack": "gitbook-content",
+      "pack": "gitbook-change-requests",
       "op": "change_request_content.list_files_in_change_request_by_id",
       "result_path": "items",
       "pagination": {
@@ -4683,7 +4769,7 @@
         }
       ],
       "selected": true,
-      "pack": "gitbook-content",
+      "pack": "gitbook-change-requests",
       "op": "change_request_content.get_file_in_change_request_by_id",
       "result_path": null,
       "pagination": null,
@@ -4788,7 +4874,7 @@
         }
       ],
       "selected": true,
-      "pack": "gitbook-content",
+      "pack": "gitbook-change-requests",
       "op": "change_request_content.get_page_in_change_request_by_id",
       "result_path": null,
       "pagination": null,
@@ -4845,7 +4931,7 @@
         }
       ],
       "selected": true,
-      "pack": "gitbook-content",
+      "pack": "gitbook-change-requests",
       "op": "change_request_content.list_change_request_page_meta_links",
       "result_path": null,
       "pagination": null,
@@ -4918,7 +5004,7 @@
         }
       ],
       "selected": true,
-      "pack": "gitbook-content",
+      "pack": "gitbook-change-requests",
       "op": "change_request_content.get_reusable_content_in_change_request_by_id",
       "result_path": null,
       "pagination": null,
@@ -4975,7 +5061,7 @@
         }
       ],
       "selected": true,
-      "pack": "gitbook-content",
+      "pack": "gitbook-change-requests",
       "op": "change_request_content.get_change_request_changes",
       "result_path": null,
       "pagination": null,
@@ -5040,7 +5126,7 @@
         }
       ],
       "selected": true,
-      "pack": "gitbook-content",
+      "pack": "gitbook-change-requests",
       "op": "change_requests.get_change_request_pdf",
       "result_path": null,
       "pagination": null,
@@ -5704,6 +5790,14 @@
           "static_owned": false
         },
         {
+          "name": "cachedMetadata",
+          "in": "query",
+          "required": false,
+          "type": "boolean",
+          "pagination_owned": false,
+          "static_owned": false
+        },
+        {
           "name": "computed",
           "in": "query",
           "required": false,
@@ -5866,6 +5960,14 @@
           "static_owned": false
         },
         {
+          "name": "cachedMetadata",
+          "in": "query",
+          "required": false,
+          "type": "boolean",
+          "pagination_owned": false,
+          "static_owned": false
+        },
+        {
           "name": "computed",
           "in": "query",
           "required": false,
@@ -5875,7 +5977,7 @@
         }
       ],
       "selected": true,
-      "pack": "gitbook-content",
+      "pack": "gitbook-change-requests",
       "op": "change_request_content.get_page_in_change_request_by_path",
       "result_path": null,
       "pagination": null,
@@ -6780,7 +6882,7 @@
         }
       ],
       "selected": true,
-      "pack": "gitbook-content",
+      "pack": "gitbook-change-requests",
       "op": "change_request_comments.list_commenters_in_change_request",
       "result_path": "items",
       "pagination": {
@@ -7953,6 +8055,11 @@
       "security": [
         {
           "user": []
+        },
+        {
+          "oauth": [
+            "integration:publish"
+          ]
         }
       ],
       "request_media": [
@@ -7991,6 +8098,11 @@
       "security": [
         {
           "user": []
+        },
+        {
+          "oauth": [
+            "integration:delete"
+          ]
         }
       ],
       "request_media": [],
@@ -8081,6 +8193,11 @@
       "security": [
         {
           "user": []
+        },
+        {
+          "oauth": [
+            "integration:installations:write"
+          ]
         }
       ],
       "request_media": [
@@ -8377,6 +8494,11 @@
       "security": [
         {
           "user": []
+        },
+        {
+          "oauth": [
+            "integration:publish"
+          ]
         }
       ],
       "request_media": [
@@ -8413,6 +8535,11 @@
       "security": [
         {
           "user": []
+        },
+        {
+          "oauth": [
+            "integration:publish"
+          ]
         }
       ],
       "request_media": [],
@@ -8588,6 +8715,11 @@
         },
         {
           "integration-installation": []
+        },
+        {
+          "oauth": [
+            "integration:installations:read"
+          ]
         }
       ],
       "request_media": [],
@@ -8638,6 +8770,11 @@
         },
         {
           "integration-installation": []
+        },
+        {
+          "oauth": [
+            "integration:installations:write"
+          ]
         }
       ],
       "request_media": [
@@ -8765,16 +8902,15 @@
           "user": []
         },
         {
-          "user-internal": []
-        },
-        {
-          "user-staff": []
-        },
-        {
           "integration": []
         },
         {
           "integration-installation": []
+        },
+        {
+          "oauth": [
+            "integration:installations:read"
+          ]
         }
       ],
       "request_media": [],
@@ -8858,16 +8994,15 @@
           "user": []
         },
         {
-          "user-internal": []
-        },
-        {
-          "user-staff": []
-        },
-        {
           "integration": []
         },
         {
           "integration-installation": []
+        },
+        {
+          "oauth": [
+            "integration:installations:write"
+          ]
         }
       ],
       "request_media": [
@@ -8924,16 +9059,15 @@
           "user": []
         },
         {
-          "user-internal": []
-        },
-        {
-          "user-staff": []
-        },
-        {
           "integration": []
         },
         {
           "integration-installation": []
+        },
+        {
+          "oauth": [
+            "integration:installations:read"
+          ]
         }
       ],
       "request_media": [],
@@ -8996,16 +9130,15 @@
           "user": []
         },
         {
-          "user-internal": []
-        },
-        {
-          "user-staff": []
-        },
-        {
           "integration": []
         },
         {
           "integration-installation": []
+        },
+        {
+          "oauth": [
+            "integration:installations:write"
+          ]
         }
       ],
       "request_media": [
@@ -9132,16 +9265,15 @@
           "user": []
         },
         {
-          "user-internal": []
-        },
-        {
-          "user-staff": []
-        },
-        {
           "integration": []
         },
         {
           "integration-installation": []
+        },
+        {
+          "oauth": [
+            "integration:installations:read"
+          ]
         }
       ],
       "request_media": [],
@@ -9225,16 +9357,15 @@
           "user": []
         },
         {
-          "user-internal": []
-        },
-        {
-          "user-staff": []
-        },
-        {
           "integration": []
         },
         {
           "integration-installation": []
+        },
+        {
+          "oauth": [
+            "integration:installations:write"
+          ]
         }
       ],
       "request_media": [
@@ -9291,16 +9422,15 @@
           "user": []
         },
         {
-          "user-internal": []
-        },
-        {
-          "user-staff": []
-        },
-        {
           "integration": []
         },
         {
           "integration-installation": []
+        },
+        {
+          "oauth": [
+            "integration:installations:read"
+          ]
         }
       ],
       "request_media": [],
@@ -9363,16 +9493,15 @@
           "user": []
         },
         {
-          "user-internal": []
-        },
-        {
-          "user-staff": []
-        },
-        {
           "integration": []
         },
         {
           "integration-installation": []
+        },
+        {
+          "oauth": [
+            "integration:installations:write"
+          ]
         }
       ],
       "request_media": [
@@ -9552,6 +9681,57 @@
       "reason": ""
     },
     {
+      "method": "POST",
+      "path": "/orgs",
+      "operation_id": "createOrganization",
+      "primary_tag": "organizations",
+      "security": [
+        {
+          "user": []
+        },
+        {
+          "oauth": [
+            "organization:write"
+          ]
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "body_mode": "json_fields",
+      "parameters": [
+        {
+          "name": "withDefaultSite",
+          "in": "query",
+          "required": false,
+          "type": "boolean",
+          "pagination_owned": false,
+          "static_owned": false
+        },
+        {
+          "name": "openapiUrl",
+          "in": "query",
+          "required": false,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
+        }
+      ],
+      "selected": true,
+      "pack": "gitbook-organization",
+      "op": "organizations.create_organization",
+      "result_path": null,
+      "pagination": null,
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "reason": ""
+    },
+    {
       "method": "GET",
       "path": "/orgs/{organizationId}",
       "operation_id": "getOrganizationById",
@@ -9640,6 +9820,191 @@
       "risk": "admin",
       "approval": "always",
       "idempotency": "idempotent",
+      "reason": ""
+    },
+    {
+      "method": "GET",
+      "path": "/orgs/{organizationId}/audit-event-actions",
+      "operation_id": "listOrganizationAuditEventActions",
+      "primary_tag": "organizations",
+      "security": [
+        {
+          "user": []
+        }
+      ],
+      "request_media": [],
+      "response_media": [
+        "application/json"
+      ],
+      "request_body_required": false,
+      "body_mode": "none",
+      "parameters": [
+        {
+          "name": "organizationId",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
+        }
+      ],
+      "selected": true,
+      "pack": "gitbook-organization",
+      "op": "organizations.list_organization_audit_event_actions",
+      "result_path": "items",
+      "pagination": null,
+      "risk": "read",
+      "approval": "ask",
+      "idempotency": "safe",
+      "reason": ""
+    },
+    {
+      "method": "GET",
+      "path": "/orgs/{organizationId}/audit-events",
+      "operation_id": "listOrganizationAuditEvents",
+      "primary_tag": "organizations",
+      "security": [
+        {
+          "user": []
+        }
+      ],
+      "request_media": [],
+      "response_media": [
+        "application/json"
+      ],
+      "request_body_required": false,
+      "body_mode": "none",
+      "parameters": [
+        {
+          "name": "organizationId",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
+        },
+        {
+          "name": "page",
+          "in": "query",
+          "required": false,
+          "type": "string",
+          "pagination_owned": true,
+          "static_owned": false
+        },
+        {
+          "name": "limit",
+          "in": "query",
+          "required": false,
+          "type": "number",
+          "pagination_owned": true,
+          "static_owned": false
+        },
+        {
+          "name": "from",
+          "in": "query",
+          "required": false,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
+        },
+        {
+          "name": "to",
+          "in": "query",
+          "required": false,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
+        },
+        {
+          "name": "action",
+          "in": "query",
+          "required": false,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
+        },
+        {
+          "name": "actor",
+          "in": "query",
+          "required": false,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
+        },
+        {
+          "name": "target",
+          "in": "query",
+          "required": false,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
+        }
+      ],
+      "selected": true,
+      "pack": "gitbook-organization",
+      "op": "organizations.list_organization_audit_events",
+      "result_path": "items",
+      "pagination": {
+        "style": "query_token",
+        "page_size": {
+          "placement": "query",
+          "param": "limit",
+          "value": 1000,
+          "max": 1000
+        },
+        "token_from": "next.page",
+        "token_to": {
+          "placement": "query",
+          "param": "page"
+        }
+      },
+      "risk": "read",
+      "approval": "ask",
+      "idempotency": "safe",
+      "reason": ""
+    },
+    {
+      "method": "GET",
+      "path": "/orgs/{organizationId}/audit-events/{auditEventId}",
+      "operation_id": "getOrganizationAuditEvent",
+      "primary_tag": "organizations",
+      "security": [
+        {
+          "user": []
+        }
+      ],
+      "request_media": [],
+      "response_media": [
+        "application/json"
+      ],
+      "request_body_required": false,
+      "body_mode": "none",
+      "parameters": [
+        {
+          "name": "organizationId",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
+        },
+        {
+          "name": "auditEventId",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
+        }
+      ],
+      "selected": true,
+      "pack": "gitbook-organization",
+      "op": "organizations.get_organization_audit_event",
+      "result_path": null,
+      "pagination": null,
+      "risk": "read",
+      "approval": "ask",
+      "idempotency": "safe",
       "reason": ""
     },
     {
@@ -11128,6 +11493,66 @@
     },
     {
       "method": "GET",
+      "path": "/orgs/{organizationId}/billing/ai-usage",
+      "operation_id": "getOrganizationAIUsage",
+      "primary_tag": "billing",
+      "security": [
+        {
+          "user": []
+        }
+      ],
+      "request_media": [],
+      "response_media": [
+        "application/json"
+      ],
+      "request_body_required": false,
+      "body_mode": "none",
+      "parameters": [
+        {
+          "name": "organizationId",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
+        },
+        {
+          "name": "from",
+          "in": "query",
+          "required": true,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
+        },
+        {
+          "name": "to",
+          "in": "query",
+          "required": true,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
+        },
+        {
+          "name": "interval",
+          "in": "query",
+          "required": false,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
+        }
+      ],
+      "selected": true,
+      "pack": "gitbook-organization",
+      "op": "billing.get_organization_ai_usage",
+      "result_path": null,
+      "pagination": null,
+      "risk": "read",
+      "approval": "ask",
+      "idempotency": "safe",
+      "reason": ""
+    },
+    {
+      "method": "GET",
       "path": "/orgs/{organizationId}/search",
       "operation_id": "searchOrganizationContent",
       "primary_tag": "organizations",
@@ -11307,6 +11732,14 @@
           "static_owned": false
         },
         {
+          "name": "styleguideRun",
+          "in": "query",
+          "required": false,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
+        },
+        {
           "name": "finding",
           "in": "query",
           "required": false,
@@ -11324,7 +11757,7 @@
         }
       ],
       "selected": true,
-      "pack": "gitbook-content",
+      "pack": "gitbook-change-requests",
       "op": "change_requests.list_change_requests_for_organization",
       "result_path": "items",
       "pagination": {
@@ -11593,16 +12026,15 @@
           "user": []
         },
         {
-          "user-internal": []
-        },
-        {
-          "user-staff": []
-        },
-        {
           "integration": []
         },
         {
           "integration-installation": []
+        },
+        {
+          "oauth": [
+            "integration:read"
+          ]
         }
       ],
       "request_media": [],
@@ -11732,6 +12164,11 @@
       "security": [
         {
           "user": []
+        },
+        {
+          "oauth": [
+            "integration:read"
+          ]
         }
       ],
       "request_media": [],
@@ -11863,16 +12300,15 @@
           "user": []
         },
         {
-          "user-internal": []
-        },
-        {
-          "user-staff": []
-        },
-        {
           "integration": []
         },
         {
           "integration-installation": []
+        },
+        {
+          "oauth": [
+            "integration:read"
+          ]
         }
       ],
       "request_media": [],
@@ -11908,6 +12344,22 @@
         },
         {
           "name": "target",
+          "in": "query",
+          "required": false,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
+        },
+        {
+          "name": "site",
+          "in": "query",
+          "required": false,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
+        },
+        {
+          "name": "space",
           "in": "query",
           "required": false,
           "type": "string",
@@ -13145,6 +13597,211 @@
     },
     {
       "method": "GET",
+      "path": "/orgs/{organizationId}/agent/conversations",
+      "operation_id": "listOrganizationAgentConversations",
+      "primary_tag": "organizations",
+      "security": [
+        {
+          "user": []
+        },
+        {
+          "oauth": [
+            "organization:read"
+          ]
+        }
+      ],
+      "request_media": [],
+      "response_media": [
+        "application/json"
+      ],
+      "request_body_required": false,
+      "body_mode": "none",
+      "parameters": [
+        {
+          "name": "organizationId",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
+        },
+        {
+          "name": "page",
+          "in": "query",
+          "required": false,
+          "type": "string",
+          "pagination_owned": true,
+          "static_owned": false
+        },
+        {
+          "name": "limit",
+          "in": "query",
+          "required": false,
+          "type": "number",
+          "pagination_owned": true,
+          "static_owned": false
+        }
+      ],
+      "selected": true,
+      "pack": "gitbook-organization",
+      "op": "organizations.list_organization_agent_conversations",
+      "result_path": "items",
+      "pagination": {
+        "style": "query_token",
+        "page_size": {
+          "placement": "query",
+          "param": "limit",
+          "value": 1000,
+          "max": 1000
+        },
+        "token_from": "next.page",
+        "token_to": {
+          "placement": "query",
+          "param": "page"
+        }
+      },
+      "risk": "read",
+      "approval": "ask",
+      "idempotency": "safe",
+      "reason": ""
+    },
+    {
+      "method": "PUT",
+      "path": "/orgs/{organizationId}/agent/conversations/{conversationId}",
+      "operation_id": "provisionOrganizationAgentConversation",
+      "primary_tag": "organizations",
+      "security": [
+        {
+          "user": []
+        }
+      ],
+      "request_media": [],
+      "response_media": [],
+      "request_body_required": false,
+      "body_mode": "none",
+      "parameters": [
+        {
+          "name": "organizationId",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
+        },
+        {
+          "name": "conversationId",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
+        }
+      ],
+      "selected": true,
+      "pack": "gitbook-organization",
+      "op": "organizations.provision_organization_agent_conversation",
+      "result_path": null,
+      "pagination": null,
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "reason": ""
+    },
+    {
+      "method": "PATCH",
+      "path": "/orgs/{organizationId}/agent/conversations/{conversationId}",
+      "operation_id": "updateOrganizationAgentConversation",
+      "primary_tag": "organizations",
+      "security": [
+        {
+          "user": []
+        },
+        {
+          "oauth": [
+            "organization:write"
+          ]
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "body_mode": "json_fields",
+      "parameters": [
+        {
+          "name": "organizationId",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
+        },
+        {
+          "name": "conversationId",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
+        }
+      ],
+      "selected": true,
+      "pack": "gitbook-organization",
+      "op": "organizations.update_organization_agent_conversation",
+      "result_path": null,
+      "pagination": null,
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "reason": ""
+    },
+    {
+      "method": "DELETE",
+      "path": "/orgs/{organizationId}/agent/conversations/{conversationId}",
+      "operation_id": "deleteOrganizationAgentConversation",
+      "primary_tag": "organizations",
+      "security": [
+        {
+          "user": []
+        }
+      ],
+      "request_media": [],
+      "response_media": [],
+      "request_body_required": false,
+      "body_mode": "none",
+      "parameters": [
+        {
+          "name": "organizationId",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
+        },
+        {
+          "name": "conversationId",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
+        }
+      ],
+      "selected": true,
+      "pack": "gitbook-organization",
+      "op": "organizations.delete_organization_agent_conversation",
+      "result_path": null,
+      "pagination": null,
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "reason": ""
+    },
+    {
+      "method": "GET",
       "path": "/orgs/{organizationId}/translations",
       "operation_id": "listTranslations",
       "primary_tag": "translations",
@@ -13776,6 +14433,108 @@
       "reason": "The official operation does not admit the documented personal user bearer token; it is internal, staff, integration, or installation-token only."
     },
     {
+      "method": "GET",
+      "path": "/org/{organizationId}/imports",
+      "operation_id": "listImportRuns",
+      "primary_tag": "imports",
+      "security": [
+        {
+          "user": []
+        },
+        {
+          "oauth": [
+            "space:read"
+          ]
+        }
+      ],
+      "request_media": [],
+      "response_media": [
+        "application/json"
+      ],
+      "request_body_required": false,
+      "body_mode": "none",
+      "parameters": [
+        {
+          "name": "organizationId",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
+        },
+        {
+          "name": "space",
+          "in": "query",
+          "required": false,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
+        },
+        {
+          "name": "changeRequest",
+          "in": "query",
+          "required": false,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
+        },
+        {
+          "name": "site",
+          "in": "query",
+          "required": false,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
+        },
+        {
+          "name": "status",
+          "in": "query",
+          "required": false,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
+        },
+        {
+          "name": "page",
+          "in": "query",
+          "required": false,
+          "type": "string",
+          "pagination_owned": true,
+          "static_owned": false
+        },
+        {
+          "name": "limit",
+          "in": "query",
+          "required": false,
+          "type": "number",
+          "pagination_owned": true,
+          "static_owned": false
+        }
+      ],
+      "selected": true,
+      "pack": "gitbook-content",
+      "op": "imports.list_import_runs",
+      "result_path": "items",
+      "pagination": {
+        "style": "query_token",
+        "page_size": {
+          "placement": "query",
+          "param": "limit",
+          "value": 1000,
+          "max": 1000
+        },
+        "token_from": "next.page",
+        "token_to": {
+          "placement": "query",
+          "param": "page"
+        }
+      },
+      "risk": "read",
+      "approval": "ask",
+      "idempotency": "safe",
+      "reason": ""
+    },
+    {
       "method": "POST",
       "path": "/org/{organizationId}/imports",
       "operation_id": "startImportRun",
@@ -13816,6 +14575,55 @@
       "risk": "write",
       "approval": "always",
       "idempotency": "non_idempotent",
+      "reason": ""
+    },
+    {
+      "method": "GET",
+      "path": "/org/{organizationId}/imports/{importRunId}",
+      "operation_id": "getImportRun",
+      "primary_tag": "imports",
+      "security": [
+        {
+          "user": []
+        },
+        {
+          "oauth": [
+            "space:read"
+          ]
+        }
+      ],
+      "request_media": [],
+      "response_media": [
+        "application/json"
+      ],
+      "request_body_required": false,
+      "body_mode": "none",
+      "parameters": [
+        {
+          "name": "organizationId",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
+        },
+        {
+          "name": "importRunId",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
+        }
+      ],
+      "selected": true,
+      "pack": "gitbook-content",
+      "op": "imports.get_import_run",
+      "result_path": null,
+      "pagination": null,
+      "risk": "read",
+      "approval": "ask",
+      "idempotency": "safe",
       "reason": ""
     },
     {
@@ -14857,7 +15665,7 @@
       "response_media": [
         "application/json"
       ],
-      "request_body_required": false,
+      "request_body_required": true,
       "body_mode": "json_fields",
       "parameters": [
         {
@@ -14872,6 +15680,14 @@
           "name": "siteId",
           "in": "path",
           "required": true,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
+        },
+        {
+          "name": "prefer",
+          "in": "header",
+          "required": false,
           "type": "string",
           "pagination_owned": false,
           "static_owned": false
@@ -15370,6 +16186,14 @@
           "type": "string",
           "pagination_owned": false,
           "static_owned": false
+        },
+        {
+          "name": "prefer",
+          "in": "header",
+          "required": false,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
         }
       ],
       "selected": true,
@@ -15652,6 +16476,14 @@
           "type": "string",
           "pagination_owned": false,
           "static_owned": false
+        },
+        {
+          "name": "prefer",
+          "in": "header",
+          "required": false,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
         }
       ],
       "selected": true,
@@ -15903,6 +16735,14 @@
           "type": "string",
           "pagination_owned": false,
           "static_owned": false
+        },
+        {
+          "name": "prefer",
+          "in": "header",
+          "required": false,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
         }
       ],
       "selected": true,
@@ -15963,6 +16803,179 @@
       "selected": true,
       "pack": "gitbook-sites",
       "op": "site_sections.delete_site_section_by_id",
+      "result_path": null,
+      "pagination": null,
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "reason": ""
+    },
+    {
+      "method": "POST",
+      "path": "/orgs/{organizationId}/sites/{siteId}/external-links",
+      "operation_id": "addExternalLinkToSite",
+      "primary_tag": "site-external-links",
+      "security": [
+        {
+          "user": []
+        },
+        {
+          "oauth": [
+            "site:write"
+          ]
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "body_mode": "json_fields",
+      "parameters": [
+        {
+          "name": "organizationId",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
+        },
+        {
+          "name": "siteId",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
+        }
+      ],
+      "selected": true,
+      "pack": "gitbook-sites",
+      "op": "site_external_links.add_external_link_to_site",
+      "result_path": null,
+      "pagination": null,
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "reason": ""
+    },
+    {
+      "method": "PATCH",
+      "path": "/orgs/{organizationId}/sites/{siteId}/external-links/{siteExternalLinkId}",
+      "operation_id": "updateSiteExternalLinkById",
+      "primary_tag": "site-external-links",
+      "security": [
+        {
+          "user": []
+        },
+        {
+          "oauth": [
+            "site:write"
+          ]
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "body_mode": "json_fields",
+      "parameters": [
+        {
+          "name": "organizationId",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
+        },
+        {
+          "name": "siteId",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
+        },
+        {
+          "name": "siteExternalLinkId",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
+        },
+        {
+          "name": "prefer",
+          "in": "header",
+          "required": false,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
+        }
+      ],
+      "selected": true,
+      "pack": "gitbook-sites",
+      "op": "site_external_links.update_site_external_link_by_id",
+      "result_path": null,
+      "pagination": null,
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "reason": ""
+    },
+    {
+      "method": "DELETE",
+      "path": "/orgs/{organizationId}/sites/{siteId}/external-links/{siteExternalLinkId}",
+      "operation_id": "deleteSiteExternalLinkById",
+      "primary_tag": "site-external-links",
+      "security": [
+        {
+          "user": []
+        },
+        {
+          "oauth": [
+            "site:write"
+          ]
+        }
+      ],
+      "request_media": [],
+      "response_media": [],
+      "request_body_required": false,
+      "body_mode": "none",
+      "parameters": [
+        {
+          "name": "organizationId",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
+        },
+        {
+          "name": "siteId",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
+        },
+        {
+          "name": "siteExternalLinkId",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
+        }
+      ],
+      "selected": true,
+      "pack": "gitbook-sites",
+      "op": "site_external_links.delete_site_external_link_by_id",
       "result_path": null,
       "pagination": null,
       "risk": "destructive",
@@ -16052,6 +17065,53 @@
     },
     {
       "method": "POST",
+      "path": "/orgs/{organizationId}/sites/{siteId}/search/prewarm",
+      "operation_id": "prewarmSiteSearch",
+      "primary_tag": "sites",
+      "security": [
+        {
+          "user": []
+        },
+        {
+          "oauth": [
+            "site:search"
+          ]
+        }
+      ],
+      "request_media": [],
+      "response_media": [],
+      "request_body_required": false,
+      "body_mode": "none",
+      "parameters": [
+        {
+          "name": "organizationId",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
+        },
+        {
+          "name": "siteId",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
+        }
+      ],
+      "selected": true,
+      "pack": "gitbook-sites",
+      "op": "sites.prewarm_site_search",
+      "result_path": null,
+      "pagination": null,
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "reason": ""
+    },
+    {
+      "method": "POST",
       "path": "/orgs/{organizationId}/sites/{siteId}/agent-feedback",
       "operation_id": "submitSiteAgentFeedback",
       "primary_tag": "site-insights",
@@ -16087,6 +17147,57 @@
       "selected": true,
       "pack": "gitbook-intelligence",
       "op": "site_insights.submit_site_agent_feedback",
+      "result_path": null,
+      "pagination": null,
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "reason": ""
+    },
+    {
+      "method": "POST",
+      "path": "/orgs/{organizationId}/sites/{siteId}/agents/feedback",
+      "operation_id": "submitAgentFeedbackToSite",
+      "primary_tag": "site-agent-feedback",
+      "security": [
+        {
+          "user": []
+        },
+        {
+          "oauth": [
+            "site:write"
+          ]
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "body_mode": "json_fields",
+      "parameters": [
+        {
+          "name": "organizationId",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
+        },
+        {
+          "name": "siteId",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
+        }
+      ],
+      "selected": true,
+      "pack": "gitbook-intelligence",
+      "op": "site_agent_feedback.submit_agent_feedback_to_site",
       "result_path": null,
       "pagination": null,
       "risk": "write",
@@ -16634,6 +17745,14 @@
           "static_owned": false
         },
         {
+          "name": "question",
+          "in": "query",
+          "required": false,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
+        },
+        {
           "name": "status",
           "in": "query",
           "required": false,
@@ -16645,7 +17764,7 @@
           "name": "type",
           "in": "query",
           "required": false,
-          "type": "string",
+          "type": "array",
           "pagination_owned": false,
           "static_owned": false
         },
@@ -16670,6 +17789,22 @@
           "in": "query",
           "required": false,
           "type": "array",
+          "pagination_owned": false,
+          "static_owned": false
+        },
+        {
+          "name": "updatedAfter",
+          "in": "query",
+          "required": false,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
+        },
+        {
+          "name": "updatedBefore",
+          "in": "query",
+          "required": false,
+          "type": "string",
           "pagination_owned": false,
           "static_owned": false
         },
@@ -17278,7 +18413,7 @@
           "name": "type",
           "in": "query",
           "required": false,
-          "type": "string",
+          "type": "array",
           "pagination_owned": false,
           "static_owned": false
         },
@@ -18848,6 +19983,14 @@
           "type": "string",
           "pagination_owned": false,
           "static_owned": false
+        },
+        {
+          "name": "prefer",
+          "in": "header",
+          "required": false,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
         }
       ],
       "selected": true,
@@ -20125,6 +21268,135 @@
     },
     {
       "method": "POST",
+      "path": "/orgs/{organizationId}/sites/{siteId}/styleguide/runs",
+      "operation_id": "createSiteStyleguideRun",
+      "primary_tag": "sites",
+      "security": [
+        {
+          "user": []
+        },
+        {
+          "oauth": [
+            "site:write"
+          ]
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "body_mode": "json_fields",
+      "parameters": [
+        {
+          "name": "organizationId",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
+        },
+        {
+          "name": "siteId",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
+        }
+      ],
+      "selected": true,
+      "pack": "gitbook-sites",
+      "op": "sites.create_site_styleguide_run",
+      "result_path": null,
+      "pagination": null,
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "reason": ""
+    },
+    {
+      "method": "GET",
+      "path": "/orgs/{organizationId}/sites/{siteId}/styleguide/runs",
+      "operation_id": "listSiteStyleguideRuns",
+      "primary_tag": "sites",
+      "security": [
+        {
+          "user": []
+        },
+        {
+          "oauth": [
+            "site:read"
+          ]
+        }
+      ],
+      "request_media": [],
+      "response_media": [
+        "application/json"
+      ],
+      "request_body_required": false,
+      "body_mode": "none",
+      "parameters": [
+        {
+          "name": "organizationId",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
+        },
+        {
+          "name": "siteId",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
+        },
+        {
+          "name": "page",
+          "in": "query",
+          "required": false,
+          "type": "string",
+          "pagination_owned": true,
+          "static_owned": false
+        },
+        {
+          "name": "limit",
+          "in": "query",
+          "required": false,
+          "type": "number",
+          "pagination_owned": true,
+          "static_owned": false
+        }
+      ],
+      "selected": true,
+      "pack": "gitbook-sites",
+      "op": "sites.list_site_styleguide_runs",
+      "result_path": "items",
+      "pagination": {
+        "style": "query_token",
+        "page_size": {
+          "placement": "query",
+          "param": "limit",
+          "value": 1000,
+          "max": 1000
+        },
+        "token_from": "next.page",
+        "token_to": {
+          "placement": "query",
+          "param": "page"
+        }
+      },
+      "risk": "read",
+      "approval": "ask",
+      "idempotency": "safe",
+      "reason": ""
+    },
+    {
+      "method": "POST",
       "path": "/orgs/{organizationId}/sites/{siteId}/insights/events",
       "operation_id": "trackEventsInSiteById",
       "primary_tag": "site-insights",
@@ -20504,6 +21776,14 @@
           "in": "query",
           "required": false,
           "type": "boolean",
+          "pagination_owned": false,
+          "static_owned": false
+        },
+        {
+          "name": "orderBy",
+          "in": "query",
+          "required": false,
+          "type": "string",
           "pagination_owned": false,
           "static_owned": false
         }
@@ -22024,6 +23304,74 @@
     },
     {
       "method": "GET",
+      "path": "/git/installations/{installationId}/github/repos/{accountName}/{repositoryName}/file",
+      "operation_id": "getGitHubRepoFileForGitSyncInstallation",
+      "primary_tag": "git",
+      "security": [
+        {
+          "user": []
+        }
+      ],
+      "request_media": [],
+      "response_media": [
+        "application/json"
+      ],
+      "request_body_required": false,
+      "body_mode": "none",
+      "parameters": [
+        {
+          "name": "installationId",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
+        },
+        {
+          "name": "accountName",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
+        },
+        {
+          "name": "repositoryName",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
+        },
+        {
+          "name": "path",
+          "in": "query",
+          "required": true,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
+        },
+        {
+          "name": "ref",
+          "in": "query",
+          "required": true,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
+        }
+      ],
+      "selected": true,
+      "pack": "gitbook-content",
+      "op": "git.get_git_hub_repo_file_for_git_sync_installation",
+      "result_path": null,
+      "pagination": null,
+      "risk": "read",
+      "approval": "ask",
+      "idempotency": "safe",
+      "reason": ""
+    },
+    {
+      "method": "GET",
       "path": "/git/installations/{installationId}/gitlab/projects",
       "operation_id": "listGitLabProjectsForGitSyncInstallation",
       "primary_tag": "git",
@@ -22096,6 +23444,66 @@
       "pack": "gitbook-content",
       "op": "git.list_git_lab_project_branches_for_git_sync_installation",
       "result_path": "items",
+      "pagination": null,
+      "risk": "read",
+      "approval": "ask",
+      "idempotency": "safe",
+      "reason": ""
+    },
+    {
+      "method": "GET",
+      "path": "/git/installations/{installationId}/gitlab/projects/{projectId}/file",
+      "operation_id": "getGitLabProjectFileForGitSyncInstallation",
+      "primary_tag": "git",
+      "security": [
+        {
+          "user": []
+        }
+      ],
+      "request_media": [],
+      "response_media": [
+        "application/json"
+      ],
+      "request_body_required": false,
+      "body_mode": "none",
+      "parameters": [
+        {
+          "name": "installationId",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
+        },
+        {
+          "name": "projectId",
+          "in": "path",
+          "required": true,
+          "type": "number",
+          "pagination_owned": false,
+          "static_owned": false
+        },
+        {
+          "name": "path",
+          "in": "query",
+          "required": true,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
+        },
+        {
+          "name": "ref",
+          "in": "query",
+          "required": true,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
+        }
+      ],
+      "selected": true,
+      "pack": "gitbook-content",
+      "op": "git.get_git_lab_project_file_for_git_sync_installation",
+      "result_path": null,
       "pagination": null,
       "risk": "read",
       "approval": "ask",
@@ -22216,6 +23624,9 @@
     "/spaces/{spaceId}/change-requests/{changeRequestId}/reviews": {
       "get": {},
       "post": {}
+    },
+    "/spaces/{spaceId}/change-requests/{changeRequestId}/reviews/stats": {
+      "get": {}
     },
     "/spaces/{spaceId}/change-requests/{changeRequestId}/reviews/{reviewId}": {
       "get": {}
@@ -22451,11 +23862,21 @@
       "delete": {}
     },
     "/orgs": {
-      "get": {}
+      "get": {},
+      "post": {}
     },
     "/orgs/{organizationId}": {
       "get": {},
       "patch": {}
+    },
+    "/orgs/{organizationId}/audit-event-actions": {
+      "get": {}
+    },
+    "/orgs/{organizationId}/audit-events": {
+      "get": {}
+    },
+    "/orgs/{organizationId}/audit-events/{auditEventId}": {
+      "get": {}
     },
     "/orgs/{organizationId}/styleguides": {
       "get": {}
@@ -22517,6 +23938,9 @@
     },
     "/orgs/{organizationId}/join": {
       "post": {}
+    },
+    "/orgs/{organizationId}/billing/ai-usage": {
+      "get": {}
     },
     "/orgs/{organizationId}/search": {
       "get": {}
@@ -22600,6 +24024,14 @@
       "get": {},
       "put": {}
     },
+    "/orgs/{organizationId}/agent/conversations": {
+      "get": {}
+    },
+    "/orgs/{organizationId}/agent/conversations/{conversationId}": {
+      "put": {},
+      "patch": {},
+      "delete": {}
+    },
     "/orgs/{organizationId}/translations": {
       "get": {},
       "post": {}
@@ -22632,7 +24064,11 @@
       "delete": {}
     },
     "/org/{organizationId}/imports": {
+      "get": {},
       "post": {}
+    },
+    "/org/{organizationId}/imports/{importRunId}": {
+      "get": {}
     },
     "/org/{organizationId}/imports/{importRunId}/cancel": {
       "post": {}
@@ -22719,10 +24155,23 @@
       "patch": {},
       "delete": {}
     },
+    "/orgs/{organizationId}/sites/{siteId}/external-links": {
+      "post": {}
+    },
+    "/orgs/{organizationId}/sites/{siteId}/external-links/{siteExternalLinkId}": {
+      "patch": {},
+      "delete": {}
+    },
     "/orgs/{organizationId}/sites/{siteId}/search": {
       "post": {}
     },
+    "/orgs/{organizationId}/sites/{siteId}/search/prewarm": {
+      "post": {}
+    },
     "/orgs/{organizationId}/sites/{siteId}/agent-feedback": {
+      "post": {}
+    },
+    "/orgs/{organizationId}/sites/{siteId}/agents/feedback": {
       "post": {}
     },
     "/orgs/{organizationId}/sites/{siteId}/ask": {
@@ -22870,6 +24319,10 @@
     "/orgs/{organizationId}/sites/{siteId}/styleguide": {
       "post": {}
     },
+    "/orgs/{organizationId}/sites/{siteId}/styleguide/runs": {
+      "post": {},
+      "get": {}
+    },
     "/orgs/{organizationId}/sites/{siteId}/insights/events": {
       "post": {}
     },
@@ -22953,10 +24406,16 @@
     "/git/installations/{installationId}/github/repos/{accountName}/{repositoryName}/branches": {
       "get": {}
     },
+    "/git/installations/{installationId}/github/repos/{accountName}/{repositoryName}/file": {
+      "get": {}
+    },
     "/git/installations/{installationId}/gitlab/projects": {
       "get": {}
     },
     "/git/installations/{installationId}/gitlab/projects/{projectId}/branches": {
+      "get": {}
+    },
+    "/git/installations/{installationId}/gitlab/projects/{projectId}/file": {
       "get": {}
     }
   }

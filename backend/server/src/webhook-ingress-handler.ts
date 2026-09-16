@@ -630,6 +630,29 @@ const managedRegistrationErrorToRpc = (
   }
 };
 
+/** ⚠ `healthy` HERE MEANS "CONFIGURED AND READY TO RECEIVE", NOT "RECEIVING".
+ *
+ *  Every input below is runtime/registration STATE: intake_state,
+ *  registration_state, last_error_code, and the two readiness booleans. None of
+ *  them is a clock, and `last_delivery_at` is never compared to one — so an
+ *  ingress that has not been delivered to in six months reads `healthy`,
+ *  indefinitely.
+ *
+ *  🔑 THAT IS NOT A DEFECT ON ITS OWN, WHICH IS WHY IT IS A NOTE AND NOT A FIX.
+ *  Event-driven ingress can legitimately stay silent forever — a webhook for an
+ *  event that has not happened is not broken. Reading silence as failure needs
+ *  something this record does not have: a DECLARED CADENCE or an expected
+ *  heartbeat from the sender. Absent that, "no deliveries" and "nothing to
+ *  deliver" are the same observation.
+ *
+ *  ⛔ SO DO NOT ADD AN AGE CHECK HERE WITHOUT A DECLARED CADENCE TO CHECK IT
+ *  AGAINST. It would mark healthy ingresses degraded on their quiet weeks, which
+ *  is worse than the current silence — and the round-17 audit finding that
+ *  raised this ("a dead ingress reads healthy") was ruled correct about the
+ *  STATUS LIMITATION and overstated on the dead-ingress conclusion, for exactly
+ *  this reason.
+ *
+ *  ⇒ Callers must not present this value as evidence that traffic is arriving. */
 const healthStatusFor = (
   row: WebhookIngressRecord,
   runtimeReady: boolean,

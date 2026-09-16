@@ -79,6 +79,28 @@ export default defineConfig({
     exclude: [
       '**/node_modules/**',
       '**/dist/**',
+      /* ⛔⛔ THE VENDORED CORPUS UNDER `.cache/` IS NOT OURS AND MUST NOT BE COLLECTED.
+       *  `scripts/breadth/.cache/` holds four cloned repos (codex, hermes, openclaw,
+       *  openfang, 1.6 GB) and `scripts/**` above globs straight into them: of the 19,867
+       *  files vitest collected before this line, 16,148 — EIGHTY-ONE PERCENT — were
+       *  theirs. They fail in bulk, because they are being run outside their own repo
+       *  with our config, our pool and none of their fixtures.
+       *
+       *  ⚠ THE COST IS NOT THE WASTED TIME, IT IS THAT "THE SUITE IS RED" STOPS MEANING
+       *  ANYTHING. `vitest run test` and `vitest run scripts` are SUBSTRING filters, so
+       *  both sweep the cache and report thousands of failures that belong to nobody
+       *  here — 4,629 in one run on 2026-09-14. A reader cannot tell that from a real
+       *  regression without reading the paths, and the honest reading ("797 files
+       *  failing") is the wrong one. This burned three separate runs before it was fixed.
+       *
+       *  ⚠ `.cache/` IS ALREADY IN `.gitignore` (line 125) AND THAT DOES NOTHING HERE —
+       *  vitest globs the filesystem and never consults git. An ignore rule and a
+       *  collection rule are different mechanisms; the first one existing is exactly why
+       *  nobody expected to need the second.
+       *
+       *  Matched on `.cache` rather than on `breadth`, so a cache dir added anywhere else
+       *  is covered on the day it appears rather than after it has cost someone a run. */
+      '**/.cache/**',
     ],
     // ⛔⛔⛔ FORKS, AND THIS IS NOT A PREFERENCE. The threads pool DIES on the
     // backend suite: SIGSEGV (exit 139) with zero test failures, reproducible

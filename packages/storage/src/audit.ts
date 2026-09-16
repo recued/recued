@@ -579,10 +579,18 @@ export type ActivityAction =
   | 'tls_auto_renew_attempted'
   // D-148 § A.2.5 — high-assurance audit kinds. Each row carries an
   // Ed25519 `signature` field populated by the signing audit-log
-  // wrapper at emit time using `server_identity_key`. The verifier
-  // rejects rows whose `action` is in this set but whose signature
-  // is missing or invalid. The closed list is mirrored on the
-  // contracts side as `HIGH_ASSURANCE_AUDIT_KINDS`.
+  // wrapper at emit time using `server_identity_key`. The closed list
+  // is mirrored on the contracts side as `HIGH_ASSURANCE_AUDIT_KINDS`.
+  //
+  // ⛔ THE VERIFIER EXISTS AND NOTHING CALLS IT (corrected 2026-09-15).
+  // This used to read "the verifier rejects rows whose action is in
+  // this set but whose signature is missing or invalid" — present
+  // tense, describing a check that has never run in production. Signing
+  // happens; verification does not, the rows reach no external
+  // artifact, and no recipient could resolve the key. Read
+  // `backend/server/src/audit/signing.ts`'s header before assuming
+  // these rows carry an integrity guarantee — and note that a per-row
+  // signature cannot detect DELETION at all.
   //
   // W3.5 path-routing amendment retires `exposure_profile_change` and
   // adds the per-path kinds `exposure_path_resolution_change` +
@@ -1057,8 +1065,9 @@ export interface ActivityEntry {
    *  JSON of this entry minus this field + `signer_fingerprint`,
    *  signed with the server's `server_identity_key`. Populated by
    *  the audit-signing wrapper (`createSigningAuditLog`) at emit
-   *  time when `action` is in `HIGH_ASSURANCE_AUDIT_KINDS`. Verifier
-   *  (`verifyActivityEntry`) rejects rows whose action requires a
+   *  time when `action` is in `HIGH_ASSURANCE_AUDIT_KINDS`.
+   *  ⛔ `verifyActivityEntry` HAS NO PRODUCTION CALLER — it WOULD
+   *  reject rows whose action requires a
    *  signature but where this field is missing, malformed, or fails
    *  Ed25519 verify against the public key keyed on
    *  `signer_fingerprint`. Absent for non-high-assurance rows. */

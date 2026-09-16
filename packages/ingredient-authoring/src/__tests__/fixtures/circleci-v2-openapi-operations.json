@@ -5,8 +5,8 @@
     "source": {
       "kind": "openapi",
       "url": "https://circleci.com/docs/api/v2/openapi.json",
-      "sha256": "ec2bef350229075b69557a8cdecbbec186e7e1dea6b7cecb67b085695f5e7933",
-      "bytes": 1182214,
+      "sha256": "71718a079e0b3b01b23ed45e8d5d86148c906a86a7778d1fbe06abe5f2ebca42",
+      "bytes": 1184524,
       "openapi": "3.0.3",
       "info_version": "v2",
       "server": "https://circleci.com/api/v2"
@@ -266,8 +266,8 @@
       "post": {}
     },
     "/organization/{org-slug-or-id}/url-orb-allow-list": {
-      "post": {},
-      "get": {}
+      "get": {},
+      "post": {}
     },
     "/organization/{org-slug-or-id}/url-orb-allow-list/{allow-list-entry-id}": {
       "delete": {}
@@ -288,31 +288,31 @@
       "get": {}
     },
     "/project/{project-slug}": {
-      "delete": {},
-      "get": {}
+      "get": {},
+      "delete": {}
     },
     "/project/{project-slug}/checkout-key": {
       "get": {},
       "post": {}
     },
     "/project/{project-slug}/checkout-key/{fingerprint}": {
-      "get": {},
-      "delete": {}
+      "delete": {},
+      "get": {}
     },
     "/project/{project-slug}/envvar": {
       "get": {},
       "post": {}
     },
     "/project/{project-slug}/envvar/{name}": {
-      "delete": {},
-      "get": {}
+      "get": {},
+      "delete": {}
     },
     "/project/{project-slug}/job/{job-number}/cancel": {
       "post": {}
     },
     "/project/{project-slug}/pipeline": {
-      "get": {},
-      "post": {}
+      "post": {},
+      "get": {}
     },
     "/project/{project-slug}/pipeline/mine": {
       "get": {}
@@ -325,8 +325,8 @@
       "post": {}
     },
     "/schedule/{schedule-id}": {
-      "get": {},
       "patch": {},
+      "get": {},
       "delete": {}
     },
     "/user/{id}": {
@@ -6525,6 +6525,12 @@
             "format": null,
             "item_type": null,
             "item_format": null
+          },
+          "avatar_url": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
           }
         }
       },
@@ -6644,6 +6650,12 @@
             "item_format": null
           },
           "vcs_type": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "avatar_url": {
             "type": "string",
             "format": null,
             "item_type": null,
@@ -6778,6 +6790,57 @@
       "approval": "always",
       "idempotency": "non_idempotent"
     },
+    "circleci-project-admin.list_url_orb_allow_list_entries": {
+      "pack": "circleci-project-admin",
+      "op": "list_url_orb_allow_list_entries",
+      "operation_id": "listURLOrbAllowListEntries",
+      "method": "GET",
+      "path": "/organization/{org-slug-or-id}/url-orb-allow-list",
+      "wire_path": "/organization/{{org_slug_or_id}}/url-orb-allow-list",
+      "tags": [
+        "Organization"
+      ],
+      "summary": "List the entries in the org's URL Orb allow-list",
+      "parameters": [
+        {
+          "name": "org-slug-or-id",
+          "in": "path",
+          "type": "string",
+          "format": null,
+          "required": true,
+          "exposed": true
+        }
+      ],
+      "request": null,
+      "response_media": [
+        "application/json"
+      ],
+      "response_schema": {
+        "type": "object",
+        "format": null,
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "format": null,
+            "item_type": "object",
+            "item_format": null
+          }
+        }
+      },
+      "unsafe_response_integer_occurrences": 0,
+      "response_json": null,
+      "result_path": "items",
+      "pagination": null,
+      "openapi_path": null,
+      "openapi_path_param_expansions": null,
+      "content_type": null,
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe"
+    },
     "circleci-project-admin.create_url_orb_allow_list_entry": {
       "pack": "circleci-project-admin",
       "op": "create_url_orb_allow_list_entry",
@@ -6872,57 +6935,6 @@
       "risk": "admin",
       "approval": "always",
       "idempotency": "non_idempotent"
-    },
-    "circleci-project-admin.list_url_orb_allow_list_entries": {
-      "pack": "circleci-project-admin",
-      "op": "list_url_orb_allow_list_entries",
-      "operation_id": "listURLOrbAllowListEntries",
-      "method": "GET",
-      "path": "/organization/{org-slug-or-id}/url-orb-allow-list",
-      "wire_path": "/organization/{{org_slug_or_id}}/url-orb-allow-list",
-      "tags": [
-        "Organization"
-      ],
-      "summary": "List the entries in the org's URL Orb allow-list",
-      "parameters": [
-        {
-          "name": "org-slug-or-id",
-          "in": "path",
-          "type": "string",
-          "format": null,
-          "required": true,
-          "exposed": true
-        }
-      ],
-      "request": null,
-      "response_media": [
-        "application/json"
-      ],
-      "response_schema": {
-        "type": "object",
-        "format": null,
-        "required": [
-          "items"
-        ],
-        "properties": {
-          "items": {
-            "type": "array",
-            "format": null,
-            "item_type": "object",
-            "item_format": null
-          }
-        }
-      },
-      "unsafe_response_integer_occurrences": 0,
-      "response_json": null,
-      "result_path": "items",
-      "pagination": null,
-      "openapi_path": null,
-      "openapi_path_param_expansions": null,
-      "content_type": null,
-      "risk": "read",
-      "approval": "never",
-      "idempotency": "safe"
     },
     "circleci-project-admin.remove_url_orb_allow_list_entry": {
       "pack": "circleci-project-admin",
@@ -7209,6 +7221,65 @@
       "approval": "always",
       "idempotency": "non_idempotent"
     },
+    "circleci-project-admin.delete_checkout_key": {
+      "pack": "circleci-project-admin",
+      "op": "delete_checkout_key",
+      "operation_id": "deleteCheckoutKey",
+      "method": "DELETE",
+      "path": "/project/{project-slug}/checkout-key/{fingerprint}",
+      "wire_path": "/project/{{project_slug}}/checkout-key/{{fingerprint}}",
+      "tags": [
+        "Project"
+      ],
+      "summary": "Delete a checkout key",
+      "parameters": [
+        {
+          "name": "project-slug",
+          "in": "path",
+          "type": "string",
+          "format": null,
+          "required": true,
+          "exposed": true
+        },
+        {
+          "name": "fingerprint",
+          "in": "path",
+          "type": "string",
+          "format": null,
+          "required": true,
+          "exposed": true
+        }
+      ],
+      "request": null,
+      "response_media": [
+        "application/json"
+      ],
+      "response_schema": {
+        "type": "object",
+        "format": null,
+        "required": [
+          "message"
+        ],
+        "properties": {
+          "message": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          }
+        }
+      },
+      "unsafe_response_integer_occurrences": 0,
+      "response_json": null,
+      "result_path": null,
+      "pagination": null,
+      "openapi_path": null,
+      "openapi_path_param_expansions": null,
+      "content_type": null,
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent"
+    },
     "circleci-project-admin.get_checkout_key": {
       "pack": "circleci-project-admin",
       "op": "get_checkout_key",
@@ -7295,65 +7366,6 @@
       "risk": "read",
       "approval": "never",
       "idempotency": "safe"
-    },
-    "circleci-project-admin.delete_checkout_key": {
-      "pack": "circleci-project-admin",
-      "op": "delete_checkout_key",
-      "operation_id": "deleteCheckoutKey",
-      "method": "DELETE",
-      "path": "/project/{project-slug}/checkout-key/{fingerprint}",
-      "wire_path": "/project/{{project_slug}}/checkout-key/{{fingerprint}}",
-      "tags": [
-        "Project"
-      ],
-      "summary": "Delete a checkout key",
-      "parameters": [
-        {
-          "name": "project-slug",
-          "in": "path",
-          "type": "string",
-          "format": null,
-          "required": true,
-          "exposed": true
-        },
-        {
-          "name": "fingerprint",
-          "in": "path",
-          "type": "string",
-          "format": null,
-          "required": true,
-          "exposed": true
-        }
-      ],
-      "request": null,
-      "response_media": [
-        "application/json"
-      ],
-      "response_schema": {
-        "type": "object",
-        "format": null,
-        "required": [
-          "message"
-        ],
-        "properties": {
-          "message": {
-            "type": "string",
-            "format": null,
-            "item_type": null,
-            "item_format": null
-          }
-        }
-      },
-      "unsafe_response_integer_occurrences": 0,
-      "response_json": null,
-      "result_path": null,
-      "pagination": null,
-      "openapi_path": null,
-      "openapi_path_param_expansions": null,
-      "content_type": null,
-      "risk": "destructive",
-      "approval": "always",
-      "idempotency": "idempotent"
     },
     "circleci-project-admin.list_env_vars": {
       "pack": "circleci-project-admin",
@@ -7507,65 +7519,6 @@
       "approval": "always",
       "idempotency": "non_idempotent"
     },
-    "circleci-project-admin.delete_env_var": {
-      "pack": "circleci-project-admin",
-      "op": "delete_env_var",
-      "operation_id": "deleteEnvVar",
-      "method": "DELETE",
-      "path": "/project/{project-slug}/envvar/{name}",
-      "wire_path": "/project/{{project_slug}}/envvar/{{name}}",
-      "tags": [
-        "Project"
-      ],
-      "summary": "Delete an environment variable",
-      "parameters": [
-        {
-          "name": "project-slug",
-          "in": "path",
-          "type": "string",
-          "format": null,
-          "required": true,
-          "exposed": true
-        },
-        {
-          "name": "name",
-          "in": "path",
-          "type": "string",
-          "format": null,
-          "required": true,
-          "exposed": true
-        }
-      ],
-      "request": null,
-      "response_media": [
-        "application/json"
-      ],
-      "response_schema": {
-        "type": "object",
-        "format": null,
-        "required": [
-          "message"
-        ],
-        "properties": {
-          "message": {
-            "type": "string",
-            "format": null,
-            "item_type": null,
-            "item_format": null
-          }
-        }
-      },
-      "unsafe_response_integer_occurrences": 0,
-      "response_json": null,
-      "result_path": null,
-      "pagination": null,
-      "openapi_path": null,
-      "openapi_path_param_expansions": null,
-      "content_type": null,
-      "risk": "destructive",
-      "approval": "always",
-      "idempotency": "idempotent"
-    },
     "circleci-project-admin.get_env_var": {
       "pack": "circleci-project-admin",
       "op": "get_env_var",
@@ -7637,6 +7590,65 @@
       "risk": "read",
       "approval": "never",
       "idempotency": "safe"
+    },
+    "circleci-project-admin.delete_env_var": {
+      "pack": "circleci-project-admin",
+      "op": "delete_env_var",
+      "operation_id": "deleteEnvVar",
+      "method": "DELETE",
+      "path": "/project/{project-slug}/envvar/{name}",
+      "wire_path": "/project/{{project_slug}}/envvar/{{name}}",
+      "tags": [
+        "Project"
+      ],
+      "summary": "Delete an environment variable",
+      "parameters": [
+        {
+          "name": "project-slug",
+          "in": "path",
+          "type": "string",
+          "format": null,
+          "required": true,
+          "exposed": true
+        },
+        {
+          "name": "name",
+          "in": "path",
+          "type": "string",
+          "format": null,
+          "required": true,
+          "exposed": true
+        }
+      ],
+      "request": null,
+      "response_media": [
+        "application/json"
+      ],
+      "response_schema": {
+        "type": "object",
+        "format": null,
+        "required": [
+          "message"
+        ],
+        "properties": {
+          "message": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          }
+        }
+      },
+      "unsafe_response_integer_occurrences": 0,
+      "response_json": null,
+      "result_path": null,
+      "pagination": null,
+      "openapi_path": null,
+      "openapi_path_param_expansions": null,
+      "content_type": null,
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent"
     },
     "circleci-project-admin.get_project_settings": {
       "pack": "circleci-project-admin",

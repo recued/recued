@@ -4,19 +4,19 @@
       "support": {
         "kind": "openapi",
         "url": "https://developer.zendesk.com/zendesk/oas.yaml",
-        "sha256": "8bd4282f3d16b146b6cbcb924e99d86112ed0e17758cc6123e555e87e6d195c0",
-        "bytes": 1701930,
+        "sha256": "5f0f601e1f9fc89978c288983766e34133a4668d6a2fbda1430ba674a8d69527",
+        "bytes": 1846963,
         "openapi": "3.0.3",
         "info_title": "Support API",
         "info_version": "2.0.0",
         "server": "https://{subdomain}.{domain}.com",
-        "path_count": 434,
-        "operation_count": 625,
+        "path_count": 449,
+        "operation_count": 649,
         "method_counts": {
-          "GET": 325,
-          "PUT": 89,
-          "POST": 111,
-          "DELETE": 86,
+          "GET": 338,
+          "PUT": 94,
+          "POST": 114,
+          "DELETE": 89,
           "PATCH": 14
         },
         "mutability": "The official URL is mutable; generation and publish revalidation fail closed unless its bytes still match this hash."
@@ -24,16 +24,16 @@
       "help_center": {
         "kind": "openapi",
         "url": "https://developer.zendesk.com/help_center/oas.yaml",
-        "sha256": "45e7b9bf50d1c2d569e6f8ec5bda5372483ae8382636935f524c1fb590b7c4e9",
-        "bytes": 292026,
+        "sha256": "500fe7c72ebfc1bf9329c2582d9240be930e63e35702968d6b583113eba11700",
+        "bytes": 311625,
         "openapi": "3.0.2",
         "info_title": "Help Center API",
         "info_version": "2.0.0",
         "server": null,
-        "path_count": 119,
-        "operation_count": 181,
+        "path_count": 120,
+        "operation_count": 182,
         "method_counts": {
-          "GET": 95,
+          "GET": 96,
           "POST": 39,
           "PUT": 22,
           "DELETE": 25
@@ -45,8 +45,8 @@
       "articles": {
         "kind": "official_html",
         "url": "https://developer.zendesk.com/api-reference/help_center/help-center-api/articles/",
-        "sha256": "36bbb05f69f2e8ac263f5ba2977b94044c7fe780bd8e85c39ef6ea3b95a17eda",
-        "bytes": 3834831,
+        "sha256": "1ee9e699dc94abd17222fb1ecf96779bc7ee0235222138cb343ff7019d9aeb62",
+        "bytes": 3419783,
         "operation_ids": [
           "ListArticles",
           "ListArticlesByCategoryNoLocale",
@@ -61,8 +61,8 @@
       "posts": {
         "kind": "official_html",
         "url": "https://developer.zendesk.com/api-reference/help_center/help-center-api/posts/",
-        "sha256": "a9a8e3fc61359bffacd464128538f7fb7f4a854408a97f1510269e4bac353998",
-        "bytes": 1284675,
+        "sha256": "dd3c3b89e025495373f36832491db90e661307819d9776bf0e0dee919368c326",
+        "bytes": 1138235,
         "operation_ids": [
           "ListPosts",
           "ListPostsByTopicNoLocale",
@@ -70,26 +70,26 @@
         ]
       }
     },
-    "official_support_operation_count": 625,
-    "admitted_support_operation_count": 600,
-    "excluded_support_operation_count": 25,
-    "official_help_center_operation_count": 181,
-    "admitted_help_center_operation_count": 178,
+    "official_support_operation_count": 649,
+    "admitted_support_operation_count": 621,
+    "excluded_support_operation_count": 28,
+    "official_help_center_operation_count": 182,
+    "admitted_help_center_operation_count": 179,
     "excluded_help_center_operation_count": 3,
     "support_compatibility_operation_count": 32,
     "help_center_compatibility_operation_count": 9,
-    "suite_operation_count": 778,
-    "unique_suite_operation_id_count": 778,
-    "unique_suite_method_path_count": 778,
+    "suite_operation_count": 800,
+    "unique_suite_operation_id_count": 800,
+    "unique_suite_method_path_count": 800,
     "admitted_support_method_counts": {
-      "GET": 316,
-      "PUT": 85,
-      "POST": 103,
-      "DELETE": 82,
+      "GET": 328,
+      "PUT": 89,
+      "POST": 106,
+      "DELETE": 84,
       "PATCH": 14
     },
     "admitted_help_center_method_counts": {
-      "GET": 94,
+      "GET": 95,
       "POST": 37,
       "PUT": 22,
       "DELETE": 25
@@ -100,38 +100,38 @@
     "pack_operation_counts": {
       "zendesk": 32,
       "zendesk-help-center": 9,
-      "zendesk-ticketing-engagement": 90,
-      "zendesk-users-groups": 68,
+      "zendesk-ticketing-engagement": 92,
+      "zendesk-users-groups": 72,
       "zendesk-organizations-brands": 61,
-      "zendesk-business-rules": 78,
-      "zendesk-fields-workspaces": 86,
-      "zendesk-custom-objects-routing": 80,
+      "zendesk-business-rules": 85,
+      "zendesk-fields-workspaces": 93,
+      "zendesk-custom-objects-routing": 81,
       "zendesk-data-exports-itam": 74,
       "zendesk-platform-admin": 31,
       "zendesk-help-center-content": 92,
-      "zendesk-help-center-community": 77
+      "zendesk-help-center-community": 78
     },
     "composition_bytes": {
-      "zendesk": 59988,
+      "zendesk": 60028,
       "zendesk-help-center": 18582,
-      "zendesk-ticketing-engagement": 120291,
-      "zendesk-users-groups": 91642,
+      "zendesk-ticketing-engagement": 122736,
+      "zendesk-users-groups": 96183,
       "zendesk-organizations-brands": 72025,
-      "zendesk-business-rules": 90390,
-      "zendesk-fields-workspaces": 95274,
-      "zendesk-custom-objects-routing": 102935,
-      "zendesk-data-exports-itam": 87182,
+      "zendesk-business-rules": 96772,
+      "zendesk-fields-workspaces": 103442,
+      "zendesk-custom-objects-routing": 104601,
+      "zendesk-data-exports-itam": 87219,
       "zendesk-platform-admin": 35441,
       "zendesk-help-center-content": 128804,
-      "zendesk-help-center-community": 105798
+      "zendesk-help-center-community": 107162
     },
     "pagination_counts": {
-      "none": 615,
-      "next_path": 131,
-      "offset": 29,
+      "none": 635,
+      "next_path": 132,
+      "offset": 30,
       "query_token": 3
     },
-    "unpaged_collection_count": 97,
+    "unpaged_collection_count": 101,
     "unpaged_collection_operation_ids": [
       "help_center:ListBlockArticleAttachments",
       "help_center:ListBlockArticleAttachmentsWithLocale",
@@ -144,6 +144,7 @@
       "support:AutocompleteGroups",
       "support:AutocompleteTags",
       "support:AutocompleteTagsPost",
+      "support:AutocompleteTickets",
       "support:AutocompleteUsers",
       "support:AutocompleteUsersPost",
       "support:CheckHostMappingValidity",
@@ -152,8 +153,8 @@
       "support:GetUserPasswordRequirements",
       "support:GetViewCounts",
       "support:GettingTwicketStatus",
-      "support:ListAGentAttributeValues",
       "support:ListAccessRules",
+      "support:ListAgentAttributeValues",
       "support:ListAssignableGroupMemberships",
       "support:ListAssignableGroupMembershipsByGroup",
       "support:ListAssignableGroups",
@@ -182,6 +183,7 @@
       "support:ListMacroCategories",
       "support:ListMacrosActions",
       "support:ListMonitoredTwitterHandles",
+      "support:ListMostUsedMacros",
       "support:ListOpenRequests",
       "support:ListOrganizationMembershipsByOrganization",
       "support:ListOrganizationMerges",
@@ -203,8 +205,10 @@
       "support:ListTicketAttributeValues",
       "support:ListTicketContentPins",
       "support:ListTicketFormStatuses",
+      "support:ListTicketGroupSlaPolicyMetrics",
       "support:ListTicketSkips",
       "support:ListTicketSkipsByTicket",
+      "support:ListTicketSlaPolicyMetrics",
       "support:ListTicketsFromView",
       "support:ListTicketsFullfilledByUser",
       "support:ListUserAssignedTickets",
@@ -259,7 +263,7 @@
       "support": [],
       "help_center": []
     },
-    "raw_body_operation_count": 185,
+    "raw_body_operation_count": 186,
     "raw_body_operation_ids": [
       "help_center:BulkAttachmentsArticles",
       "help_center:BulkAttachmentsArticlesNoLocale",
@@ -376,7 +380,6 @@
       "support:RecordNewSkip",
       "support:RedactChatComment",
       "support:RedactChatCommentAttachment",
-      "support:RedactStringInComment",
       "support:RedactTicketCommentInAgentWorkspace",
       "support:ReorderCustomObjectFields",
       "support:ReorderOrganizationField",
@@ -400,6 +403,7 @@
       "support:UpdateAccountSettings",
       "support:UpdateAttribute",
       "support:UpdateAttributeValue",
+      "support:UpdateAttributeValuePut",
       "support:UpdateAutomation",
       "support:UpdateBrand",
       "support:UpdateCustomObject",
@@ -445,7 +449,8 @@
       "support:UpdateUserField",
       "support:UpdateUserIdentity",
       "support:UpdateView",
-      "support:ValidateToken"
+      "support:ValidateToken",
+      "support:ValidateTrigger"
     ],
     "required_raw_body_operation_ids": [
       "help_center:BulkAttachmentsArticles",
@@ -519,6 +524,7 @@
       "support:CreateSharingAgreement",
       "support:CreateSupportAddress",
       "support:CreateTarget",
+      "support:CreateTicket",
       "support:CreateTicketForm",
       "support:CreateTicketFromTweet",
       "support:CreateTicketSatisfactionRating",
@@ -540,7 +546,6 @@
       "support:RecordNewSkip",
       "support:RedactChatComment",
       "support:RedactChatCommentAttachment",
-      "support:RedactStringInComment",
       "support:RedactTicketCommentInAgentWorkspace",
       "support:ReorderCustomObjectFields",
       "support:ReorderOrganizationField",
@@ -561,6 +566,7 @@
       "support:UpdateAccountSettings",
       "support:UpdateAttribute",
       "support:UpdateAttributeValue",
+      "support:UpdateAttributeValuePut",
       "support:UpdateAutomation",
       "support:UpdateCustomObject",
       "support:UpdateCustomObjectField",
@@ -589,6 +595,7 @@
       "support:UpdateTarget",
       "support:UpdateTicketField",
       "support:UpdateTicketForm",
+      "support:UpdateTicketFormStatusById",
       "support:UpdateUser",
       "support:UpdateUserField",
       "support:UpdateUserIdentity",
@@ -680,7 +687,6 @@
       "support:RecordNewSkip",
       "support:RedactChatComment",
       "support:RedactChatCommentAttachment",
-      "support:RedactStringInComment",
       "support:RedactTicketCommentInAgentWorkspace",
       "support:ReorderCustomObjectFields",
       "support:ReorderOrganizationField",
@@ -699,6 +705,7 @@
       "support:UpdateAccountSettings",
       "support:UpdateAttribute",
       "support:UpdateAttributeValue",
+      "support:UpdateAttributeValuePut",
       "support:UpdateAutomation",
       "support:UpdateCustomObject",
       "support:UpdateCustomObjectField",
@@ -780,7 +787,7 @@
     "response_capture_operation_ids": [
       "support:DownloadCustomObjectRecordAttachment"
     ],
-    "sensitive_read_operation_count": 173,
+    "sensitive_read_operation_count": 177,
     "lossless_json_response_operation_ids": [
       "help_center:ArticleSearch",
       "help_center:BulkAttachmentsArticles",
@@ -895,6 +902,7 @@
       "help_center:ShowLabel",
       "help_center:ShowPost",
       "help_center:ShowPostComment",
+      "help_center:ShowPostCommentByLocale",
       "help_center:ShowPostSubscription",
       "help_center:ShowSection",
       "help_center:ShowSectionNoLocale",
@@ -942,6 +950,7 @@
       "support:AutocompleteProblems",
       "support:AutocompleteTags",
       "support:AutocompleteTagsPost",
+      "support:AutocompleteTickets",
       "support:AutocompleteUsers",
       "support:AutocompleteUsersPost",
       "support:BatchOperateTriggerCategories",
@@ -987,6 +996,7 @@
       "support:CreateCustomObjectRecord",
       "support:CreateCustomRole",
       "support:CreateCustomStatus",
+      "support:CreateCustomTaskItem",
       "support:CreateDeletionSchedule",
       "support:CreateDynamicContent",
       "support:CreateDynamicContentVariant",
@@ -1042,6 +1052,7 @@
       "support:CreateUserGroupMembership",
       "support:CreateUserIdentity",
       "support:CreateUserOrganizationMembership",
+      "support:CreateUserSuspension",
       "support:CreateView",
       "support:CreateWorkspace",
       "support:CustomObjectFieldsLimit",
@@ -1094,7 +1105,6 @@
       "support:IncrementalUserExportCursor",
       "support:IncrementalUserExportTime",
       "support:ItamAssetBulkJobs",
-      "support:ListAGentAttributeValues",
       "support:ListAccessRuleDefinitions",
       "support:ListAccessRules",
       "support:ListAccountAttributes",
@@ -1104,6 +1114,7 @@
       "support:ListActiveTriggers",
       "support:ListActiveViews",
       "support:ListActivities",
+      "support:ListAgentAttributeValues",
       "support:ListApprovalRequests",
       "support:ListAssignableGroupMemberships",
       "support:ListAssignableGroupMembershipsByGroup",
@@ -1151,10 +1162,12 @@
       "support:ListMacroActionDefinitions",
       "support:ListMacroAttachments",
       "support:ListMacroCategories",
+      "support:ListMacroGroups",
       "support:ListMacros",
       "support:ListMacrosActions",
       "support:ListManyAgentsAttributeValues",
       "support:ListMonitoredTwitterHandles",
+      "support:ListMostUsedMacros",
       "support:ListObjectTriggers",
       "support:ListObjectTriggersDefinitions",
       "support:ListOpenRequests",
@@ -1192,6 +1205,7 @@
       "support:ListTags",
       "support:ListTargetFailures",
       "support:ListTargets",
+      "support:ListTaskItems",
       "support:ListTaskListTemplates",
       "support:ListTicketAttributeValues",
       "support:ListTicketAudits",
@@ -1204,12 +1218,15 @@
       "support:ListTicketFollowers",
       "support:ListTicketFormStatuses",
       "support:ListTicketForms",
+      "support:ListTicketGroupSlaPolicyMetrics",
       "support:ListTicketIncidents",
       "support:ListTicketMetricEvents",
+      "support:ListTicketMetricEventsByTicket",
       "support:ListTicketMetrics",
       "support:ListTicketProblems",
       "support:ListTicketSkips",
       "support:ListTicketSkipsByTicket",
+      "support:ListTicketSlaPolicyMetrics",
       "support:ListTickets",
       "support:ListTicketsFromView",
       "support:ListTicketsFullfilledByUser",
@@ -1371,8 +1388,10 @@
       "support:ShowSuspendedTickets",
       "support:ShowTarget",
       "support:ShowTargetFailure",
-      "support:ShowTaskList",
+      "support:ShowTaskItem",
+      "support:ShowTaskListInstance",
       "support:ShowTaskListTemplate",
+      "support:ShowTaskListsForTicket",
       "support:ShowTicket",
       "support:ShowTicketAfterChanges",
       "support:ShowTicketAudit",
@@ -1383,6 +1402,7 @@
       "support:ShowTicketMetricsByTicket",
       "support:ShowTicketfield",
       "support:ShowTriggerCategoryById",
+      "support:ShowTriggerLimits",
       "support:ShowUser",
       "support:ShowUserBrandAgentById",
       "support:ShowUserComplianceDeletionStatuses",
@@ -1391,6 +1411,7 @@
       "support:ShowUserGroupMembershipById",
       "support:ShowUserIdentity",
       "support:ShowUserRelated",
+      "support:ShowUserSuspension",
       "support:ShowView",
       "support:ShowWorkspace",
       "support:SuspendedTicketsAttachments",
@@ -1408,6 +1429,7 @@
       "support:UpdateAttachment",
       "support:UpdateAttribute",
       "support:UpdateAttributeValue",
+      "support:UpdateAttributeValuePut",
       "support:UpdateAutomation",
       "support:UpdateBrand",
       "support:UpdateCurrentUserSettings",
@@ -1417,6 +1439,7 @@
       "support:UpdateCustomObjectRecordAttachment",
       "support:UpdateCustomRoleById",
       "support:UpdateCustomStatus",
+      "support:UpdateCustomTaskList",
       "support:UpdateDeletionSchedule",
       "support:UpdateDynamicContentItem",
       "support:UpdateDynamicContentVariant",
@@ -1448,6 +1471,7 @@
       "support:UpdateSharingAgreement",
       "support:UpdateSupportAddress",
       "support:UpdateTarget",
+      "support:UpdateTaskItem",
       "support:UpdateTaskListTemplate",
       "support:UpdateTicket",
       "support:UpdateTicketField",
@@ -1459,10 +1483,12 @@
       "support:UpdateUser",
       "support:UpdateUserField",
       "support:UpdateUserIdentity",
+      "support:UpdateUserSuspension",
       "support:UpdateView",
       "support:UpdateWorkspace",
       "support:UpsertCustomObjectRecordByExternalIdOrName",
       "support:ValidateToken",
+      "support:ValidateTrigger",
       "support:VerifySubdomainAvailability",
       "support:VerifySupportAddressForwarding",
       "support:VerifyUserIdentity"
@@ -1470,6 +1496,7 @@
     "official_support_int64_response_operation_ids": [
       "AutocompleteGroups",
       "AutocompleteOrganizations",
+      "AutocompleteTickets",
       "AutocompleteUsers",
       "AutocompleteUsersPost",
       "BatchOperateTriggerCategories",
@@ -1480,6 +1507,7 @@
       "ClientGenerateSecret",
       "CloneTicketForm",
       "CreateAccessRule",
+      "CreateApiToken",
       "CreateApprovalRequest",
       "CreateAssociatedMacroAttachment",
       "CreateAutomation",
@@ -1504,7 +1532,6 @@
       "CreateManyOrganizations",
       "CreateManyUsers",
       "CreateOAuthClient",
-      "CreateOAuthToken",
       "CreateObjectTrigger",
       "CreateOrUpdateManyUsers",
       "CreateOrUpdateOrganization",
@@ -1537,6 +1564,7 @@
       "CreateUserGroupMembership",
       "CreateUserIdentity",
       "CreateUserOrganizationMembership",
+      "CreateUserSuspension",
       "CreateView",
       "CreateWorkspace",
       "DeleteManyOrganizationMemberships",
@@ -1578,6 +1606,7 @@
       "ListActiveTriggers",
       "ListActiveViews",
       "ListActivities",
+      "ListApiTokens",
       "ListApprovalRequests",
       "ListAssignableGroupMemberships",
       "ListAssignableGroupMembershipsByGroup",
@@ -1617,9 +1646,11 @@
       "ListLocales",
       "ListLocalesForAgent",
       "ListMacroAttachments",
+      "ListMacroGroups",
       "ListMacros",
       "ListManyAgentsAttributeValues",
       "ListMonitoredTwitterHandles",
+      "ListMostUsedMacros",
       "ListOAuthClients",
       "ListOAuthTokens",
       "ListObjectTriggers",
@@ -1659,6 +1690,7 @@
       "ListTicketFormStatuses",
       "ListTicketForms",
       "ListTicketMetricEvents",
+      "ListTicketMetricEventsByTicket",
       "ListTicketMetrics",
       "ListTicketSkips",
       "ListTicketSkipsByTicket",
@@ -1792,6 +1824,7 @@
       "ShowTicketfield",
       "ShowToken",
       "ShowTriggerCategoryById",
+      "ShowTriggerLimits",
       "ShowUser",
       "ShowUserBrandAgentById",
       "ShowUserComplianceDeletionStatuses",
@@ -1799,6 +1832,7 @@
       "ShowUserFieldOption",
       "ShowUserGroupMembershipById",
       "ShowUserIdentity",
+      "ShowUserSuspension",
       "ShowView",
       "ShowWorkspace",
       "SuspendedTicketsAttachments",
@@ -1811,6 +1845,7 @@
       "TriggerRevision",
       "UpdateAccessRule",
       "UpdateAccountSettings",
+      "UpdateApiToken",
       "UpdateAttachment",
       "UpdateAutomation",
       "UpdateBrand",
@@ -1856,6 +1891,7 @@
       "UpdateUser",
       "UpdateUserField",
       "UpdateUserIdentity",
+      "UpdateUserSuspension",
       "UpdateView",
       "UpdateWorkspace",
       "UploadFiles",
@@ -1959,8 +1995,8 @@
       "connection_owned_secret_surfaces_excluded": 17,
       "session_credential_surfaces_excluded": 1,
       "authenticated_operation_counts": {
-        "support": 625,
-        "help_center": 181
+        "support": 649,
+        "help_center": 0
       }
     },
     "source_decision": {
@@ -2090,6 +2126,20 @@
       },
       {
         "source": "support",
+        "operation_id": "CreateApiToken",
+        "method": "POST",
+        "path": "/api/v2/api_tokens",
+        "documented_request_media": [
+          "application/json"
+        ],
+        "documented_response_media": [
+          "application/json"
+        ],
+        "category": "credential_bearing_response",
+        "reason": "The `api_token` object in these responses carries a `token` field — the usable Zendesk API token. Returning it in an ordinary operation result makes the result a secret channel, and the list route hands back every token at once. Token lifecycle belongs to connection enrollment, not to recipe arguments and results."
+      },
+      {
+        "source": "support",
         "operation_id": "CreateAssociatedMacroAttachment",
         "method": "POST",
         "path": "/api/v2/macros/{macro_id}/attachments",
@@ -2140,18 +2190,6 @@
       },
       {
         "source": "support",
-        "operation_id": "CreateOAuthToken",
-        "method": "POST",
-        "path": "/api/v2/oauth/tokens",
-        "documented_request_media": [],
-        "documented_response_media": [
-          "application/json"
-        ],
-        "category": "connection_owned_oauth_secret_surface",
-        "reason": "OAuth clients, secrets, and tokens belong to connection enrollment and revocation. Exposing them as ordinary recipe arguments or results would leak or destroy connection authority."
-      },
-      {
-        "source": "support",
         "operation_id": "CreateTokenForGrantType",
         "method": "POST",
         "path": "/oauth/tokens",
@@ -2161,6 +2199,16 @@
         ],
         "category": "connection_owned_oauth_secret_surface",
         "reason": "OAuth clients, secrets, and tokens belong to connection enrollment and revocation. Exposing them as ordinary recipe arguments or results would leak or destroy connection authority."
+      },
+      {
+        "source": "support",
+        "operation_id": "DeleteApiToken",
+        "method": "DELETE",
+        "path": "/api/v2/api_tokens/{id}",
+        "documented_request_media": [],
+        "documented_response_media": [],
+        "category": "credential_bearing_response",
+        "reason": "The `api_token` object in these responses carries a `token` field — the usable Zendesk API token. Returning it in an ordinary operation result makes the result a secret channel, and the list route hands back every token at once. Token lifecycle belongs to connection enrollment, not to recipe arguments and results."
       },
       {
         "source": "support",
@@ -2195,6 +2243,18 @@
         ],
         "category": "connection_owned_oauth_secret_surface",
         "reason": "OAuth clients, secrets, and tokens belong to connection enrollment and revocation. Exposing them as ordinary recipe arguments or results would leak or destroy connection authority."
+      },
+      {
+        "source": "support",
+        "operation_id": "ListApiTokens",
+        "method": "GET",
+        "path": "/api/v2/api_tokens",
+        "documented_request_media": [],
+        "documented_response_media": [
+          "application/json"
+        ],
+        "category": "credential_bearing_response",
+        "reason": "The `api_token` object in these responses carries a `token` field — the usable Zendesk API token. Returning it in an ordinary operation result makes the result a secret channel, and the list route hands back every token at once. Token lifecycle belongs to connection enrollment, not to recipe arguments and results."
       },
       {
         "source": "support",
@@ -2326,6 +2386,20 @@
       },
       {
         "source": "support",
+        "operation_id": "UpdateApiToken",
+        "method": "PUT",
+        "path": "/api/v2/api_tokens/{id}",
+        "documented_request_media": [
+          "application/json"
+        ],
+        "documented_response_media": [
+          "application/json"
+        ],
+        "category": "credential_bearing_response",
+        "reason": "The `api_token` object in these responses carries a `token` field — the usable Zendesk API token. Returning it in an ordinary operation result makes the result a secret channel, and the list route hands back every token at once. Token lifecycle belongs to connection enrollment, not to recipe arguments and results."
+      },
+      {
+        "source": "support",
         "operation_id": "UpdateBrandLogo",
         "method": "PUT",
         "path": "/api/v2/brands/{brand_id}/logo",
@@ -2425,6 +2499,22 @@
       "/api/v2/any_channel/validate_token": {
         "post": {
           "operationId": "ValidateToken"
+        }
+      },
+      "/api/v2/api_tokens": {
+        "get": {
+          "operationId": "ListApiTokens"
+        },
+        "post": {
+          "operationId": "CreateApiToken"
+        }
+      },
+      "/api/v2/api_tokens/{id}": {
+        "put": {
+          "operationId": "UpdateApiToken"
+        },
+        "delete": {
+          "operationId": "DeleteApiToken"
         }
       },
       "/api/v2/approval_requests": {
@@ -3447,6 +3537,11 @@
           "operationId": "ShowMacroAttachment"
         }
       },
+      "/api/v2/macros/attachments/{attachment_id}/content": {
+        "get": {
+          "operationId": "DownloadMacroAttachment"
+        }
+      },
       "/api/v2/macros/categories": {
         "get": {
           "operationId": "ListMacroCategories"
@@ -3460,6 +3555,16 @@
       "/api/v2/macros/destroy_many": {
         "delete": {
           "operationId": "DeleteManyMacros"
+        }
+      },
+      "/api/v2/macros/groups": {
+        "get": {
+          "operationId": "ListMacroGroups"
+        }
+      },
+      "/api/v2/macros/most_used": {
+        "get": {
+          "operationId": "ListMostUsedMacros"
         }
       },
       "/api/v2/macros/new": {
@@ -3519,9 +3624,6 @@
       "/api/v2/oauth/tokens": {
         "get": {
           "operationId": "ListOAuthTokens"
-        },
-        "post": {
-          "operationId": "CreateOAuthToken"
         }
       },
       "/api/v2/oauth/tokens/{oauth_token_id}": {
@@ -3879,7 +3981,7 @@
       },
       "/api/v2/routing/agents/{user_id}/instance_values": {
         "get": {
-          "operationId": "ListAGentAttributeValues"
+          "operationId": "ListAgentAttributeValues"
         },
         "post": {
           "operationId": "SetAgentAttributeValues"
@@ -3925,6 +4027,9 @@
       "/api/v2/routing/attributes/{attribute_id}/values/{attribute_value_id}": {
         "get": {
           "operationId": "ShowAttributeValue"
+        },
+        "put": {
+          "operationId": "UpdateAttributeValuePut"
         },
         "patch": {
           "operationId": "UpdateAttributeValue"
@@ -4179,6 +4284,33 @@
           "operationId": "GetTasksByTaskListTemplateId"
         }
       },
+      "/api/v2/task_lists/{task_list_id}": {
+        "get": {
+          "operationId": "ShowTaskListInstance"
+        },
+        "put": {
+          "operationId": "UpdateCustomTaskList"
+        }
+      },
+      "/api/v2/task_lists/{task_list_id}/task_items": {
+        "get": {
+          "operationId": "ListTaskItems"
+        },
+        "post": {
+          "operationId": "CreateCustomTaskItem"
+        }
+      },
+      "/api/v2/task_lists/{task_list_id}/task_items/{task_item_id}": {
+        "get": {
+          "operationId": "ShowTaskItem"
+        },
+        "put": {
+          "operationId": "UpdateTaskItem"
+        },
+        "delete": {
+          "operationId": "DeleteCustomTaskItem"
+        }
+      },
       "/api/v2/ticket_audits": {
         "get": {
           "operationId": "ListTicketAudits"
@@ -4407,6 +4539,11 @@
           "operationId": "ListTicketFollowers"
         }
       },
+      "/api/v2/tickets/{ticket_id}/group_slas/policy_metrics": {
+        "get": {
+          "operationId": "ListTicketGroupSlaPolicyMetrics"
+        }
+      },
       "/api/v2/tickets/{ticket_id}/incidents": {
         "get": {
           "operationId": "ListTicketIncidents"
@@ -4425,6 +4562,11 @@
       "/api/v2/tickets/{ticket_id}/merge": {
         "post": {
           "operationId": "MergeTicketsIntoTargetTicket"
+        }
+      },
+      "/api/v2/tickets/{ticket_id}/metric_events": {
+        "get": {
+          "operationId": "ListTicketMetricEventsByTicket"
         }
       },
       "/api/v2/tickets/{ticket_id}/metrics": {
@@ -4447,6 +4589,11 @@
           "operationId": "ListTicketSkipsByTicket"
         }
       },
+      "/api/v2/tickets/{ticket_id}/slas/policy_metrics": {
+        "get": {
+          "operationId": "ListTicketSlaPolicyMetrics"
+        }
+      },
       "/api/v2/tickets/{ticket_id}/tags": {
         "get": {
           "operationId": "ListResourceTags"
@@ -4463,10 +4610,15 @@
       },
       "/api/v2/tickets/{ticket_id}/task_lists": {
         "get": {
-          "operationId": "ShowTaskList"
+          "operationId": "ShowTaskListsForTicket"
         },
         "post": {
           "operationId": "CreateTaskList"
+        }
+      },
+      "/api/v2/tickets/autocomplete": {
+        "get": {
+          "operationId": "AutocompleteTickets"
         }
       },
       "/api/v2/tickets/count": {
@@ -4577,6 +4729,11 @@
           "operationId": "DeleteManyTriggers"
         }
       },
+      "/api/v2/triggers/limits": {
+        "get": {
+          "operationId": "ShowTriggerLimits"
+        }
+      },
       "/api/v2/triggers/reorder": {
         "put": {
           "operationId": "ReorderTriggers"
@@ -4590,6 +4747,11 @@
       "/api/v2/triggers/update_many": {
         "put": {
           "operationId": "UpdateManyTriggers"
+        }
+      },
+      "/api/v2/triggers/validate": {
+        "post": {
+          "operationId": "ValidateTrigger"
         }
       },
       "/api/v2/uploads": {
@@ -4844,6 +5006,20 @@
       "/api/v2/users/{user_id}/skips": {
         "get": {
           "operationId": "ListTicketSkips"
+        }
+      },
+      "/api/v2/users/{user_id}/suspension": {
+        "get": {
+          "operationId": "ShowUserSuspension"
+        },
+        "post": {
+          "operationId": "CreateUserSuspension"
+        },
+        "put": {
+          "operationId": "UpdateUserSuspension"
+        },
+        "delete": {
+          "operationId": "DeleteUserSuspension"
         }
       },
       "/api/v2/users/{user_id}/tags": {
@@ -5402,6 +5578,11 @@
       "/api/v2/help_center/{locale}/categories/{category_id}/source_locale": {
         "put": {
           "operationId": "UpdateCategorySourceLocale"
+        }
+      },
+      "/api/v2/help_center/{locale}/community/posts/{post_id}/comments/{post_comment_id}": {
+        "get": {
+          "operationId": "ShowPostCommentByLocale"
         }
       },
       "/api/v2/help_center/{locale}/sections": {
@@ -7016,6 +7197,55 @@
       "approval": "always",
       "idempotency": "idempotent"
     },
+    "zendesk-business-rules.download_macro_attachment": {
+      "pack": "zendesk-business-rules",
+      "ingredient": "zendesk-business-rules",
+      "source": "support",
+      "op": "download_macro_attachment",
+      "operation_id": "DownloadMacroAttachment",
+      "method": "GET",
+      "path": "/api/v2/macros/attachments/{attachment_id}/content",
+      "effective_path": "/api/v2/macros/attachments/{attachment_id}/content",
+      "wire_path": "/api/v2/macros/attachments/{{attachment_id}}/content",
+      "tags": [
+        "Macros"
+      ],
+      "parameters": [
+        {
+          "name": "attachment_id",
+          "wire_name": "attachment_id",
+          "in": "path",
+          "official_type": "integer",
+          "admitted_type": "string",
+          "admitted_name": "attachment_id",
+          "required": true,
+          "exposed": true
+        }
+      ],
+      "request": null,
+      "documented_response_media": [
+        "application/octet-stream"
+      ],
+      "selected_response_media": "application/octet-stream",
+      "response_schema": {
+        "type": null,
+        "properties": {}
+      },
+      "result_path": null,
+      "pagination": null,
+      "pagination_authority": null,
+      "accept": "application/octet-stream",
+      "content_type": null,
+      "response_json": null,
+      "request_json": null,
+      "response_capture": null,
+      "compatibility_body_field": null,
+      "compatibility_approval_preserved": false,
+      "required_scopes": [],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe"
+    },
     "zendesk-business-rules.export_view": {
       "pack": "zendesk-business-rules",
       "ingredient": "zendesk-business-rules",
@@ -7952,6 +8182,84 @@
       "approval": "never",
       "idempotency": "safe"
     },
+    "zendesk-business-rules.list_macro_groups": {
+      "pack": "zendesk-business-rules",
+      "ingredient": "zendesk-business-rules",
+      "source": "support",
+      "op": "list_macro_groups",
+      "operation_id": "ListMacroGroups",
+      "method": "GET",
+      "path": "/api/v2/macros/groups",
+      "effective_path": "/api/v2/macros/groups",
+      "wire_path": "/api/v2/macros/groups",
+      "tags": [
+        "Macros"
+      ],
+      "parameters": [
+        {
+          "name": "page",
+          "wire_name": "page",
+          "in": "query",
+          "official_type": null,
+          "admitted_type": "object",
+          "admitted_name": "query.page",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "per_page",
+          "wire_name": "per_page",
+          "in": "query",
+          "official_type": "integer",
+          "admitted_type": "number",
+          "admitted_name": "query.per_page",
+          "required": false,
+          "exposed": true
+        }
+      ],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "groups": {
+            "type": "array"
+          }
+        }
+      },
+      "result_path": "groups",
+      "pagination": {
+        "style": "offset",
+        "page_size": {
+          "placement": "query",
+          "param": "per_page",
+          "value": 100
+        },
+        "param": {
+          "placement": "query",
+          "param": "page"
+        },
+        "start": 1,
+        "increment": "page"
+      },
+      "pagination_authority": "openapi_schema",
+      "accept": "application/json",
+      "content_type": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_json": null,
+      "response_capture": null,
+      "compatibility_body_field": null,
+      "compatibility_approval_preserved": false,
+      "required_scopes": [],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe"
+    },
     "zendesk-business-rules.list_macros": {
       "pack": "zendesk-business-rules",
       "ingredient": "zendesk-business-rules",
@@ -8158,6 +8466,50 @@
       "approval": "never",
       "idempotency": "safe"
     },
+    "zendesk-business-rules.list_most_used_macros": {
+      "pack": "zendesk-business-rules",
+      "ingredient": "zendesk-business-rules",
+      "source": "support",
+      "op": "list_most_used_macros",
+      "operation_id": "ListMostUsedMacros",
+      "method": "GET",
+      "path": "/api/v2/macros/most_used",
+      "effective_path": "/api/v2/macros/most_used",
+      "wire_path": "/api/v2/macros/most_used",
+      "tags": [
+        "Macros"
+      ],
+      "parameters": [],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "most_used_macros": {
+            "type": "array"
+          }
+        }
+      },
+      "result_path": "most_used_macros",
+      "pagination": null,
+      "pagination_authority": null,
+      "accept": "application/json",
+      "content_type": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_json": null,
+      "response_capture": null,
+      "compatibility_body_field": null,
+      "compatibility_approval_preserved": false,
+      "required_scopes": [],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe"
+    },
     "zendesk-business-rules.list_sla_policies": {
       "pack": "zendesk-business-rules",
       "ingredient": "zendesk-business-rules",
@@ -8200,6 +8552,118 @@
         "path": "next_page"
       },
       "pagination_authority": "openapi_schema",
+      "accept": "application/json",
+      "content_type": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_json": null,
+      "response_capture": null,
+      "compatibility_body_field": null,
+      "compatibility_approval_preserved": false,
+      "required_scopes": [],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe"
+    },
+    "zendesk-business-rules.list_ticket_group_sla_policy_metrics": {
+      "pack": "zendesk-business-rules",
+      "ingredient": "zendesk-business-rules",
+      "source": "support",
+      "op": "list_ticket_group_sla_policy_metrics",
+      "operation_id": "ListTicketGroupSlaPolicyMetrics",
+      "method": "GET",
+      "path": "/api/v2/tickets/{ticket_id}/group_slas/policy_metrics",
+      "effective_path": "/api/v2/tickets/{ticket_id}/group_slas/policy_metrics",
+      "wire_path": "/api/v2/tickets/{{ticket_id}}/group_slas/policy_metrics",
+      "tags": [
+        "Group SLA Policies",
+        "Tickets"
+      ],
+      "parameters": [
+        {
+          "name": "ticket_id",
+          "wire_name": "ticket_id",
+          "in": "path",
+          "official_type": "integer",
+          "admitted_type": "string",
+          "admitted_name": "ticket_id",
+          "required": true,
+          "exposed": true
+        }
+      ],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "policy_metrics": {
+            "type": "array"
+          }
+        }
+      },
+      "result_path": "policy_metrics",
+      "pagination": null,
+      "pagination_authority": null,
+      "accept": "application/json",
+      "content_type": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_json": null,
+      "response_capture": null,
+      "compatibility_body_field": null,
+      "compatibility_approval_preserved": false,
+      "required_scopes": [],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe"
+    },
+    "zendesk-business-rules.list_ticket_sla_policy_metrics": {
+      "pack": "zendesk-business-rules",
+      "ingredient": "zendesk-business-rules",
+      "source": "support",
+      "op": "list_ticket_sla_policy_metrics",
+      "operation_id": "ListTicketSlaPolicyMetrics",
+      "method": "GET",
+      "path": "/api/v2/tickets/{ticket_id}/slas/policy_metrics",
+      "effective_path": "/api/v2/tickets/{ticket_id}/slas/policy_metrics",
+      "wire_path": "/api/v2/tickets/{{ticket_id}}/slas/policy_metrics",
+      "tags": [
+        "SLA Policies",
+        "Tickets"
+      ],
+      "parameters": [
+        {
+          "name": "ticket_id",
+          "wire_name": "ticket_id",
+          "in": "path",
+          "official_type": "integer",
+          "admitted_type": "string",
+          "admitted_name": "ticket_id",
+          "required": true,
+          "exposed": true
+        }
+      ],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "policy_metrics": {
+            "type": "array"
+          }
+        }
+      },
+      "result_path": "policy_metrics",
+      "pagination": null,
+      "pagination_authority": null,
       "accept": "application/json",
       "content_type": null,
       "response_json": {
@@ -10007,6 +10471,53 @@
       "approval": "never",
       "idempotency": "safe"
     },
+    "zendesk-business-rules.show_trigger_limits": {
+      "pack": "zendesk-business-rules",
+      "ingredient": "zendesk-business-rules",
+      "source": "support",
+      "op": "show_trigger_limits",
+      "operation_id": "ShowTriggerLimits",
+      "method": "GET",
+      "path": "/api/v2/triggers/limits",
+      "effective_path": "/api/v2/triggers/limits",
+      "wire_path": "/api/v2/triggers/limits",
+      "tags": [
+        "Triggers"
+      ],
+      "parameters": [],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "count": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "string"
+          }
+        }
+      },
+      "result_path": "limit",
+      "pagination": null,
+      "pagination_authority": null,
+      "accept": "application/json",
+      "content_type": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_json": null,
+      "response_capture": null,
+      "compatibility_body_field": null,
+      "compatibility_approval_preserved": false,
+      "required_scopes": [],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe"
+    },
     "zendesk-business-rules.trigger_revision": {
       "pack": "zendesk-business-rules",
       "ingredient": "zendesk-business-rules",
@@ -10864,6 +11375,68 @@
       "risk": "admin",
       "approval": "always",
       "idempotency": "idempotent"
+    },
+    "zendesk-business-rules.validate_trigger": {
+      "pack": "zendesk-business-rules",
+      "ingredient": "zendesk-business-rules",
+      "source": "support",
+      "op": "validate_trigger",
+      "operation_id": "ValidateTrigger",
+      "method": "POST",
+      "path": "/api/v2/triggers/validate",
+      "effective_path": "/api/v2/triggers/validate",
+      "wire_path": "/api/v2/triggers/validate",
+      "tags": [
+        "Triggers"
+      ],
+      "parameters": [],
+      "request": {
+        "authority": "openapi_schema",
+        "documented_media": [
+          "application/json"
+        ],
+        "selected_media": "application/json",
+        "schema_type": "object",
+        "writable_properties": [
+          "fail_on_validate",
+          "trigger"
+        ],
+        "omitted_nested_int64_properties": [
+          "trigger"
+        ],
+        "raw_body": true
+      },
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "errors": {
+            "type": "array"
+          },
+          "valid": {
+            "type": "boolean"
+          }
+        }
+      },
+      "result_path": "errors",
+      "pagination": null,
+      "pagination_authority": null,
+      "accept": "application/json",
+      "content_type": "application/json",
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_json": null,
+      "response_capture": null,
+      "compatibility_body_field": null,
+      "compatibility_approval_preserved": false,
+      "required_scopes": [],
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent"
     },
     "zendesk-custom-objects-routing.autocomplete_custom_object_record_search": {
       "pack": "zendesk-custom-objects-routing",
@@ -13236,61 +13809,6 @@
       "approval": "never",
       "idempotency": "safe"
     },
-    "zendesk-custom-objects-routing.list_a_gent_attribute_values": {
-      "pack": "zendesk-custom-objects-routing",
-      "ingredient": "zendesk-custom-objects-routing",
-      "source": "support",
-      "op": "list_a_gent_attribute_values",
-      "operation_id": "ListAGentAttributeValues",
-      "method": "GET",
-      "path": "/api/v2/routing/agents/{user_id}/instance_values",
-      "effective_path": "/api/v2/routing/agents/{user_id}/instance_values",
-      "wire_path": "/api/v2/routing/agents/{{user_id}}/instance_values",
-      "tags": [
-        "Skill Based Routing"
-      ],
-      "parameters": [
-        {
-          "name": "user_id",
-          "wire_name": "user_id",
-          "in": "path",
-          "official_type": "integer",
-          "admitted_type": "string",
-          "admitted_name": "user_id",
-          "required": true,
-          "exposed": true
-        }
-      ],
-      "request": null,
-      "documented_response_media": [
-        "application/json"
-      ],
-      "selected_response_media": "application/json",
-      "response_schema": {
-        "type": "object",
-        "properties": {
-          "attribute_values": {
-            "type": "array"
-          }
-        }
-      },
-      "result_path": "attribute_values",
-      "pagination": null,
-      "pagination_authority": null,
-      "accept": "application/json",
-      "content_type": null,
-      "response_json": {
-        "unsafe_integers": "string"
-      },
-      "request_json": null,
-      "response_capture": null,
-      "compatibility_body_field": null,
-      "compatibility_approval_preserved": false,
-      "required_scopes": [],
-      "risk": "read",
-      "approval": "never",
-      "idempotency": "safe"
-    },
     "zendesk-custom-objects-routing.list_access_rule_definitions": {
       "pack": "zendesk-custom-objects-routing",
       "ingredient": "zendesk-custom-objects-routing",
@@ -13541,6 +14059,61 @@
         "path": "next_page"
       },
       "pagination_authority": "openapi_schema",
+      "accept": "application/json",
+      "content_type": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_json": null,
+      "response_capture": null,
+      "compatibility_body_field": null,
+      "compatibility_approval_preserved": false,
+      "required_scopes": [],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe"
+    },
+    "zendesk-custom-objects-routing.list_agent_attribute_values": {
+      "pack": "zendesk-custom-objects-routing",
+      "ingredient": "zendesk-custom-objects-routing",
+      "source": "support",
+      "op": "list_agent_attribute_values",
+      "operation_id": "ListAgentAttributeValues",
+      "method": "GET",
+      "path": "/api/v2/routing/agents/{user_id}/instance_values",
+      "effective_path": "/api/v2/routing/agents/{user_id}/instance_values",
+      "wire_path": "/api/v2/routing/agents/{{user_id}}/instance_values",
+      "tags": [
+        "Skill Based Routing"
+      ],
+      "parameters": [
+        {
+          "name": "user_id",
+          "wire_name": "user_id",
+          "in": "path",
+          "official_type": "integer",
+          "admitted_type": "string",
+          "admitted_name": "user_id",
+          "required": true,
+          "exposed": true
+        }
+      ],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "attribute_values": {
+            "type": "array"
+          }
+        }
+      },
+      "result_path": "attribute_values",
+      "pagination": null,
+      "pagination_authority": null,
       "accept": "application/json",
       "content_type": null,
       "response_json": {
@@ -15642,6 +16215,79 @@
       "op": "update_attribute_value",
       "operation_id": "UpdateAttributeValue",
       "method": "PATCH",
+      "path": "/api/v2/routing/attributes/{attribute_id}/values/{attribute_value_id}",
+      "effective_path": "/api/v2/routing/attributes/{attribute_id}/values/{attribute_value_id}",
+      "wire_path": "/api/v2/routing/attributes/{{attribute_id}}/values/{{attribute_value_id}}",
+      "tags": [
+        "Skill Based Routing"
+      ],
+      "parameters": [
+        {
+          "name": "attribute_id",
+          "wire_name": "attribute_id",
+          "in": "path",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "attribute_id",
+          "required": true,
+          "exposed": true
+        },
+        {
+          "name": "attribute_value_id",
+          "wire_name": "attribute_value_id",
+          "in": "path",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "attribute_value_id",
+          "required": true,
+          "exposed": true
+        }
+      ],
+      "request": {
+        "authority": "official_description_raw_json",
+        "documented_media": [],
+        "selected_media": "application/json",
+        "schema_type": null,
+        "writable_properties": [],
+        "omitted_nested_int64_properties": [],
+        "raw_body": true
+      },
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "attribute_value": {
+            "type": "object"
+          }
+        }
+      },
+      "result_path": "attribute_value",
+      "pagination": null,
+      "pagination_authority": null,
+      "accept": "application/json",
+      "content_type": "application/json",
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_json": null,
+      "response_capture": null,
+      "compatibility_body_field": null,
+      "compatibility_approval_preserved": false,
+      "required_scopes": [],
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "idempotent"
+    },
+    "zendesk-custom-objects-routing.update_attribute_value_put": {
+      "pack": "zendesk-custom-objects-routing",
+      "ingredient": "zendesk-custom-objects-routing",
+      "source": "support",
+      "op": "update_attribute_value_put",
+      "operation_id": "UpdateAttributeValuePut",
+      "method": "PUT",
       "path": "/api/v2/routing/attributes/{attribute_id}/values/{attribute_value_id}",
       "effective_path": "/api/v2/routing/attributes/{attribute_id}/values/{attribute_value_id}",
       "wire_path": "/api/v2/routing/attributes/{{attribute_id}}/values/{{attribute_value_id}}",
@@ -17882,7 +18528,7 @@
           "official_type": "string",
           "admitted_type": "string",
           "admitted_name": "query.filter[type]",
-          "required": false,
+          "required": true,
           "exposed": true
         },
         {
@@ -21434,6 +22080,73 @@
       "approval": "always",
       "idempotency": "non_idempotent"
     },
+    "zendesk-fields-workspaces.create_custom_task_item": {
+      "pack": "zendesk-fields-workspaces",
+      "ingredient": "zendesk-fields-workspaces",
+      "source": "support",
+      "op": "create_custom_task_item",
+      "operation_id": "CreateCustomTaskItem",
+      "method": "POST",
+      "path": "/api/v2/task_lists/{task_list_id}/task_items",
+      "effective_path": "/api/v2/task_lists/{task_list_id}/task_items",
+      "wire_path": "/api/v2/task_lists/{{task_list_id}}/task_items",
+      "tags": [
+        "Task Lists"
+      ],
+      "parameters": [
+        {
+          "name": "task_list_id",
+          "wire_name": "task_list_id",
+          "in": "path",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "task_list_id",
+          "required": true,
+          "exposed": true
+        }
+      ],
+      "request": {
+        "authority": "openapi_schema",
+        "documented_media": [
+          "application/json"
+        ],
+        "selected_media": "application/json",
+        "schema_type": "object",
+        "writable_properties": [
+          "task_item"
+        ],
+        "omitted_nested_int64_properties": [],
+        "raw_body": false
+      },
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "task_item": {
+            "type": "object"
+          }
+        }
+      },
+      "result_path": "task_item",
+      "pagination": null,
+      "pagination_authority": null,
+      "accept": "application/json",
+      "content_type": "application/json",
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_json": null,
+      "response_capture": null,
+      "compatibility_body_field": null,
+      "compatibility_approval_preserved": false,
+      "required_scopes": [],
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent"
+    },
     "zendesk-fields-workspaces.create_or_update_ticket_field_option": {
       "pack": "zendesk-fields-workspaces",
       "ingredient": "zendesk-fields-workspaces",
@@ -22331,6 +23044,63 @@
           "official_type": "integer",
           "admitted_type": "string",
           "admitted_name": "custom_status_id",
+          "required": true,
+          "exposed": true
+        }
+      ],
+      "request": null,
+      "documented_response_media": [],
+      "selected_response_media": null,
+      "response_schema": {
+        "type": null,
+        "properties": {}
+      },
+      "result_path": null,
+      "pagination": null,
+      "pagination_authority": null,
+      "accept": "application/json",
+      "content_type": null,
+      "response_json": null,
+      "request_json": null,
+      "response_capture": null,
+      "compatibility_body_field": null,
+      "compatibility_approval_preserved": false,
+      "required_scopes": [],
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent"
+    },
+    "zendesk-fields-workspaces.delete_custom_task_item": {
+      "pack": "zendesk-fields-workspaces",
+      "ingredient": "zendesk-fields-workspaces",
+      "source": "support",
+      "op": "delete_custom_task_item",
+      "operation_id": "DeleteCustomTaskItem",
+      "method": "DELETE",
+      "path": "/api/v2/task_lists/{task_list_id}/task_items/{task_item_id}",
+      "effective_path": "/api/v2/task_lists/{task_list_id}/task_items/{task_item_id}",
+      "wire_path": "/api/v2/task_lists/{{task_list_id}}/task_items/{{task_item_id}}",
+      "tags": [
+        "Task Lists"
+      ],
+      "parameters": [
+        {
+          "name": "task_list_id",
+          "wire_name": "task_list_id",
+          "in": "path",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "task_list_id",
+          "required": true,
+          "exposed": true
+        },
+        {
+          "name": "task_item_id",
+          "wire_name": "task_item_id",
+          "in": "path",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "task_item_id",
           "required": true,
           "exposed": true
         }
@@ -23525,6 +24295,73 @@
         },
         "start": 1,
         "increment": "page"
+      },
+      "pagination_authority": "openapi_schema",
+      "accept": "application/json",
+      "content_type": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_json": null,
+      "response_capture": null,
+      "compatibility_body_field": null,
+      "compatibility_approval_preserved": false,
+      "required_scopes": [],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe"
+    },
+    "zendesk-fields-workspaces.list_task_items": {
+      "pack": "zendesk-fields-workspaces",
+      "ingredient": "zendesk-fields-workspaces",
+      "source": "support",
+      "op": "list_task_items",
+      "operation_id": "ListTaskItems",
+      "method": "GET",
+      "path": "/api/v2/task_lists/{task_list_id}/task_items",
+      "effective_path": "/api/v2/task_lists/{task_list_id}/task_items",
+      "wire_path": "/api/v2/task_lists/{{task_list_id}}/task_items",
+      "tags": [
+        "Task Lists"
+      ],
+      "parameters": [
+        {
+          "name": "task_list_id",
+          "wire_name": "task_list_id",
+          "in": "path",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "task_list_id",
+          "required": true,
+          "exposed": true
+        }
+      ],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "count": {
+            "type": "number"
+          },
+          "next_page": {
+            "type": "string"
+          },
+          "previous_page": {
+            "type": "string"
+          },
+          "task_items": {
+            "type": "array"
+          }
+        }
+      },
+      "result_path": "task_items",
+      "pagination": {
+        "style": "next_path",
+        "path": "next_page"
       },
       "pagination_authority": "openapi_schema",
       "accept": "application/json",
@@ -24842,27 +25679,37 @@
       "approval": "never",
       "idempotency": "safe"
     },
-    "zendesk-fields-workspaces.show_task_list": {
+    "zendesk-fields-workspaces.show_task_item": {
       "pack": "zendesk-fields-workspaces",
       "ingredient": "zendesk-fields-workspaces",
       "source": "support",
-      "op": "show_task_list",
-      "operation_id": "ShowTaskList",
+      "op": "show_task_item",
+      "operation_id": "ShowTaskItem",
       "method": "GET",
-      "path": "/api/v2/tickets/{ticket_id}/task_lists",
-      "effective_path": "/api/v2/tickets/{ticket_id}/task_lists",
-      "wire_path": "/api/v2/tickets/{{ticket_id}}/task_lists",
+      "path": "/api/v2/task_lists/{task_list_id}/task_items/{task_item_id}",
+      "effective_path": "/api/v2/task_lists/{task_list_id}/task_items/{task_item_id}",
+      "wire_path": "/api/v2/task_lists/{{task_list_id}}/task_items/{{task_item_id}}",
       "tags": [
         "Task Lists"
       ],
       "parameters": [
         {
-          "name": "ticket_id",
-          "wire_name": "ticket_id",
+          "name": "task_list_id",
+          "wire_name": "task_list_id",
           "in": "path",
-          "official_type": "integer",
+          "official_type": "string",
           "admitted_type": "string",
-          "admitted_name": "ticket_id",
+          "admitted_name": "task_list_id",
+          "required": true,
+          "exposed": true
+        },
+        {
+          "name": "task_item_id",
+          "wire_name": "task_item_id",
+          "in": "path",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "task_item_id",
           "required": true,
           "exposed": true
         }
@@ -24875,26 +25722,69 @@
       "response_schema": {
         "type": "object",
         "properties": {
-          "count": {
-            "type": "number"
-          },
-          "next_page": {
-            "type": "string"
-          },
-          "previous_page": {
-            "type": "string"
-          },
-          "task_lists": {
-            "type": "array"
+          "task_item": {
+            "type": "object"
           }
         }
       },
-      "result_path": "task_lists",
-      "pagination": {
-        "style": "next_path",
-        "path": "next_page"
+      "result_path": "task_item",
+      "pagination": null,
+      "pagination_authority": null,
+      "accept": "application/json",
+      "content_type": null,
+      "response_json": {
+        "unsafe_integers": "string"
       },
-      "pagination_authority": "openapi_schema",
+      "request_json": null,
+      "response_capture": null,
+      "compatibility_body_field": null,
+      "compatibility_approval_preserved": false,
+      "required_scopes": [],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe"
+    },
+    "zendesk-fields-workspaces.show_task_list_instance": {
+      "pack": "zendesk-fields-workspaces",
+      "ingredient": "zendesk-fields-workspaces",
+      "source": "support",
+      "op": "show_task_list_instance",
+      "operation_id": "ShowTaskListInstance",
+      "method": "GET",
+      "path": "/api/v2/task_lists/{task_list_id}",
+      "effective_path": "/api/v2/task_lists/{task_list_id}",
+      "wire_path": "/api/v2/task_lists/{{task_list_id}}",
+      "tags": [
+        "Task Lists"
+      ],
+      "parameters": [
+        {
+          "name": "task_list_id",
+          "wire_name": "task_list_id",
+          "in": "path",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "task_list_id",
+          "required": true,
+          "exposed": true
+        }
+      ],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "task_list": {
+            "type": "object"
+          }
+        }
+      },
+      "result_path": "task_list",
+      "pagination": null,
+      "pagination_authority": null,
       "accept": "application/json",
       "content_type": null,
       "response_json": {
@@ -24950,6 +25840,73 @@
       "result_path": "task_list_template",
       "pagination": null,
       "pagination_authority": null,
+      "accept": "application/json",
+      "content_type": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_json": null,
+      "response_capture": null,
+      "compatibility_body_field": null,
+      "compatibility_approval_preserved": false,
+      "required_scopes": [],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe"
+    },
+    "zendesk-fields-workspaces.show_task_lists_for_ticket": {
+      "pack": "zendesk-fields-workspaces",
+      "ingredient": "zendesk-fields-workspaces",
+      "source": "support",
+      "op": "show_task_lists_for_ticket",
+      "operation_id": "ShowTaskListsForTicket",
+      "method": "GET",
+      "path": "/api/v2/tickets/{ticket_id}/task_lists",
+      "effective_path": "/api/v2/tickets/{ticket_id}/task_lists",
+      "wire_path": "/api/v2/tickets/{{ticket_id}}/task_lists",
+      "tags": [
+        "Task Lists"
+      ],
+      "parameters": [
+        {
+          "name": "ticket_id",
+          "wire_name": "ticket_id",
+          "in": "path",
+          "official_type": "integer",
+          "admitted_type": "string",
+          "admitted_name": "ticket_id",
+          "required": true,
+          "exposed": true
+        }
+      ],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "count": {
+            "type": "number"
+          },
+          "next_page": {
+            "type": "string"
+          },
+          "previous_page": {
+            "type": "string"
+          },
+          "task_lists": {
+            "type": "array"
+          }
+        }
+      },
+      "result_path": "task_lists",
+      "pagination": {
+        "style": "next_path",
+        "path": "next_page"
+      },
+      "pagination_authority": "openapi_schema",
       "accept": "application/json",
       "content_type": null,
       "response_json": {
@@ -25498,6 +26455,73 @@
       "approval": "always",
       "idempotency": "idempotent"
     },
+    "zendesk-fields-workspaces.update_custom_task_list": {
+      "pack": "zendesk-fields-workspaces",
+      "ingredient": "zendesk-fields-workspaces",
+      "source": "support",
+      "op": "update_custom_task_list",
+      "operation_id": "UpdateCustomTaskList",
+      "method": "PUT",
+      "path": "/api/v2/task_lists/{task_list_id}",
+      "effective_path": "/api/v2/task_lists/{task_list_id}",
+      "wire_path": "/api/v2/task_lists/{{task_list_id}}",
+      "tags": [
+        "Task Lists"
+      ],
+      "parameters": [
+        {
+          "name": "task_list_id",
+          "wire_name": "task_list_id",
+          "in": "path",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "task_list_id",
+          "required": true,
+          "exposed": true
+        }
+      ],
+      "request": {
+        "authority": "openapi_schema",
+        "documented_media": [
+          "application/json"
+        ],
+        "selected_media": "application/json",
+        "schema_type": "object",
+        "writable_properties": [
+          "task_list"
+        ],
+        "omitted_nested_int64_properties": [],
+        "raw_body": false
+      },
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "task_list": {
+            "type": "object"
+          }
+        }
+      },
+      "result_path": "task_list",
+      "pagination": null,
+      "pagination_authority": null,
+      "accept": "application/json",
+      "content_type": "application/json",
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_json": null,
+      "response_capture": null,
+      "compatibility_body_field": null,
+      "compatibility_approval_preserved": false,
+      "required_scopes": [],
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "idempotent"
+    },
     "zendesk-fields-workspaces.update_organization_field": {
       "pack": "zendesk-fields-workspaces",
       "ingredient": "zendesk-fields-workspaces",
@@ -25741,6 +26765,83 @@
         }
       },
       "result_path": "recipient_address",
+      "pagination": null,
+      "pagination_authority": null,
+      "accept": "application/json",
+      "content_type": "application/json",
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_json": null,
+      "response_capture": null,
+      "compatibility_body_field": null,
+      "compatibility_approval_preserved": false,
+      "required_scopes": [],
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "idempotent"
+    },
+    "zendesk-fields-workspaces.update_task_item": {
+      "pack": "zendesk-fields-workspaces",
+      "ingredient": "zendesk-fields-workspaces",
+      "source": "support",
+      "op": "update_task_item",
+      "operation_id": "UpdateTaskItem",
+      "method": "PUT",
+      "path": "/api/v2/task_lists/{task_list_id}/task_items/{task_item_id}",
+      "effective_path": "/api/v2/task_lists/{task_list_id}/task_items/{task_item_id}",
+      "wire_path": "/api/v2/task_lists/{{task_list_id}}/task_items/{{task_item_id}}",
+      "tags": [
+        "Task Lists"
+      ],
+      "parameters": [
+        {
+          "name": "task_list_id",
+          "wire_name": "task_list_id",
+          "in": "path",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "task_list_id",
+          "required": true,
+          "exposed": true
+        },
+        {
+          "name": "task_item_id",
+          "wire_name": "task_item_id",
+          "in": "path",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "task_item_id",
+          "required": true,
+          "exposed": true
+        }
+      ],
+      "request": {
+        "authority": "openapi_schema",
+        "documented_media": [
+          "application/json"
+        ],
+        "selected_media": "application/json",
+        "schema_type": "object",
+        "writable_properties": [
+          "task_item"
+        ],
+        "omitted_nested_int64_properties": [],
+        "raw_body": false
+      },
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "task_item": {
+            "type": "object"
+          }
+        }
+      },
+      "result_path": "task_item",
       "pagination": null,
       "pagination_authority": null,
       "accept": "application/json",
@@ -30228,6 +31329,81 @@
         "Post Comments"
       ],
       "parameters": [
+        {
+          "name": "post_id",
+          "wire_name": "post_id",
+          "in": "path",
+          "official_type": "integer",
+          "admitted_type": "string",
+          "admitted_name": "post_id",
+          "required": true,
+          "exposed": true
+        },
+        {
+          "name": "post_comment_id",
+          "wire_name": "post_comment_id",
+          "in": "path",
+          "official_type": "integer",
+          "admitted_type": "string",
+          "admitted_name": "post_comment_id",
+          "required": true,
+          "exposed": true
+        }
+      ],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "comment": {
+            "type": "object"
+          }
+        }
+      },
+      "result_path": "comment",
+      "pagination": null,
+      "pagination_authority": null,
+      "accept": "application/json",
+      "content_type": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_json": null,
+      "response_capture": null,
+      "compatibility_body_field": null,
+      "compatibility_approval_preserved": false,
+      "required_scopes": [],
+      "risk": "read",
+      "approval": "ask",
+      "idempotency": "safe"
+    },
+    "zendesk-help-center-community.show_post_comment_by_locale": {
+      "pack": "zendesk-help-center-community",
+      "ingredient": "zendesk-help-center-community",
+      "source": "help_center",
+      "op": "show_post_comment_by_locale",
+      "operation_id": "ShowPostCommentByLocale",
+      "method": "GET",
+      "path": "/api/v2/help_center/{locale}/community/posts/{post_id}/comments/{post_comment_id}",
+      "effective_path": "/api/v2/help_center/{locale}/community/posts/{post_id}/comments/{post_comment_id}",
+      "wire_path": "/api/v2/help_center/{{locale}}/community/posts/{{post_id}}/comments/{{post_comment_id}}",
+      "tags": [
+        "Post Comments"
+      ],
+      "parameters": [
+        {
+          "name": "locale",
+          "wire_name": "locale",
+          "in": "path",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "locale",
+          "required": true,
+          "exposed": true
+        },
         {
           "name": "post_id",
           "wire_name": "post_id",
@@ -44376,6 +45552,91 @@
       "approval": "ask",
       "idempotency": "safe"
     },
+    "zendesk-ticketing-engagement.autocomplete_tickets": {
+      "pack": "zendesk-ticketing-engagement",
+      "ingredient": "zendesk-ticketing-engagement",
+      "source": "support",
+      "op": "autocomplete_tickets",
+      "operation_id": "AutocompleteTickets",
+      "method": "GET",
+      "path": "/api/v2/tickets/autocomplete",
+      "effective_path": "/api/v2/tickets/autocomplete",
+      "wire_path": "/api/v2/tickets/autocomplete",
+      "tags": [
+        "Tickets"
+      ],
+      "parameters": [
+        {
+          "name": "name",
+          "wire_name": "name",
+          "in": "query",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "query.name",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "support_type_scope",
+          "wire_name": "support_type_scope",
+          "in": "query",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "query.support_type_scope",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "field_id",
+          "wire_name": "field_id",
+          "in": "query",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "query.field_id",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "source",
+          "wire_name": "source",
+          "in": "query",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "query.source",
+          "required": false,
+          "exposed": true
+        }
+      ],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "tickets": {
+            "type": "array"
+          }
+        }
+      },
+      "result_path": "tickets",
+      "pagination": null,
+      "pagination_authority": null,
+      "accept": "application/json",
+      "content_type": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_json": null,
+      "response_capture": null,
+      "compatibility_body_field": null,
+      "compatibility_approval_preserved": false,
+      "required_scopes": [],
+      "risk": "read",
+      "approval": "ask",
+      "idempotency": "safe"
+    },
     "zendesk-ticketing-engagement.bulk_delete_tickets": {
       "pack": "zendesk-ticketing-engagement",
       "ingredient": "zendesk-ticketing-engagement",
@@ -45165,33 +46426,12 @@
       "response_schema": {
         "type": "object",
         "properties": {
-          "account_id": {
-            "type": "string"
-          },
-          "content_id": {
-            "type": "string"
-          },
-          "content_type": {
-            "type": "string"
-          },
-          "created_at": {
-            "type": "string"
-          },
-          "id": {
-            "type": "string"
-          },
-          "locale": {
-            "type": "string"
-          },
-          "ticket_id": {
-            "type": "string"
-          },
-          "url": {
-            "type": "string"
+          "ticket_content_pin": {
+            "type": "object"
           }
         }
       },
-      "result_path": null,
+      "result_path": "ticket_content_pin",
       "pagination": null,
       "pagination_authority": null,
       "accept": "application/json",
@@ -45492,33 +46732,12 @@
       "response_schema": {
         "type": "object",
         "properties": {
-          "account_id": {
-            "type": "string"
-          },
-          "content_id": {
-            "type": "string"
-          },
-          "content_type": {
-            "type": "string"
-          },
-          "created_at": {
-            "type": "string"
-          },
-          "id": {
-            "type": "string"
-          },
-          "locale": {
-            "type": "string"
-          },
-          "ticket_id": {
-            "type": "string"
-          },
-          "url": {
-            "type": "string"
+          "ticket_content_pin": {
+            "type": "object"
           }
         }
       },
-      "result_path": null,
+      "result_path": "ticket_content_pin",
       "pagination": null,
       "pagination_authority": null,
       "accept": "application/json",
@@ -47365,6 +48584,58 @@
       "approval": "ask",
       "idempotency": "safe"
     },
+    "zendesk-ticketing-engagement.list_ticket_metric_events_by_ticket": {
+      "pack": "zendesk-ticketing-engagement",
+      "ingredient": "zendesk-ticketing-engagement",
+      "source": "support",
+      "op": "list_ticket_metric_events_by_ticket",
+      "operation_id": "ListTicketMetricEventsByTicket",
+      "method": "GET",
+      "path": "/api/v2/tickets/{ticket_id}/metric_events",
+      "effective_path": "/api/v2/tickets/{ticket_id}/metric_events",
+      "wire_path": "/api/v2/tickets/{{ticket_id}}/metric_events",
+      "tags": [
+        "Ticket Metric Events",
+        "Tickets"
+      ],
+      "parameters": [
+        {
+          "name": "ticket_id",
+          "wire_name": "ticket_id",
+          "in": "path",
+          "official_type": "integer",
+          "admitted_type": "string",
+          "admitted_name": "ticket_id",
+          "required": true,
+          "exposed": true
+        }
+      ],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {}
+      },
+      "result_path": null,
+      "pagination": null,
+      "pagination_authority": null,
+      "accept": "application/json",
+      "content_type": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_json": null,
+      "response_capture": null,
+      "compatibility_body_field": null,
+      "compatibility_approval_preserved": false,
+      "required_scopes": [],
+      "risk": "read",
+      "approval": "ask",
+      "idempotency": "safe"
+    },
     "zendesk-ticketing-engagement.list_ticket_problems": {
       "pack": "zendesk-ticketing-engagement",
       "ingredient": "zendesk-ticketing-engagement",
@@ -48741,13 +50012,17 @@
         }
       ],
       "request": {
-        "authority": "official_description_raw_json",
-        "documented_media": [],
+        "authority": "openapi_schema",
+        "documented_media": [
+          "application/json"
+        ],
         "selected_media": "application/json",
-        "schema_type": null,
-        "writable_properties": [],
+        "schema_type": "object",
+        "writable_properties": [
+          "text"
+        ],
         "omitted_nested_int64_properties": [],
-        "raw_body": true
+        "raw_body": false
       },
       "documented_response_media": [
         "application/json"
@@ -51356,6 +52631,73 @@
       "approval": "always",
       "idempotency": "non_idempotent"
     },
+    "zendesk-users-groups.create_user_suspension": {
+      "pack": "zendesk-users-groups",
+      "ingredient": "zendesk-users-groups",
+      "source": "support",
+      "op": "create_user_suspension",
+      "operation_id": "CreateUserSuspension",
+      "method": "POST",
+      "path": "/api/v2/users/{user_id}/suspension",
+      "effective_path": "/api/v2/users/{user_id}/suspension",
+      "wire_path": "/api/v2/users/{{user_id}}/suspension",
+      "tags": [
+        "Users"
+      ],
+      "parameters": [
+        {
+          "name": "user_id",
+          "wire_name": "user_id",
+          "in": "path",
+          "official_type": "integer",
+          "admitted_type": "string",
+          "admitted_name": "user_id",
+          "required": true,
+          "exposed": true
+        }
+      ],
+      "request": {
+        "authority": "openapi_schema",
+        "documented_media": [
+          "application/json"
+        ],
+        "selected_media": "application/json",
+        "schema_type": "object",
+        "writable_properties": [
+          "suspension"
+        ],
+        "omitted_nested_int64_properties": [],
+        "raw_body": false
+      },
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "suspension": {
+            "type": "object"
+          }
+        }
+      },
+      "result_path": "suspension",
+      "pagination": null,
+      "pagination_authority": null,
+      "accept": "application/json",
+      "content_type": "application/json",
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_json": null,
+      "response_capture": null,
+      "compatibility_body_field": null,
+      "compatibility_approval_preserved": false,
+      "required_scopes": [],
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "non_idempotent"
+    },
     "zendesk-users-groups.delete_end_user_identity": {
       "pack": "zendesk-users-groups",
       "ingredient": "zendesk-users-groups",
@@ -51651,6 +52993,53 @@
           "official_type": "integer",
           "admitted_type": "string",
           "admitted_name": "user_identity_id",
+          "required": true,
+          "exposed": true
+        }
+      ],
+      "request": null,
+      "documented_response_media": [],
+      "selected_response_media": null,
+      "response_schema": {
+        "type": null,
+        "properties": {}
+      },
+      "result_path": null,
+      "pagination": null,
+      "pagination_authority": null,
+      "accept": "application/json",
+      "content_type": null,
+      "response_json": null,
+      "request_json": null,
+      "response_capture": null,
+      "compatibility_body_field": null,
+      "compatibility_approval_preserved": false,
+      "required_scopes": [],
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent"
+    },
+    "zendesk-users-groups.delete_user_suspension": {
+      "pack": "zendesk-users-groups",
+      "ingredient": "zendesk-users-groups",
+      "source": "support",
+      "op": "delete_user_suspension",
+      "operation_id": "DeleteUserSuspension",
+      "method": "DELETE",
+      "path": "/api/v2/users/{user_id}/suspension",
+      "effective_path": "/api/v2/users/{user_id}/suspension",
+      "wire_path": "/api/v2/users/{{user_id}}/suspension",
+      "tags": [
+        "Users"
+      ],
+      "parameters": [
+        {
+          "name": "user_id",
+          "wire_name": "user_id",
+          "in": "path",
+          "official_type": "integer",
+          "admitted_type": "string",
+          "admitted_name": "user_id",
           "required": true,
           "exposed": true
         }
@@ -54142,7 +55531,7 @@
           "name": "brand_id",
           "wire_name": "brand_id",
           "in": "query",
-          "official_type": null,
+          "official_type": "integer",
           "admitted_type": "string",
           "admitted_name": "query.brand_id",
           "required": false,
@@ -54424,6 +55813,61 @@
         }
       },
       "result_path": "user_related",
+      "pagination": null,
+      "pagination_authority": null,
+      "accept": "application/json",
+      "content_type": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_json": null,
+      "response_capture": null,
+      "compatibility_body_field": null,
+      "compatibility_approval_preserved": false,
+      "required_scopes": [],
+      "risk": "read",
+      "approval": "ask",
+      "idempotency": "safe"
+    },
+    "zendesk-users-groups.show_user_suspension": {
+      "pack": "zendesk-users-groups",
+      "ingredient": "zendesk-users-groups",
+      "source": "support",
+      "op": "show_user_suspension",
+      "operation_id": "ShowUserSuspension",
+      "method": "GET",
+      "path": "/api/v2/users/{user_id}/suspension",
+      "effective_path": "/api/v2/users/{user_id}/suspension",
+      "wire_path": "/api/v2/users/{{user_id}}/suspension",
+      "tags": [
+        "Users"
+      ],
+      "parameters": [
+        {
+          "name": "user_id",
+          "wire_name": "user_id",
+          "in": "path",
+          "official_type": "integer",
+          "admitted_type": "string",
+          "admitted_name": "user_id",
+          "required": true,
+          "exposed": true
+        }
+      ],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "suspension": {
+            "type": "object"
+          }
+        }
+      },
+      "result_path": "suspension",
       "pagination": null,
       "pagination_authority": null,
       "accept": "application/json",
@@ -54781,6 +56225,73 @@
         }
       },
       "result_path": "identity",
+      "pagination": null,
+      "pagination_authority": null,
+      "accept": "application/json",
+      "content_type": "application/json",
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_json": null,
+      "response_capture": null,
+      "compatibility_body_field": null,
+      "compatibility_approval_preserved": false,
+      "required_scopes": [],
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "idempotent"
+    },
+    "zendesk-users-groups.update_user_suspension": {
+      "pack": "zendesk-users-groups",
+      "ingredient": "zendesk-users-groups",
+      "source": "support",
+      "op": "update_user_suspension",
+      "operation_id": "UpdateUserSuspension",
+      "method": "PUT",
+      "path": "/api/v2/users/{user_id}/suspension",
+      "effective_path": "/api/v2/users/{user_id}/suspension",
+      "wire_path": "/api/v2/users/{{user_id}}/suspension",
+      "tags": [
+        "Users"
+      ],
+      "parameters": [
+        {
+          "name": "user_id",
+          "wire_name": "user_id",
+          "in": "path",
+          "official_type": "integer",
+          "admitted_type": "string",
+          "admitted_name": "user_id",
+          "required": true,
+          "exposed": true
+        }
+      ],
+      "request": {
+        "authority": "openapi_schema",
+        "documented_media": [
+          "application/json"
+        ],
+        "selected_media": "application/json",
+        "schema_type": "object",
+        "writable_properties": [
+          "suspension"
+        ],
+        "omitted_nested_int64_properties": [],
+        "raw_body": false
+      },
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "suspension": {
+            "type": "object"
+          }
+        }
+      },
+      "result_path": "suspension",
       "pagination": null,
       "pagination_authority": null,
       "accept": "application/json",

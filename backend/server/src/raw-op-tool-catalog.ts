@@ -18,6 +18,7 @@ import {
   derivePerOpDependencyReads,
   isExternallyExposableIngredient,
   isClosedRequestSchema,
+  projectClosedRequestSchemaForJsonSchema,
   type DependencyReadAdmission,
   type IngredientManifest,
   type RiskTier,
@@ -73,11 +74,17 @@ const rawOpInputSchema = (
     ...(manifest.kind === 'connection' ? ['connection'] : []),
     ...declaredRequired,
   ].filter((value, index, all) => all.indexOf(value) === index);
+  // ⛔ PROJECT BEFORE SPREADING. The closed subset's `file_ref` / `file_ref[]`
+  // types are NOT JSON Schema, and this object becomes a tool's `inputSchema`
+  // verbatim — an unprojected one reaches a model as a type no validator knows.
+  // Cli ops are fenced off this door, but `tool_function` packs carry file_ref
+  // args too, so this is load-bearing rather than defensive.
+  const projected = projectClosedRequestSchemaForJsonSchema(requestSchema) as Record<string, unknown>;
   return {
-    ...requestSchema,
+    ...projected,
     properties: {
       connection: RAW_OP_CONNECTION_PROPERTY,
-      ...requestSchema.properties,
+      ...(projected.properties as Record<string, unknown>),
     },
     ...(required.length > 0 ? { required } : {}),
   };

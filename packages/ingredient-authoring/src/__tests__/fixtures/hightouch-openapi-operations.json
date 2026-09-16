@@ -4,11 +4,11 @@
       "openapi": {
         "kind": "official_mutable_openapi_hash_locked",
         "url": "https://api.hightouch.io/api/swagger.json",
-        "bytes": 159627,
-        "sha256": "2c4f61255d7bdd95f9a6122036fb80f72bb417016a7c3c091a5e05758c162d30",
+        "bytes": 196984,
+        "sha256": "06eff2ce6d4c944d119572198d92f9a1d39e2d2efcc6656983f9f66ed4e75eff",
         "retrieved_on": "2026-07-20",
         "evidence": [
-          "39 bearer-secured method/path operations across 27 paths",
+          "46 bearer-secured method/path operations across 32 paths",
           "exact parameters, required and optional JSON bodies, success response unions, and pagination defaults",
           "declared Hightouch API server https://api.hightouch.com/api/v1"
         ],
@@ -16,7 +16,7 @@
         "openapi": "3.0.0",
         "title": "Hightouch API",
         "api_version": "1.0.0",
-        "official_path_count": 27,
+        "official_path_count": 32,
         "declared_server": [
           {
             "url": "https://api.hightouch.com/api/v1"
@@ -48,58 +48,58 @@
         "extraction_end_marker": "\n---\n"
       }
     },
-    "official_operation_count": 39,
-    "admitted_operation_count": 38,
+    "official_operation_count": 46,
+    "admitted_operation_count": 45,
     "exclusion_count": 1,
     "official_method_counts": {
-      "GET": 19,
-      "PATCH": 6,
-      "POST": 14
+      "GET": 21,
+      "PATCH": 7,
+      "POST": 18
     },
     "admitted_method_counts": {
-      "GET": 19,
-      "PATCH": 6,
-      "POST": 13
+      "GET": 21,
+      "PATCH": 7,
+      "POST": 17
     },
     "pack_operation_counts": {
-      "hightouch-data-resources": 12,
+      "hightouch-data-resources": 14,
       "hightouch-sync-runtime": 9,
       "hightouch-identity-resolution": 4,
-      "hightouch-decisioning-campaigns": 9,
-      "hightouch-event-contracts": 4
+      "hightouch-decisioning-campaigns": 10,
+      "hightouch-event-contracts": 8
     },
     "composition_bytes": {
-      "hightouch-data-resources": 37344,
-      "hightouch-sync-runtime": 28065,
-      "hightouch-identity-resolution": 8903,
-      "hightouch-decisioning-campaigns": 24687,
-      "hightouch-event-contracts": 11254
+      "hightouch-data-resources": 42293,
+      "hightouch-sync-runtime": 28021,
+      "hightouch-identity-resolution": 9003,
+      "hightouch-decisioning-campaigns": 28651,
+      "hightouch-event-contracts": 23952
     },
     "body_mode_counts": {
-      "none": 21,
-      "raw_json": 18
+      "none": 23,
+      "raw_json": 23
     },
     "admitted_body_mode_counts": {
-      "none": 21,
-      "raw_json": 17
+      "none": 23,
+      "raw_json": 22
     },
-    "official_body_count": 18,
-    "official_required_body_count": 14,
-    "official_optional_body_count": 4,
-    "admitted_optional_body_count": 3,
+    "official_body_count": 23,
+    "official_required_body_count": 17,
+    "official_optional_body_count": 6,
+    "admitted_optional_body_count": 5,
     "risk_counts": {
-      "admin": 12,
+      "admin": 17,
       "destructive": 7,
-      "read": 19
+      "read": 21
     },
     "approval_counts": {
-      "always": 19,
-      "never": 19
+      "always": 24,
+      "never": 21
     },
     "idempotency_counts": {
-      "idempotent": 6,
-      "non_idempotent": 13,
-      "safe": 19
+      "idempotent": 7,
+      "non_idempotent": 17,
+      "safe": 21
     },
     "pagination": {
       "automatic_operation_count": 9,
@@ -131,16 +131,18 @@
           "type": "bearer"
         }
       },
-      "explicitly_secured_operation_count": 39,
+      "explicitly_secured_operation_count": 46,
       "credential_fields_in_pack_args": 0
     },
     "authority_notes": {
       "exact_path_parameter_contract": true,
       "operation_id_uniqueness": true,
-      "exact_json_content_type_operation_count": 17,
+      "exact_json_content_type_operation_count": 22,
       "optional_body_operation_keys": [
+        "POST /decision-engine/flow/{flowId}/messages/{messageId}/clone",
         "POST /idr/{graphId}/queue-for-reprocessing",
         "POST /idr/{graphId}/trigger",
+        "POST /models/{modelId}/match-booster/trigger",
         "POST /syncs/{syncId}/trigger"
       ],
       "pagination_owned_parameters": [
@@ -168,6 +170,7 @@
       ],
       "exact_decimal_string_parameters": [
         "GET /destinations/{destinationId}:destinationId",
+        "GET /models/{modelId}/match-booster/runs:modelId",
         "GET /models/{modelId}:modelId",
         "GET /sources/{sourceId}:sourceId",
         "GET /syncs/{syncId}/runs:runId",
@@ -177,26 +180,32 @@
         "PATCH /destinations/{destinationId}:destinationId",
         "PATCH /models/{modelId}:modelId",
         "PATCH /sources/{sourceId}:sourceId",
-        "PATCH /syncs/{syncId}:syncId"
+        "PATCH /syncs/{syncId}:syncId",
+        "POST /models/{modelId}/match-booster/trigger:modelId"
       ],
       "response_error_envelope_operation_ids": [
+        "CloneMessage",
         "CreateContract",
         "CreateDestination",
+        "CreateDomain",
         "CreateMessage",
         "CreateModel",
         "CreateSource",
         "CreateSync",
         "GetContract",
+        "GetDomain",
         "GetFlow",
         "GetMessage",
-        "GetSendStatus",
+        "ListEnrichmentRuns",
         "ListFlows",
         "ListMessages",
         "RunFlow",
         "TriggerCampaign",
+        "TriggerEnrichment",
         "TriggerRunCustom",
         "UpdateContract",
         "UpdateDestination",
+        "UpdateDomain",
         "UpdateMessage",
         "UpdateModel",
         "UpdateSource",
@@ -293,90 +302,6 @@
       }
     ],
     "workflows": [
-      {
-        "recipe_id": "get-sync-hightouch",
-        "operation_id": "GetSync",
-        "key": "GET /syncs/{syncId}",
-        "pack": "hightouch-sync-runtime",
-        "op": "sync.get_sync",
-        "required_args": [
-          "syncId"
-        ],
-        "supplied_args": [
-          "syncId"
-        ],
-        "pagination": null,
-        "response_error_envelope": false
-      },
-      {
-        "recipe_id": "list-sync-hightouch",
-        "operation_id": "ListSync",
-        "key": "GET /syncs",
-        "pack": "hightouch-sync-runtime",
-        "op": "sync.list_sync",
-        "required_args": [],
-        "supplied_args": [],
-        "pagination": {
-          "style": "offset",
-          "page_size": {
-            "placement": "query",
-            "param": "limit",
-            "value": 100
-          },
-          "param": {
-            "placement": "query",
-            "param": "offset"
-          },
-          "start": 0,
-          "increment": "by_page_size"
-        },
-        "response_error_envelope": false
-      },
-      {
-        "recipe_id": "list-sync-runs-hightouch",
-        "operation_id": "ListSyncRuns",
-        "key": "GET /syncs/{syncId}/runs",
-        "pack": "hightouch-sync-runtime",
-        "op": "sync.list_sync_runs",
-        "required_args": [
-          "syncId"
-        ],
-        "supplied_args": [
-          "syncId"
-        ],
-        "pagination": {
-          "style": "offset",
-          "page_size": {
-            "placement": "query",
-            "param": "limit",
-            "value": 100
-          },
-          "param": {
-            "placement": "query",
-            "param": "offset"
-          },
-          "start": 0,
-          "increment": "by_page_size"
-        },
-        "response_error_envelope": false
-      },
-      {
-        "recipe_id": "get-send-status-hightouch",
-        "operation_id": "GetSendStatus",
-        "key": "GET /campaigns/{campaignId}/sends/{sendId}",
-        "pack": "hightouch-decisioning-campaigns",
-        "op": "campaign.get_send_status",
-        "required_args": [
-          "campaignId",
-          "sendId"
-        ],
-        "supplied_args": [
-          "campaignId",
-          "sendId"
-        ],
-        "pagination": null,
-        "response_error_envelope": true
-      },
       {
         "recipe_id": "get-flow-hightouch",
         "operation_id": "GetFlow",
@@ -501,6 +426,32 @@
         "response_error_envelope": false
       },
       {
+        "recipe_id": "get-domain-hightouch",
+        "operation_id": "GetDomain",
+        "key": "GET /events/domains/{domainId}",
+        "pack": "hightouch-event-contracts",
+        "op": "event_domain.get_domain",
+        "required_args": [
+          "domainId"
+        ],
+        "supplied_args": [
+          "domainId"
+        ],
+        "pagination": null,
+        "response_error_envelope": true
+      },
+      {
+        "recipe_id": "list-domains-hightouch",
+        "operation_id": "ListDomains",
+        "key": "GET /events/domains",
+        "pack": "hightouch-event-contracts",
+        "op": "event_domain.list_domains",
+        "required_args": [],
+        "supplied_args": [],
+        "pagination": null,
+        "response_error_envelope": false
+      },
+      {
         "recipe_id": "list-idr-runs-hightouch",
         "operation_id": "ListIdrRuns",
         "key": "GET /idr/{graphId}/runs",
@@ -546,6 +497,88 @@
         "response_error_envelope": false
       },
       {
+        "recipe_id": "list-enrichment-runs-hightouch",
+        "operation_id": "ListEnrichmentRuns",
+        "key": "GET /models/{modelId}/match-booster/runs",
+        "pack": "hightouch-data-resources",
+        "op": "model.list_enrichment_runs",
+        "required_args": [
+          "modelId"
+        ],
+        "supplied_args": [
+          "modelId"
+        ],
+        "pagination": null,
+        "response_error_envelope": true
+      },
+      {
+        "recipe_id": "get-sync-hightouch",
+        "operation_id": "GetSync",
+        "key": "GET /syncs/{syncId}",
+        "pack": "hightouch-sync-runtime",
+        "op": "sync.get_sync",
+        "required_args": [
+          "syncId"
+        ],
+        "supplied_args": [
+          "syncId"
+        ],
+        "pagination": null,
+        "response_error_envelope": false
+      },
+      {
+        "recipe_id": "list-sync-hightouch",
+        "operation_id": "ListSync",
+        "key": "GET /syncs",
+        "pack": "hightouch-sync-runtime",
+        "op": "sync.list_sync",
+        "required_args": [],
+        "supplied_args": [],
+        "pagination": {
+          "style": "offset",
+          "page_size": {
+            "placement": "query",
+            "param": "limit",
+            "value": 100
+          },
+          "param": {
+            "placement": "query",
+            "param": "offset"
+          },
+          "start": 0,
+          "increment": "by_page_size"
+        },
+        "response_error_envelope": false
+      },
+      {
+        "recipe_id": "list-sync-runs-hightouch",
+        "operation_id": "ListSyncRuns",
+        "key": "GET /syncs/{syncId}/runs",
+        "pack": "hightouch-sync-runtime",
+        "op": "sync.list_sync_runs",
+        "required_args": [
+          "syncId"
+        ],
+        "supplied_args": [
+          "syncId"
+        ],
+        "pagination": {
+          "style": "offset",
+          "page_size": {
+            "placement": "query",
+            "param": "limit",
+            "value": 100
+          },
+          "param": {
+            "placement": "query",
+            "param": "offset"
+          },
+          "start": 0,
+          "increment": "by_page_size"
+        },
+        "response_error_envelope": false
+      },
+      {
         "recipe_id": "get-sync-sequence-run-hightouch",
         "operation_id": "GetSyncSequenceRun",
         "key": "GET /sync-sequences/runs/{syncSequenceRunId}",
@@ -561,9 +594,299 @@
         "response_error_envelope": false
       }
     ],
-    "operation_ids_sha256": "a943f9b86b6940b517ff8ff88f86b01318a987ea5ae8b4d4eb2c86a723ba209f"
+    "operation_ids_sha256": "1554b556e51576050f2e0b508316885c2856978393d409f4eacd71d39fc37ce4"
   },
   "official_operations": [
+    {
+      "key": "POST /campaigns/{campaignId}/trigger",
+      "method": "POST",
+      "path": "/campaigns/{campaignId}/trigger",
+      "operation_id": "TriggerCampaign",
+      "namespace": "campaign",
+      "summary": "Trigger an API campaign send",
+      "deprecated": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": true,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": true,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "hightouch-decisioning-campaigns",
+      "op": "campaign.trigger_campaign"
+    },
+    {
+      "key": "POST /campaigns/{campaignId}/sends/batch-get",
+      "method": "POST",
+      "path": "/campaigns/{campaignId}/sends/batch-get",
+      "operation_id": "GetSendStatuses",
+      "namespace": "campaign",
+      "summary": "Get send delivery statuses",
+      "deprecated": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": true,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": false,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "hightouch-decisioning-campaigns",
+      "op": "campaign.get_send_statuses"
+    },
+    {
+      "key": "GET /decision-engine/flow/{flowId}",
+      "method": "GET",
+      "path": "/decision-engine/flow/{flowId}",
+      "operation_id": "GetFlow",
+      "namespace": "decision_engine",
+      "summary": "Get Decision Engine Flow",
+      "deprecated": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": true,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "hightouch-decisioning-campaigns",
+      "op": "decision_engine.get_flow"
+    },
+    {
+      "key": "GET /decision-engine/flows",
+      "method": "GET",
+      "path": "/decision-engine/flows",
+      "operation_id": "ListFlows",
+      "namespace": "decision_engine",
+      "summary": "List Decision Engine Flows",
+      "deprecated": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": true,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "hightouch-decisioning-campaigns",
+      "op": "decision_engine.list_flows"
+    },
+    {
+      "key": "GET /decision-engine/flow/{flowId}/messages",
+      "method": "GET",
+      "path": "/decision-engine/flow/{flowId}/messages",
+      "operation_id": "ListMessages",
+      "namespace": "decision_engine",
+      "summary": "List Decision Engine Messages",
+      "deprecated": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": true,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "hightouch-decisioning-campaigns",
+      "op": "decision_engine.list_messages"
+    },
+    {
+      "key": "POST /decision-engine/flow/{flowId}/messages",
+      "method": "POST",
+      "path": "/decision-engine/flow/{flowId}/messages",
+      "operation_id": "CreateMessage",
+      "namespace": "decision_engine",
+      "summary": "Create Decision Engine Message",
+      "deprecated": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": true,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": true,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "hightouch-decisioning-campaigns",
+      "op": "decision_engine.create_message"
+    },
+    {
+      "key": "GET /decision-engine/flow/{flowId}/messages/{messageId}",
+      "method": "GET",
+      "path": "/decision-engine/flow/{flowId}/messages/{messageId}",
+      "operation_id": "GetMessage",
+      "namespace": "decision_engine",
+      "summary": "Get Decision Engine Message",
+      "deprecated": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": true,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "hightouch-decisioning-campaigns",
+      "op": "decision_engine.get_message"
+    },
+    {
+      "key": "PATCH /decision-engine/flow/{flowId}/messages/{messageId}",
+      "method": "PATCH",
+      "path": "/decision-engine/flow/{flowId}/messages/{messageId}",
+      "operation_id": "UpdateMessage",
+      "namespace": "decision_engine",
+      "summary": "Update Decision Engine Message",
+      "deprecated": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": true,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": true,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "hightouch-decisioning-campaigns",
+      "op": "decision_engine.update_message"
+    },
+    {
+      "key": "POST /decision-engine/flow/{flowId}/messages/{messageId}/clone",
+      "method": "POST",
+      "path": "/decision-engine/flow/{flowId}/messages/{messageId}/clone",
+      "operation_id": "CloneMessage",
+      "namespace": "decision_engine",
+      "summary": "Clone Decision Engine Message",
+      "deprecated": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": false,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": true,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "hightouch-decisioning-campaigns",
+      "op": "decision_engine.clone_message"
+    },
+    {
+      "key": "POST /decision-engine/flow/{flowId}/run",
+      "method": "POST",
+      "path": "/decision-engine/flow/{flowId}/run",
+      "operation_id": "RunFlow",
+      "namespace": "decision_engine",
+      "summary": "Trigger Decision Engine Flow Run",
+      "deprecated": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": true,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "hightouch-decisioning-campaigns",
+      "op": "decision_engine.run_flow"
+    },
     {
       "key": "GET /destinations/{destinationId}",
       "method": "GET",
@@ -679,6 +1002,442 @@
       "exclusion_reason": null,
       "pack": "hightouch-data-resources",
       "op": "destination.create_destination"
+    },
+    {
+      "key": "GET /events/contracts/{contractId}",
+      "method": "GET",
+      "path": "/events/contracts/{contractId}",
+      "operation_id": "GetContract",
+      "namespace": "event_contract",
+      "summary": "Get Contract",
+      "deprecated": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": true,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "hightouch-event-contracts",
+      "op": "event_contract.get_contract"
+    },
+    {
+      "key": "PATCH /events/contracts/{contractId}",
+      "method": "PATCH",
+      "path": "/events/contracts/{contractId}",
+      "operation_id": "UpdateContract",
+      "namespace": "event_contract",
+      "summary": "Update an Event Contract",
+      "deprecated": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": true,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": true,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "hightouch-event-contracts",
+      "op": "event_contract.update_contract"
+    },
+    {
+      "key": "GET /events/contracts",
+      "method": "GET",
+      "path": "/events/contracts",
+      "operation_id": "ListContracts",
+      "namespace": "event_contract",
+      "summary": "List Event Contracts",
+      "deprecated": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": false,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "hightouch-event-contracts",
+      "op": "event_contract.list_contracts"
+    },
+    {
+      "key": "POST /events/contracts",
+      "method": "POST",
+      "path": "/events/contracts",
+      "operation_id": "CreateContract",
+      "namespace": "event_contract",
+      "summary": "Create an Event Contract",
+      "deprecated": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": true,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": true,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "hightouch-event-contracts",
+      "op": "event_contract.create_contract"
+    },
+    {
+      "key": "GET /events/domains/{domainId}",
+      "method": "GET",
+      "path": "/events/domains/{domainId}",
+      "operation_id": "GetDomain",
+      "namespace": "event_domain",
+      "summary": "Get Domain",
+      "deprecated": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": true,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "hightouch-event-contracts",
+      "op": "event_domain.get_domain"
+    },
+    {
+      "key": "PATCH /events/domains/{domainId}",
+      "method": "PATCH",
+      "path": "/events/domains/{domainId}",
+      "operation_id": "UpdateDomain",
+      "namespace": "event_domain",
+      "summary": "Update an Event Domain",
+      "deprecated": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": true,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": true,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "hightouch-event-contracts",
+      "op": "event_domain.update_domain"
+    },
+    {
+      "key": "GET /events/domains",
+      "method": "GET",
+      "path": "/events/domains",
+      "operation_id": "ListDomains",
+      "namespace": "event_domain",
+      "summary": "List Event Domains",
+      "deprecated": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": false,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "hightouch-event-contracts",
+      "op": "event_domain.list_domains"
+    },
+    {
+      "key": "POST /events/domains",
+      "method": "POST",
+      "path": "/events/domains",
+      "operation_id": "CreateDomain",
+      "namespace": "event_domain",
+      "summary": "Create an Event Domain",
+      "deprecated": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": true,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": true,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "hightouch-event-contracts",
+      "op": "event_domain.create_domain"
+    },
+    {
+      "key": "POST /idr/{graphId}/trigger",
+      "method": "POST",
+      "path": "/idr/{graphId}/trigger",
+      "operation_id": "TriggerIdrRun",
+      "namespace": "identity_resolution",
+      "summary": "Trigger IDR run",
+      "deprecated": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": false,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": false,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "hightouch-identity-resolution",
+      "op": "identity_resolution.trigger_idr_run"
+    },
+    {
+      "key": "GET /idr/{graphId}/runs",
+      "method": "GET",
+      "path": "/idr/{graphId}/runs",
+      "operation_id": "ListIdrRuns",
+      "namespace": "identity_resolution",
+      "summary": "List IDR runs",
+      "deprecated": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": false,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "hightouch-identity-resolution",
+      "op": "identity_resolution.list_idr_runs"
+    },
+    {
+      "key": "POST /idr/{graphId}/queue-for-reprocessing",
+      "method": "POST",
+      "path": "/idr/{graphId}/queue-for-reprocessing",
+      "operation_id": "QueueForReprocessing",
+      "namespace": "identity_resolution",
+      "summary": "Queue identifier values for reprocessing",
+      "deprecated": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": false,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": false,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "hightouch-identity-resolution",
+      "op": "identity_resolution.queue_for_reprocessing"
+    },
+    {
+      "key": "GET /idr/{graphId}/reprocess-status/{requestId}",
+      "method": "GET",
+      "path": "/idr/{graphId}/reprocess-status/{requestId}",
+      "operation_id": "ReprocessStatus",
+      "namespace": "identity_resolution",
+      "summary": "ReprocessStatus",
+      "deprecated": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": false,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "hightouch-identity-resolution",
+      "op": "identity_resolution.reprocess_status"
+    },
+    {
+      "key": "POST /id_graphs/{graphId}/trigger",
+      "method": "POST",
+      "path": "/id_graphs/{graphId}/trigger",
+      "operation_id": "TriggerRunIdGraph",
+      "namespace": "identity_resolution",
+      "summary": "TriggerRunIdGraph",
+      "deprecated": true,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": false,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": false,
+      "selected": false,
+      "exclusion": "deprecated_operation",
+      "exclusion_reason": "The official operation is explicitly deprecated and directs callers to POST /idr/{graphId}/trigger, which is admitted as TriggerIdrRun.",
+      "pack": null,
+      "op": null
+    },
+    {
+      "key": "POST /models/{modelId}/match-booster/trigger",
+      "method": "POST",
+      "path": "/models/{modelId}/match-booster/trigger",
+      "operation_id": "TriggerEnrichment",
+      "namespace": "model",
+      "summary": "Trigger Match Booster enrichment",
+      "deprecated": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": false,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": true,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "hightouch-data-resources",
+      "op": "model.trigger_enrichment"
+    },
+    {
+      "key": "GET /models/{modelId}/match-booster/runs",
+      "method": "GET",
+      "path": "/models/{modelId}/match-booster/runs",
+      "operation_id": "ListEnrichmentRuns",
+      "namespace": "model",
+      "summary": "List Match Booster enrichment runs",
+      "deprecated": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": true,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "hightouch-data-resources",
+      "op": "model.list_enrichment_runs"
     },
     {
       "key": "GET /sources/{sourceId}",
@@ -1117,526 +1876,6 @@
       "op": "sync.trigger_run_custom"
     },
     {
-      "key": "POST /campaigns/{campaignId}/trigger",
-      "method": "POST",
-      "path": "/campaigns/{campaignId}/trigger",
-      "operation_id": "TriggerCampaign",
-      "namespace": "campaign",
-      "summary": "Trigger an API campaign send",
-      "deprecated": false,
-      "security": [
-        {
-          "bearerAuth": []
-        }
-      ],
-      "request_media": [
-        "application/json"
-      ],
-      "official_request_body_required": true,
-      "success_statuses": [
-        "200"
-      ],
-      "response_media": [
-        "application/json"
-      ],
-      "response_error_envelope": true,
-      "selected": true,
-      "exclusion": null,
-      "exclusion_reason": null,
-      "pack": "hightouch-decisioning-campaigns",
-      "op": "campaign.trigger_campaign"
-    },
-    {
-      "key": "GET /campaigns/{campaignId}/sends/{sendId}",
-      "method": "GET",
-      "path": "/campaigns/{campaignId}/sends/{sendId}",
-      "operation_id": "GetSendStatus",
-      "namespace": "campaign",
-      "summary": "Get send delivery status",
-      "deprecated": false,
-      "security": [
-        {
-          "bearerAuth": []
-        }
-      ],
-      "request_media": [],
-      "official_request_body_required": false,
-      "success_statuses": [
-        "200"
-      ],
-      "response_media": [
-        "application/json"
-      ],
-      "response_error_envelope": true,
-      "selected": true,
-      "exclusion": null,
-      "exclusion_reason": null,
-      "pack": "hightouch-decisioning-campaigns",
-      "op": "campaign.get_send_status"
-    },
-    {
-      "key": "GET /decision-engine/flow/{flowId}",
-      "method": "GET",
-      "path": "/decision-engine/flow/{flowId}",
-      "operation_id": "GetFlow",
-      "namespace": "decision_engine",
-      "summary": "Get Decision Engine Flow",
-      "deprecated": false,
-      "security": [
-        {
-          "bearerAuth": []
-        }
-      ],
-      "request_media": [],
-      "official_request_body_required": false,
-      "success_statuses": [
-        "200"
-      ],
-      "response_media": [
-        "application/json"
-      ],
-      "response_error_envelope": true,
-      "selected": true,
-      "exclusion": null,
-      "exclusion_reason": null,
-      "pack": "hightouch-decisioning-campaigns",
-      "op": "decision_engine.get_flow"
-    },
-    {
-      "key": "GET /decision-engine/flows",
-      "method": "GET",
-      "path": "/decision-engine/flows",
-      "operation_id": "ListFlows",
-      "namespace": "decision_engine",
-      "summary": "List Decision Engine Flows",
-      "deprecated": false,
-      "security": [
-        {
-          "bearerAuth": []
-        }
-      ],
-      "request_media": [],
-      "official_request_body_required": false,
-      "success_statuses": [
-        "200"
-      ],
-      "response_media": [
-        "application/json"
-      ],
-      "response_error_envelope": true,
-      "selected": true,
-      "exclusion": null,
-      "exclusion_reason": null,
-      "pack": "hightouch-decisioning-campaigns",
-      "op": "decision_engine.list_flows"
-    },
-    {
-      "key": "GET /decision-engine/flow/{flowId}/messages",
-      "method": "GET",
-      "path": "/decision-engine/flow/{flowId}/messages",
-      "operation_id": "ListMessages",
-      "namespace": "decision_engine",
-      "summary": "List Decision Engine Messages",
-      "deprecated": false,
-      "security": [
-        {
-          "bearerAuth": []
-        }
-      ],
-      "request_media": [],
-      "official_request_body_required": false,
-      "success_statuses": [
-        "200"
-      ],
-      "response_media": [
-        "application/json"
-      ],
-      "response_error_envelope": true,
-      "selected": true,
-      "exclusion": null,
-      "exclusion_reason": null,
-      "pack": "hightouch-decisioning-campaigns",
-      "op": "decision_engine.list_messages"
-    },
-    {
-      "key": "POST /decision-engine/flow/{flowId}/messages",
-      "method": "POST",
-      "path": "/decision-engine/flow/{flowId}/messages",
-      "operation_id": "CreateMessage",
-      "namespace": "decision_engine",
-      "summary": "Create Decision Engine Message",
-      "deprecated": false,
-      "security": [
-        {
-          "bearerAuth": []
-        }
-      ],
-      "request_media": [
-        "application/json"
-      ],
-      "official_request_body_required": true,
-      "success_statuses": [
-        "200"
-      ],
-      "response_media": [
-        "application/json"
-      ],
-      "response_error_envelope": true,
-      "selected": true,
-      "exclusion": null,
-      "exclusion_reason": null,
-      "pack": "hightouch-decisioning-campaigns",
-      "op": "decision_engine.create_message"
-    },
-    {
-      "key": "GET /decision-engine/flow/{flowId}/messages/{messageId}",
-      "method": "GET",
-      "path": "/decision-engine/flow/{flowId}/messages/{messageId}",
-      "operation_id": "GetMessage",
-      "namespace": "decision_engine",
-      "summary": "Get Decision Engine Message",
-      "deprecated": false,
-      "security": [
-        {
-          "bearerAuth": []
-        }
-      ],
-      "request_media": [],
-      "official_request_body_required": false,
-      "success_statuses": [
-        "200"
-      ],
-      "response_media": [
-        "application/json"
-      ],
-      "response_error_envelope": true,
-      "selected": true,
-      "exclusion": null,
-      "exclusion_reason": null,
-      "pack": "hightouch-decisioning-campaigns",
-      "op": "decision_engine.get_message"
-    },
-    {
-      "key": "PATCH /decision-engine/flow/{flowId}/messages/{messageId}",
-      "method": "PATCH",
-      "path": "/decision-engine/flow/{flowId}/messages/{messageId}",
-      "operation_id": "UpdateMessage",
-      "namespace": "decision_engine",
-      "summary": "Update Decision Engine Message",
-      "deprecated": false,
-      "security": [
-        {
-          "bearerAuth": []
-        }
-      ],
-      "request_media": [
-        "application/json"
-      ],
-      "official_request_body_required": true,
-      "success_statuses": [
-        "200"
-      ],
-      "response_media": [
-        "application/json"
-      ],
-      "response_error_envelope": true,
-      "selected": true,
-      "exclusion": null,
-      "exclusion_reason": null,
-      "pack": "hightouch-decisioning-campaigns",
-      "op": "decision_engine.update_message"
-    },
-    {
-      "key": "POST /decision-engine/flow/{flowId}/run",
-      "method": "POST",
-      "path": "/decision-engine/flow/{flowId}/run",
-      "operation_id": "RunFlow",
-      "namespace": "decision_engine",
-      "summary": "Trigger Decision Engine Flow Run",
-      "deprecated": false,
-      "security": [
-        {
-          "bearerAuth": []
-        }
-      ],
-      "request_media": [],
-      "official_request_body_required": false,
-      "success_statuses": [
-        "200"
-      ],
-      "response_media": [
-        "application/json"
-      ],
-      "response_error_envelope": true,
-      "selected": true,
-      "exclusion": null,
-      "exclusion_reason": null,
-      "pack": "hightouch-decisioning-campaigns",
-      "op": "decision_engine.run_flow"
-    },
-    {
-      "key": "GET /events/contracts/{contractId}",
-      "method": "GET",
-      "path": "/events/contracts/{contractId}",
-      "operation_id": "GetContract",
-      "namespace": "event_contract",
-      "summary": "Get Contract",
-      "deprecated": false,
-      "security": [
-        {
-          "bearerAuth": []
-        }
-      ],
-      "request_media": [],
-      "official_request_body_required": false,
-      "success_statuses": [
-        "200"
-      ],
-      "response_media": [
-        "application/json"
-      ],
-      "response_error_envelope": true,
-      "selected": true,
-      "exclusion": null,
-      "exclusion_reason": null,
-      "pack": "hightouch-event-contracts",
-      "op": "event_contract.get_contract"
-    },
-    {
-      "key": "PATCH /events/contracts/{contractId}",
-      "method": "PATCH",
-      "path": "/events/contracts/{contractId}",
-      "operation_id": "UpdateContract",
-      "namespace": "event_contract",
-      "summary": "Update an Event Contract",
-      "deprecated": false,
-      "security": [
-        {
-          "bearerAuth": []
-        }
-      ],
-      "request_media": [
-        "application/json"
-      ],
-      "official_request_body_required": true,
-      "success_statuses": [
-        "200"
-      ],
-      "response_media": [
-        "application/json"
-      ],
-      "response_error_envelope": true,
-      "selected": true,
-      "exclusion": null,
-      "exclusion_reason": null,
-      "pack": "hightouch-event-contracts",
-      "op": "event_contract.update_contract"
-    },
-    {
-      "key": "GET /events/contracts",
-      "method": "GET",
-      "path": "/events/contracts",
-      "operation_id": "ListContracts",
-      "namespace": "event_contract",
-      "summary": "List Event Contracts",
-      "deprecated": false,
-      "security": [
-        {
-          "bearerAuth": []
-        }
-      ],
-      "request_media": [],
-      "official_request_body_required": false,
-      "success_statuses": [
-        "200"
-      ],
-      "response_media": [
-        "application/json"
-      ],
-      "response_error_envelope": false,
-      "selected": true,
-      "exclusion": null,
-      "exclusion_reason": null,
-      "pack": "hightouch-event-contracts",
-      "op": "event_contract.list_contracts"
-    },
-    {
-      "key": "POST /events/contracts",
-      "method": "POST",
-      "path": "/events/contracts",
-      "operation_id": "CreateContract",
-      "namespace": "event_contract",
-      "summary": "Create an Event Contract",
-      "deprecated": false,
-      "security": [
-        {
-          "bearerAuth": []
-        }
-      ],
-      "request_media": [
-        "application/json"
-      ],
-      "official_request_body_required": true,
-      "success_statuses": [
-        "200"
-      ],
-      "response_media": [
-        "application/json"
-      ],
-      "response_error_envelope": true,
-      "selected": true,
-      "exclusion": null,
-      "exclusion_reason": null,
-      "pack": "hightouch-event-contracts",
-      "op": "event_contract.create_contract"
-    },
-    {
-      "key": "POST /idr/{graphId}/trigger",
-      "method": "POST",
-      "path": "/idr/{graphId}/trigger",
-      "operation_id": "TriggerIdrRun",
-      "namespace": "identity_resolution",
-      "summary": "Trigger IDR run",
-      "deprecated": false,
-      "security": [
-        {
-          "bearerAuth": []
-        }
-      ],
-      "request_media": [
-        "application/json"
-      ],
-      "official_request_body_required": false,
-      "success_statuses": [
-        "200"
-      ],
-      "response_media": [
-        "application/json"
-      ],
-      "response_error_envelope": false,
-      "selected": true,
-      "exclusion": null,
-      "exclusion_reason": null,
-      "pack": "hightouch-identity-resolution",
-      "op": "identity_resolution.trigger_idr_run"
-    },
-    {
-      "key": "GET /idr/{graphId}/runs",
-      "method": "GET",
-      "path": "/idr/{graphId}/runs",
-      "operation_id": "ListIdrRuns",
-      "namespace": "identity_resolution",
-      "summary": "List IDR runs",
-      "deprecated": false,
-      "security": [
-        {
-          "bearerAuth": []
-        }
-      ],
-      "request_media": [],
-      "official_request_body_required": false,
-      "success_statuses": [
-        "200"
-      ],
-      "response_media": [
-        "application/json"
-      ],
-      "response_error_envelope": false,
-      "selected": true,
-      "exclusion": null,
-      "exclusion_reason": null,
-      "pack": "hightouch-identity-resolution",
-      "op": "identity_resolution.list_idr_runs"
-    },
-    {
-      "key": "POST /idr/{graphId}/queue-for-reprocessing",
-      "method": "POST",
-      "path": "/idr/{graphId}/queue-for-reprocessing",
-      "operation_id": "QueueForReprocessing",
-      "namespace": "identity_resolution",
-      "summary": "Queue identifier values for reprocessing",
-      "deprecated": false,
-      "security": [
-        {
-          "bearerAuth": []
-        }
-      ],
-      "request_media": [
-        "application/json"
-      ],
-      "official_request_body_required": false,
-      "success_statuses": [
-        "200"
-      ],
-      "response_media": [
-        "application/json"
-      ],
-      "response_error_envelope": false,
-      "selected": true,
-      "exclusion": null,
-      "exclusion_reason": null,
-      "pack": "hightouch-identity-resolution",
-      "op": "identity_resolution.queue_for_reprocessing"
-    },
-    {
-      "key": "GET /idr/{graphId}/reprocess-status/{requestId}",
-      "method": "GET",
-      "path": "/idr/{graphId}/reprocess-status/{requestId}",
-      "operation_id": "ReprocessStatus",
-      "namespace": "identity_resolution",
-      "summary": "ReprocessStatus",
-      "deprecated": false,
-      "security": [
-        {
-          "bearerAuth": []
-        }
-      ],
-      "request_media": [],
-      "official_request_body_required": false,
-      "success_statuses": [
-        "200"
-      ],
-      "response_media": [
-        "application/json"
-      ],
-      "response_error_envelope": false,
-      "selected": true,
-      "exclusion": null,
-      "exclusion_reason": null,
-      "pack": "hightouch-identity-resolution",
-      "op": "identity_resolution.reprocess_status"
-    },
-    {
-      "key": "POST /id_graphs/{graphId}/trigger",
-      "method": "POST",
-      "path": "/id_graphs/{graphId}/trigger",
-      "operation_id": "TriggerRunIdGraph",
-      "namespace": "identity_resolution",
-      "summary": "TriggerRunIdGraph",
-      "deprecated": true,
-      "security": [
-        {
-          "bearerAuth": []
-        }
-      ],
-      "request_media": [
-        "application/json"
-      ],
-      "official_request_body_required": false,
-      "success_statuses": [
-        "200"
-      ],
-      "response_media": [
-        "application/json"
-      ],
-      "response_error_envelope": false,
-      "selected": false,
-      "exclusion": "deprecated_operation",
-      "exclusion_reason": "The official operation is explicitly deprecated and directs callers to POST /idr/{graphId}/trigger, which is admitted as TriggerIdrRun.",
-      "pack": null,
-      "op": null
-    },
-    {
       "key": "POST /sync-sequences/{syncSequenceId}/trigger",
       "method": "POST",
       "path": "/sync-sequences/{syncSequenceId}/trigger",
@@ -1694,69 +1933,6 @@
     }
   ],
   "operation_contracts": {
-    "GET /campaigns/{campaignId}/sends/{sendId}": {
-      "key": "GET /campaigns/{campaignId}/sends/{sendId}",
-      "operation_id": "GetSendStatus",
-      "pack": "hightouch-decisioning-campaigns",
-      "op": "campaign.get_send_status",
-      "method": "GET",
-      "path": "/campaigns/{campaignId}/sends/{sendId}",
-      "namespace": "campaign",
-      "risk": "read",
-      "approval": "never",
-      "idempotency": "safe",
-      "parameters": [
-        {
-          "in": "path",
-          "wire_name": "campaignId",
-          "required": true,
-          "official_types": [
-            "string"
-          ],
-          "official_format": null,
-          "admitted_key": "campaignId",
-          "admitted_type": "string",
-          "serialization": "scalar",
-          "authority": "official_openapi_parameter",
-          "dropped_pattern": false,
-          "exact_identifier": false
-        },
-        {
-          "in": "path",
-          "wire_name": "sendId",
-          "required": true,
-          "official_types": [
-            "string"
-          ],
-          "official_format": null,
-          "admitted_key": "sendId",
-          "admitted_type": "string",
-          "serialization": "scalar",
-          "authority": "official_openapi_parameter",
-          "dropped_pattern": false,
-          "exact_identifier": false
-        }
-      ],
-      "request_media": [],
-      "official_request_body_required": false,
-      "request_body_mode": "none",
-      "success_statuses": [
-        "200"
-      ],
-      "response_media": [
-        "application/json"
-      ],
-      "response_error_envelope": true,
-      "result_path": null,
-      "pagination": null,
-      "sensitive_response": false,
-      "security": [
-        {
-          "bearerAuth": []
-        }
-      ],
-      "response_schema_sha256": "1d9ff5b0da34554cff38f84632ff915ae0cfc3089d66ef3dd3c78eb1447dd8c1"
-    },
     "GET /decision-engine/flow/{flowId}": {
       "key": "GET /decision-engine/flow/{flowId}",
       "operation_id": "GetFlow",
@@ -2388,6 +2564,162 @@
       ],
       "response_schema_sha256": "fca255200be37f682f11c5220abe1e29e47b58d8ab2b6489dbcebdde675dbf58"
     },
+    "GET /events/domains": {
+      "key": "GET /events/domains",
+      "operation_id": "ListDomains",
+      "pack": "hightouch-event-contracts",
+      "op": "event_domain.list_domains",
+      "method": "GET",
+      "path": "/events/domains",
+      "namespace": "event_domain",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "query",
+          "wire_name": "name",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "query.name",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        },
+        {
+          "in": "query",
+          "wire_name": "source",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "query.source",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        },
+        {
+          "in": "query",
+          "wire_name": "offset",
+          "required": false,
+          "official_types": [
+            "number"
+          ],
+          "official_format": "double",
+          "admitted_key": "query.offset",
+          "admitted_type": "number",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        },
+        {
+          "in": "query",
+          "wire_name": "limit",
+          "required": false,
+          "official_types": [
+            "number"
+          ],
+          "official_format": "double",
+          "admitted_key": "query.limit",
+          "admitted_type": "number",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        },
+        {
+          "in": "query",
+          "wire_name": "orderBy",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "query.orderBy",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "request_body_mode": "none",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": false,
+      "result_path": null,
+      "pagination": null,
+      "sensitive_response": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "response_schema_sha256": "95ad85205eb99c1aca05cc7d235e63cb7811f804277fda9eabf95f1cdafc9aee"
+    },
+    "GET /events/domains/{domainId}": {
+      "key": "GET /events/domains/{domainId}",
+      "operation_id": "GetDomain",
+      "pack": "hightouch-event-contracts",
+      "op": "event_domain.get_domain",
+      "method": "GET",
+      "path": "/events/domains/{domainId}",
+      "namespace": "event_domain",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "domainId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "domainId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "request_body_mode": "none",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": true,
+      "result_path": null,
+      "pagination": null,
+      "sensitive_response": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "response_schema_sha256": "c092409ef540042cad54edd099428f5f3fa7dfeae426a5a1783dc47643f227d9"
+    },
     "GET /idr/{graphId}/reprocess-status/{requestId}": {
       "key": "GET /idr/{graphId}/reprocess-status/{requestId}",
       "operation_id": "ReprocessStatus",
@@ -2449,7 +2781,7 @@
           "bearerAuth": []
         }
       ],
-      "response_schema_sha256": "d187d887d09bf1795cacdc9f123c62574ca8a3504333dcb297838e3559628335"
+      "response_schema_sha256": "ea81d4315afef259764aaceb1249840c230ba2314b3be63ef515e09d7b06edc2"
     },
     "GET /idr/{graphId}/runs": {
       "key": "GET /idr/{graphId}/runs",
@@ -2785,6 +3117,99 @@
         }
       ],
       "response_schema_sha256": "89023431b582ef5a6bd3e947c539278b9ba5ddaa6933284722e7a4b0abd27fe5"
+    },
+    "GET /models/{modelId}/match-booster/runs": {
+      "key": "GET /models/{modelId}/match-booster/runs",
+      "operation_id": "ListEnrichmentRuns",
+      "pack": "hightouch-data-resources",
+      "op": "model.list_enrichment_runs",
+      "method": "GET",
+      "path": "/models/{modelId}/match-booster/runs",
+      "namespace": "model",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "modelId",
+          "required": true,
+          "official_types": [
+            "number"
+          ],
+          "official_format": "double",
+          "admitted_key": "modelId",
+          "admitted_type": "string",
+          "serialization": "exact_decimal_string",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": true
+        },
+        {
+          "in": "query",
+          "wire_name": "region",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "query.region",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        },
+        {
+          "in": "query",
+          "wire_name": "limit",
+          "required": false,
+          "official_types": [
+            "number"
+          ],
+          "official_format": "double",
+          "admitted_key": "query.limit",
+          "admitted_type": "number",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        },
+        {
+          "in": "query",
+          "wire_name": "offset",
+          "required": false,
+          "official_types": [
+            "number"
+          ],
+          "official_format": "double",
+          "admitted_key": "query.offset",
+          "admitted_type": "number",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "request_body_mode": "none",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": true,
+      "result_path": null,
+      "pagination": null,
+      "sensitive_response": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "response_schema_sha256": "3242398066078f5d444b13a3b6668c98f282a9fe6c6a6f003e71de267d1ed8fd"
     },
     "GET /sources": {
       "key": "GET /sources",
@@ -3152,7 +3577,7 @@
           "bearerAuth": []
         }
       ],
-      "response_schema_sha256": "2912ada6f9eb5cbe1a6747b326c21a6537c31af070e7ab00d14390e392a9db03"
+      "response_schema_sha256": "6bcfb2803dfe538345d0cacdd9d006ce7c1b1e5df1c1ac1bb8ee77872e1ea1ce"
     },
     "GET /syncs/{syncId}": {
       "key": "GET /syncs/{syncId}",
@@ -3200,7 +3625,7 @@
           "bearerAuth": []
         }
       ],
-      "response_schema_sha256": "52b0acd3f01a83426d061cafbb2605768de0d5ecc40df138d5c78143ce452ecd"
+      "response_schema_sha256": "a1f7d8763ad4d151d1fa4cba7bb48c0287b62ed5f85bfbac8a1ece35fc95f3d5"
     },
     "GET /syncs/{syncId}/runs": {
       "key": "GET /syncs/{syncId}/runs",
@@ -3533,6 +3958,56 @@
       ],
       "response_schema_sha256": "fb1b5fb936d075422caea977994e374b0b527c8cdcb7b919870f857a77beb246"
     },
+    "PATCH /events/domains/{domainId}": {
+      "key": "PATCH /events/domains/{domainId}",
+      "operation_id": "UpdateDomain",
+      "pack": "hightouch-event-contracts",
+      "op": "event_domain.update_domain",
+      "method": "PATCH",
+      "path": "/events/domains/{domainId}",
+      "namespace": "event_domain",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "domainId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "domainId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": true,
+      "request_body_mode": "raw_json",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": true,
+      "result_path": null,
+      "pagination": null,
+      "sensitive_response": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "response_schema_sha256": "c092409ef540042cad54edd099428f5f3fa7dfeae426a5a1783dc47643f227d9"
+    },
     "PATCH /models/{modelId}": {
       "key": "PATCH /models/{modelId}",
       "operation_id": "UpdateModel",
@@ -3681,7 +4156,57 @@
           "bearerAuth": []
         }
       ],
-      "response_schema_sha256": "bb6712eb3914f40c2cb8193d045afd497a542a5f55a62dbe76c87ca2cff0013f"
+      "response_schema_sha256": "f351076265832840308bb895bdcd4b554c04e05ab5df223684a9677da43221e2"
+    },
+    "POST /campaigns/{campaignId}/sends/batch-get": {
+      "key": "POST /campaigns/{campaignId}/sends/batch-get",
+      "operation_id": "GetSendStatuses",
+      "pack": "hightouch-decisioning-campaigns",
+      "op": "campaign.get_send_statuses",
+      "method": "POST",
+      "path": "/campaigns/{campaignId}/sends/batch-get",
+      "namespace": "campaign",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "campaignId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "campaignId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": true,
+      "request_body_mode": "raw_json",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": false,
+      "result_path": null,
+      "pagination": null,
+      "sensitive_response": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "response_schema_sha256": "ab883c47a996a58edd2723bf939acfc692bd5dac008ac6f923a1216618c0c7d8"
     },
     "POST /campaigns/{campaignId}/trigger": {
       "key": "POST /campaigns/{campaignId}/trigger",
@@ -3782,6 +4307,71 @@
         }
       ],
       "response_schema_sha256": "dc23b6df115c2271066ec58f19d9625b6159c56f5d3594243db0297eb1b4509c"
+    },
+    "POST /decision-engine/flow/{flowId}/messages/{messageId}/clone": {
+      "key": "POST /decision-engine/flow/{flowId}/messages/{messageId}/clone",
+      "operation_id": "CloneMessage",
+      "pack": "hightouch-decisioning-campaigns",
+      "op": "decision_engine.clone_message",
+      "method": "POST",
+      "path": "/decision-engine/flow/{flowId}/messages/{messageId}/clone",
+      "namespace": "decision_engine",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "flowId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "flowId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        },
+        {
+          "in": "path",
+          "wire_name": "messageId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "messageId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": false,
+      "request_body_mode": "raw_json",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": true,
+      "result_path": null,
+      "pagination": null,
+      "sensitive_response": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "response_schema_sha256": "4866b433ea9d6721fd7ab449ae5efa46df1b2faf092b9652a06d401772cd91d9"
     },
     "POST /decision-engine/flow/{flowId}/run": {
       "key": "POST /decision-engine/flow/{flowId}/run",
@@ -3898,6 +4488,40 @@
         }
       ],
       "response_schema_sha256": "fca255200be37f682f11c5220abe1e29e47b58d8ab2b6489dbcebdde675dbf58"
+    },
+    "POST /events/domains": {
+      "key": "POST /events/domains",
+      "operation_id": "CreateDomain",
+      "pack": "hightouch-event-contracts",
+      "op": "event_domain.create_domain",
+      "method": "POST",
+      "path": "/events/domains",
+      "namespace": "event_domain",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "parameters": [],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": true,
+      "request_body_mode": "raw_json",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": true,
+      "result_path": null,
+      "pagination": null,
+      "sensitive_response": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "response_schema_sha256": "c092409ef540042cad54edd099428f5f3fa7dfeae426a5a1783dc47643f227d9"
     },
     "POST /idr/{graphId}/queue-for-reprocessing": {
       "key": "POST /idr/{graphId}/queue-for-reprocessing",
@@ -4049,6 +4673,56 @@
       ],
       "response_schema_sha256": "b157d1afbd6fe6f2beb82b0f47a1108eae99e3603aa8a982f976c4a59f0e62ec"
     },
+    "POST /models/{modelId}/match-booster/trigger": {
+      "key": "POST /models/{modelId}/match-booster/trigger",
+      "operation_id": "TriggerEnrichment",
+      "pack": "hightouch-data-resources",
+      "op": "model.trigger_enrichment",
+      "method": "POST",
+      "path": "/models/{modelId}/match-booster/trigger",
+      "namespace": "model",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "modelId",
+          "required": true,
+          "official_types": [
+            "number"
+          ],
+          "official_format": "double",
+          "admitted_key": "modelId",
+          "admitted_type": "string",
+          "serialization": "exact_decimal_string",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": true
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": false,
+      "request_body_mode": "raw_json",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": true,
+      "result_path": null,
+      "pagination": null,
+      "sensitive_response": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "response_schema_sha256": "7afa07088620d36ebe68591483c7a3d1f4162e90d193b65d81a44928e9392d2a"
+    },
     "POST /sources": {
       "key": "POST /sources",
       "operation_id": "CreateSource",
@@ -4163,7 +4837,7 @@
           "bearerAuth": []
         }
       ],
-      "response_schema_sha256": "bb6712eb3914f40c2cb8193d045afd497a542a5f55a62dbe76c87ca2cff0013f"
+      "response_schema_sha256": "f351076265832840308bb895bdcd4b554c04e05ab5df223684a9677da43221e2"
     },
     "POST /syncs/{syncId}/trigger": {
       "key": "POST /syncs/{syncId}/trigger",

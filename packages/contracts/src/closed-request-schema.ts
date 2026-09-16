@@ -7,6 +7,8 @@
  * unsupported constraint can never look enforced while being ignored.
  */
 
+import { isPinnedCasFileRef, isTempFileRef } from './ingredient-catalog.js';
+
 const ROOT_KEYS = new Set(['type', 'additionalProperties', 'required', 'properties']);
 const PROPERTY_KEYS = new Set([
   'type',
@@ -18,8 +20,90 @@ const PROPERTY_KEYS = new Set([
   'maximum',
 ]);
 const ARRAY_PROPERTY_KEYS = new Set(['type', 'items', 'minItems', 'maxItems', 'uniqueItems']);
+/** `file_ref` carries NO constraint keywords, and that is deliberate. Its value is
+ *  a UNION — a scalar the cli passes through as a literal path/URL, a
+ *  materializable record id, or one of two closed object carriers — so a
+ *  `maxLength` or `pattern` here would silently bind one branch and not the
+ *  others. This file's own rule ("a misspelled or unsupported constraint can
+ *  never look enforced while being ignored") forbids exactly that. The shape is
+ *  fixed in contracts, not restated per pack. */
+const FILE_REF_PROPERTY_KEYS = new Set(['type']);
+const FILE_REF_ARRAY_PROPERTY_KEYS = new Set(['type', 'minItems', 'maxItems']);
 const SCALAR_PROPERTY_TYPES = new Set(['string', 'number', 'integer', 'boolean']);
-const PROPERTY_TYPES = new Set([...SCALAR_PROPERTY_TYPES, 'array', 'object']);
+const FILE_REF_TYPES = new Set(['file_ref', 'file_ref[]']);
+const PROPERTY_TYPES = new Set([
+  ...SCALAR_PROPERTY_TYPES, 'array', 'object', ...FILE_REF_TYPES,
+]);
+
+/** Does a value satisfy a `file_ref` argument?
+ *
+ *  ⛔ THIS MIRRORS THE RUNTIME ACCEPTOR AND MUST NOT BE NARROWER. `input_materialize`
+ *  (`backend/server/src/cli-invocation-executor.ts`) resolves a temp ref to its path,
+ *  materializes a pinned-CAS carrier or a recognized record id, and passes
+ *  ANYTHING ELSE through to the tool as a literal path / URL via `scalarString`,
+ *  whose `SCALAR_TYPES` are string / number / boolean / bigint. A gate narrower
+ *  than its runtime rejects calls that work today, which is the failure this whole
+ *  subset exists to avoid — so the scalars stay in.
+ *
+ *  What it DOES reject: null, undefined, arrays, and any object that is neither
+ *  carrier (a half-formed `{ backing: 'temp', path }` with no mime_type/filename
+ *  reaches `scalarString` today and dies with "must resolve to a scalar" deep in
+ *  the executor; here it is named at the door). */
+export const isFileRefArgumentValue = (value: unknown): boolean => {
+  // ⛔ A LEADING DASH IS FLAG INJECTION, NOT A FILE. The passthrough lane hands
+  // this value straight into argv, so `-i /etc/passwd` as a `source` would be
+  // read by the tool as an option. Every pack that gave one of these args an
+  // `editable_args` pattern already wrote `^(?!-)` — the rule was the authors'
+  // intent everywhere and enforced nowhere, because a `pattern` on a file_ref
+  // could only ever bind the string branch of the union. It belongs here, where
+  // it binds the whole type.
+  if (typeof value === 'string') return value.length > 0 && !value.startsWith('-');
+  if (typeof value === 'number') return Number.isFinite(value);
+  if (typeof value === 'boolean') return true;
+  return isTempFileRef(value) || isPinnedCasFileRef(value);
+};
+
+/** The JSON-Schema projection of a `file_ref`, for surfaces that hand a request
+ *  schema to something that speaks JSON Schema (the MCP raw-op door).
+ *
+ *  ⛔ `{ "type": "file_ref" }` IS NOT JSON SCHEMA. `rawOpInputSchema`
+ *  (`backend/server/src/raw-op-tool-catalog.ts`) spreads a closed schema VERBATIM
+ *  into a tool's `inputSchema`, so an unprojected file_ref would reach a model as
+ *  a type no validator knows. Cli ops are fenced off that door, but `file_ref`
+ *  args also exist in `tool_function` packs (bluesky / facebook / mastodon /
+ *  x-twitter), which are not — so the projection is a requirement, not a
+ *  courtesy. */
+export const FILE_REF_JSON_SCHEMA: Readonly<Record<string, unknown>> = Object.freeze({
+  description:
+    'A file reference: a data.file record id, a local path or URL, or a '
+    + 'producing step\'s file_ref carrier.',
+  anyOf: [
+    { type: 'string', minLength: 1 },
+    { type: 'number' },
+    { type: 'boolean' },
+    {
+      type: 'object',
+      additionalProperties: false,
+      required: ['backing', 'path', 'mime_type', 'filename'],
+      properties: {
+        backing: { type: 'string', enum: ['temp'] },
+        path: { type: 'string', minLength: 1 },
+        mime_type: { type: 'string', minLength: 1 },
+        filename: { type: 'string', minLength: 1 },
+      },
+    },
+    {
+      type: 'object',
+      additionalProperties: false,
+      required: ['backing', 'record_id', 'content_sha256'],
+      properties: {
+        backing: { type: 'string', enum: ['cas'] },
+        record_id: { type: 'string', pattern: '^file:[0-9a-f]{32}$' },
+        content_sha256: { type: 'string', pattern: '^[0-9a-f]{64}$' },
+      },
+    },
+  ],
+});
 const ARRAY_ITEM_TYPES = new Set([...SCALAR_PROPERTY_TYPES, 'object']);
 const MAX_SCHEMA_DEPTH = 8;
 
@@ -32,7 +116,10 @@ const valueMatchesType = (value: unknown, type: string): boolean =>
   || (type === 'integer' && typeof value === 'number' && Number.isSafeInteger(value))
   || (type === 'boolean' && typeof value === 'boolean')
   || (type === 'array' && Array.isArray(value))
-  || (type === 'object' && isRecord(value));
+  || (type === 'object' && isRecord(value))
+  || (type === 'file_ref' && isFileRefArgumentValue(value))
+  || (type === 'file_ref[]' && Array.isArray(value)
+    && value.every((item) => isFileRefArgumentValue(item)));
 
 /** True only for schemas that explicitly opt into the fail-closed subset. */
 export const isClosedRequestSchema = (schema: unknown): boolean =>
@@ -81,7 +168,34 @@ const validatePropertyDefinition = (
   }
   const type = rawProperty.type;
   if (typeof type !== 'string' || !PROPERTY_TYPES.has(type)) {
-    issues.push(`property '${path}' type must be string, number, integer, boolean, array, or object`);
+    issues.push(`property '${path}' type must be string, number, integer, boolean, array, object, file_ref, or file_ref[]`);
+    return;
+  }
+
+  if (type === 'file_ref' || type === 'file_ref[]') {
+    const allowed = type === 'file_ref' ? FILE_REF_PROPERTY_KEYS : FILE_REF_ARRAY_PROPERTY_KEYS;
+    for (const keyword of Object.keys(rawProperty)) {
+      if (!allowed.has(keyword)) {
+        issues.push(`property '${path}' uses unsupported keyword '${keyword}' for type '${type}'`);
+      }
+    }
+    if (type === 'file_ref[]') {
+      const minItems = rawProperty.minItems;
+      const maxItems = rawProperty.maxItems;
+      if (minItems !== undefined
+        && (!Number.isSafeInteger(minItems) || (minItems as number) < 0)) {
+        issues.push(`property '${path}' minItems must be a non-negative integer`);
+      }
+      // Symmetric with `array`: an unbounded list is not a closed contract.
+      if (!Number.isSafeInteger(maxItems) || (maxItems as number) < 0) {
+        issues.push(`property '${path}' must declare a non-negative maxItems bound`);
+      }
+      if (typeof minItems === 'number'
+        && typeof maxItems === 'number'
+        && minItems > maxItems) {
+        issues.push(`property '${path}' minItems must not exceed maxItems`);
+      }
+    }
     return;
   }
 
@@ -212,6 +326,42 @@ const validatePropertyDefinition = (
   }
 };
 
+/** Rewrite a closed request schema into plain JSON Schema, so a door that hands
+ *  it to something speaking JSON Schema (the MCP raw-op `inputSchema`) never
+ *  emits `type: 'file_ref'` — a type no validator knows.
+ *
+ *  ⚠ ONLY `file_ref` / `file_ref[]` need rewriting; every other type in the
+ *  closed subset IS JSON Schema already. Returns the input unchanged when there
+ *  is nothing to project, so the common path allocates nothing.
+ *
+ *  ⛔ Call this at the DOOR, not at authoring time. The stored schema stays in
+ *  the closed vocabulary — that is what `closedRequestSchemaViolation` validates
+ *  against, and what the alignment validator compares to `args[].type`. */
+export const projectClosedRequestSchemaForJsonSchema = (schema: unknown): unknown => {
+  if (!isRecord(schema) || !isRecord(schema.properties)) return schema;
+  let rewrote = false;
+  const properties: Record<string, unknown> = {};
+  for (const [key, raw] of Object.entries(schema.properties)) {
+    const type = isRecord(raw) ? raw.type : undefined;
+    if (type === 'file_ref') {
+      properties[key] = FILE_REF_JSON_SCHEMA;
+      rewrote = true;
+    } else if (type === 'file_ref[]') {
+      const prop = raw as Record<string, unknown>;
+      properties[key] = {
+        type: 'array',
+        items: FILE_REF_JSON_SCHEMA,
+        ...(typeof prop.minItems === 'number' ? { minItems: prop.minItems } : {}),
+        ...(typeof prop.maxItems === 'number' ? { maxItems: prop.maxItems } : {}),
+      };
+      rewrote = true;
+    } else {
+      properties[key] = raw;
+    }
+  }
+  return rewrote ? { ...schema, properties } : schema;
+};
+
 export const closedRequestSchemaDefinitionIssues = (schema: unknown): string[] => {
   if (!isClosedRequestSchema(schema)) return [];
   const root = schema as Record<string, unknown>;
@@ -243,7 +393,26 @@ const propertyViolation = (
   path: string,
 ): string | null => {
   const type = property.type as string;
-  if (!valueMatchesType(value, type)) return `argument '${path}' must be ${type}`;
+  if (!valueMatchesType(value, type)) {
+    if (type === 'file_ref' || type === 'file_ref[]') {
+      // Name the union rather than echo the type — "must be file_ref" tells a
+      // recipe author nothing about which shapes are accepted.
+      return `argument '${path}' must be ${type === 'file_ref[]' ? 'a list of file references' : 'a file reference'}`
+        + ' (a data.file record id, a local path or URL, or a producing step\'s file_ref)';
+    }
+    return `argument '${path}' must be ${type}`;
+  }
+  if (type === 'file_ref[]') {
+    const values = value as unknown[];
+    if (typeof property.minItems === 'number' && values.length < property.minItems) {
+      return `argument '${path}' has fewer than ${property.minItems} items`;
+    }
+    if (typeof property.maxItems === 'number' && values.length > property.maxItems) {
+      return `argument '${path}' has more than ${property.maxItems} items`;
+    }
+    return null;
+  }
+  if (type === 'file_ref') return null;
   if (type === 'array') {
     const values = value as unknown[];
     if (typeof property.minItems === 'number' && values.length < property.minItems) {

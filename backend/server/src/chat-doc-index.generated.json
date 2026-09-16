@@ -2480,6 +2480,38 @@
     "body": "Attach a client in [Pairing and devices](pairing-and-devices.md)."
   },
   {
+    "id": "setup/lan-access",
+    "doc": "Use Recued on another device",
+    "section": "Use Recued on another device",
+    "eyebrow": "Setup",
+    "url": "https://recued.com/docs/setup/lan-access",
+    "body": "Your server listens on two ports. Each one reaches a different place.\n\n| Port | Reaches | Needs a certificate |\n| --- | --- | --- |\n| 7717 | The computer running the server | No |\n| 443 | Any device, at home or away | Yes |\n\nPort 7717 works as soon as the server starts. Open this on that same\ncomputer:\n\n```\nhttp://127.0.0.1:7717/webclient/\n```\n\nThat page is served by your own server. Nothing else is needed."
+  },
+  {
+    "id": "setup/lan-access#why-a-phone-needs-more",
+    "doc": "Use Recued on another device",
+    "section": "Why a phone needs more",
+    "eyebrow": "Setup",
+    "url": "https://recued.com/docs/setup/lan-access#why-a-phone-needs-more",
+    "body": "A browser only runs Recued from a safe address. An `https` address is\nsafe. A plain `http` address is not.\n\nThere is one exception. Your browser trusts `127.0.0.1`. That address can\nonly mean the computer you are sitting at.\n\nYour phone cannot use it. Your phone needs a real `https` address. That\nmeans a certificate.\n\nOne more thing is worth knowing. Port 443 serves both the visitor page and\nthe app. So you only ever open one port."
+  },
+  {
+    "id": "setup/lan-access#three-free-ways-to-get-a-certificate",
+    "doc": "Use Recued on another device",
+    "section": "Three free ways to get a certificate",
+    "eyebrow": "Setup",
+    "url": "https://recued.com/docs/setup/lan-access#three-free-ways-to-get-a-certificate",
+    "body": "### Tailscale\n\nTailscale builds a small private network across your devices. It hands out\nreal certificates. It needs no open ports at all.\n\nInstall it on your server and on your phone. Then run this on the server:\n\n```\ntailscale cert my-server.my-tailnet.ts.net\ntailscale serve --bg https / http://127.0.0.1:7717\n```\n\nNow open that same name on your phone. It works at home and away.\n\n### Caddy\n\nCaddy is a small web server. It fetches and renews certificates for you.\nYou need a domain name for this one.\n\nPut this in a file called `Caddyfile`:\n\n```\nrecued.example.com {\n\treverse_proxy 127.0.0.1:7717\n}\n```\n\nThen run `caddy run`. Point your domain at your home address first.\n\n### A certificate you already have\n\nSome people already own a domain and a certificate. Upload it under\nSettings, then Server, then Certificates."
+  },
+  {
+    "id": "setup/lan-access#which-one-to-pick",
+    "doc": "Use Recued on another device",
+    "section": "Which one to pick",
+    "eyebrow": "Setup",
+    "url": "https://recued.com/docs/setup/lan-access#which-one-to-pick",
+    "body": "| You have | Pick |\n| --- | --- |\n| No domain name | Tailscale |\n| A domain name | Caddy |\n| A domain and a certificate | Upload it |\n\nRecued Pro does this step for you. It gives the server a name. It keeps\nthe certificate fresh. You configure nothing."
+  },
+  {
     "id": "setup/pairing-and-devices",
     "doc": "Pairing and devices",
     "section": "Pairing and devices",

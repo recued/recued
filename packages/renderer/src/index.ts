@@ -99,6 +99,9 @@ export interface SectionBlock {
   /** Host-derived columns for a `table` that named an entity. Absent on a
    *  hand-written table, which still carries its columns in `data`. */
   record_columns?: unknown;
+  /** The row field a `table` buckets by. Authored on the section, not derived —
+   *  a grouped list is still a list, so there is no `board` kind to dispatch. */
+  group_by?: string;
 }
 
 export const renderSection = (
@@ -112,7 +115,8 @@ export const renderSection = (
     case 'summary':     return renderSummaryBlock(block.data, block.label);
     case 'checklist':   return renderChecklistBlock(block.data, block.label);
     case 'table':       return renderTableBlock(block.data, block.label,
-      isResolvedRecordColumnsDescriptor(block.record_columns) ? block.record_columns : undefined);
+      isResolvedRecordColumnsDescriptor(block.record_columns) ? block.record_columns : undefined,
+      typeof block.group_by === 'string' ? block.group_by : undefined);
     case 'ai_analysis': return renderAiAnalysisBlock(block.data, block.label);
     case 'text':        return renderTextBlock(block.data, block.label);
     case 'copyable':    return renderCopyableBlock(block.data, block.label, context);

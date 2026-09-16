@@ -20,10 +20,76 @@
  *  produce the same byte sequence under the signature — diverging
  *  here would be invisible at write time and only fail at verify.
  *
- *  The verifier returns boolean + a reason. Callers that read
- *  audit rows for compliance / replay defense must treat
- *  `requires_signature` rows missing or failing verification as
- *  tampered + surface them in the Settings → Audit panel.
+ *  ⛔⛔⛔ WHAT FOLLOWS USED TO DESCRIBE A SYSTEM THAT DOES NOT EXIST,
+ *  AND THE PROMISE IS WHY THE GAP LOOKED LIKE A MISSING ONE-LINE CALL.
+ *  It read: *"Callers that read audit rows for compliance / replay
+ *  defense must treat `requires_signature` rows missing or failing
+ *  verification as tampered + surface them in the Settings → Audit
+ *  panel."* There are no such callers, and there is no such panel.
+ *  Corrected 2026-09-15 after tracing every path; the design intent is
+ *  kept below because it is still the right destination.
+ *
+ *  ## What is true today
+ *
+ *  Signing RUNS: one production construction of `createSigningAuditLog`
+ *  (`serve/compose-storage-context.ts`), stamping every row whose
+ *  `action` is in `HIGH_ASSURANCE_AUDIT_KINDS` — `key_rotation`,
+ *  `pair_revoke`, `cert_renewal`, `handle_change`, `exposure_*`,
+ *  `account_bind*`.
+ *
+ *  ⛔ VERIFICATION NEVER RUNS. `verifyActivityEntry` and
+ *  `isActivityEntryTampered` have ZERO production callers. The only
+ *  thing that reaches the verifier is the tamper helper, which nothing
+ *  calls.
+ *
+ *  ## Why wiring a caller would not have helped — three gaps, not one
+ *
+ *  1. ⛔ THE SIGNED ROWS REACH NO EXTERNAL ARTIFACT. They are
+ *     `ActivityEntry` rows (activities table). The unified compliance
+ *     export reads AuditEntry rows (runs) and does not read activities
+ *     at all. The Server Passport (D-148 § A.9) IS built and IS signed,
+ *     and its `enterprise_audit` profile exists for exactly this — but
+ *     it does not carry these rows either.
+ *  2. ⛔ NO RECIPIENT COULD RESOLVE THE KEY. Every one of the cloud's
+ *     uses of `server_public_key_b64` is an INBOUND `ed25519Verify` —
+ *     the cloud authenticating a request FROM a server. No route
+ *     returns a key, so there is no `signer_fingerprint` → public-key
+ *     lookup for anyone else. Worse, the authority record holds ONE key
+ *     and its own comment says it "changes on an identity rotation":
+ *     no history, so a signature made before a rotation becomes
+ *     permanently unverifiable. That is precisely the store the
+ *     rotation-aware resolver path below was written against.
+ *  3. ⛔ LOCAL VERIFICATION IS CIRCULAR. The signing key lives on the
+ *     same machine, in the keyfile the server must read to run. A
+ *     server checking its own signature with its own key catches
+ *     someone who edited the DB and forgot to re-sign, and nothing
+ *     stronger.
+ *
+ *  ## ⛔⛔ AND IT IS STRUCTURALLY BLIND TO DELETION
+ *
+ *  Each row is signed STANDALONE — no `prev_hash`, no sequence, no
+ *  chain. A signature proves ALTERATION of a row that still exists; it
+ *  can never prove a row was REMOVED, which is the obvious way to tamper
+ *  with an audit log. Detecting that needs a chain or a counter, and
+ *  neither is built. Any surface that ever presents these rows as an
+ *  integrity guarantee must say so, or it claims completeness the
+ *  mechanism does not provide.
+ *
+ *  ## So what is this for
+ *
+ *  The one threat model where the maths pays is PORTABILITY: "this
+ *  record came from that server and has not been altered", checked by
+ *  someone who is NOT the machine's owner. Reaching that needs, in
+ *  order: a fingerprint-keyed public-key lookup with rotation history,
+ *  then the rows carried in a signed external artifact (the passport's
+ *  `enterprise_audit` profile is the natural vehicle), then a verifying
+ *  recipient. Until the first of those exists, the signature is cost
+ *  paid at every high-assurance write for a property nobody can use.
+ *
+ *  ⚠ DO NOT "FIX" THIS BY CALLING THE VERIFIER SOMEWHERE. That produces
+ *  a green check that means very little and reads as assurance —
+ *  assurance-shaped non-assurance is worse than none. The missing piece
+ *  is a reader who is not this machine.
  */
 
 import { isHighAssuranceAuditKind } from '@recued/contracts';
@@ -106,10 +172,13 @@ export type PublicKeyResolver =
  *     path, looks the right key up by `entry.signer_fingerprint`).
  *
  *  Returns ok-false rather than throwing so callers can route every
- *  failure mode through the same handling. The closed reason
- *  taxonomy distinguishes signature-shape errors from key-lookup
- *  errors so downstream surfaces (Settings → Audit panel) can render
- *  appropriate context. */
+ *  failure mode through the same handling. The closed reason taxonomy
+ *  distinguishes signature-shape errors from key-lookup errors.
+ *
+ *  ⛔ ZERO PRODUCTION CALLERS as of 2026-09-15. The "downstream
+ *  surfaces (Settings → Audit panel)" this used to name do not exist.
+ *  The function is correct and complete; see the module header for why
+ *  adding a caller here is NOT the missing piece. */
 export const verifyActivityEntry = (
   entry: ActivityEntry,
   resolver: PublicKeyResolver,
@@ -156,8 +225,12 @@ export const verifyActivityEntry = (
 
 /** True iff the row's action is in HIGH_ASSURANCE_AUDIT_KINDS *and*
  *  the row is missing a signature OR the signature fails verify
- *  against the supplied public key. Use at read time when the
- *  caller wants a single boolean for "this row is suspicious". */
+ *  against the supplied public key. Intended for a read-time caller
+ *  that wants a single boolean for "this row is suspicious".
+ *
+ *  ⛔ NOTHING CALLS THIS, and nothing calls the only thing it calls.
+ *  ⚠ A `false` here means "not detectably altered" — NEVER "present and
+ *  complete". Deletion is undetectable by construction (module header). */
 export const isActivityEntryTampered = (
   entry: ActivityEntry,
   resolver: PublicKeyResolver,

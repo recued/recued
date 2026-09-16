@@ -43,7 +43,24 @@ export const createFileLifecycleFixture = async (broadcast: ChatBroadcastEmitter
       broadcast.emit({ kind: 'chat.session_changed', session_id, field: 'queue', value: true });
     },
   })!.handlers;
-  const client = { instance_id: 'paired-test' } as WsClient;
+  /** ⛔ NOT `{ instance_id } as WsClient`. `requireRegisteredClient` reads only
+   *  `instance_id`, but the cast silenced FOUR missing required fields at the same
+   *  time, so the compiler stopped checking this object at all — `check:object-casts`
+   *  flags exactly that (TS1360). Declared in full instead: the fixture is
+   *  in-process, so there is no socket to hold and the realm is nominal.
+   *
+   *  ⚠ `instance_id` is non-null ON PURPOSE, and this is NOT the live clients-map
+   *  value. `ws-server.ts` keeps a webclient's map entry null — it is the registered-
+   *  EXTENSION marker, and populating it there would mis-route bridge-only frames —
+   *  and resolves `token_instance_id` into a shallow copy at rpc dispatch. So this is
+   *  the shape a handler actually receives for a PAIRED webclient. */
+  const client: WsClient = {
+    ws: null,
+    realm: 'e2e',
+    instance_id: 'paired-test',
+    display_name: 'file-lifecycle-e2e',
+    connected_at: 0,
+  };
   const fileId = f.files!.list({ platform: 'file', slug: 'received', limit: 10 })[0]!.record_id;
   return { ...f, fileId, cloudSource,
     async rpc(method: string, args: Record<string, unknown>): Promise<unknown> {

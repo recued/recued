@@ -1,9 +1,9 @@
 {
   "_extract": {
-    "note": "paths and minimal parameter-shape extract of the pinned official Trello OpenAPI 3 document; covers all 59 Trello v2 bindings. The pack path_alias strips the runtime /1 server prefix before documentary comparison.",
-    "url": "https://dac-static.atlassian.com/cloud/trello/swagger.v3.json?_v=1.1156.0",
-    "sha256": "b50fca38c5ea62025f9778482f89f11ae3da0dd983d31ba49401c4422e450b19",
-    "fetched_at": "2026-07-14",
+    "note": "paths and minimal parameter-shape extract of the pinned official Trello OpenAPI 3 document; covers all 59 Trello v2 bindings. The pack path_alias strips the runtime /1 server prefix before documentary comparison. \u26a0 The URL previously carried Atlassian's cache-busting `?_v=1.1156.0` query parameter, which reads like a version pin and is not one: Atlassian rotates it and deletes the old value, so on 2026-09-15 the pin 404'd and the document became unfetchable \u2014 the corpus's only GONE pin. The bare address serves the same bytes and is stable. The sha256 below is what provides integrity; a URL that cannot be fetched provides none. Re-pinned after confirming all 59 operations still prove and all 265 parameters are unchanged in name, location and requiredness.",
+    "url": "https://dac-static.atlassian.com/cloud/trello/swagger.v3.json",
+    "sha256": "b07c97d06e93f7caff661a307e86f2b58c1f97591614ac8179f8e31bda27334b",
+    "fetched_at": "2026-09-15",
     "openapi": "3.0.0",
     "document_version": "0.0.1",
     "raw_path_count": 191,

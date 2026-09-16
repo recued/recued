@@ -19,11 +19,35 @@
  *  MUST produce the same byte sequence under the signature — diverging
  *  here would be invisible at write time and only fail at verify.
  *
- *  The verifier returns boolean + a reason. Callers that read plans
- *  for compliance / replay defense must treat
- *  `audit_policy.high_assurance: true` rows missing or failing
- *  verification as tampered + surface them in the Settings → Audit
- *  panel.
+ *  ⛔⛔⛔ THE VERIFIER HAS NO PRODUCTION CALLER, AND THE PARAGRAPH THIS
+ *  REPLACES TOLD READERS OTHERWISE. It said: *"Callers that read plans
+ *  for compliance / replay defense must treat `audit_policy.
+ *  high_assurance: true` rows missing or failing verification as
+ *  tampered + surface them in the Settings → Audit panel."* There are no
+ *  such callers and there is no such panel. `verifyRecuedPlan`'s only
+ *  non-definition references are `isRecuedPlanTampered` (itself
+ *  uncalled) and two comments in `packages/storage/src/recued-plan.ts`
+ *  instructing callers to call it.
+ *
+ *  ⛔ AND THE SAME DEFECT EXISTS IN THE MODULE THIS ONE MIRRORS. See
+ *  `backend/server/src/audit/signing.ts` — corrected 2026-09-15 — for
+ *  the full analysis of why wiring a caller is NOT the missing piece:
+ *  the signed artifact reaches no external consumer, no recipient could
+ *  resolve the key (the cloud's authority record holds one key and
+ *  overwrites it on rotation), and a machine verifying its own
+ *  signature with its own key is circular. Everything there applies
+ *  here; this module says so itself — "deliberately mirrors
+ *  `audit/signing.ts` row-for-row".
+ *
+ *  ⚠ Plans are signed STANDALONE, so as with audit rows the signature
+ *  proves ALTERATION of a plan that still exists and can never prove one
+ *  was REMOVED.
+ *
+ *  🔑 Found by running the repo's OWN instrument in a scope nobody had
+ *  pointed it at: `audit-zero-consumer-exports.mts` defaults to
+ *  `--scope contracts`, so `backend/server/src` had never been audited.
+ *  Both signing modules surface immediately under
+ *  `--scope backend/server/src`.
  *
  *  The implementation deliberately mirrors `audit/signing.ts` row-for-
  *  row to keep operational semantics consistent (rotation-aware

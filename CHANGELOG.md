@@ -7,6 +7,70 @@ checkpoint was cut. One entry per published export; the machine-readable
 provenance for each — source commit, tree, payload digest, and what was omitted
 — lives in `.recued-public-export.json`.
 
+## 26.9.15 — 2026-09-15
+
+Mostly the marketplace packs and the checks that are supposed to keep them
+honest — one of which had quietly stopped working. Plus the page explaining how
+to reach your server from a second device, rewritten for the person doing it,
+and a `doctor` command for when the server will not start.
+
+### Security
+
+- **An OpenAI pack exposed an operation that hands back a newly created API
+  key.** `openai-organization-access` included the call that mints a service
+  account's API key and returns it in the response body. It was meant to be
+  excluded, and the exclusion had silently stopped matching: OpenAI now derives
+  that operation's identifier from its summary text, so the name the exclusion
+  looked for no longer existed anywhere and the operation shipped with the pack.
+  Every one of the 161 lists that name operations this way is now checked, so a
+  renamed operation is refused rather than ignored. If you have that pack
+  installed, update.
+- **The same check now covers lists that do not announce their own failure.**
+  The earlier version only guarded lists marked as safety-critical, on the
+  reasoning that the rest would break loudly if they went stale. That was wrong
+  for the largest group it left out: a stale pagination entry does not break the
+  call, it stops reading after the first page and the caller believes that is
+  everything.
+
+### Added
+
+- **`recued doctor`** — a diagnosis that still works when the server is down.
+  Installing Recued is a terminal task by design, so a shell is the one thing a
+  stuck self-hoster reliably has. The individual checks already existed; nothing
+  gathered them into one answer.
+- **Grouped tables.** A recipe can group a table's rows by a field, and the
+  surface showing it decides how that looks.
+
+### Fixed
+
+- **Deleting a connection could leave its data behind.** When the cleanup of
+  mirrored data failed, the connection record was deleted anyway — so the data
+  it named stayed on disk with nothing left pointing at it.
+- **Work you had pre-approved, then missed during an outage, appeared nowhere.**
+  An approved run that expired left no trace at all.
+- **Recued could put an approval on a channel that cannot reach you.** Being
+  approved means being asked without prompting first, so a channel that can only
+  answer when you speak to it cannot carry one.
+- **Every pack operation that runs a command line now declares the arguments it
+  accepts** — all 450 of them. An argument that is not declared is not passed.
+- **A pack that could not be proved is treated as a defect rather than a gap.**
+  One pack was withdrawn instead of shipping unproved.
+
+### Improved
+
+- **"Use Recued on another device" is written for the person doing it.** It was
+  organised around ports, which is the right shape for an operator and the wrong
+  one for someone who just wants their phone to work. It now follows the three
+  situations people actually ask about — this computer, at home, away — and the
+  free routes to a certificate (Tailscale, Caddy, or bring your own) are steps
+  you can follow rather than a phrase to go look up.
+
+### A note on upgrading
+
+This release changes no database schema — no new tables, no new columns, nothing
+rebuilt. Going back to 26.9.14 afterwards is safe, with none of the caveats the
+last release carried.
+
 ## 26.9.14 — 2026-09-14
 
 Three threads that turn out to answer the same complaint from different sides:

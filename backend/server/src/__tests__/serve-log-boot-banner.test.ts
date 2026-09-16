@@ -175,7 +175,7 @@ describe('renderBootBanner', () => {
     expect(Math.max(...lines.map((l) => [...l].length))).toBeLessThanOrEqual(58);
   });
 
-  it('renders the not-enrolled pairing instructions with BOTH webclient targets (hosted first, local second)', () => {
+  it('renders the not-enrolled pairing instructions leading with the LOCAL webclient', () => {
     const output = renderBootBanner(
       opts({ port: 8123, recipeCount: 0, llmConfig: undefined, pairingCode: 'ABCDEFGH', notEnrolled: true, webclientServed: true }),
     );
@@ -185,12 +185,21 @@ describe('renderBootBanner', () => {
     expect(output).toContain(
       '⚠  Server is not encrypted yet — operations are blocked until you',
     );
-    expect(output).toContain('Open the Recued webclient:');
-    // hosted webclient is the top target; local (bundled) is the second.
-    const hostedIdx = output.indexOf('https://app.recued.com');
-    const localIdx = output.indexOf('http://127.0.0.1:8123/webclient/');
-    expect(hostedIdx).toBeGreaterThanOrEqual(0);
-    expect(localIdx).toBeGreaterThan(hostedIdx);
+    expect(output).toContain('Open Recued on this machine:');
+    // ⛔ THE LOCAL URL IS THE ONLY ONE OFFERED WHEN THIS SERVER SERVES IT, and the
+    // hosted app is NOT named beside it. Listing the hosted app first read like
+    // the happy path and was not: the reader picks it, pastes the loopback Server
+    // URL below into it, and lands on the one combination that half-works —
+    // Chrome permits an `https` page to open a `ws://` socket to loopback, Safari
+    // and Firefox refuse it, and the failure looks like an unplugged cable
+    // (`net/insecure-origin.ts`). The embedded webclient is same-origin, so it
+    // has no such failure mode.
+    expect(output).toContain('http://127.0.0.1:8123/webclient/');
+    expect(output).not.toContain('https://app.recued.com');
+    // The second-device question is answered on every boot, and NOT with the
+    // loopback URL — which would load a page on a phone and then refuse to run.
+    expect(output).toContain('From another device');
+    expect(output).toContain('Settings — Server — Connect a device.');
     // LOOPBACK, both here and in the Server URL. A LAN origin is not a secure
     // context, so `crypto.subtle` is absent and the webclient stops at its
     // secure-context guard — printing a LAN URL here would hand the operator a
@@ -245,8 +254,9 @@ describe('renderBootBanner', () => {
 
     expect(output).toContain('Running');
     expect(output).toContain('Add a browser'); // enrolled variant copy
-    expect(output).toContain('https://app.recued.com');
     expect(output).toContain('http://127.0.0.1:8123/webclient/');
+    expect(output).not.toContain('https://app.recued.com');
+    expect(output).toContain('From another device');
     expect(output).toContain('HGFEDCBA');
     expect(output).toContain('expires in 15 min');
     expect(output).not.toContain('Server is not encrypted yet');

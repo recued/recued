@@ -1339,6 +1339,12 @@ export interface RestExecutionBinding {
    *  segments. The prover requires an exact literal/parameter match after the
    *  declared expansion; runtime dispatch still uses `path_template`. */
   openapi_path_param_expansions?: Record<string, string[]>;
+  /** D-271 — this op is absent from the pinned document and the reason is
+   *  structural. See {@link OpenApiAbsentDeclaration}. ⛔ Mutually exclusive with
+   *  `openapi_path`: one says "the document proves this HERE", the other says
+   *  "the document cannot prove this at all", and a binding asserting both is
+   *  incoherent rather than merely redundant — the validator rejects the pair. */
+  openapi_absent?: OpenApiAbsentDeclaration;
   /** D-192 (azure-devops WIQL) — static request-BODY fields baked into the
    *  binding, folded by the gateway as authoritative `body.<k>` wire args.
    *  Each key is a LITERAL top-level JSON property name: the connection
@@ -1572,8 +1578,61 @@ export interface SchemaSourceRef {
   url: string;
   sha256: string;
   /** D-192 CORE #8a — OPENAPI ONLY: reconcile wire↔doc path divergence at
-   *  publish-time op-proof (ignored on graphql / google_discovery pins). */
-  path_alias?: OpenApiPathAlias;
+   *  publish-time op-proof (ignored on graphql / google_discovery pins).
+   *
+   *  D-271 — a LIST is an ordered set of SCOPED rules: the first whose
+   *  `wire_prefix` matches (strict descendants only) wins, and an op no rule
+   *  claims is left alone. A bare object is one rule and behaves exactly as it
+   *  always has. Needed by a document that addresses one sub-tree differently
+   *  from the rest of the same catalog — Microsoft Graph keys drive items under
+   *  `/drives/{drive-id}/…` while the pack calls the `/me/drive/…` singleton
+   *  shortcut, yet the same pack's `/me` is documented verbatim. A catch-all
+   *  rule (no `wire_prefix`) must come LAST; the validator rejects one that
+   *  would make a later rule unreachable. */
+  path_alias?: OpenApiPathAlias | readonly OpenApiPathAlias[];
+}
+
+/** D-271 — why a REST op the pack declares is absent from its pinned OpenAPI
+ *  document. A CLOSED list: each member names a structural property of how the
+ *  document was produced, so the claim is checkable by a reviewer rather than
+ *  a free-text assertion that the author knows better than the gate.
+ *
+ *  ⛔ THIS IS NOT "the op is fine, skip it". An exemption says the DOCUMENT
+ *  cannot describe an endpoint the vendor publishes elsewhere, and it is only
+ *  honest while `evidence` points at that other publication. The audit counts
+ *  exempt ops APART from proven ones and never folds them into a pass — an
+ *  exemption that reported as PROVEN would make the corpus look better than it
+ *  is, which is the one outcome worse than the red it replaces. */
+export const OPENAPI_ABSENT_REASONS = [
+  /** An OData-derived document (Microsoft Graph) that does not expand a
+   *  navigation property under another navigation property, so a real route
+   *  like `/drives/{id}/root/children` has no path key even though
+   *  `/drives/{id}/root` does. */
+  'odata_nav_not_expanded',
+  /** OData models the route as a FUNCTION, which is GET-only in the metadata,
+   *  while the vendor's REST documentation defines further methods on the same
+   *  URL (Excel `PATCH …/range(address='A1')`). */
+  'odata_function_method_absent',
+  /** The vendor publishes the endpoint in prose/reference documentation but has
+   *  never included it in the machine-readable specification. */
+  'undocumented_in_spec',
+] as const;
+
+export type OpenApiAbsentReason = (typeof OPENAPI_ABSENT_REASONS)[number];
+
+export const OPENAPI_ABSENT_REASON_SET: ReadonlySet<OpenApiAbsentReason> = new Set(
+  OPENAPI_ABSENT_REASONS,
+);
+
+/** D-271 — a per-op declaration that the pinned document cannot prove this op,
+ *  with the vendor publication that can. Proof-time only; changes nothing the
+ *  runtime calls. */
+export interface OpenApiAbsentDeclaration {
+  reason: OpenApiAbsentReason;
+  /** The vendor documentation URL that DOES define this operation. Required and
+   *  `https://` — an exemption whose evidence a reviewer cannot open is the
+   *  free-text assertion this shape exists to refuse. */
+  evidence: string;
 }
 
 /** D-165 RUNTIME — `SchemaSourceRef.sha256` digest format: 64 lowercase hex

@@ -41,8 +41,17 @@ import { BUNDLED_PACK_RECONCILIATION_TARGETS } from './bundled-pack-reconciliati
 
 interface ApprovedPackTransition {
   publisher: 'recued-core';
-  from_version: 1;
-  to_version: 2;
+  /** ⛔ A SET, NOT A LITERAL, AND THAT IS THE WHOLE POINT. One transition exists
+   *  per pack slug and `resolveReconciliationTarget` resolves ONE shipped
+   *  artifact, so a second hop cannot be expressed as a second entry. When the
+   *  target moved to v3, `from_version: 1` alone would have answered
+   *  `source_version_not_approved` to every HEALTHY v2 install, and
+   *  `from_version: 2` alone would have abandoned the broken-v1 population this
+   *  mechanism exists for. Every listed version must have a reviewed body hash in
+   *  `source_body_hashes` — the set widens WHICH installs are eligible, never what
+   *  they are repaired to. */
+  from_versions: readonly number[];
+  to_version: 3;
   catalog_slug: string;
   /** SHA-256 over canonical JSON, not file bytes (formatting is immaterial). */
   target_hash: string;
@@ -59,49 +68,61 @@ const LAUNCH_SAFE_PACK_TRANSITIONS: Readonly<
 > = Object.freeze({
   'codex-pack': {
     publisher: 'recued-core',
-    from_version: 1,
-    to_version: 2,
+    from_versions: [1, 2],
+    to_version: 3,
     catalog_slug: 'codex',
-    target_hash: '963fa4bad7e4e44b6c09031b272645feb8c7063a11d78615f03219d6ca2b90a1',
+    target_hash: '8a794a0cc7797b1f7efe70555a8f6b0e7fcf5204a96a7f091d953b2efa18839b',
     source_body_hashes: [
       // bcf0b30f2 (immediate pre-D-259 body) and the authority-equivalent
       // 99da7a1f6 shape predating the D-185 output-field cleanup.
       'b4ff50ac549b1108bdeb152c16cba1bc3f13b3b342e2618dfac1660b15b5e281',
       'c4450525beb7f642512175ff55a9851e2107b6fb00c1dff2201791e2b9ec2e08',
+      // v2 (the previously reviewed target). Its ONLY delta to v3 is the
+      // ADDED closed request schema, which narrows and grants nothing.
+      '29ac1e3a71546c1c6e2dd204b304c02fac850c5f49ea92b9474f6275cc2a39e2',
     ],
   },
   'yt-dlp': {
     publisher: 'recued-core',
-    from_version: 1,
-    to_version: 2,
+    from_versions: [1, 2],
+    to_version: 3,
     catalog_slug: 'yt-dlp',
-    target_hash: '5a1e36b5d7ac602a2192b98c807796f59af66f496320956abd41bec7ce04740a',
+    target_hash: 'b03c0aa6d7752b66f637b14e516faa1fcc76e62a9328516db87c490ce87cb0aa',
     source_body_hashes: [
       // bcf0b30f2; the preceding pack body had a different authority surface.
       'f00d1dc0d9e33d36f3fbf57a53b6b435309c393ccc137f70cd8aefde207e7958',
+      // v2 (the previously reviewed target). Its ONLY delta to v3 is the
+      // ADDED closed request schema, which narrows and grants nothing.
+      'd7d3782fa7a80851749b64eb3c8cc41799b74c317b97512bf8c2549b158ba72f',
     ],
   },
   cloudflared: {
     publisher: 'recued-core',
-    from_version: 1,
-    to_version: 2,
+    from_versions: [1, 2],
+    to_version: 3,
     catalog_slug: 'cloudflared',
-    target_hash: '72f5b03d59da3f5f99146d04bf5fc128d2a96afb55c081994060c430246c8517',
+    target_hash: 'adf42962954afaf4c7beecb5820ac995ade2e35797919e820f3727848fc0c150',
     source_body_hashes: [
       // bcf0b30f2/a250d2aa2 and the authority-equivalent d73706d7d shape.
       '099903758de889b012c72b15c7330b1931ca85255310a26c5aa7eae4b8ac680a',
       '84e210046644cd00aeb93313094ef820ab0645cf7ab46b3bd01a20e858af1129',
+      // v2 (the previously reviewed target). Its ONLY delta to v3 is the
+      // ADDED closed request schema, which narrows and grants nothing.
+      '34e98728c79396c941732332159396899aa51854387dd11157b617b2593557db',
     ],
   },
   ollama: {
     publisher: 'recued-core',
-    from_version: 1,
-    to_version: 2,
+    from_versions: [1, 2],
+    to_version: 3,
     catalog_slug: 'ollama',
-    target_hash: '15e3067de04a60ef29583155d6b12b8d158ff83899fb8913e9b7ad184d7dc11d',
+    target_hash: '94c337b3014bdeddf939d59e9e861030d952fe0d716725a2926af05b913499be',
     source_body_hashes: [
       // bcf0b30f2; older bodies changed the authority surface and stay held.
       '716066313589646facdf0874b1acf72143000ba3747d6a46cb487c4e952d5931',
+      // v2 (the previously reviewed target). Its ONLY delta to v3 is the
+      // ADDED closed request schema, which narrows and grants nothing.
+      'dc5da04525bf73293ff14fe907cbb1d5cd7c464f498ebf7b6f322cfad524ed5b',
     ],
   },
 });
@@ -162,6 +183,14 @@ const authoritySnapshot = (manifest: IngredientManifest): JsonRecord => {
     delete value.timeout_ms;
     delete value.cache_ttl_ms;
     delete value.editable_args;
+    // ⛔ NOT "schemas don't matter" — compared DIRECTIONALLY below, exactly as
+    // `editable_args` is. Deep-equality here would refuse a target that merely
+    // ADDS a closed request schema, which can only ever narrow what an operation
+    // accepts (`closedRequestSchemaViolation` admits everything when the schema is
+    // absent — the gate is opt-in). Narrowing grants nothing and retargets nothing,
+    // so it is not an authority change; CHANGING or REMOVING one is, and that is
+    // what the directional check refuses.
+    delete value.request_schema;
   }
 
   const surfaces = isRecord(snapshot.surfaces) ? snapshot.surfaces : {};
@@ -233,6 +262,16 @@ export const comparePackUpdateAuthority = (
           reason: `editable_argument_added_or_changed:${operationId}:${key}`,
         };
       }
+    }
+    // A closed request schema may only be ADDED. An installed operation that
+    // already declares one must keep it byte-identical: relaxing or replacing a
+    // LIVE gate is an authority change however the artifact is hash-pinned.
+    if (currentValue.request_schema !== undefined
+      && !isDeepStrictEqual(currentValue.request_schema, incomingValue.request_schema)) {
+      return {
+        equivalent: false,
+        reason: `request_schema_changed_or_removed:${operationId}`,
+      };
     }
   }
   return { equivalent: true };
@@ -494,7 +533,7 @@ export const reconcileInstalledPacksOnBoot = async (
         continue;
       }
       if (
-        observedVersion !== transition.from_version
+        !transition.from_versions.includes(observedVersion)
         && observedVersion !== transition.to_version
       ) {
         entries.push(held(

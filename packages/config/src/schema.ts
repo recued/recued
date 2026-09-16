@@ -363,7 +363,7 @@ export const RUNTIME_SCHEMA = [
     // `server.setConfigField`, so the consistency gate can't be bypassed.
     internal: true,
     description:
-      'What the public listener serves at the bare root URL. "redirect" sends <handle>.recued.cloud visitors to app.recued.com (default); "serve_reception" serves the visitor-intake page; "serve_webclient" serves the embedded webclient (later release); "not_found" closes the root with a 404.',
+      'What the public listener serves at the bare root URL. "redirect" sends <handle>.recued.cloud visitors to app.recued.com (default); "serve_reception" serves the visitor-intake page; "serve_webclient" serves the embedded webclient; "not_found" closes the root with a 404.',
   },
 
   // ─── Scheduler ───────────────────────────────────────────────

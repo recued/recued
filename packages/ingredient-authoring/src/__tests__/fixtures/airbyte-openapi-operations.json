@@ -76,8 +76,8 @@
       "authentication": {
         "kind": "official_markdown_documentation",
         "url": "https://reference.airbyte.com/reference/authentication.md",
-        "bytes": 2763,
-        "sha256": "a477471745470b0d2f15c6543dc49c4b887fdf0e94822cbeecdb366dd2947c82",
+        "bytes": 2833,
+        "sha256": "afea8a08371f1879f6c61e29c792e21686b4465e166b876fe3e27a99a058c4d8",
         "retrieved_on": "2026-07-16",
         "evidence": [
           "Airbyte Applications provide Client ID and Client Secret",
@@ -89,8 +89,8 @@
       "getting_started": {
         "kind": "official_markdown_documentation",
         "url": "https://reference.airbyte.com/reference/getting-started.md",
-        "bytes": 1011,
-        "sha256": "47b63ed5e2fd1d2db7de38e547450f8462be52a31f7f4d687036849009de03f6",
+        "bytes": 1081,
+        "sha256": "748bddd046609adc93ac3869c3f083d02e5c1e7692e1a87d4a7872d404218d4f",
         "retrieved_on": "2026-07-16",
         "evidence": [
           "Airbyte Cloud API origin",
@@ -101,8 +101,8 @@
       "error_messages": {
         "kind": "official_markdown_documentation",
         "url": "https://reference.airbyte.com/reference/error-messages.md",
-        "bytes": 3568,
-        "sha256": "a9055acd1e223b9bdfc2a537cc1eb56b6a02761b0ea1b189ffc728f8545b76fc",
+        "bytes": 3638,
+        "sha256": "c62d4b3a24ffc96d49886b80c022fc91b99103990a0813f82428346eb725ae36",
         "retrieved_on": "2026-07-16",
         "evidence": [
           "RFC 7807 JSON errors",
@@ -114,8 +114,8 @@
       "documentation_index": {
         "kind": "official_llms_index",
         "url": "https://reference.airbyte.com/llms.txt",
-        "bytes": 8497,
-        "sha256": "be23bd4b50ffa3e0fd0219855fb962b975b4d26714749c875c7b0de6c469a1d0",
+        "bytes": 8568,
+        "sha256": "3d5538959c34419b7fe203e9c840bc2d9c865d7127cb6e8f5b70acde5b13255d",
         "retrieved_on": "2026-07-16",
         "evidence": [
           "endpoint-page discovery and cross-checking",

@@ -1003,6 +1003,15 @@ const resolveOutputRender = (
       type: section.type,
       data: restored,
       ...(section.label ? { label: section.label } : {}),
+      // Authored, not host-derived — it names a field of the rows the step
+      // produced, so it rides across unchanged like `label` does. Narrowed on
+      // `type` for the same reason `edit` and `entity` above are: it is a facet
+      // of the table section, not of every section.
+      ...(section.type === 'table'
+        && typeof section.group_by === 'string'
+        && section.group_by.trim().length > 0
+        ? { group_by: section.group_by }
+        : {}),
       ...(filter !== undefined ? { filter } : {}),
       ...(record_fields !== undefined ? { record_fields } : {}),
       ...(record_columns !== undefined ? { record_columns } : {}),

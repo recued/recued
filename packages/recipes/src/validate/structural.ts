@@ -1762,6 +1762,16 @@ const KNOWN_TABLE_SECTION_KEYS: ReadonlySet<string> = new Set([
   'entity',
   'fields',
   'edit',
+  /** The field whose value buckets the rows. NOT a layout directive and not a
+   *  new output kind: `OUTPUT_TYPES` members say what the data IS, and "board"
+   *  or "kanban" say how it looks. A grouped list is still a list, so this is a
+   *  facet of `table` — which also means one vocabulary, one validator, and no
+   *  widening of a closed union every consumer has to follow.
+   *
+   *  ⚠ NOT named anything column-ish: `columns` on a table already means its
+   *  FIELDS, while a board's "columns" are its groups. One word, two meanings,
+   *  in one descriptor is how a reader a year from now gets it wrong. */
+  'group_by',
 ]);
 
 export const validateOutput = (
@@ -1955,6 +1965,24 @@ const validateTableOutputSection = (
   if (section.entity !== undefined && !hasEntity) {
     add('error', 'table_entity_invalid', `${path}.entity`,
       'table.entity must be the non-empty entity kind whose schema supplies the columns');
+  }
+  if (section.group_by !== undefined
+    && (typeof section.group_by !== 'string' || section.group_by.trim().length === 0)) {
+    add('error', 'table_group_by_invalid', `${path}.group_by`,
+      'table.group_by must name the row field whose value buckets the rows '
+      + '(e.g. "status") — it is a field name, not a layout');
+  }
+  // ⛔ THE COMBINATION WITH NO DEFINED ANSWER. An editable grid submits its rows
+  // as one repeating group bound to `edit.into`; grouping reorders them into
+  // buckets, and nothing says which bucket a NEWLY ADDED row belongs to, nor
+  // what a `fixed` grid's row identity means once the shown order is no longer
+  // the submitted order. Refused at authoring time rather than rendered into a
+  // grid whose submission quietly means something other than it looks like.
+  if (section.group_by !== undefined && section.edit !== undefined) {
+    add('error', 'table_group_by_with_edit', `${path}.group_by`,
+      'table.group_by cannot be combined with table.edit — a grouped list is for reading '
+      + 'and moving, an editable grid submits one ordered set, and nothing defines which '
+      + 'group a row added to the grid would join');
   }
   if (section.fields !== undefined && !hasEntity) {
     add('error', 'table_fields_without_entity', `${path}.fields`,

@@ -85,6 +85,7 @@ import {
   diagnosePeerBinding,
   MCP_PEER_CONTRACT_CONFIG_KEY,
   MCP_PEER_ADMISSION_CONFIG_KEY,
+  invalidExchangeAdmissionEntries,
 } from '@recued/contracts';
 import type {
   ConnectionAuth,
@@ -300,10 +301,23 @@ export interface ConnectionRpcDeps {
   /** D-192 source-data-removal — the opt-in teardown purge. When wired AND
    *  the delete carries `remove_mirror_data: true`, the handler fans the
    *  per-Source hard-delete over every registry Source the connection owns
-   *  (pre-bound to the warehouse stores at composition) AFTER the row is
-   *  removed, and returns the summed counts on the rpc response. Best-effort +
-   *  optional — absent (dbless / unwired) or unchecked, the connection is
-   *  removed with its mirror records left in place (the ratified default). */
+   *  (pre-bound to the warehouse stores at composition) and returns the summed
+   *  counts on the rpc response. Optional — absent (dbless / unwired) or
+   *  unchecked, the connection is removed with its mirror records left in place
+   *  (the ratified default).
+   *
+   *  ⛔ TWO CORRECTIONS, 2026-09-15. This said the purge runs "AFTER the row is
+   *  removed". IT RUNS BEFORE, and must: `store.delete` fires the source-boot
+   *  delete hooks which `unregisterSource` every Source of this connection,
+   *  after which `listSources()` is blind and the purge would remove nothing.
+   *  The handler's own comment at the call site has always said so — this
+   *  description said the opposite, which is exactly the reading that would lead
+   *  someone to "fix" the ordering and silently break the purge.
+   *
+   *  ⛔ It also said "Best-effort". No longer, for the opted-in case: a purge
+   *  throw now FAILS the delete and KEEPS the row, because `store.delete`
+   *  destroys the purge's only recovery path and the old justification
+   *  ("idempotent + re-runnable") was false. See the call site. */
   purgeConnectionData?: (input: {
     connection_name: string;
     vendor?: string;
@@ -507,6 +521,41 @@ const ensureConfig = (
  *  this field, and while the M2 matcher fail-closes per bad pattern (a typo
  *  just never matches), surfacing the problems HERE turns a silent no-match
  *  into an immediate, actionable enroll/update error. Absent field ⇒ no-op. */
+/** D-234 § 234.1 — refuse a `peer_admission` map that stores a value the resolver
+ *  will not recognize.
+ *
+ *  ⛔⛔ THIS IS THE FENCE `resolveExchangeAdmission` SAYS SHOULD EXIST AND DID NOT.
+ *  That resolver answers an unrecognized value with `auto_accept` deliberately —
+ *  correct at dispatch, because refusing there would break exchanges the owner
+ *  already admitted through a contract, a grant and an installed recipe. It points
+ *  upstream for the real check: *"the fences that fail CLOSED are upstream, where
+ *  admission is actually decided."* ⇒ **For this field the upstream fence was
+ *  missing entirely**, so `'Refuse'`, `'deny'` or `'ASK'` stored cleanly and then
+ *  resolved to `auto_accept` — the owner's intended refusal silently inverted into
+ *  acceptance, with no error anywhere.
+ *
+ *  ⚠ NOTHING ABOUT DISPATCH CHANGES. A value already stored still resolves exactly
+ *  as before; this only decides what may be written. That split is deliberate: the
+ *  interop argument for the permissive resolver is sound and its tests encode it.
+ *
+ *  🔑 The failure mode this closes is the one a closed vocabulary always has when
+ *  it is keyed by a free-form record — it matches its own type and still lies. */
+const ensureValidPeerAdmission = (
+  where: string,
+  config: Record<string, unknown>,
+): void => {
+  const bad = invalidExchangeAdmissionEntries(config[MCP_PEER_ADMISSION_CONFIG_KEY]);
+  if (bad.length === 0) return;
+  throw new RpcError(
+    'bad_request',
+    `${where}: ${MCP_PEER_ADMISSION_CONFIG_KEY} has ${bad.length === 1 ? 'an entry' : 'entries'} `
+    + `this server will not honour: ${bad.join(', ')}. `
+    + `Values are case-sensitive and must be one of auto_accept, ask, refuse. `
+    + `Storing anything else would resolve to auto_accept at dispatch — the opposite `
+    + `of a restriction — so it is refused here instead.`,
+  );
+};
+
 const ensureValidMatchPatterns = (where: string, config: Record<string, unknown>): void => {
   const raw = config[MESSAGE_MATCH_CONFIG_KEY];
   if (raw === undefined) return;
@@ -1667,6 +1716,7 @@ export const handleConnectionEnroll = async (
     existing ? parseStoredConfig(existing.config_json) : undefined,
   );
   ensureValidMatchPatterns('collection.connection.enroll', config);
+  ensureValidPeerAdmission('collection.connection.enroll', config);
   const auth = ensureAuth('collection.connection.enroll', a.auth);
   ensureSigningAuthKind('collection.connection.enroll', kind, auth);
   ensureMessengerAuthDeliverable('collection.connection.enroll', subtype, auth);
@@ -1896,6 +1946,7 @@ export const handleConnectionUpdate = async (
       existingConfig,
     );
     ensureValidMatchPatterns('collection.connection.update', normalized);
+    ensureValidPeerAdmission('collection.connection.update', normalized);
     config_json = JSON.stringify(normalized);
   }
   const finalConfig = parseStoredConfig(config_json);
@@ -2033,6 +2084,7 @@ export const handleConnectionDelete = async (
   // completes it).
   const purgeable = kind === 'api' || messengerVendor !== undefined;
   let purged: ConnectionDataPurgeSummary | undefined;
+  let purgeFailure: unknown;
   if (existing !== null && removeMirrorData && purgeable && deps.purgeConnectionData) {
     try {
       purged = deps.purgeConnectionData({
@@ -2040,10 +2092,44 @@ export const handleConnectionDelete = async (
         ...(vendor ? { vendor } : {}),
         ...(messengerVendor ? { messenger_vendor: messengerVendor } : {}),
       });
-    } catch {
-      // Swallow — the delete proceeds; the purge is idempotent + re-runnable.
+    } catch (err) {
+      purgeFailure = err;
       purged = undefined;
     }
+  }
+  // ⛔⛔⛔ THIS ONE IS NOT BEST-EFFORT, AND ITS TWO NEIGHBOURS BELOW STILL ARE.
+  // The difference is structural, not a matter of taste: `teardownGeneratedPack`
+  // and `cascadeForConnectionDelete` run AFTER `store.delete` and each has a real
+  // recovery path (retry the delete; the next housekeeping cascade). The purge runs
+  // BEFORE it, and `store.delete` DESTROYS its recovery path — once the row is gone
+  // `listSources()` cannot reach this connection's sources, which is exactly why the
+  // purge has to run first.
+  //
+  // This block used to swallow the throw with the comment "the purge is idempotent +
+  // re-runnable". IT IS NOT RE-RUNNABLE. A re-run reads `deps.store.get(kind, name)`,
+  // gets null, and the purge is gated on `existing !== null` — so it never runs again.
+  // The residue was orphaned permanently and the owner was told the delete succeeded,
+  // having explicitly asked for their mirrored data to be removed. For a product whose
+  // promise is that the data is yours and you can remove it, a silent failure here is
+  // the worst available outcome.
+  //
+  // ⇒ Keep the row instead. The connection staying visible IS the error report, it
+  // keeps the residue reachable, and it makes the retry actually work.
+  // ⚠ NOBODY IS TRAPPED: the purge is only attempted when the caller opted in with
+  // `remove_mirror_data`, so a connection whose purge cannot succeed is still
+  // deletable by asking for the delete without the removal.
+  if (purgeFailure !== undefined) {
+    throw new RpcError(
+      'conflict',
+      'collection.connection.delete: the mirrored data for this connection could not be '
+      + 'removed, so the connection was KEPT — deleting it would leave that data on disk '
+      + 'with nothing able to find it again. Retry, or delete without "also remove the '
+      + 'mirrored records" if you want the connection gone and the data left in place. '
+      + `Cause: ${purgeFailure instanceof Error ? purgeFailure.message : String(purgeFailure)}`,
+      409,
+      'collection.connection.delete',
+      { connection_preserved: true, mirror_data_preserved: true },
+    );
   }
   const deleted = deps.store.delete(kind, name);
   // D-225 Slice 2 — a generated MCP pack is an artifact OF this connection: its

@@ -3,12 +3,12 @@
     "source": {
       "kind": "official_openapi",
       "url": "https://api.clickhouse.cloud/v1",
-      "bytes": 1175169,
-      "sha256": "f22dc7c3a6587f05f33c5b8474a163464278f52ca7ff2f63792345770e447348",
-      "openapi": "3.1.2",
+      "bytes": 1313898,
+      "sha256": "2fb5d39a45f289e759fff2323d9f43d14d00d62862c9c0a002bb6ced0880cf27",
+      "openapi": "3.1.1",
       "title": "OpenAPI spec for ClickHouse Cloud",
       "api_version": "1.0",
-      "official_path_count": 80,
+      "official_path_count": 90,
       "retrieved_on": "2026-07-15",
       "mutability": "The vendor-hosted URL is mutable. Generation fails closed unless the bytes and SHA-256 match this reviewed contract.",
       "declared_server": [
@@ -24,102 +24,107 @@
       "security_scheme": {
         "type": "http",
         "scheme": "basic",
-        "description": "Use key ID and key secret obtained in ClickHouse Cloud console: https://clickhouse.com/docs/cloud/manage/openapi"
+        "description": "Use key ID and key secret obtained in ClickHouse Cloud console: https://clickhouse.com/docs/cloud/manage/openapi",
+        "x-permission-scopes": "The scope list of a `security` requirement holds ClickHouse Cloud API key permission ids (for example `control-plane:organization:view`), not OAuth scopes. OpenAPI has no field for API key permissions, so this is the closest available place. A key must hold every permission listed on an operation to call it; an operation with no scopes needs none beyond a valid key. Every operation declares at most one requirement object, always for this scheme, so the list is only ever conjunctive — alternative sets of permissions are never expressed."
       }
     },
-    "official_operation_count": 142,
-    "admitted_operation_count": 140,
-    "deprecated_operation_count": 2,
+    "official_operation_count": 154,
+    "admitted_operation_count": 150,
+    "deprecated_operation_count": 4,
     "official_method_counts": {
-      "DELETE": 23,
-      "GET": 62,
+      "DELETE": 24,
+      "GET": 72,
       "PATCH": 22,
       "POST": 26,
-      "PUT": 9
+      "PUT": 10
     },
     "admitted_method_counts": {
-      "DELETE": 23,
-      "GET": 61,
+      "DELETE": 24,
+      "GET": 69,
       "PATCH": 21,
       "POST": 26,
-      "PUT": 9
+      "PUT": 10
     },
     "official_tag_counts": {
+      "API keys": 4,
       "Backup": 8,
-      "Billing": 1,
-      "ClickPipes": 17,
+      "Billing": 3,
+      "ClickPipes": 18,
       "ClickStack": 30,
-      "OpenAPI": 5,
       "Organization": 11,
-      "Postgres": 16,
-      "Prometheus": 4,
+      "Postgres": 17,
+      "Prometheus": 5,
+      "Query API endpoints": 5,
       "Role Management": 5,
-      "Service": 25,
+      "Service": 26,
+      "Snapshot": 2,
       "UDF": 12,
       "User management": 8
     },
     "admitted_tag_counts": {
+      "API keys": 4,
       "Backup": 8,
-      "Billing": 1,
-      "ClickPipes": 17,
+      "Billing": 2,
+      "ClickPipes": 18,
       "ClickStack": 30,
-      "OpenAPI": 5,
       "Organization": 10,
-      "Postgres": 16,
+      "Postgres": 17,
       "Prometheus": 4,
+      "Query API endpoints": 5,
       "Role Management": 5,
-      "Service": 24,
+      "Service": 25,
+      "Snapshot": 2,
       "UDF": 12,
       "User management": 8
     },
     "pack_operation_counts": {
       "clickhouse-cloud-organizations-access": 29,
-      "clickhouse-cloud-services-lifecycle": 24,
-      "clickhouse-cloud-backups-observability": 12,
-      "clickhouse-cloud-clickpipes": 17,
-      "clickhouse-cloud-postgres": 16,
+      "clickhouse-cloud-services-lifecycle": 30,
+      "clickhouse-cloud-backups-observability": 14,
+      "clickhouse-cloud-clickpipes": 18,
+      "clickhouse-cloud-postgres": 17,
       "clickhouse-cloud-clickstack": 30,
       "clickhouse-cloud-udf": 12
     },
     "composition_bytes": {
-      "clickhouse-cloud-organizations-access": 56018,
-      "clickhouse-cloud-services-lifecycle": 52708,
-      "clickhouse-cloud-backups-observability": 23242,
-      "clickhouse-cloud-clickpipes": 42913,
-      "clickhouse-cloud-postgres": 39140,
+      "clickhouse-cloud-organizations-access": 55775,
+      "clickhouse-cloud-services-lifecycle": 68253,
+      "clickhouse-cloud-backups-observability": 27813,
+      "clickhouse-cloud-clickpipes": 44916,
+      "clickhouse-cloud-postgres": 41968,
       "clickhouse-cloud-clickstack": 70691,
       "clickhouse-cloud-udf": 28664
     },
     "body_mode_counts": {
-      "none": 85,
-      "raw_json": 55
+      "none": 94,
+      "raw_json": 56
     },
     "body_shape_counts": {
-      "object": 55
+      "object": 56
     },
     "success_status_counts": {
-      "200": 137,
-      "201": 3
+      "200": 146,
+      "201": 4
     },
     "selected_response_media_counts": {
-      "application/json": 135,
+      "application/json": 146,
       "application/x-pem-file": 1,
-      "text/plain": 2,
+      "text/plain": 1,
       "text/plain; charset=UTF-8": 2
     },
     "risk_counts": {
-      "admin": 25,
-      "destructive": 53,
-      "read": 62
+      "admin": 26,
+      "destructive": 54,
+      "read": 70
     },
     "approval_counts": {
-      "always": 78,
-      "never": 62
+      "always": 80,
+      "never": 70
     },
     "idempotency_counts": {
-      "idempotent": 56,
+      "idempotent": 58,
       "non_idempotent": 22,
-      "safe": 62
+      "safe": 70
     },
     "pagination": {
       "automatic_operation_count": 1,
@@ -132,17 +137,17 @@
     "auth": {
       "selected": "HTTP Basic supplied only by the enrolled clickhouse_cloud connection: organization API key ID as username and key secret as password",
       "official_documentation_model": "The official OpenAPI declares HTTP Basic and identifies the organization API key ID and secret as its credentials.",
-      "basic_auth_operation_count": 140,
+      "basic_auth_operation_count": 150,
       "credential_fields_in_pack": 0
     },
     "authority_notes": {
       "exact_path_parameter_contract": true,
       "operation_id_uniqueness": true,
       "official_request_body_required_count": 0,
-      "effective_request_body_required_count": 55,
-      "exact_content_type_operation_count": 55,
-      "exact_accept_operation_count": 140,
-      "beta_operation_count": 75,
+      "effective_request_body_required_count": 56,
+      "exact_content_type_operation_count": 56,
+      "exact_accept_operation_count": 150,
+      "beta_operation_count": 85,
       "beta_operation_keys": [
         "DELETE /v1/organizations/{organizationId}/postgres/{postgresId}",
         "DELETE /v1/organizations/{organizationId}/services/{serviceId}/backupBucket",
@@ -153,15 +158,18 @@
         "DELETE /v1/organizations/{organizationId}/services/{serviceId}/clickstack/saved-searches/{clickStackSavedSearchId}",
         "DELETE /v1/organizations/{organizationId}/services/{serviceId}/clickstack/sources/{clickStackSourceId}",
         "DELETE /v1/organizations/{organizationId}/services/{serviceId}/clickstack/webhooks/{clickStackWebhookId}",
+        "DELETE /v1/organizations/{organizationId}/services/{serviceId}/query-api-endpoints/{endpointId}",
         "DELETE /v1/organizations/{organizationId}/services/{serviceId}/scalingSchedule",
         "DELETE /v1/organizations/{organizationId}/udfs/{functionName}",
         "DELETE /v1/organizations/{organizationId}/udfs/{functionName}/attachments/{serviceId}",
         "DELETE /v1/organizations/{organizationId}/udfs/{functionName}/versions/{version}",
+        "GET /v1/organizations/{organizationId}/creditBalances",
         "GET /v1/organizations/{organizationId}/postgres",
         "GET /v1/organizations/{organizationId}/postgres/prometheus",
         "GET /v1/organizations/{organizationId}/postgres/{postgresId}",
         "GET /v1/organizations/{organizationId}/postgres/{postgresId}/caCertificates",
         "GET /v1/organizations/{organizationId}/postgres/{postgresId}/config",
+        "GET /v1/organizations/{organizationId}/postgres/{postgresId}/logs",
         "GET /v1/organizations/{organizationId}/postgres/{postgresId}/metrics",
         "GET /v1/organizations/{organizationId}/postgres/{postgresId}/prometheus",
         "GET /v1/organizations/{organizationId}/postgres/{postgresId}/slowQueryPatterns",
@@ -172,6 +180,7 @@
         "GET /v1/organizations/{organizationId}/services/{serviceId}/clickhouseSettings",
         "GET /v1/organizations/{organizationId}/services/{serviceId}/clickhouseSettings/schema",
         "GET /v1/organizations/{organizationId}/services/{serviceId}/clickhouseSettings/{settingName}",
+        "GET /v1/organizations/{organizationId}/services/{serviceId}/clickpipes/context",
         "GET /v1/organizations/{organizationId}/services/{serviceId}/clickstack/alerts",
         "GET /v1/organizations/{organizationId}/services/{serviceId}/clickstack/alerts/{clickStackAlertId}",
         "GET /v1/organizations/{organizationId}/services/{serviceId}/clickstack/dashboards",
@@ -183,7 +192,11 @@
         "GET /v1/organizations/{organizationId}/services/{serviceId}/clickstack/sources",
         "GET /v1/organizations/{organizationId}/services/{serviceId}/clickstack/sources/{clickStackSourceId}",
         "GET /v1/organizations/{organizationId}/services/{serviceId}/clickstack/webhooks",
+        "GET /v1/organizations/{organizationId}/services/{serviceId}/query-api-endpoints",
+        "GET /v1/organizations/{organizationId}/services/{serviceId}/query-api-endpoints/{endpointId}",
         "GET /v1/organizations/{organizationId}/services/{serviceId}/scalingSchedule",
+        "GET /v1/organizations/{organizationId}/services/{serviceId}/snapshots",
+        "GET /v1/organizations/{organizationId}/services/{serviceId}/snapshots/{snapshotId}",
         "GET /v1/organizations/{organizationId}/udfs",
         "GET /v1/organizations/{organizationId}/udfs/{functionName}",
         "GET /v1/organizations/{organizationId}/udfs/{functionName}/attachments",
@@ -208,6 +221,7 @@
         "POST /v1/organizations/{organizationId}/services/{serviceId}/clickstack/saved-searches",
         "POST /v1/organizations/{organizationId}/services/{serviceId}/clickstack/sources",
         "POST /v1/organizations/{organizationId}/services/{serviceId}/clickstack/webhooks",
+        "POST /v1/organizations/{organizationId}/services/{serviceId}/query-api-endpoints",
         "POST /v1/organizations/{organizationId}/services/{serviceId}/scalingSchedule",
         "POST /v1/organizations/{organizationId}/udfUploads/url",
         "POST /v1/organizations/{organizationId}/udfs",
@@ -218,6 +232,7 @@
         "PUT /v1/organizations/{organizationId}/services/{serviceId}/clickstack/saved-searches/{clickStackSavedSearchId}",
         "PUT /v1/organizations/{organizationId}/services/{serviceId}/clickstack/sources/{clickStackSourceId}",
         "PUT /v1/organizations/{organizationId}/services/{serviceId}/clickstack/webhooks/{clickStackWebhookId}",
+        "PUT /v1/organizations/{organizationId}/services/{serviceId}/query-api-endpoints/{endpointId}",
         "PUT /v1/organizations/{organizationId}/udfs/{functionName}/attachments/{serviceId}"
       ],
       "repeated_query_array_parameters": [
@@ -225,7 +240,7 @@
         "GET /v1/organizations/{organizationId}/usageCost:filter"
       ],
       "boolean_string_parameters": [
-        "GET /v1/organizations/{organizationId}/prometheus:filtered_metrics",
+        "GET /v1/organizations/{organizationId}/prometheus/discovery:filtered_metrics",
         "GET /v1/organizations/{organizationId}/services/{serviceId}/prometheus:filtered_metrics"
       ],
       "exact_decimal_string_parameters": [],
@@ -236,7 +251,6 @@
       "non_json_text_operations": [
         "GET /v1/organizations/{organizationId}/postgres/prometheus",
         "GET /v1/organizations/{organizationId}/postgres/{postgresId}/prometheus",
-        "GET /v1/organizations/{organizationId}/prometheus",
         "GET /v1/organizations/{organizationId}/services/{serviceId}/prometheus"
       ],
       "semantic_read_post_operations": [
@@ -279,8 +293,8 @@
         "PUT /v1/organizations/{organizationId}/services/{serviceId}/clickstack/dashboards/{clickStackDashboardId}",
         "PUT /v1/organizations/{organizationId}/services/{serviceId}/upgradeWindow"
       ],
-      "result_array_operation_count": 19,
-      "unsafe_integer_response_union_operation_count": 135
+      "result_array_operation_count": 22,
+      "unsafe_integer_response_union_operation_count": 145
     },
     "source_decision": {
       "admitted": false,
@@ -395,7 +409,7 @@
         "operation_id": "openapiKeyGetList",
         "key": "GET /v1/organizations/{organizationId}/keys",
         "pack": "clickhouse-cloud-organizations-access",
-        "op": "open_api.openapi_key_get_list",
+        "op": "api_keys.openapi_key_get_list",
         "required_args": [
           "organizationId"
         ],
@@ -559,20 +573,6 @@
         "supplied_args": [
           "organizationId",
           "serviceId"
-        ],
-        "approval": "never"
-      },
-      {
-        "recipe_id": "organization-prometheus-clickhouse-cloud",
-        "operation_id": "organizationPrometheusGet",
-        "key": "GET /v1/organizations/{organizationId}/prometheus",
-        "pack": "clickhouse-cloud-backups-observability",
-        "op": "prometheus.organization_prometheus_get",
-        "required_args": [
-          "organizationId"
-        ],
-        "supplied_args": [
-          "organizationId"
         ],
         "approval": "never"
       },
@@ -823,7 +823,7 @@
         "approval": "never"
       }
     ],
-    "operation_ids_sha256": "5a9362acecc28ec011667bc584389da1192e35c063466f43a395efe0edd79f2c"
+    "operation_ids_sha256": "851bb14f3283b925778d54330065356e0bde6dbd254dc1b34b948430edd1b113"
   },
   "official_operations": [
     {
@@ -925,7 +925,7 @@
       "tag": "Prometheus",
       "summary": "Get organization metrics",
       "beta": false,
-      "deprecated": false,
+      "deprecated": true,
       "security": [
         {
           "basicAuth": []
@@ -940,11 +940,40 @@
         "text/plain"
       ],
       "result_is_array": false,
+      "selected": false,
+      "exclusion": "provider_deprecated",
+      "exclusion_reason": "The official ClickHouse Cloud OpenAPI marks this operation deprecated; the full current pack admits every nondeprecated operation instead.",
+      "pack": null,
+      "op": null
+    },
+    {
+      "key": "GET /v1/organizations/{organizationId}/prometheus/discovery",
+      "method": "GET",
+      "path": "/v1/organizations/{organizationId}/prometheus/discovery",
+      "operation_id": "organizationPrometheusDiscoveryGet",
+      "tag": "Prometheus",
+      "summary": "List Prometheus scrape targets",
+      "beta": false,
+      "deprecated": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "result_is_array": false,
       "selected": true,
       "exclusion": null,
       "exclusion_reason": null,
       "pack": "clickhouse-cloud-backups-observability",
-      "op": "prometheus.organization_prometheus_get"
+      "op": "prometheus.organization_prometheus_discovery_get"
     },
     {
       "key": "GET /v1/organizations/{organizationId}/roles",
@@ -1156,6 +1185,35 @@
       "exclusion_reason": null,
       "pack": "clickhouse-cloud-organizations-access",
       "op": "organization.organization_quota_get"
+    },
+    {
+      "key": "GET /v1/organizations/{organizationId}/serviceProfiles",
+      "method": "GET",
+      "path": "/v1/organizations/{organizationId}/serviceProfiles",
+      "operation_id": "serviceProfilesList",
+      "tag": "Service",
+      "summary": "List available service profiles",
+      "beta": false,
+      "deprecated": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "result_is_array": true,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "clickhouse-cloud-services-lifecycle",
+      "op": "service.service_profiles_list"
     },
     {
       "key": "GET /v1/organizations/{organizationId}/services",
@@ -2014,6 +2072,64 @@
       "op": "backup.backup_get"
     },
     {
+      "key": "GET /v1/organizations/{organizationId}/services/{serviceId}/snapshots",
+      "method": "GET",
+      "path": "/v1/organizations/{organizationId}/services/{serviceId}/snapshots",
+      "operation_id": "snapshotGetList",
+      "tag": "Snapshot",
+      "summary": "List of service snapshots",
+      "beta": true,
+      "deprecated": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "result_is_array": true,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "clickhouse-cloud-backups-observability",
+      "op": "snapshot.snapshot_get_list"
+    },
+    {
+      "key": "GET /v1/organizations/{organizationId}/services/{serviceId}/snapshots/{snapshotId}",
+      "method": "GET",
+      "path": "/v1/organizations/{organizationId}/services/{serviceId}/snapshots/{snapshotId}",
+      "operation_id": "snapshotGet",
+      "tag": "Snapshot",
+      "summary": "Get snapshot details",
+      "beta": true,
+      "deprecated": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "result_is_array": false,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "clickhouse-cloud-backups-observability",
+      "op": "snapshot.snapshot_get"
+    },
+    {
       "key": "GET /v1/organizations/{organizationId}/services/{serviceId}/backupConfiguration",
       "method": "GET",
       "path": "/v1/organizations/{organizationId}/services/{serviceId}/backupConfiguration",
@@ -2204,7 +2320,7 @@
       "method": "GET",
       "path": "/v1/organizations/{organizationId}/keys",
       "operation_id": "openapiKeyGetList",
-      "tag": "OpenAPI",
+      "tag": "API keys",
       "summary": "Get list of all keys",
       "beta": false,
       "deprecated": false,
@@ -2226,47 +2342,14 @@
       "exclusion": null,
       "exclusion_reason": null,
       "pack": "clickhouse-cloud-organizations-access",
-      "op": "open_api.openapi_key_get_list"
-    },
-    {
-      "key": "POST /v1/organizations/{organizationId}/keys",
-      "method": "POST",
-      "path": "/v1/organizations/{organizationId}/keys",
-      "operation_id": "openapiKeyCreate",
-      "tag": "OpenAPI",
-      "summary": "Create key",
-      "beta": false,
-      "deprecated": false,
-      "security": [
-        {
-          "basicAuth": []
-        }
-      ],
-      "request_media": [
-        "application/json"
-      ],
-      "official_request_body_required": false,
-      "effective_request_body_required": true,
-      "request_body_types": [
-        "object"
-      ],
-      "success_status": "200",
-      "response_media": [
-        "application/json"
-      ],
-      "result_is_array": false,
-      "selected": true,
-      "exclusion": null,
-      "exclusion_reason": null,
-      "pack": "clickhouse-cloud-organizations-access",
-      "op": "open_api.openapi_key_create"
+      "op": "api_keys.openapi_key_get_list"
     },
     {
       "key": "GET /v1/organizations/{organizationId}/keys/{keyId}",
       "method": "GET",
       "path": "/v1/organizations/{organizationId}/keys/{keyId}",
       "operation_id": "openapiKeyGet",
-      "tag": "OpenAPI",
+      "tag": "API keys",
       "summary": "Get key details",
       "beta": false,
       "deprecated": false,
@@ -2288,14 +2371,14 @@
       "exclusion": null,
       "exclusion_reason": null,
       "pack": "clickhouse-cloud-organizations-access",
-      "op": "open_api.openapi_key_get"
+      "op": "api_keys.openapi_key_get"
     },
     {
       "key": "PATCH /v1/organizations/{organizationId}/keys/{keyId}",
       "method": "PATCH",
       "path": "/v1/organizations/{organizationId}/keys/{keyId}",
       "operation_id": "openapiKeyUpdate",
-      "tag": "OpenAPI",
+      "tag": "API keys",
       "summary": "Update key",
       "beta": false,
       "deprecated": false,
@@ -2321,14 +2404,14 @@
       "exclusion": null,
       "exclusion_reason": null,
       "pack": "clickhouse-cloud-organizations-access",
-      "op": "open_api.openapi_key_update"
+      "op": "api_keys.openapi_key_update"
     },
     {
       "key": "DELETE /v1/organizations/{organizationId}/keys/{keyId}",
       "method": "DELETE",
       "path": "/v1/organizations/{organizationId}/keys/{keyId}",
       "operation_id": "openapiKeyDelete",
-      "tag": "OpenAPI",
+      "tag": "API keys",
       "summary": "Delete key",
       "beta": false,
       "deprecated": false,
@@ -2350,7 +2433,7 @@
       "exclusion": null,
       "exclusion_reason": null,
       "pack": "clickhouse-cloud-organizations-access",
-      "op": "open_api.openapi_key_delete"
+      "op": "api_keys.openapi_key_delete"
     },
     {
       "key": "GET /v1/organizations/{organizationId}/members",
@@ -2680,6 +2763,64 @@
       "op": "billing.usage_cost_get"
     },
     {
+      "key": "GET /v1/organizations/{organizationId}/activeBalances",
+      "method": "GET",
+      "path": "/v1/organizations/{organizationId}/activeBalances",
+      "operation_id": "activeBalancesGet",
+      "tag": "Billing",
+      "summary": "Get organization active prepaid balances",
+      "beta": false,
+      "deprecated": true,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "result_is_array": false,
+      "selected": false,
+      "exclusion": "provider_deprecated",
+      "exclusion_reason": "The official ClickHouse Cloud OpenAPI marks this operation deprecated; the full current pack admits every nondeprecated operation instead.",
+      "pack": null,
+      "op": null
+    },
+    {
+      "key": "GET /v1/organizations/{organizationId}/creditBalances",
+      "method": "GET",
+      "path": "/v1/organizations/{organizationId}/creditBalances",
+      "operation_id": "creditBalancesGet",
+      "tag": "Billing",
+      "summary": "Get organization active credit balances",
+      "beta": true,
+      "deprecated": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "result_is_array": false,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "clickhouse-cloud-organizations-access",
+      "op": "billing.credit_balances_get"
+    },
+    {
       "key": "GET /v1/organizations/{organizationId}/services/{serviceId}/clickpipes",
       "method": "GET",
       "path": "/v1/organizations/{organizationId}/services/{serviceId}/clickpipes",
@@ -2740,6 +2881,35 @@
       "exclusion_reason": null,
       "pack": "clickhouse-cloud-clickpipes",
       "op": "click_pipes.click_pipe_create"
+    },
+    {
+      "key": "GET /v1/organizations/{organizationId}/services/{serviceId}/clickpipes/context",
+      "method": "GET",
+      "path": "/v1/organizations/{organizationId}/services/{serviceId}/clickpipes/context",
+      "operation_id": "clickPipesServiceContextGet",
+      "tag": "ClickPipes",
+      "summary": "Get ClickPipes service context",
+      "beta": true,
+      "deprecated": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "result_is_array": false,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "clickhouse-cloud-clickpipes",
+      "op": "click_pipes.click_pipes_service_context_get"
     },
     {
       "key": "GET /v1/organizations/{organizationId}/services/{serviceId}/clickpipes/{clickPipeId}",
@@ -4532,6 +4702,35 @@
       "op": "postgres.slow_query_pattern_get"
     },
     {
+      "key": "GET /v1/organizations/{organizationId}/postgres/{postgresId}/logs",
+      "method": "GET",
+      "path": "/v1/organizations/{organizationId}/postgres/{postgresId}/logs",
+      "operation_id": "postgresLogsGetList",
+      "tag": "Postgres",
+      "summary": "List Postgres server logs",
+      "beta": true,
+      "deprecated": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "result_is_array": true,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "clickhouse-cloud-postgres",
+      "op": "postgres.postgres_logs_get_list"
+    },
+    {
       "key": "GET /v1/organizations/{organizationId}/privateEndpointConfig",
       "method": "GET",
       "path": "/v1/organizations/{organizationId}/privateEndpointConfig",
@@ -4807,6 +5006,159 @@
       "exclusion_reason": null,
       "pack": "clickhouse-cloud-clickpipes",
       "op": "click_pipes.click_pipe_reverse_private_endpoint_delete"
+    },
+    {
+      "key": "GET /v1/organizations/{organizationId}/services/{serviceId}/query-api-endpoints",
+      "method": "GET",
+      "path": "/v1/organizations/{organizationId}/services/{serviceId}/query-api-endpoints",
+      "operation_id": "queryApiEndpointList",
+      "tag": "Query API endpoints",
+      "summary": "List Query API endpoints",
+      "beta": true,
+      "deprecated": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "result_is_array": false,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "clickhouse-cloud-services-lifecycle",
+      "op": "query_api_endpoints.query_api_endpoint_list"
+    },
+    {
+      "key": "POST /v1/organizations/{organizationId}/services/{serviceId}/query-api-endpoints",
+      "method": "POST",
+      "path": "/v1/organizations/{organizationId}/services/{serviceId}/query-api-endpoints",
+      "operation_id": "queryApiEndpointCreate",
+      "tag": "Query API endpoints",
+      "summary": "Create a Query API endpoint",
+      "beta": true,
+      "deprecated": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": false,
+      "effective_request_body_required": true,
+      "request_body_types": [
+        "object"
+      ],
+      "success_status": "201",
+      "response_media": [
+        "application/json"
+      ],
+      "result_is_array": false,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "clickhouse-cloud-services-lifecycle",
+      "op": "query_api_endpoints.query_api_endpoint_create"
+    },
+    {
+      "key": "GET /v1/organizations/{organizationId}/services/{serviceId}/query-api-endpoints/{endpointId}",
+      "method": "GET",
+      "path": "/v1/organizations/{organizationId}/services/{serviceId}/query-api-endpoints/{endpointId}",
+      "operation_id": "queryApiEndpointGet",
+      "tag": "Query API endpoints",
+      "summary": "Get a Query API endpoint",
+      "beta": true,
+      "deprecated": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "result_is_array": false,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "clickhouse-cloud-services-lifecycle",
+      "op": "query_api_endpoints.query_api_endpoint_get"
+    },
+    {
+      "key": "PUT /v1/organizations/{organizationId}/services/{serviceId}/query-api-endpoints/{endpointId}",
+      "method": "PUT",
+      "path": "/v1/organizations/{organizationId}/services/{serviceId}/query-api-endpoints/{endpointId}",
+      "operation_id": "queryApiEndpointUpdate",
+      "tag": "Query API endpoints",
+      "summary": "Update a Query API endpoint",
+      "beta": true,
+      "deprecated": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": false,
+      "effective_request_body_required": true,
+      "request_body_types": [
+        "object"
+      ],
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "result_is_array": false,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "clickhouse-cloud-services-lifecycle",
+      "op": "query_api_endpoints.query_api_endpoint_update"
+    },
+    {
+      "key": "DELETE /v1/organizations/{organizationId}/services/{serviceId}/query-api-endpoints/{endpointId}",
+      "method": "DELETE",
+      "path": "/v1/organizations/{organizationId}/services/{serviceId}/query-api-endpoints/{endpointId}",
+      "operation_id": "queryApiEndpointDelete",
+      "tag": "Query API endpoints",
+      "summary": "Delete a Query API endpoint",
+      "beta": true,
+      "deprecated": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "result_is_array": false,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "clickhouse-cloud-services-lifecycle",
+      "op": "query_api_endpoints.query_api_endpoint_delete"
     },
     {
       "key": "GET /v1/organizations/{organizationId}/udfs/{functionName}/attachments/{serviceId}",
@@ -5304,11 +5656,11 @@
       "key": "DELETE /v1/organizations/{organizationId}/keys/{keyId}",
       "operation_id": "openapiKeyDelete",
       "pack": "clickhouse-cloud-organizations-access",
-      "op": "open_api.openapi_key_delete",
+      "op": "api_keys.openapi_key_delete",
       "method": "DELETE",
       "path": "/v1/organizations/{organizationId}/keys/{keyId}",
       "wire_path": "/v1/organizations/{organizationId}/keys/{keyId}",
-      "tag": "OpenAPI",
+      "tag": "API keys",
       "risk": "destructive",
       "approval": "always",
       "idempotency": "idempotent",
@@ -6419,6 +6771,87 @@
         }
       ]
     },
+    "DELETE /v1/organizations/{organizationId}/services/{serviceId}/query-api-endpoints/{endpointId}": {
+      "key": "DELETE /v1/organizations/{organizationId}/services/{serviceId}/query-api-endpoints/{endpointId}",
+      "operation_id": "queryApiEndpointDelete",
+      "pack": "clickhouse-cloud-services-lifecycle",
+      "op": "query_api_endpoints.query_api_endpoint_delete",
+      "method": "DELETE",
+      "path": "/v1/organizations/{organizationId}/services/{serviceId}/query-api-endpoints/{endpointId}",
+      "wire_path": "/v1/organizations/{organizationId}/services/{serviceId}/query-api-endpoints/{endpointId}",
+      "tag": "Query API endpoints",
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "organizationId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "organizationId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "path",
+          "wire_name": "serviceId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "serviceId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "path",
+          "wire_name": "endpointId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "endpointId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "request_body_mode": "none",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "result_path": null,
+      "pagination": null,
+      "response_capture": null,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ]
+    },
     "DELETE /v1/organizations/{organizationId}/services/{serviceId}/scalingSchedule": {
       "key": "DELETE /v1/organizations/{organizationId}/services/{serviceId}/scalingSchedule",
       "operation_id": "scalingScheduleDelete",
@@ -7068,6 +7501,55 @@
         }
       ]
     },
+    "GET /v1/organizations/{organizationId}/creditBalances": {
+      "key": "GET /v1/organizations/{organizationId}/creditBalances",
+      "operation_id": "creditBalancesGet",
+      "pack": "clickhouse-cloud-organizations-access",
+      "op": "billing.credit_balances_get",
+      "method": "GET",
+      "path": "/v1/organizations/{organizationId}/creditBalances",
+      "wire_path": "/v1/organizations/{organizationId}/creditBalances",
+      "tag": "Billing",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "organizationId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "organizationId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "request_body_mode": "none",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "result_path": null,
+      "pagination": null,
+      "response_capture": null,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ]
+    },
     "GET /v1/organizations/{organizationId}/invitations": {
       "key": "GET /v1/organizations/{organizationId}/invitations",
       "operation_id": "invitationGetList",
@@ -7186,11 +7668,11 @@
       "key": "GET /v1/organizations/{organizationId}/keys",
       "operation_id": "openapiKeyGetList",
       "pack": "clickhouse-cloud-organizations-access",
-      "op": "open_api.openapi_key_get_list",
+      "op": "api_keys.openapi_key_get_list",
       "method": "GET",
       "path": "/v1/organizations/{organizationId}/keys",
       "wire_path": "/v1/organizations/{organizationId}/keys",
-      "tag": "OpenAPI",
+      "tag": "API keys",
       "risk": "read",
       "approval": "never",
       "idempotency": "safe",
@@ -7235,11 +7717,11 @@
       "key": "GET /v1/organizations/{organizationId}/keys/{keyId}",
       "operation_id": "openapiKeyGet",
       "pack": "clickhouse-cloud-organizations-access",
-      "op": "open_api.openapi_key_get",
+      "op": "api_keys.openapi_key_get",
       "method": "GET",
       "path": "/v1/organizations/{organizationId}/keys/{keyId}",
       "wire_path": "/v1/organizations/{organizationId}/keys/{keyId}",
-      "tag": "OpenAPI",
+      "tag": "API keys",
       "risk": "read",
       "approval": "never",
       "idempotency": "safe",
@@ -7653,6 +8135,183 @@
       ],
       "selected_response_media": "application/json",
       "result_path": null,
+      "pagination": null,
+      "response_capture": null,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ]
+    },
+    "GET /v1/organizations/{organizationId}/postgres/{postgresId}/logs": {
+      "key": "GET /v1/organizations/{organizationId}/postgres/{postgresId}/logs",
+      "operation_id": "postgresLogsGetList",
+      "pack": "clickhouse-cloud-postgres",
+      "op": "postgres.postgres_logs_get_list",
+      "method": "GET",
+      "path": "/v1/organizations/{organizationId}/postgres/{postgresId}/logs",
+      "wire_path": "/v1/organizations/{organizationId}/postgres/{postgresId}/logs",
+      "tag": "Postgres",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "organizationId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "organizationId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "path",
+          "wire_name": "postgresId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "postgresId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "query",
+          "wire_name": "from_date",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "query.from_date",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "query",
+          "wire_name": "to_date",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "query.to_date",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "query",
+          "wire_name": "body_contains",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "query.body_contains",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "query",
+          "wire_name": "severity",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "query.severity",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "query",
+          "wire_name": "sort_order",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "query.sort_order",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "query",
+          "wire_name": "limit",
+          "required": false,
+          "official_types": [
+            "integer"
+          ],
+          "admitted_key": "query.limit",
+          "admitted_type": "number",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "query",
+          "wire_name": "offset",
+          "required": false,
+          "official_types": [
+            "integer"
+          ],
+          "admitted_key": "query.offset",
+          "admitted_type": "number",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "request_body_mode": "none",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "result_path": "result",
       "pagination": null,
       "response_capture": null,
       "security": [
@@ -8288,14 +8947,14 @@
         }
       ]
     },
-    "GET /v1/organizations/{organizationId}/prometheus": {
-      "key": "GET /v1/organizations/{organizationId}/prometheus",
-      "operation_id": "organizationPrometheusGet",
+    "GET /v1/organizations/{organizationId}/prometheus/discovery": {
+      "key": "GET /v1/organizations/{organizationId}/prometheus/discovery",
+      "operation_id": "organizationPrometheusDiscoveryGet",
       "pack": "clickhouse-cloud-backups-observability",
-      "op": "prometheus.organization_prometheus_get",
+      "op": "prometheus.organization_prometheus_discovery_get",
       "method": "GET",
-      "path": "/v1/organizations/{organizationId}/prometheus",
-      "wire_path": "/v1/organizations/{organizationId}/prometheus",
+      "path": "/v1/organizations/{organizationId}/prometheus/discovery",
+      "wire_path": "/v1/organizations/{organizationId}/prometheus/discovery",
       "tag": "Prometheus",
       "risk": "read",
       "approval": "never",
@@ -8341,9 +9000,9 @@
       "request_body_mode": "none",
       "success_status": "200",
       "response_media": [
-        "text/plain"
+        "application/json"
       ],
-      "selected_response_media": "text/plain",
+      "selected_response_media": "application/json",
       "result_path": null,
       "pagination": null,
       "response_capture": null,
@@ -8573,6 +9232,87 @@
       ],
       "selected_response_media": "application/json",
       "result_path": null,
+      "pagination": null,
+      "response_capture": null,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ]
+    },
+    "GET /v1/organizations/{organizationId}/serviceProfiles": {
+      "key": "GET /v1/organizations/{organizationId}/serviceProfiles",
+      "operation_id": "serviceProfilesList",
+      "pack": "clickhouse-cloud-services-lifecycle",
+      "op": "service.service_profiles_list",
+      "method": "GET",
+      "path": "/v1/organizations/{organizationId}/serviceProfiles",
+      "wire_path": "/v1/organizations/{organizationId}/serviceProfiles",
+      "tag": "Service",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "organizationId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "organizationId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "query",
+          "wire_name": "region_id",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "query.region_id",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "query",
+          "wire_name": "byoc_id",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "query.byoc_id",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "request_body_mode": "none",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "result_path": "result",
       "pagination": null,
       "response_capture": null,
       "security": [
@@ -9397,6 +10137,71 @@
             "string"
           ],
           "admitted_key": "clickPipeId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "request_body_mode": "none",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "result_path": null,
+      "pagination": null,
+      "response_capture": null,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ]
+    },
+    "GET /v1/organizations/{organizationId}/services/{serviceId}/clickpipes/context": {
+      "key": "GET /v1/organizations/{organizationId}/services/{serviceId}/clickpipes/context",
+      "operation_id": "clickPipesServiceContextGet",
+      "pack": "clickhouse-cloud-clickpipes",
+      "op": "click_pipes.click_pipes_service_context_get",
+      "method": "GET",
+      "path": "/v1/organizations/{organizationId}/services/{serviceId}/clickpipes/context",
+      "wire_path": "/v1/organizations/{organizationId}/services/{serviceId}/clickpipes/context",
+      "tag": "ClickPipes",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "organizationId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "organizationId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "path",
+          "wire_name": "serviceId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "serviceId",
           "admitted_type": "string",
           "serialization": "scalar",
           "authority": "official_openapi_parameter",
@@ -10673,6 +11478,184 @@
         }
       ]
     },
+    "GET /v1/organizations/{organizationId}/services/{serviceId}/query-api-endpoints": {
+      "key": "GET /v1/organizations/{organizationId}/services/{serviceId}/query-api-endpoints",
+      "operation_id": "queryApiEndpointList",
+      "pack": "clickhouse-cloud-services-lifecycle",
+      "op": "query_api_endpoints.query_api_endpoint_list",
+      "method": "GET",
+      "path": "/v1/organizations/{organizationId}/services/{serviceId}/query-api-endpoints",
+      "wire_path": "/v1/organizations/{organizationId}/services/{serviceId}/query-api-endpoints",
+      "tag": "Query API endpoints",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "organizationId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "organizationId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "path",
+          "wire_name": "serviceId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "serviceId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "query",
+          "wire_name": "cursor",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "query.cursor",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "query",
+          "wire_name": "limit",
+          "required": false,
+          "official_types": [
+            "integer"
+          ],
+          "admitted_key": "query.limit",
+          "admitted_type": "number",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "request_body_mode": "none",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "result_path": null,
+      "pagination": null,
+      "response_capture": null,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ]
+    },
+    "GET /v1/organizations/{organizationId}/services/{serviceId}/query-api-endpoints/{endpointId}": {
+      "key": "GET /v1/organizations/{organizationId}/services/{serviceId}/query-api-endpoints/{endpointId}",
+      "operation_id": "queryApiEndpointGet",
+      "pack": "clickhouse-cloud-services-lifecycle",
+      "op": "query_api_endpoints.query_api_endpoint_get",
+      "method": "GET",
+      "path": "/v1/organizations/{organizationId}/services/{serviceId}/query-api-endpoints/{endpointId}",
+      "wire_path": "/v1/organizations/{organizationId}/services/{serviceId}/query-api-endpoints/{endpointId}",
+      "tag": "Query API endpoints",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "organizationId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "organizationId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "path",
+          "wire_name": "serviceId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "serviceId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "path",
+          "wire_name": "endpointId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "endpointId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "request_body_mode": "none",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "result_path": null,
+      "pagination": null,
+      "response_capture": null,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ]
+    },
     "GET /v1/organizations/{organizationId}/services/{serviceId}/scalingSchedule": {
       "key": "GET /v1/organizations/{organizationId}/services/{serviceId}/scalingSchedule",
       "operation_id": "scalingScheduleGet",
@@ -10775,6 +11758,152 @@
             "string"
           ],
           "admitted_key": "serviceId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "request_body_mode": "none",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "result_path": null,
+      "pagination": null,
+      "response_capture": null,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ]
+    },
+    "GET /v1/organizations/{organizationId}/services/{serviceId}/snapshots": {
+      "key": "GET /v1/organizations/{organizationId}/services/{serviceId}/snapshots",
+      "operation_id": "snapshotGetList",
+      "pack": "clickhouse-cloud-backups-observability",
+      "op": "snapshot.snapshot_get_list",
+      "method": "GET",
+      "path": "/v1/organizations/{organizationId}/services/{serviceId}/snapshots",
+      "wire_path": "/v1/organizations/{organizationId}/services/{serviceId}/snapshots",
+      "tag": "Snapshot",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "organizationId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "organizationId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "path",
+          "wire_name": "serviceId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "serviceId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "request_body_mode": "none",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "result_path": "result",
+      "pagination": null,
+      "response_capture": null,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ]
+    },
+    "GET /v1/organizations/{organizationId}/services/{serviceId}/snapshots/{snapshotId}": {
+      "key": "GET /v1/organizations/{organizationId}/services/{serviceId}/snapshots/{snapshotId}",
+      "operation_id": "snapshotGet",
+      "pack": "clickhouse-cloud-backups-observability",
+      "op": "snapshot.snapshot_get",
+      "method": "GET",
+      "path": "/v1/organizations/{organizationId}/services/{serviceId}/snapshots/{snapshotId}",
+      "wire_path": "/v1/organizations/{organizationId}/services/{serviceId}/snapshots/{snapshotId}",
+      "tag": "Snapshot",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "organizationId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "organizationId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "path",
+          "wire_name": "serviceId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "serviceId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "path",
+          "wire_name": "snapshotId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "snapshotId",
           "admitted_type": "string",
           "serialization": "scalar",
           "authority": "official_openapi_parameter",
@@ -11512,11 +12641,11 @@
       "key": "PATCH /v1/organizations/{organizationId}/keys/{keyId}",
       "operation_id": "openapiKeyUpdate",
       "pack": "clickhouse-cloud-organizations-access",
-      "op": "open_api.openapi_key_update",
+      "op": "api_keys.openapi_key_update",
       "method": "PATCH",
       "path": "/v1/organizations/{organizationId}/keys/{keyId}",
       "wire_path": "/v1/organizations/{organizationId}/keys/{keyId}",
-      "tag": "OpenAPI",
+      "tag": "API keys",
       "risk": "destructive",
       "approval": "always",
       "idempotency": "idempotent",
@@ -12989,59 +14118,6 @@
         }
       ]
     },
-    "POST /v1/organizations/{organizationId}/keys": {
-      "key": "POST /v1/organizations/{organizationId}/keys",
-      "operation_id": "openapiKeyCreate",
-      "pack": "clickhouse-cloud-organizations-access",
-      "op": "open_api.openapi_key_create",
-      "method": "POST",
-      "path": "/v1/organizations/{organizationId}/keys",
-      "wire_path": "/v1/organizations/{organizationId}/keys",
-      "tag": "OpenAPI",
-      "risk": "admin",
-      "approval": "always",
-      "idempotency": "non_idempotent",
-      "parameters": [
-        {
-          "in": "path",
-          "wire_name": "organizationId",
-          "required": true,
-          "official_types": [
-            "string"
-          ],
-          "admitted_key": "organizationId",
-          "admitted_type": "string",
-          "serialization": "scalar",
-          "authority": "official_openapi_parameter",
-          "dropped_pattern": false,
-          "integer_as_decimal_string": false,
-          "repeated_query_array": false,
-          "boolean_string": false
-        }
-      ],
-      "request_media": [
-        "application/json"
-      ],
-      "official_request_body_required": false,
-      "effective_request_body_required": true,
-      "request_body_types": [
-        "object"
-      ],
-      "request_body_mode": "raw_json",
-      "success_status": "200",
-      "response_media": [
-        "application/json"
-      ],
-      "selected_response_media": "application/json",
-      "result_path": null,
-      "pagination": null,
-      "response_capture": null,
-      "security": [
-        {
-          "basicAuth": []
-        }
-      ]
-    },
     "POST /v1/organizations/{organizationId}/postgres": {
       "key": "POST /v1/organizations/{organizationId}/postgres",
       "operation_id": "postgresServiceCreate",
@@ -14236,6 +15312,75 @@
         }
       ]
     },
+    "POST /v1/organizations/{organizationId}/services/{serviceId}/query-api-endpoints": {
+      "key": "POST /v1/organizations/{organizationId}/services/{serviceId}/query-api-endpoints",
+      "operation_id": "queryApiEndpointCreate",
+      "pack": "clickhouse-cloud-services-lifecycle",
+      "op": "query_api_endpoints.query_api_endpoint_create",
+      "method": "POST",
+      "path": "/v1/organizations/{organizationId}/services/{serviceId}/query-api-endpoints",
+      "wire_path": "/v1/organizations/{organizationId}/services/{serviceId}/query-api-endpoints",
+      "tag": "Query API endpoints",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "organizationId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "organizationId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "path",
+          "wire_name": "serviceId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "serviceId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": false,
+      "effective_request_body_required": true,
+      "request_body_types": [
+        "object"
+      ],
+      "request_body_mode": "raw_json",
+      "success_status": "201",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "result_path": null,
+      "pagination": null,
+      "response_capture": null,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ]
+    },
     "POST /v1/organizations/{organizationId}/services/{serviceId}/scalingSchedule": {
       "key": "POST /v1/organizations/{organizationId}/services/{serviceId}/scalingSchedule",
       "operation_id": "scalingScheduleUpsert",
@@ -15108,6 +16253,91 @@
             "string"
           ],
           "admitted_key": "clickStackWebhookId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": false,
+      "effective_request_body_required": true,
+      "request_body_types": [
+        "object"
+      ],
+      "request_body_mode": "raw_json",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "result_path": null,
+      "pagination": null,
+      "response_capture": null,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ]
+    },
+    "PUT /v1/organizations/{organizationId}/services/{serviceId}/query-api-endpoints/{endpointId}": {
+      "key": "PUT /v1/organizations/{organizationId}/services/{serviceId}/query-api-endpoints/{endpointId}",
+      "operation_id": "queryApiEndpointUpdate",
+      "pack": "clickhouse-cloud-services-lifecycle",
+      "op": "query_api_endpoints.query_api_endpoint_update",
+      "method": "PUT",
+      "path": "/v1/organizations/{organizationId}/services/{serviceId}/query-api-endpoints/{endpointId}",
+      "wire_path": "/v1/organizations/{organizationId}/services/{serviceId}/query-api-endpoints/{endpointId}",
+      "tag": "Query API endpoints",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "organizationId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "organizationId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "path",
+          "wire_name": "serviceId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "serviceId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "path",
+          "wire_name": "endpointId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "endpointId",
           "admitted_type": "string",
           "serialization": "scalar",
           "authority": "official_openapi_parameter",

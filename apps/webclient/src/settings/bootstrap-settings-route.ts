@@ -134,6 +134,11 @@ import {
   type NotificationsSetVerificationPhraseCaller,
 } from './notifications-panel.js';
 import {
+  mountConnectDevicePanel,
+  type ConnectDevicePanelMount,
+  CONNECT_DEVICE_PANEL_STYLES,
+} from './connect-device-panel.js';
+import {
   mountServerTimeZonePanel,
   type ServerTimeZoneGetCaller,
   type ServerTimeZonePanelMount,
@@ -1309,6 +1314,7 @@ export const bootstrapSettingsRoute = (
       KIND_POLICY_PANEL_STYLES,
       QUIET_HOURS_PANEL_STYLES,
       SERVER_TIMEZONE_PANEL_STYLES,
+      CONNECT_DEVICE_PANEL_STYLES,
       NOTIFICATIONS_PANEL_STYLES,
       // D-187 §6 follow-on — PACKS_PANEL_STYLES / INSTALL_GRANT_PICKER_STYLES /
       // CLI_GRANT_DIALOG_STYLES moved to the `#packs` route bundle
@@ -2207,6 +2213,7 @@ export const bootstrapSettingsRoute = (
   // per D-158 P2b-ii, channel-specific settings per § O-2) can append
   // into the same section host under the same gate.
   let notifications: NotificationsPanelMount | null = null;
+  let connectDevice: ConnectDevicePanelMount | null = null;
   let serverTimeZone: ServerTimeZonePanelMount | null = null;
   let quietHours: QuietHoursPanelMount | null = null;
   let kindPolicy: KindPolicyPanelMount | null = null;
@@ -2394,6 +2401,11 @@ export const bootstrapSettingsRoute = (
     const serverHosts = buildSectionTabs(
       serverSection,
       [
+        // ⛔ FIRST, AND BEFORE EXPOSURE. Exposure is the headline control for an
+        // OPERATOR; this is the first question a beginner has, and until now it
+        // had no surface at all — "it says port 7717, now what?". It also needs
+        // no caller, so it is the one Server tab that always mounts.
+        { id: 'connect-device', label: 'Connect a device' },
         ...(canMountExposure ? [{ id: 'exposure', label: 'Exposure' }] : []),
         ...(canMountReachability
           ? [{ id: 'reachability', label: 'Reachability' }]
@@ -2417,6 +2429,49 @@ export const bootstrapSettingsRoute = (
       'Server sections',
       opts.initialServerTabId,
     );
+
+    {
+      // `bootstrap.bind_port`, read from THIS page when it is the one serving it
+      // — the common case for a beginner, who got here from the boot banner's
+      // loopback URL. Anywhere else, the documented default. Named as a PORT and
+      // not a URL because the panel is organised by port: the two tables are the
+      // two listeners, and the port is the thing the reader decides about.
+      // ⚠ A FALLBACK, not the source of truth — `bootstrap.bind_port` in
+      // `packages/config/src/presets.ts` is, and the webclient does not depend on
+      // `@recued/config` (one number is not worth the edge). It is only reached
+      // when this page was NOT served by the server, i.e. a remotely-paired
+      // webclient, where the loopback table is the least load-bearing anyway.
+      const DEFAULT_BIND_PORT = 7717;
+      const loopbackHosts = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
+      const lanPort = (() => {
+        try {
+          const here = new URL(doc.location?.href ?? '');
+          if (here.protocol === 'http:' && loopbackHosts.has(here.hostname)) {
+            const parsed = Number(here.port);
+            if (Number.isInteger(parsed) && parsed > 0) return parsed;
+          }
+        } catch { /* fall through */ }
+        return DEFAULT_BIND_PORT;
+      })();
+      connectDevice = mountConnectDevicePanel({
+        host: serverHosts['connect-device']!,
+        document: doc,
+        lanPort,
+        ...(opts.tlsDomainListCaller !== undefined
+          ? { readCertifiedHostnames: async (): Promise<readonly string[]> => {
+              const res = await (opts.tlsDomainListCaller as TlsDomainListCaller)();
+              // Presence in `entries` IS the certificate — the row carries its
+              // fingerprint and issuer. An EXPIRED one is filtered out: it is
+              // not a working secure origin, and offering its address would be
+              // the same "loads then refuses" failure this page exists to avoid.
+              const now = Date.now();
+              return (res?.entries ?? [])
+                .filter((entry) => entry.expires_at > now)
+                .map((entry) => entry.domain);
+            } }
+          : {}),
+      });
+    }
 
     if (canMountServerTimeZone) {
       // D-269 — where the owner states whether this machine travels with them.

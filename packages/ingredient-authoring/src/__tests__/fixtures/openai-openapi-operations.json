@@ -12,8 +12,8 @@
     },
     "official_path_count": 182,
     "official_operation_count": 288,
-    "admitted_operation_count": 218,
-    "excluded_operation_count": 70,
+    "admitted_operation_count": 217,
+    "excluded_operation_count": 71,
     "official_method_counts": {
       "GET": 122,
       "POST": 123,
@@ -21,7 +21,7 @@
     },
     "admitted_method_counts": {
       "GET": 103,
-      "POST": 78,
+      "POST": 77,
       "DELETE": 37
     },
     "pack_operation_counts": {
@@ -30,26 +30,26 @@
       "openai-data-retrieval": 59,
       "openai-training-batches": 15,
       "openai-organization-observability": 26,
-      "openai-organization-access": 91
+      "openai-organization-access": 90
     },
     "risk_counts": {
       "read": 113,
       "destructive": 46,
       "write": 24,
-      "admin": 35
+      "admin": 34
     },
     "approval_counts": {
       "never": 8,
       "ask": 105,
-      "always": 105
+      "always": 104
     },
     "idempotency_counts": {
       "safe": 113,
       "idempotent": 37,
-      "non_idempotent": 68
+      "non_idempotent": 67
     },
     "pagination_counts": {
-      "none": 164,
+      "none": 163,
       "body_cursor": 43,
       "query_token": 11
     },
@@ -123,7 +123,7 @@
         "reason": "omitted_safe_subset"
       }
     ],
-    "raw_json_operation_count": 59,
+    "raw_json_operation_count": 58,
     "safe_request_subsets": [
       {
         "operation_id": "Compactconversation",
@@ -354,7 +354,7 @@
       },
       "admitted": {
         "openai": 101,
-        "openai_admin": 117
+        "openai_admin": 116
       },
       "connection_isolation": "Application API key operations use openai; organization Admin API key operations use openai_admin."
     },
@@ -377,7 +377,7 @@
       "deprecated_assistants_api": 23,
       "unsupported_post_binary_or_stream": 1,
       "unsupported_multipart_request": 9,
-      "credential_bearing_response": 4,
+      "credential_bearing_response": 5,
       "undocumented_content_response": 1,
       "credential_bearing_required_request": 1,
       "deprecated_evals_platform": 12,
@@ -666,6 +666,20 @@
         ],
         "category": "realtime_secret_or_transport",
         "reason": "Realtime routes either negotiate SDP/call transport or mint ephemeral client credentials. Neither belongs in ordinary bounded REST operation values."
+      },
+      {
+        "operation_id": "CreateanAPIkeyforaserviceaccount",
+        "method": "POST",
+        "path": "/organization/projects/{project_id}/service_accounts/{service_account_id}/api_keys",
+        "tags": [],
+        "documented_request_media": [
+          "application/json"
+        ],
+        "documented_response_media": [
+          "application/json"
+        ],
+        "category": "credential_bearing_response",
+        "reason": "The response returns the complete newly created service-account API key value. Ordinary operation results are not a secret result channel."
       },
       {
         "operation_id": "createAssistant",
@@ -10627,60 +10641,6 @@
       "idempotency": "safe",
       "request_schema_sha256": "0d780ce5d4c7a97702f81d3d96cda92800af9e25ed70ea91a49bb711ec63d6c3",
       "response_schema_sha256": "36d9a2bf0017fabeee5962592c0a1900aa05dfce132e10965e178f6f25b95f1f"
-    },
-    "openai-organization-access.untagged.createan_ap_ikeyforaserviceaccount": {
-      "pack": "openai-organization-access",
-      "op": "untagged.createan_ap_ikeyforaserviceaccount",
-      "operation_id": "CreateanAPIkeyforaserviceaccount",
-      "method": "POST",
-      "path": "/organization/projects/{project_id}/service_accounts/{service_account_id}/api_keys",
-      "wire_path": "/organization/projects/{{project_id}}/service_accounts/{{service_account_id}}/api_keys",
-      "tags": [],
-      "security": [
-        "AdminApiKeyAuth"
-      ],
-      "parameters": [
-        {
-          "name": "project_id",
-          "in": "path",
-          "required": true,
-          "documented_type": "string",
-          "admitted_key": "project_id",
-          "admitted_type": "string",
-          "serialization": "scalar"
-        },
-        {
-          "name": "service_account_id",
-          "in": "path",
-          "required": true,
-          "documented_type": "string",
-          "admitted_key": "service_account_id",
-          "admitted_type": "string",
-          "serialization": "scalar"
-        }
-      ],
-      "request": {
-        "documented_media": [
-          "application/json"
-        ],
-        "selected_media": "application/json",
-        "body_mode": "raw_json",
-        "omitted_top_level_fields": [],
-        "restricted_text_message_fields": [],
-        "request_schema_closed": true
-      },
-      "documented_response_media": [
-        "application/json"
-      ],
-      "selected_response_media": "application/json",
-      "response_capture": null,
-      "result_path": null,
-      "pagination": null,
-      "risk": "admin",
-      "approval": "always",
-      "idempotency": "non_idempotent",
-      "request_schema_sha256": "791105d979f53d05cdc4b41f2d98843ccbf589fbee043c41a2337d7b09af5f1b",
-      "response_schema_sha256": "056781bab3cbc96cb6d64847f56937520dcabc901b3dfd290e7f579716e681f8"
     },
     "openai-organization-access.untagged.deleteorganizationspendlimit": {
       "pack": "openai-organization-access",

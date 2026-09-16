@@ -217,6 +217,28 @@ export interface DataOutputSection extends OutputSectionBase {
  *  So the caller writes the list. That is the proper way for an export. */
 export interface TableOutputSection extends OutputSectionBase {
   type: 'table';
+  /** The row field whose value buckets the rows — `"status"`, `"assignee"`,
+   *  `"due_week"`. A grouped list, not a new kind of block.
+   *
+   *  ⛔ WHY THIS IS A FACET AND NOT AN `OUTPUT_TYPES` MEMBER. Every member of
+   *  that list says what the data IS and leaves rendering to the consuming
+   *  channel; "board" and "kanban" say how it LOOKS. An MCP caller receiving
+   *  `{type: 'board', data}` has no answer to what a board is to it, whereas a
+   *  table with a declared grouping it can present as grouped rows — or ignore.
+   *  Adding a kind also widens a closed union every consumer has to follow,
+   *  which is the drift `OUTPUT_TYPES`' own header warns about.
+   *
+   *  ⚠ DELIBERATELY NOT NAMED ANYTHING COLUMN-ISH. `TableData.columns` already
+   *  means the table's FIELDS, while a board's "columns" are its groups — one
+   *  word with two meanings inside one descriptor is how the next reader gets
+   *  it wrong. `group_by` is the operation, and it stays accurate whether the
+   *  result reads as a board (by status), as lanes (by assignee) or as a
+   *  schedule (by date).
+   *
+   *  ⛔ Refused alongside `edit`: an editable grid submits one ordered set bound
+   *  to `edit.into`, and nothing defines which bucket a newly added row joins.
+   *  See `table_group_by_with_edit`. */
+  group_by?: string;
   /** Entity kind whose schema supplies the columns. Omit for a hand-written
    *  table — `source` then supplies both columns and rows as before. */
   entity?: string;

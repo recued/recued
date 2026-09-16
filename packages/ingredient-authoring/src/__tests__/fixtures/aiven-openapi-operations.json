@@ -3,12 +3,12 @@
     "source": {
       "kind": "official_openapi",
       "url": "https://api.aiven.io/doc/openapi.json",
-      "bytes": 1840663,
-      "sha256": "871517494397af82e27dd0d6c80d3fce7d611b9ff6daedec83d06a3474dc5738",
+      "bytes": 1878200,
+      "sha256": "6bffd07ad025435e181251d7cc2b0152b58f53a1e0d1c5ef1a050e6f27d547b7",
       "openapi": "3.0.1",
       "title": "Aiven API Documentation",
       "api_version": "v1",
-      "official_path_count": 323,
+      "official_path_count": 327,
       "retrieved_on": "2026-07-20",
       "mutability": "The vendor-hosted URL is mutable. Generation fails closed unless the bytes and SHA-256 match this reviewed contract.",
       "declared_server": [
@@ -22,8 +22,8 @@
         "key": "api_guide",
         "kind": "official_markdown",
         "url": "https://aiven.io/docs/tools/api.md",
-        "bytes": 5508,
-        "sha256": "5842d35437d3ad2447075508ddf9c8d25055faec9a8ba7fe3511ff74e4171925",
+        "bytes": 5572,
+        "sha256": "db2ef33f52dffaa00c0708c55ed649460c78b2425e7f590fee83bc5c0d8da14a",
         "proves": [
           "https_api_origin_and_v1_prefix",
           "authorization_aivenv1_token_format",
@@ -32,21 +32,21 @@
         ]
       }
     ],
-    "official_operation_count": 465,
-    "admitted_operation_count": 400,
-    "deprecated_operation_count": 65,
+    "official_operation_count": 468,
+    "admitted_operation_count": 406,
+    "deprecated_operation_count": 62,
     "official_method_counts": {
       "DELETE": 69,
-      "GET": 202,
+      "GET": 204,
       "PATCH": 16,
-      "POST": 132,
+      "POST": 133,
       "PUT": 46
     },
     "admitted_method_counts": {
       "DELETE": 59,
-      "GET": 172,
+      "GET": 176,
       "PATCH": 16,
-      "POST": 114,
+      "POST": 116,
       "PUT": 39
     },
     "official_tag_counts": {
@@ -64,7 +64,7 @@
       "OrganizationBillingGroup": 10,
       "OrganizationEmissions": 1,
       "OrganizationPaymentMethod": 9,
-      "Organizations": 25,
+      "Organizations": 31,
       "Payment": 4,
       "Permissions": 3,
       "Project": 35,
@@ -73,6 +73,7 @@
       "Secrets": 8,
       "Service": 56,
       "Service_Integrations": 12,
+      "Service:_Application": 1,
       "Service:_ClickHouse": 13,
       "Service:_Flink": 32,
       "Service:_Kafka": 49,
@@ -82,7 +83,6 @@
       "Service:_PostgreSQL": 10,
       "Service:_Thanos": 1,
       "StaticIP": 7,
-      "Ticket_[deprecated]": 4,
       "Upgrade_pipeline": 6,
       "Users": 36
     },
@@ -101,13 +101,14 @@
       "OrganizationBillingGroup": 10,
       "OrganizationEmissions": 1,
       "OrganizationPaymentMethod": 9,
-      "Organizations": 25,
+      "Organizations": 31,
       "Permissions": 3,
-      "Project": 25,
+      "Project": 24,
       "Project_Key_Management": 1,
       "Secrets": 8,
       "Service": 56,
       "Service_Integrations": 12,
+      "Service:_Application": 1,
       "Service:_ClickHouse": 13,
       "Service:_Flink": 32,
       "Service:_Kafka": 48,
@@ -121,52 +122,52 @@
       "Users": 33
     },
     "pack_operation_counts": {
-      "aiven-organization-access": 51,
+      "aiven-organization-access": 57,
       "aiven-account-users": 47,
       "aiven-billing-payments": 28,
-      "aiven-projects-networking": 69,
-      "aiven-services-integrations": 68,
+      "aiven-projects-networking": 68,
+      "aiven-services-integrations": 69,
       "aiven-kafka": 53,
       "aiven-flink": 32,
       "aiven-data-services": 52
     },
     "composition_bytes": {
-      "aiven-organization-access": 86796,
+      "aiven-organization-access": 98682,
       "aiven-account-users": 74866,
       "aiven-billing-payments": 49809,
-      "aiven-projects-networking": 145502,
-      "aiven-services-integrations": 130235,
-      "aiven-kafka": 101928,
+      "aiven-projects-networking": 143711,
+      "aiven-services-integrations": 131934,
+      "aiven-kafka": 101637,
       "aiven-flink": 78786,
       "aiven-data-services": 98400
     },
     "body_mode_counts": {
-      "none": 262,
-      "raw_json": 138
+      "none": 267,
+      "raw_json": 139
     },
     "success_status_counts": {
-      "200": 378,
-      "204": 22
+      "200": 383,
+      "204": 23
     },
     "selected_response_media_counts": {
-      "application/json": 375,
+      "application/json": 380,
       "application/pdf": 1,
-      "none": 22,
+      "none": 23,
       "text/csv": 2
     },
     "risk_counts": {
-      "admin": 113,
+      "admin": 115,
       "destructive": 95,
-      "read": 192
+      "read": 196
     },
     "approval_counts": {
-      "always": 208,
-      "never": 192
+      "always": 210,
+      "never": 196
     },
     "idempotency_counts": {
       "idempotent": 114,
-      "non_idempotent": 94,
-      "safe": 192
+      "non_idempotent": 96,
+      "safe": 196
     },
     "pagination": {
       "automatic_operation_count": 2,
@@ -197,7 +198,7 @@
     "auth": {
       "selected": "Complete Authorization value in the documented aivenv1 TOKEN format, supplied only by the enrolled aiven connection",
       "official_documentation_model": "Authorization: aivenv1 TOKEN over https://api.aiven.io/v1",
-      "token_or_oauth_operation_count": 378,
+      "token_or_oauth_operation_count": 384,
       "no_auth_requirement_operation_count": 22,
       "no_auth_requirement_operation_keys": [
         "GET /clouds",
@@ -227,7 +228,7 @@
     },
     "authority_notes": {
       "openapi_operation_refs": 0,
-      "openapi_inline_operations": 465,
+      "openapi_inline_operations": 468,
       "exact_path_parameter_contract": true,
       "wire_prefix_path_alias": "/v1",
       "numeric_string_bounds_as_lengths": [
@@ -281,7 +282,7 @@
         "PUT /project/{project}/service/{service_name}/user/{service_username}",
         "PUT /project/{project}/tags"
       ],
-      "optional_request_body_count": 138,
+      "optional_request_body_count": 139,
       "unsafe_integer_response_union_operation_count": 50,
       "nullable_response_union_operation_count": 0
     },
@@ -532,7 +533,7 @@
         "approval": "never"
       }
     ],
-    "operation_ids_sha256": "1ab9c28bce38d3ad0f4ab4f7ae4b0a15c84d367255ac28dd27e296b7112c64d3"
+    "operation_ids_sha256": "dc3a9843b455b08f5a1a4b627811d60da0addc32cc4213e97c95faadcd2756b3"
   },
   "official_operations": [
     {
@@ -580,9 +581,7 @@
           ]
         }
       ],
-      "request_media": [
-        "application/json"
-      ],
+      "request_media": [],
       "success_status": "200",
       "response_media": [
         "application/json"
@@ -2253,9 +2252,7 @@
           ]
         }
       ],
-      "request_media": [
-        "application/json"
-      ],
+      "request_media": [],
       "success_status": "200",
       "response_media": [
         "application/json"
@@ -3858,9 +3855,7 @@
           ]
         }
       ],
-      "request_media": [
-        "application/json"
-      ],
+      "request_media": [],
       "success_status": "200",
       "response_media": [
         "application/json"
@@ -4149,6 +4144,35 @@
       "exclusion_reason": null,
       "pack": "aiven-organization-access",
       "op": "organizations.organization_delete"
+    },
+    {
+      "key": "POST /organization/{organization_id}/event-logs",
+      "method": "POST",
+      "path": "/organization/{organization_id}/event-logs",
+      "operation_id": "OrganizationEventLogsGet",
+      "tag": "Organizations",
+      "summary": "Get platform event log entries",
+      "deprecated": false,
+      "security": [
+        {
+          "tokenAuth": [],
+          "oauth2": [
+            "accounts:read"
+          ]
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "aiven-organization-access",
+      "op": "organizations.organization_event_logs_get"
     },
     {
       "key": "GET /organization/{organization_id}/governance/access",
@@ -4646,6 +4670,143 @@
       "op": "organizations.user_organization_create"
     },
     {
+      "key": "GET /organization/{organization_id}/application/vcs-integrations",
+      "method": "GET",
+      "path": "/organization/{organization_id}/application/vcs-integrations",
+      "operation_id": "VcsIntegrationList",
+      "tag": "Organizations",
+      "summary": "List VCS integrations of an organization",
+      "deprecated": false,
+      "security": [
+        {
+          "tokenAuth": [],
+          "oauth2": [
+            "accounts:read"
+          ]
+        }
+      ],
+      "request_media": [],
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "aiven-organization-access",
+      "op": "organizations.vcs_integration_list"
+    },
+    {
+      "key": "GET /organization/{organization_id}/application/vcs-integrations/{vcs_integration_id}/repositories/{remote_repository_id}/branches",
+      "method": "GET",
+      "path": "/organization/{organization_id}/application/vcs-integrations/{vcs_integration_id}/repositories/{remote_repository_id}/branches",
+      "operation_id": "VcsIntegrationRepositoryBranchList",
+      "tag": "Organizations",
+      "summary": "List branches of a repository of a VCS integration",
+      "deprecated": false,
+      "security": [
+        {
+          "tokenAuth": [],
+          "oauth2": [
+            "accounts:read"
+          ]
+        }
+      ],
+      "request_media": [],
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "aiven-organization-access",
+      "op": "organizations.vcs_integration_repository_branch_list"
+    },
+    {
+      "key": "GET /organization/{organization_id}/application/vcs-integrations/{vcs_integration_id}/repositories/{remote_repository_id}/refs/{commit_sha}/container-manifest-files",
+      "method": "GET",
+      "path": "/organization/{organization_id}/application/vcs-integrations/{vcs_integration_id}/repositories/{remote_repository_id}/refs/{commit_sha}/container-manifest-files",
+      "operation_id": "VcsIntegrationRepositoryContainerManifestFilesList",
+      "tag": "Organizations",
+      "summary": "List container manifest files (Docker and Docker Compose files) in a repository at a specific commit",
+      "deprecated": false,
+      "security": [
+        {
+          "tokenAuth": [],
+          "oauth2": [
+            "accounts:read"
+          ]
+        }
+      ],
+      "request_media": [],
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "aiven-organization-access",
+      "op": "organizations.vcs_integration_repository_container_manifest_files_list"
+    },
+    {
+      "key": "POST /organization/{organization_id}/application/vcs-integrations/{vcs_integration_id}/repositories/{remote_repository_id}/refs/{commit_sha}/scan-container-manifest",
+      "method": "POST",
+      "path": "/organization/{organization_id}/application/vcs-integrations/{vcs_integration_id}/repositories/{remote_repository_id}/refs/{commit_sha}/scan-container-manifest",
+      "operation_id": "VcsIntegrationRepositoryFileScan",
+      "tag": "Organizations",
+      "summary": "Scan a container manifest file by path, including detected ports",
+      "deprecated": false,
+      "security": [
+        {
+          "tokenAuth": [],
+          "oauth2": [
+            "accounts:read"
+          ]
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "aiven-organization-access",
+      "op": "organizations.vcs_integration_repository_file_scan"
+    },
+    {
+      "key": "GET /organization/{organization_id}/application/vcs-integrations/{vcs_integration_id}/repositories",
+      "method": "GET",
+      "path": "/organization/{organization_id}/application/vcs-integrations/{vcs_integration_id}/repositories",
+      "operation_id": "VcsIntegrationRepositoryList",
+      "tag": "Organizations",
+      "summary": "List repositories of a VCS integration",
+      "deprecated": false,
+      "security": [
+        {
+          "tokenAuth": [],
+          "oauth2": [
+            "accounts:read"
+          ]
+        }
+      ],
+      "request_media": [],
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "aiven-organization-access",
+      "op": "organizations.vcs_integration_repository_list"
+    },
+    {
       "key": "GET /card",
       "method": "GET",
       "path": "/card",
@@ -4925,7 +5086,7 @@
       "operation_id": "ProjectCreate",
       "tag": "Project",
       "summary": "Create a project",
-      "deprecated": false,
+      "deprecated": true,
       "security": [
         {
           "tokenAuth": [],
@@ -4941,11 +5102,11 @@
       "response_media": [
         "application/json"
       ],
-      "selected": true,
-      "exclusion": null,
-      "exclusion_reason": null,
-      "pack": "aiven-projects-networking",
-      "op": "project.project_create"
+      "selected": false,
+      "exclusion": "provider_deprecated",
+      "exclusion_reason": "The official Aiven OpenAPI marks this operation deprecated; the full current pack admits every nondeprecated operation instead.",
+      "pack": null,
+      "op": null
     },
     {
       "key": "GET /project/{project}",
@@ -6137,6 +6298,31 @@
       "exclusion_reason": null,
       "pack": "aiven-projects-networking",
       "op": "secrets.cmkservice_associations_list"
+    },
+    {
+      "key": "POST /project/{project}/service/{service_name}/application/redeploy",
+      "method": "POST",
+      "path": "/project/{project}/service/{service_name}/application/redeploy",
+      "operation_id": "ServiceApplicationRedeploy",
+      "tag": "Service:_Application",
+      "summary": "Trigger a rebuild and deploy of the application from its configured branch",
+      "deprecated": false,
+      "security": [
+        {
+          "tokenAuth": [],
+          "oauth2": [
+            "services:write"
+          ]
+        }
+      ],
+      "request_media": [],
+      "success_status": "204",
+      "response_media": [],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "aiven-services-integrations",
+      "op": "service_application.service_application_redeploy"
     },
     {
       "key": "GET /project/{project}/service/{service_name}/clickhouse/query",
@@ -11995,117 +12181,6 @@
       "exclusion_reason": null,
       "pack": "aiven-projects-networking",
       "op": "static_ip.static_ipcreate"
-    },
-    {
-      "key": "GET /organization/{organization_id}/tickets",
-      "method": "GET",
-      "path": "/organization/{organization_id}/tickets",
-      "operation_id": "OrganizationTicketList",
-      "tag": "Ticket_[deprecated]",
-      "summary": "List organization support tickets",
-      "deprecated": true,
-      "security": [
-        {
-          "tokenAuth": [],
-          "oauth2": [
-            "tickets:read"
-          ]
-        }
-      ],
-      "request_media": [],
-      "success_status": "200",
-      "response_media": [
-        "application/json"
-      ],
-      "selected": false,
-      "exclusion": "provider_deprecated",
-      "exclusion_reason": "The official Aiven OpenAPI marks this operation deprecated; the full current pack admits every nondeprecated operation instead.",
-      "pack": null,
-      "op": null
-    },
-    {
-      "key": "GET /project/{project}/tickets",
-      "method": "GET",
-      "path": "/project/{project}/tickets",
-      "operation_id": "ProjectTicketList",
-      "tag": "Ticket_[deprecated]",
-      "summary": "List support tickets",
-      "deprecated": true,
-      "security": [
-        {
-          "tokenAuth": [],
-          "oauth2": [
-            "projects:read",
-            "tickets:read"
-          ]
-        }
-      ],
-      "request_media": [],
-      "success_status": "200",
-      "response_media": [
-        "application/json"
-      ],
-      "selected": false,
-      "exclusion": "provider_deprecated",
-      "exclusion_reason": "The official Aiven OpenAPI marks this operation deprecated; the full current pack admits every nondeprecated operation instead.",
-      "pack": null,
-      "op": null
-    },
-    {
-      "key": "POST /project/{project}/tickets",
-      "method": "POST",
-      "path": "/project/{project}/tickets",
-      "operation_id": "ProjectTicketCreate",
-      "tag": "Ticket_[deprecated]",
-      "summary": "Create a support ticket",
-      "deprecated": true,
-      "security": [
-        {
-          "tokenAuth": [],
-          "oauth2": [
-            "projects:write",
-            "tickets:write"
-          ]
-        }
-      ],
-      "request_media": [],
-      "success_status": "200",
-      "response_media": [
-        "application/json"
-      ],
-      "selected": false,
-      "exclusion": "provider_deprecated",
-      "exclusion_reason": "The official Aiven OpenAPI marks this operation deprecated; the full current pack admits every nondeprecated operation instead.",
-      "pack": null,
-      "op": null
-    },
-    {
-      "key": "POST /project/{project}/tickets/{ticket_id}/invite",
-      "method": "POST",
-      "path": "/project/{project}/tickets/{ticket_id}/invite",
-      "operation_id": "ProjectTicketInvite",
-      "tag": "Ticket_[deprecated]",
-      "summary": "Invite a user to a ticket",
-      "deprecated": true,
-      "security": [
-        {
-          "tokenAuth": [],
-          "oauth2": [
-            "projects:write",
-            "tickets:write"
-          ]
-        }
-      ],
-      "request_media": [],
-      "success_status": "200",
-      "response_media": [
-        "application/json"
-      ],
-      "selected": false,
-      "exclusion": "provider_deprecated",
-      "exclusion_reason": "The official Aiven OpenAPI marks this operation deprecated; the full current pack admits every nondeprecated operation instead.",
-      "pack": null,
-      "op": null
     },
     {
       "key": "GET /organization/{organization_id}/upgrade-pipeline/steps",
@@ -18416,6 +18491,342 @@
           "oauth2": [
             "accounts:read",
             "authentication:read"
+          ]
+        }
+      ]
+    },
+    "GET /organization/{organization_id}/application/vcs-integrations": {
+      "key": "GET /organization/{organization_id}/application/vcs-integrations",
+      "operation_id": "VcsIntegrationList",
+      "pack": "aiven-organization-access",
+      "op": "organizations.vcs_integration_list",
+      "method": "GET",
+      "path": "/organization/{organization_id}/application/vcs-integrations",
+      "wire_path": "/v1/organization/{organization_id}/application/vcs-integrations",
+      "tag": "Organizations",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "organization_id",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "organization_id",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "numeric_string_bounds_as_lengths": false,
+          "untyped_array_items_as_strings": false
+        }
+      ],
+      "request_media": [],
+      "request_body_required": false,
+      "request_body_mode": "none",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "result_path": "vcs_integrations",
+      "pagination": null,
+      "pagination_contract_gap": null,
+      "response_capture": null,
+      "security": [
+        {
+          "tokenAuth": [],
+          "oauth2": [
+            "accounts:read"
+          ]
+        }
+      ]
+    },
+    "GET /organization/{organization_id}/application/vcs-integrations/{vcs_integration_id}/repositories": {
+      "key": "GET /organization/{organization_id}/application/vcs-integrations/{vcs_integration_id}/repositories",
+      "operation_id": "VcsIntegrationRepositoryList",
+      "pack": "aiven-organization-access",
+      "op": "organizations.vcs_integration_repository_list",
+      "method": "GET",
+      "path": "/organization/{organization_id}/application/vcs-integrations/{vcs_integration_id}/repositories",
+      "wire_path": "/v1/organization/{organization_id}/application/vcs-integrations/{vcs_integration_id}/repositories",
+      "tag": "Organizations",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "organization_id",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "organization_id",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "numeric_string_bounds_as_lengths": false,
+          "untyped_array_items_as_strings": false
+        },
+        {
+          "in": "path",
+          "wire_name": "vcs_integration_id",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "vcs_integration_id",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "numeric_string_bounds_as_lengths": false,
+          "untyped_array_items_as_strings": false
+        },
+        {
+          "in": "query",
+          "wire_name": "cursor",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "query.cursor",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "numeric_string_bounds_as_lengths": false,
+          "untyped_array_items_as_strings": false
+        },
+        {
+          "in": "query",
+          "wire_name": "limit",
+          "required": false,
+          "official_types": [
+            "integer"
+          ],
+          "admitted_key": "query.limit",
+          "admitted_type": "number",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "numeric_string_bounds_as_lengths": false,
+          "untyped_array_items_as_strings": false
+        }
+      ],
+      "request_media": [],
+      "request_body_required": false,
+      "request_body_mode": "none",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "result_path": "repositories",
+      "pagination": null,
+      "pagination_contract_gap": null,
+      "response_capture": null,
+      "security": [
+        {
+          "tokenAuth": [],
+          "oauth2": [
+            "accounts:read"
+          ]
+        }
+      ]
+    },
+    "GET /organization/{organization_id}/application/vcs-integrations/{vcs_integration_id}/repositories/{remote_repository_id}/branches": {
+      "key": "GET /organization/{organization_id}/application/vcs-integrations/{vcs_integration_id}/repositories/{remote_repository_id}/branches",
+      "operation_id": "VcsIntegrationRepositoryBranchList",
+      "pack": "aiven-organization-access",
+      "op": "organizations.vcs_integration_repository_branch_list",
+      "method": "GET",
+      "path": "/organization/{organization_id}/application/vcs-integrations/{vcs_integration_id}/repositories/{remote_repository_id}/branches",
+      "wire_path": "/v1/organization/{organization_id}/application/vcs-integrations/{vcs_integration_id}/repositories/{remote_repository_id}/branches",
+      "tag": "Organizations",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "organization_id",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "organization_id",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "numeric_string_bounds_as_lengths": false,
+          "untyped_array_items_as_strings": false
+        },
+        {
+          "in": "path",
+          "wire_name": "vcs_integration_id",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "vcs_integration_id",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "numeric_string_bounds_as_lengths": false,
+          "untyped_array_items_as_strings": false
+        },
+        {
+          "in": "path",
+          "wire_name": "remote_repository_id",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "remote_repository_id",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "numeric_string_bounds_as_lengths": false,
+          "untyped_array_items_as_strings": false
+        },
+        {
+          "in": "query",
+          "wire_name": "cursor",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "query.cursor",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "numeric_string_bounds_as_lengths": false,
+          "untyped_array_items_as_strings": false
+        },
+        {
+          "in": "query",
+          "wire_name": "limit",
+          "required": false,
+          "official_types": [
+            "integer"
+          ],
+          "admitted_key": "query.limit",
+          "admitted_type": "number",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "numeric_string_bounds_as_lengths": false,
+          "untyped_array_items_as_strings": false
+        }
+      ],
+      "request_media": [],
+      "request_body_required": false,
+      "request_body_mode": "none",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "result_path": "branches",
+      "pagination": null,
+      "pagination_contract_gap": null,
+      "response_capture": null,
+      "security": [
+        {
+          "tokenAuth": [],
+          "oauth2": [
+            "accounts:read"
+          ]
+        }
+      ]
+    },
+    "GET /organization/{organization_id}/application/vcs-integrations/{vcs_integration_id}/repositories/{remote_repository_id}/refs/{commit_sha}/container-manifest-files": {
+      "key": "GET /organization/{organization_id}/application/vcs-integrations/{vcs_integration_id}/repositories/{remote_repository_id}/refs/{commit_sha}/container-manifest-files",
+      "operation_id": "VcsIntegrationRepositoryContainerManifestFilesList",
+      "pack": "aiven-organization-access",
+      "op": "organizations.vcs_integration_repository_container_manifest_files_list",
+      "method": "GET",
+      "path": "/organization/{organization_id}/application/vcs-integrations/{vcs_integration_id}/repositories/{remote_repository_id}/refs/{commit_sha}/container-manifest-files",
+      "wire_path": "/v1/organization/{organization_id}/application/vcs-integrations/{vcs_integration_id}/repositories/{remote_repository_id}/refs/{commit_sha}/container-manifest-files",
+      "tag": "Organizations",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "organization_id",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "organization_id",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "numeric_string_bounds_as_lengths": false,
+          "untyped_array_items_as_strings": false
+        },
+        {
+          "in": "path",
+          "wire_name": "vcs_integration_id",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "vcs_integration_id",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "numeric_string_bounds_as_lengths": false,
+          "untyped_array_items_as_strings": false
+        },
+        {
+          "in": "path",
+          "wire_name": "remote_repository_id",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "remote_repository_id",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "numeric_string_bounds_as_lengths": false,
+          "untyped_array_items_as_strings": false
+        },
+        {
+          "in": "path",
+          "wire_name": "commit_sha",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "commit_sha",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "numeric_string_bounds_as_lengths": false,
+          "untyped_array_items_as_strings": false
+        }
+      ],
+      "request_media": [],
+      "request_body_required": false,
+      "request_body_mode": "none",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "result_path": "container_manifest_files",
+      "pagination": null,
+      "pagination_contract_gap": null,
+      "response_capture": null,
+      "security": [
+        {
+          "tokenAuth": [],
+          "oauth2": [
+            "accounts:read"
           ]
         }
       ]
@@ -27971,7 +28382,22 @@
       "risk": "read",
       "approval": "never",
       "idempotency": "safe",
-      "parameters": [],
+      "parameters": [
+        {
+          "in": "query",
+          "wire_name": "visible_until",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "query.visible_until",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "numeric_string_bounds_as_lengths": false,
+          "untyped_array_items_as_strings": false
+        }
+      ],
       "request_media": [],
       "request_body_required": false,
       "request_body_mode": "none",
@@ -29821,6 +30247,99 @@
         }
       ]
     },
+    "POST /organization/{organization_id}/application/vcs-integrations/{vcs_integration_id}/repositories/{remote_repository_id}/refs/{commit_sha}/scan-container-manifest": {
+      "key": "POST /organization/{organization_id}/application/vcs-integrations/{vcs_integration_id}/repositories/{remote_repository_id}/refs/{commit_sha}/scan-container-manifest",
+      "operation_id": "VcsIntegrationRepositoryFileScan",
+      "pack": "aiven-organization-access",
+      "op": "organizations.vcs_integration_repository_file_scan",
+      "method": "POST",
+      "path": "/organization/{organization_id}/application/vcs-integrations/{vcs_integration_id}/repositories/{remote_repository_id}/refs/{commit_sha}/scan-container-manifest",
+      "wire_path": "/v1/organization/{organization_id}/application/vcs-integrations/{vcs_integration_id}/repositories/{remote_repository_id}/refs/{commit_sha}/scan-container-manifest",
+      "tag": "Organizations",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "organization_id",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "organization_id",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "numeric_string_bounds_as_lengths": false,
+          "untyped_array_items_as_strings": false
+        },
+        {
+          "in": "path",
+          "wire_name": "vcs_integration_id",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "vcs_integration_id",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "numeric_string_bounds_as_lengths": false,
+          "untyped_array_items_as_strings": false
+        },
+        {
+          "in": "path",
+          "wire_name": "remote_repository_id",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "remote_repository_id",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "numeric_string_bounds_as_lengths": false,
+          "untyped_array_items_as_strings": false
+        },
+        {
+          "in": "path",
+          "wire_name": "commit_sha",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "commit_sha",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "numeric_string_bounds_as_lengths": false,
+          "untyped_array_items_as_strings": false
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": false,
+      "request_body_mode": "raw_json",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "result_path": null,
+      "pagination": null,
+      "pagination_contract_gap": null,
+      "response_capture": null,
+      "security": [
+        {
+          "tokenAuth": [],
+          "oauth2": [
+            "accounts:read"
+          ]
+        }
+      ]
+    },
     "POST /organization/{organization_id}/billing-groups": {
       "key": "POST /organization/{organization_id}/billing-groups",
       "operation_id": "OrganizationBillingGroupCreate",
@@ -30149,6 +30668,57 @@
           "tokenAuth": [],
           "oauth2": [
             "accounts:write"
+          ]
+        }
+      ]
+    },
+    "POST /organization/{organization_id}/event-logs": {
+      "key": "POST /organization/{organization_id}/event-logs",
+      "operation_id": "OrganizationEventLogsGet",
+      "pack": "aiven-organization-access",
+      "op": "organizations.organization_event_logs_get",
+      "method": "POST",
+      "path": "/organization/{organization_id}/event-logs",
+      "wire_path": "/v1/organization/{organization_id}/event-logs",
+      "tag": "Organizations",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "organization_id",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "organization_id",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "numeric_string_bounds_as_lengths": false,
+          "untyped_array_items_as_strings": false
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": false,
+      "request_body_mode": "raw_json",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "result_path": null,
+      "pagination": null,
+      "pagination_contract_gap": null,
+      "response_capture": null,
+      "security": [
+        {
+          "tokenAuth": [],
+          "oauth2": [
+            "accounts:read"
           ]
         }
       ]
@@ -30856,42 +31426,6 @@
       "response_capture": null,
       "security": null
     },
-    "POST /project": {
-      "key": "POST /project",
-      "operation_id": "ProjectCreate",
-      "pack": "aiven-projects-networking",
-      "op": "project.project_create",
-      "method": "POST",
-      "path": "/project",
-      "wire_path": "/v1/project",
-      "tag": "Project",
-      "risk": "admin",
-      "approval": "always",
-      "idempotency": "non_idempotent",
-      "parameters": [],
-      "request_media": [
-        "application/json"
-      ],
-      "request_body_required": false,
-      "request_body_mode": "raw_json",
-      "success_status": "200",
-      "response_media": [
-        "application/json"
-      ],
-      "selected_response_media": "application/json",
-      "result_path": null,
-      "pagination": null,
-      "pagination_contract_gap": null,
-      "response_capture": null,
-      "security": [
-        {
-          "tokenAuth": [],
-          "oauth2": [
-            "projects:write"
-          ]
-        }
-      ]
-    },
     "POST /project/{project}/integration": {
       "key": "POST /project/{project}/integration",
       "operation_id": "ServiceIntegrationCreate",
@@ -31276,6 +31810,67 @@
         "application/json"
       ],
       "selected_response_media": "application/json",
+      "result_path": null,
+      "pagination": null,
+      "pagination_contract_gap": null,
+      "response_capture": null,
+      "security": [
+        {
+          "tokenAuth": [],
+          "oauth2": [
+            "services:write"
+          ]
+        }
+      ]
+    },
+    "POST /project/{project}/service/{service_name}/application/redeploy": {
+      "key": "POST /project/{project}/service/{service_name}/application/redeploy",
+      "operation_id": "ServiceApplicationRedeploy",
+      "pack": "aiven-services-integrations",
+      "op": "service_application.service_application_redeploy",
+      "method": "POST",
+      "path": "/project/{project}/service/{service_name}/application/redeploy",
+      "wire_path": "/v1/project/{project}/service/{service_name}/application/redeploy",
+      "tag": "Service:_Application",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "project",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "project",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "numeric_string_bounds_as_lengths": false,
+          "untyped_array_items_as_strings": false
+        },
+        {
+          "in": "path",
+          "wire_name": "service_name",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "service_name",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "numeric_string_bounds_as_lengths": false,
+          "untyped_array_items_as_strings": false
+        }
+      ],
+      "request_media": [],
+      "request_body_required": false,
+      "request_body_mode": "none",
+      "success_status": "204",
+      "response_media": [],
+      "selected_response_media": null,
       "result_path": null,
       "pagination": null,
       "pagination_contract_gap": null,

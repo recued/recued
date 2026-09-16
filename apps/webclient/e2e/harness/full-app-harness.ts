@@ -48,7 +48,7 @@ import {
 import { savedViewsDemoReply } from './saved-data-views.js';
 import { recordsBrowseReply } from './records-browse.js';
 import { chatHistorySearchReply } from './chat-history-search.js';
-import { todayDemoReply } from './today-view.js';
+import { todayDemoReply, todayEmptyDemoReply } from './today-view.js';
 import { chatTurnQueueDemoReply } from './chat-turn-queue.js';
 import { workEntityUpsertDemoReply } from './work-entity-upsert.js';
 import { recipeSimulationDemoReply } from './recipe-simulation.js';
@@ -6541,7 +6541,8 @@ const buildFakeTransport = (
         }
         const preapprovalReply = preapprovalDemoReply(rpc.method, rpc.args);
         if (preapprovalReply !== null) { result = preapprovalReply.result; error = preapprovalReply.error; }
-        const todayReply: ReturnType<typeof todayDemoReply> = todayDemoReply(rpc.method, rpc.args);
+        const todayReply: ReturnType<typeof todayDemoReply> = todayDemoReply(rpc.method, rpc.args)
+          ?? todayEmptyDemoReply(rpc.method);
         if (todayReply !== null) { result = todayReply.result; error = todayReply.error; }
         // D-265's queue read. Unanswered it never settles, and `sendMessage`
         // awaits it before `chat.send` — see `chat-turn-queue.ts`.

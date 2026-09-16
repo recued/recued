@@ -61,13 +61,20 @@ export interface RecuedPlanListOptions {
  *  Read-time verification is caller-responsibility (matches the
  *  audit-store pattern at `packages/storage/src/audit.ts`). `get` /
  *  `list` return persisted plan content directly without verifying
- *  the signature — callers that need a trust signal call
- *  `verifyRecuedPlan` (or `isRecuedPlanTampered`) per-row at read
- *  time. PB3's orchestrator wires verification at the replay + Dry
- *  Run preview sites where the trust gate is load-bearing; UI
- *  surfaces that render plan rows surface tampered rows visually.
- *  (Codex P1 #2 from the PB2 review — design choice consistent with
- *  the audit pattern, surfaced as P3 documentation note.) */
+ *  the signature.
+ *
+ *  ⛔⛔ CORRECTED 2026-09-15 — THIS DESCRIBED WIRING THAT DOES NOT EXIST.
+ *  It said "PB3's orchestrator wires verification at the replay + Dry Run
+ *  preview sites where the trust gate is load-bearing; UI surfaces that
+ *  render plan rows surface tampered rows visually." `verifyRecuedPlan`
+ *  has ZERO production callers — its only non-definition references are
+ *  `isRecuedPlanTampered` (also uncalled) and this file's comments. No
+ *  orchestrator wires it, no surface renders a tamper state.
+ *  ⇒ Read `backend/server/src/recued-plan/signing.ts` before assuming a
+ *  plan row carries a verified trust signal; it does not. (Original note:
+ *  Codex P1 #2 from the PB2 review — read-time verification as caller
+ *  responsibility, consistent with the audit pattern. That design choice
+ *  stands; only the claim that it was wired was false.) */
 export interface RecuedPlanStore {
   /** Persist a plan. Validates shape via `assertValidRecuedPlan` —
    *  throws `RecuedPlanValidationError` on issues. Idempotent on
@@ -75,8 +82,9 @@ export interface RecuedPlanStore {
    *  re-appends with the post-confirm result). */
   append(plan: RecuedPlan): Promise<void>;
   /** Fetch one plan by id, or null when missing. Does NOT verify
-   *  the signature; high-assurance callers call `verifyRecuedPlan`
-   *  on the result before trusting content. */
+   *  the signature. ⛔ No production caller verifies it either — the
+   *  "high-assurance callers call `verifyRecuedPlan`" this used to
+   *  assert do not exist (see the header). */
   get(plan_id: string): Promise<RecuedPlan | null>;
   /** List plans matching the optional window. Default: newest-first,
    *  no cap. Does NOT verify signatures; high-assurance callers

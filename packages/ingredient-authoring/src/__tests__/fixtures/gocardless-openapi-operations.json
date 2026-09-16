@@ -1,12 +1,11 @@
 {
   "source": "https://developer.gocardless.com/openapi-schema-public.json",
-  "sha256": "6fce6f2797637b74fbccb58b433cde6ccacb2b6fd8bbe54cec191a99c79afdbb",
+  "sha256": "17f4d40105bc89cb9f2465be83234055e64f8d301b71244e7303e6cf1bc8b1c0",
   "openapi": "3.0.0",
   "api_version": "2015-07-06",
-  "schema_version": "0.108.0",
-  "path_count": 107,
-  "operation_count": 137,
-  "selected_operation_count": 114,
+  "path_count": 109,
+  "operation_count": 138,
+  "selected_operation_count": 115,
   "admission": {
     "official_reference": "https://developer.gocardless.com/api-reference",
     "request_signing_reference": "https://developer.gocardless.com/sending-money/api-request-signing/",
@@ -932,21 +931,6 @@
       "reason": "nondeprecated official bearer-token operation with buildable REST transport"
     },
     {
-      "method": "POST",
-      "path": "/instalment_schedules",
-      "operation_id": "create_instalment_schedule",
-      "tags": [
-        "Instalment Schedule"
-      ],
-      "security": [
-        "bearerAuth"
-      ],
-      "deprecated": false,
-      "selected": true,
-      "pack": "gocardless-collections",
-      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
-    },
-    {
       "method": "GET",
       "path": "/instalment_schedules/{instalment_schedule_id}",
       "operation_id": "get_instalment_schedules",
@@ -980,6 +964,36 @@
       "method": "POST",
       "path": "/instalment_schedules/{instalment_schedule_id}/actions/cancel",
       "operation_id": "cancel_instalment_schedule",
+      "tags": [
+        "Instalment Schedule"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-collections",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/instalment_schedules/create_with_dates",
+      "operation_id": "create_with_dates_instalment_schedules",
+      "tags": [
+        "Instalment Schedule"
+      ],
+      "security": [
+        "bearerAuth"
+      ],
+      "deprecated": false,
+      "selected": true,
+      "pack": "gocardless-collections",
+      "reason": "nondeprecated official bearer-token operation with buildable REST transport"
+    },
+    {
+      "method": "POST",
+      "path": "/instalment_schedules/create_with_schedule",
+      "operation_id": "create_with_schedule_instalment_schedules",
       "tags": [
         "Instalment Schedule"
       ],

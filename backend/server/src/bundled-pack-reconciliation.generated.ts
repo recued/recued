@@ -15,7 +15,7 @@ export const BUNDLED_PACK_RECONCILIATION_TARGETS: Readonly<Record<string, BulkPa
     "publisher": "recued-core",
     "name": "Codex Pack",
     "description": "Use Codex Pack in Recued for developer tools and background. It includes 2 built-in actions. It runs locally on your machine. Actions that change data use Recued's approval controls.",
-    "version": 2,
+    "version": 3,
     "recipes": [],
     "requires": [
       "install_bulk_pack"
@@ -59,6 +59,11 @@ export const BUNDLED_PACK_RECONCILIATION_TARGETS: Readonly<Record<string, BulkPa
               "ingredient": "codex",
               "risk": "read",
               "approval": "never",
+              "request_schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {}
+              },
               "description": "Return the Codex CLI readiness snapshot.",
               "bind": {
                 "kind": "cli_invocation",
@@ -81,10 +86,31 @@ export const BUNDLED_PACK_RECONCILIATION_TARGETS: Readonly<Record<string, BulkPa
               "args": [
                 {
                   "key": "repo_dir",
-                  "affects_target": true
+                  "affects_target": true,
+                  "required": true
                 },
                 "task"
               ],
+              "request_schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "repo_dir",
+                  "task"
+                ],
+                "properties": {
+                  "repo_dir": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
+                  },
+                  "task": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
+                  }
+                }
+              },
               "description": "Run one Codex repository task as an awaited, owned process tree and return its JSONL event stream. Semantic item-completion events prove progress; owner stop, recipe-budget cancellation, stalls, and wall deadlines terminate the full tree.",
               "bind": {
                 "kind": "cli_invocation",
@@ -134,7 +160,7 @@ export const BUNDLED_PACK_RECONCILIATION_TARGETS: Readonly<Record<string, BulkPa
     "publisher": "recued-core",
     "name": "yt-dlp Pack",
     "description": "Use yt-dlp Pack in Recued for media, video, audio, and download. It includes 4 built-in actions. It runs locally on your machine. Actions that change data use Recued's approval controls.",
-    "version": 2,
+    "version": 3,
     "recipes": [],
     "requires": [
       "install_bulk_pack"
@@ -192,6 +218,11 @@ export const BUNDLED_PACK_RECONCILIATION_TARGETS: Readonly<Record<string, BulkPa
               "ingredient": "yt-dlp",
               "risk": "read",
               "approval": "never",
+              "request_schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {}
+              },
               "description": "Return the local yt-dlp CLI version without loading user configuration.",
               "bind": {
                 "kind": "cli_invocation",
@@ -216,9 +247,24 @@ export const BUNDLED_PACK_RECONCILIATION_TARGETS: Readonly<Record<string, BulkPa
                 {
                   "key": "url",
                   "type": "string",
-                  "affects_target": true
+                  "affects_target": true,
+                  "required": true
                 }
               ],
+              "request_schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "url"
+                ],
+                "properties": {
+                  "url": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
+                  }
+                }
+              },
               "description": "Fetch extractor metadata for one remote media URL as a single JSON object via yt-dlp --dump-single-json. This is for URL triage before deciding whether to download: title, duration, uploader, webpage URL, thumbnails, available formats, and extractor fields may appear depending on the site. The command runs with --skip-download and does not write media or info-json files. It also ignores local yt-dlp config, cookies, browser cookies, and persistent cache so the result does not silently depend on local account state. Approval is required because metadata extraction contacts the remote site and may reveal the URL being inspected.",
               "bind": {
                 "kind": "cli_invocation",
@@ -259,9 +305,24 @@ export const BUNDLED_PACK_RECONCILIATION_TARGETS: Readonly<Record<string, BulkPa
                 {
                   "key": "url",
                   "type": "string",
-                  "affects_target": true
+                  "affects_target": true,
+                  "required": true
                 }
               ],
+              "request_schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "url"
+                ],
+                "properties": {
+                  "url": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
+                  }
+                }
+              },
               "description": "List the available formats for one remote media URL via yt-dlp --list-formats and return the human-readable table. Use this before media.download when a user needs to choose between video, audio, resolution, or container options. The command simulates by default and writes no media output. It ignores local yt-dlp config, cookies, browser cookies, and persistent cache so the result does not silently depend on local account state. Approval is required because format discovery contacts the remote site.",
               "bind": {
                 "kind": "cli_invocation",
@@ -300,10 +361,31 @@ export const BUNDLED_PACK_RECONCILIATION_TARGETS: Readonly<Record<string, BulkPa
               "args": [
                 {
                   "key": "url",
-                  "affects_target": true
+                  "affects_target": true,
+                  "required": true
                 },
                 "format"
               ],
+              "request_schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "url",
+                  "format"
+                ],
+                "properties": {
+                  "url": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
+                  },
+                  "format": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
+                  }
+                }
+              },
               "description": "Download one video or audio stream as an awaited, owned process tree and return the completed artifact as an opaque data.file reference. Monotonically increasing yt-dlp percentages prove progress; owner stop, recipe-budget cancellation, stalls, and wall deadlines terminate the full tree. The command ignores local config, cookies, browser cookies, playlists, and persistent cache.",
               "bind": {
                 "kind": "cli_invocation",
@@ -372,7 +454,7 @@ export const BUNDLED_PACK_RECONCILIATION_TARGETS: Readonly<Record<string, BulkPa
     "publisher": "recued-core",
     "name": "Cloudflared Pack",
     "description": "Use Cloudflared Pack in Recued for tunnel, webhook, and background. It includes 1 built-in action. It runs locally on your machine. Actions that change data use Recued's approval controls.",
-    "version": 2,
+    "version": 3,
     "recipes": [],
     "requires": [
       "install_bulk_pack"
@@ -421,17 +503,47 @@ export const BUNDLED_PACK_RECONCILIATION_TARGETS: Readonly<Record<string, BulkPa
               "args": [
                 {
                   "key": "tunnel_name",
-                  "affects_target": true
+                  "affects_target": true,
+                  "required": true
                 },
                 {
                   "key": "result_dir",
-                  "affects_target": true
+                  "affects_target": true,
+                  "required": true
                 },
                 {
                   "key": "key",
-                  "affects_target": true
+                  "affects_target": true,
+                  "required": true
                 }
               ],
+              "request_schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "tunnel_name",
+                  "result_dir",
+                  "key"
+                ],
+                "properties": {
+                  "tunnel_name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
+                  },
+                  "result_dir": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
+                  },
+                  "key": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096,
+                    "pattern": "^[A-Za-z0-9_-]+$"
+                  }
+                }
+              },
               "description": "Start `cloudflared tunnel run <tunnel_name>` as a Recued-supervised service. The operation binds this connector's local metrics server to 127.0.0.1:20241 and returns only after its `/ready` endpoint confirms an active Cloudflare edge connection. It retains the compatible launch receipt and remains owned by the supervisor for health checks, process-group stop, crash restart, and server-start recovery.",
               "bind": {
                 "kind": "cli_invocation",
@@ -520,7 +632,7 @@ export const BUNDLED_PACK_RECONCILIATION_TARGETS: Readonly<Record<string, BulkPa
     "publisher": "recued-core",
     "name": "Ollama Pack",
     "description": "Use Ollama Pack in Recued for AI, local, inference, and summary. It includes 3 built-in actions. It runs locally on your machine. Actions that change data use Recued's approval controls.",
-    "version": 2,
+    "version": 3,
     "recipes": [],
     "requires": [
       "install_bulk_pack"
@@ -574,6 +686,26 @@ export const BUNDLED_PACK_RECONCILIATION_TARGETS: Readonly<Record<string, BulkPa
                 "model",
                 "prompt"
               ],
+              "request_schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "model",
+                  "prompt"
+                ],
+                "properties": {
+                  "model": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
+                  },
+                  "prompt": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
+                  }
+                }
+              },
               "description": "Run a prompt against a locally-installed Ollama model via the local ollama CLI (ollama run <model> <prompt>) and return the model's reply as captured text in the op result's `stdout` field. A local, no-egress inference: the prompt never leaves the paired recued-server, and the reply is a transient text value the next step consumes directly (no durable write, no file). The target model must already be pulled (ollama pull <model>) — a missing model fails the run rather than triggering a mid-recipe network download. The prompt is passed as a single discrete argv element (shell:false), so it cannot inject ollama flags. Read-tier because the op mutates nothing and sends nothing; the cost is local compute. For structured-JSON contracts use the ai-* functions instead — this op is the escape hatch for keeping private content on the machine.",
               "bind": {
                 "kind": "cli_invocation",
@@ -609,6 +741,11 @@ export const BUNDLED_PACK_RECONCILIATION_TARGETS: Readonly<Record<string, BulkPa
               "ingredient": "ollama",
               "risk": "read",
               "approval": "never",
+              "request_schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {}
+              },
               "description": "List the models pulled into the local Ollama install via the local ollama CLI (ollama list) — the captured table is returned in the op result's `stdout` (a string the next step parses). Read-tier + approval=never: it inspects local state and mutates nothing, sends nothing. Pulling a new model stays a manual setup step (ollama pull <model>) — the model.run op assumes the target model is already present. Requires the ollama binary on PATH.",
               "bind": {
                 "kind": "cli_invocation",
@@ -631,13 +768,36 @@ export const BUNDLED_PACK_RECONCILIATION_TARGETS: Readonly<Record<string, BulkPa
               "args": [
                 {
                   "key": "result_dir",
-                  "affects_target": true
+                  "affects_target": true,
+                  "required": true
                 },
                 {
                   "key": "key",
-                  "affects_target": true
+                  "affects_target": true,
+                  "required": true
                 }
               ],
+              "request_schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "result_dir",
+                  "key"
+                ],
+                "properties": {
+                  "result_dir": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
+                  },
+                  "key": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096,
+                    "pattern": "^[A-Za-z0-9_-]+$"
+                  }
+                }
+              },
               "description": "Start the local Ollama inference daemon as a Recued-supervised service. The operation returns only after the local API answers, retains the compatible launch receipt, and remains owned by the supervisor for HTTP health checks, process-group stop, crash restart, and server-start recovery. admin-risk + approval=ask because it opens a long-running local listener.",
               "bind": {
                 "kind": "cli_invocation",

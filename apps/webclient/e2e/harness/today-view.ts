@@ -26,6 +26,29 @@ const records: CollectionRecord[] = [
   { record_id: 'cal:offsite', source_id: 'offsite', received_at: NOW, modified_at: NOW, size_bytes: 0,
     hot_fields: { summary: 'Team offsite', start_at: Date.parse('2026-09-08T00:00:00Z'), end_at: Date.parse('2026-09-09T00:00:00Z'), status: 'confirmed', is_all_day: true } },
 ];
+/** D-267 — the FRESH-INSTALL state, which had no fixture at all until Today
+ *  became what a tabless `#data` resolves to. `?data=today-empty` answers every
+ *  Today read with a real, EMPTY, RESOLVED result — no work entities, no
+ *  calendar instances — which is the one state a new owner actually sees and
+ *  the only one in which the zero-state capture offer renders.
+ *
+ *  ⛔ NOT the same as leaving the reads unstubbed. An unanswered method in this
+ *  harness never settles, so Today sits on "Loading Today…" forever and every
+ *  assertion about the empty state reads as absent rather than as pending — a
+ *  false negative that looks exactly like a missing feature. (In the product a
+ *  read cannot hang like that: `rpc-conn.ts` carries a 30s per-call timeout and
+ *  sweeps in-flight calls when the connection goes unusable.) */
+export const todayEmptyDemoReply = (method: string): { result?: unknown } | null => {
+  if (new URLSearchParams(location.search).get('data') !== 'today-empty') return null;
+  if (method === 'work_entity.source.list') return { result: { sources: [source('task'), source('commitment')] } };
+  if (method === 'work_entity.list') return { result: { entities: [], total: 0 } };
+  if (method === 'collection.listInstances') return { result: { instances: [] } };
+  if (method === 'collection.list') return { result: { records: [] } };
+  if (method === 'contact.list') return { result: { contacts: [], total: 0 } };
+  if (method === 'data.timeline') return { result: { entries: [] } };
+  return null;
+};
+
 export const todayDemoReply = (method: string, raw: unknown): { result?: unknown; error?: { code: string; message: string } } | null => {
   const params = new URLSearchParams(location.search);
   if (params.get('data') !== 'today') return null;

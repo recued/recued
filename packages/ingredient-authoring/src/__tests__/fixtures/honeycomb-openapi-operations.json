@@ -2,8 +2,8 @@
   "vendor": "Honeycomb",
   "contract_retrieved_on": "2026-07-15",
   "url": "https://docs.honeycomb.io/api/openapi-public.yaml",
-  "sha256": "37e0c75697750915355451958f93782945df8b8c09e551240574b89e93a94139",
-  "byte_length": 321457,
+  "sha256": "d5f0054f804790ce3c758f9fd449c16d99140c8717674af98039794fd8e51ed9",
+  "byte_length": 331868,
   "openapi": "3.1.0",
   "title": "Honeycomb API",
   "version": "1.0.0",
@@ -11,19 +11,19 @@
     "https://api.honeycomb.io",
     "https://api.eu1.honeycomb.io"
   ],
-  "path_count": 44,
-  "operation_count": 85,
-  "selected_operation_count": 85,
+  "path_count": 47,
+  "operation_count": 89,
+  "selected_operation_count": 89,
   "excluded_operation_count": 0,
   "method_counts": {
     "DELETE": 14,
-    "GET": 35,
+    "GET": 38,
     "PATCH": 3,
     "POST": 21,
-    "PUT": 12
+    "PUT": 13
   },
   "auth_counts": {
-    "configuration": 71,
+    "configuration": 75,
     "firehose": 1,
     "ingest": 2,
     "management": 11
@@ -33,9 +33,10 @@
     "honeycomb-ingest": 2,
     "honeycomb-kinesis-ingest": 1,
     "honeycomb-management": 11,
-    "honeycomb-observability": 40
+    "honeycomb-observability": 44
   },
   "tag_counts": {
+    "Anomaly Detection": 4,
     "Auth": 2,
     "Boards": 10,
     "Burn Alerts": 5,
@@ -61,13 +62,13 @@
   "risk_counts": {
     "admin": 14,
     "destructive": 14,
-    "read": 36,
-    "write": 21
+    "read": 39,
+    "write": 22
   },
   "body_mode_counts": {
-    "json_fields": 34,
+    "json_fields": 35,
     "json_raw": 2,
-    "none": 49
+    "none": 52
   },
   "pagination_operation_ids": [
     "getMapDependencies",
@@ -5085,6 +5086,368 @@
     },
     {
       "method": "GET",
+      "path": "/1/signals",
+      "operation_id": "listSignals",
+      "primary_tag": "Anomaly Detection",
+      "auth_class": "configuration",
+      "security_schemes": [
+        "configuration_key"
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "response_media": [
+        "application/json"
+      ],
+      "request_body_required": false,
+      "body_mode": "none",
+      "parameters": [
+        {
+          "name": "page[after]",
+          "in": "query",
+          "required": false,
+          "pagination_owned": false,
+          "credential_owned": false,
+          "intentionally_omitted": false,
+          "emitted_key": "query.page[after]"
+        },
+        {
+          "name": "page[size]",
+          "in": "query",
+          "required": false,
+          "pagination_owned": false,
+          "credential_owned": false,
+          "intentionally_omitted": false,
+          "emitted_key": "query.page[size]"
+        },
+        {
+          "name": "service_name",
+          "in": "query",
+          "required": false,
+          "pagination_owned": false,
+          "credential_owned": false,
+          "intentionally_omitted": false,
+          "emitted_key": "query.service_name"
+        },
+        {
+          "name": "dataset_slug",
+          "in": "query",
+          "required": false,
+          "pagination_owned": false,
+          "credential_owned": false,
+          "intentionally_omitted": false,
+          "emitted_key": "query.dataset_slug"
+        },
+        {
+          "name": "measured_signal",
+          "in": "query",
+          "required": false,
+          "pagination_owned": false,
+          "credential_owned": false,
+          "intentionally_omitted": false,
+          "emitted_key": "query.measured_signal"
+        },
+        {
+          "name": "status",
+          "in": "query",
+          "required": false,
+          "pagination_owned": false,
+          "credential_owned": false,
+          "intentionally_omitted": false,
+          "emitted_key": "query.status"
+        },
+        {
+          "name": "currently_anomalous",
+          "in": "query",
+          "required": false,
+          "pagination_owned": false,
+          "credential_owned": false,
+          "intentionally_omitted": false,
+          "emitted_key": "query.currently_anomalous"
+        }
+      ],
+      "request_read_only_paths": [],
+      "request_internal_paths": [],
+      "request_int64_paths": [],
+      "response_int64_paths": [],
+      "emitted_args": [
+        {
+          "key": "query.page[after]",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "query.page[size]",
+          "type": "number",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "query.service_name",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "query.dataset_slug",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "query.measured_signal",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "query.status",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "query.currently_anomalous",
+          "type": "boolean",
+          "required": false,
+          "affects_target": true
+        }
+      ],
+      "pack": "honeycomb-observability",
+      "op": "anomaly_detection.list_signals",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "result_path": null,
+      "pagination": null,
+      "reason": "admitted from the hash-pinned official Honeycomb OpenAPI contract with a static REST binding"
+    },
+    {
+      "method": "GET",
+      "path": "/1/signals/{signalId}",
+      "operation_id": "getSignal",
+      "primary_tag": "Anomaly Detection",
+      "auth_class": "configuration",
+      "security_schemes": [
+        "configuration_key"
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "response_media": [
+        "application/json"
+      ],
+      "request_body_required": false,
+      "body_mode": "none",
+      "parameters": [
+        {
+          "name": "signalId",
+          "in": "path",
+          "required": true,
+          "pagination_owned": false,
+          "credential_owned": false,
+          "intentionally_omitted": false,
+          "emitted_key": "signalId"
+        }
+      ],
+      "request_read_only_paths": [],
+      "request_internal_paths": [],
+      "request_int64_paths": [],
+      "response_int64_paths": [],
+      "emitted_args": [
+        {
+          "key": "signalId",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "pack": "honeycomb-observability",
+      "op": "anomaly_detection.get_signal",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "result_path": null,
+      "pagination": null,
+      "reason": "admitted from the hash-pinned official Honeycomb OpenAPI contract with a static REST binding"
+    },
+    {
+      "method": "PUT",
+      "path": "/1/signals/{signalId}",
+      "operation_id": "updateSignal",
+      "primary_tag": "Anomaly Detection",
+      "auth_class": "configuration",
+      "security_schemes": [
+        "configuration_key"
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "response_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "body_mode": "json_fields",
+      "parameters": [
+        {
+          "name": "signalId",
+          "in": "path",
+          "required": true,
+          "pagination_owned": false,
+          "credential_owned": false,
+          "intentionally_omitted": false,
+          "emitted_key": "signalId"
+        }
+      ],
+      "request_read_only_paths": [],
+      "request_internal_paths": [],
+      "request_int64_paths": [],
+      "response_int64_paths": [],
+      "emitted_args": [
+        {
+          "key": "signalId",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body.enabled",
+          "type": "boolean",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body.sensitivity",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body.recipients",
+          "type": "array",
+          "required": false,
+          "affects_target": true
+        }
+      ],
+      "pack": "honeycomb-observability",
+      "op": "anomaly_detection.update_signal",
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "result_path": null,
+      "pagination": null,
+      "reason": "admitted from the hash-pinned official Honeycomb OpenAPI contract with a static REST binding"
+    },
+    {
+      "method": "GET",
+      "path": "/1/signals/{signalId}/historical_anomalies",
+      "operation_id": "listSignalHistoricalAnomalies",
+      "primary_tag": "Anomaly Detection",
+      "auth_class": "configuration",
+      "security_schemes": [
+        "configuration_key"
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "response_media": [
+        "application/json"
+      ],
+      "request_body_required": false,
+      "body_mode": "none",
+      "parameters": [
+        {
+          "name": "signalId",
+          "in": "path",
+          "required": true,
+          "pagination_owned": false,
+          "credential_owned": false,
+          "intentionally_omitted": false,
+          "emitted_key": "signalId"
+        },
+        {
+          "name": "start_time",
+          "in": "query",
+          "required": true,
+          "pagination_owned": false,
+          "credential_owned": false,
+          "intentionally_omitted": false,
+          "emitted_key": "query.start_time"
+        },
+        {
+          "name": "end_time",
+          "in": "query",
+          "required": true,
+          "pagination_owned": false,
+          "credential_owned": false,
+          "intentionally_omitted": false,
+          "emitted_key": "query.end_time"
+        },
+        {
+          "name": "page[after]",
+          "in": "query",
+          "required": false,
+          "pagination_owned": false,
+          "credential_owned": false,
+          "intentionally_omitted": false,
+          "emitted_key": "query.page[after]"
+        },
+        {
+          "name": "page[size]",
+          "in": "query",
+          "required": false,
+          "pagination_owned": false,
+          "credential_owned": false,
+          "intentionally_omitted": false,
+          "emitted_key": "query.page[size]"
+        }
+      ],
+      "request_read_only_paths": [],
+      "request_internal_paths": [],
+      "request_int64_paths": [],
+      "response_int64_paths": [],
+      "emitted_args": [
+        {
+          "key": "signalId",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query.start_time",
+          "type": "number",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query.end_time",
+          "type": "number",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query.page[after]",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "query.page[size]",
+          "type": "number",
+          "required": false,
+          "affects_target": true
+        }
+      ],
+      "pack": "honeycomb-observability",
+      "op": "anomaly_detection.list_signal_historical_anomalies",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "result_path": null,
+      "pagination": null,
+      "reason": "admitted from the hash-pinned official Honeycomb OpenAPI contract with a static REST binding"
+    },
+    {
+      "method": "GET",
       "path": "/1/slos/{datasetSlug}",
       "operation_id": "listSlos",
       "primary_tag": "SLOs",
@@ -7088,6 +7451,24 @@
     "/1/reporting/slos/historical": {
       "post": {
         "operationId": "getSloHistory"
+      }
+    },
+    "/1/signals": {
+      "get": {
+        "operationId": "listSignals"
+      }
+    },
+    "/1/signals/{signalId}": {
+      "get": {
+        "operationId": "getSignal"
+      },
+      "put": {
+        "operationId": "updateSignal"
+      }
+    },
+    "/1/signals/{signalId}/historical_anomalies": {
+      "get": {
+        "operationId": "listSignalHistoricalAnomalies"
       }
     },
     "/1/slos/{datasetSlug}": {

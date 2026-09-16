@@ -318,8 +318,8 @@
       "pack": "klarna-disputes-v4",
       "docs_release": "r2606",
       "docs_version": "v2",
-      "embedded_schema_bytes": 190266,
-      "embedded_schema_sha256": "6aed89db077f628cffb5b3a7a15c76046db218f17366e09a8e83a224f2c86e01",
+      "embedded_schema_bytes": 191892,
+      "embedded_schema_sha256": "4f7309ce7534df1d5c9c5a93e1a24c31500e715423687a1a66130381dd5a2837",
       "dialect": "openapi",
       "dialect_version": "3.0.3",
       "title": "Klarna Partner Product API - Payment Disputes",
@@ -3120,6 +3120,14 @@
           "reason": "optional_repeated_query_array_omitted"
         },
         {
+          "field": "query.product_ids",
+          "reason": "optional_repeated_query_array_omitted"
+        },
+        {
+          "field": "query.merchant_ids",
+          "reason": "optional_repeated_query_array_omitted"
+        },
+        {
           "field": "query.state",
           "reason": "optional_repeated_query_array_omitted"
         },
@@ -3165,6 +3173,7 @@
         "disputes[].dispute_details",
         "disputes[].dispute_details.dispute_amount",
         "disputes[].dispute_reason",
+        "disputes[].merchant_id",
         "disputes[].merchant_reference2",
         "disputes[].order_id",
         "disputes[].partner_account_id",
@@ -3266,6 +3275,7 @@
         "dispute_details",
         "dispute_details.dispute_amount",
         "dispute_reason",
+        "merchant_id",
         "merchant_reference2",
         "order_id",
         "partner_account_id",

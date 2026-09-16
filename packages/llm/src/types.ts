@@ -208,7 +208,7 @@ export type CoordinationStrategy = 'round_robin' | 'weighted';
 /** An API entry in the free LLM pool. Each entry carries its own declarative
  *  capability record (speed + supports_json + supports_search) so matching is
  *  strict comparison — no heuristic detection. `model` is required free text
- *  because most free providers (OpenRouter, Groq, Cerebras, GitHub Models)
+ *  because most free providers (OpenRouter, Groq, Mistral)
  *  demand an explicit model string. */
 export interface FreePoolApiEntry {
   id: string;

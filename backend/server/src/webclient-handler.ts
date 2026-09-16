@@ -1,10 +1,20 @@
-/** D-152 § A.16 — LAN-only webclient bundle handler.
+/** D-152 § A.16 — webclient bundle handler.
  *
- *  Static-file mount that serves a pre-loaded bundle of webclient PWA
- *  assets on the LAN listener at `/webclient/*`. The path-router carve-
- *  out (gated by `listener === 'lan'`) dispatches here BEFORE role
- *  lookup; the public listener never invokes this handler (the
- *  listener-set only threads it onto the LAN router).
+ *  Static-file mount that serves a pre-loaded bundle of webclient PWA assets at
+ *  `/webclient/*`.
+ *
+ *  ⚠ NO LONGER LAN-ONLY, AND THIS HEADER SAID IT WAS. R26.2 Delta 3 made
+ *  `webclient` a first-class exposure path role, and `server.ts` threads this
+ *  handler onto BOTH listeners — "wired identically on both", with the
+ *  per-listener `resolution.webclient` grid bit deciding where it serves
+ *  (LAN-on, public-off by DEFAULT, public being an explicit per-row opt-in).
+ *  The stale sentence mattered: it reads as a hard architectural fence and is
+ *  really a default, which is the difference between "you cannot serve the app
+ *  on 443" and "you have not switched it on".
+ *
+ *  ⇒ One public listener (443 by default) can serve reception AND the webclient
+ *  at once — they are independent rows in the grid, and only the bare `/` apex
+ *  is an exclusive choice.
  *
  *  Off-grid scenario (the original FU#7 deferred concern): an air-gapped
  *  server is reachable on `192.168.x.x` and serves the full webclient PWA
@@ -21,8 +31,11 @@
  *
  *  What actually works today: `http://localhost:<port>/` ON THE SERVER MACHINE
  *  (loopback is a secure-context exception), or any device once the server has
- *  trusted HTTPS (Pro DDNS + ACME, or an operator-provisioned cert). Another
- *  phone or laptop over a bare LAN IP needs that HTTPS first. Serving these
+ *  trusted HTTPS — Pro DDNS + ACME, an operator-provisioned cert, OR an upstream
+ *  proxy holding the cert while this listener binds plaintext behind it
+ *  (`path-listener-coordinator.ts`: "null/empty holder → public listener binds
+ *  plaintext"). That third option is the one that costs the project nothing.
+ *  Another phone or laptop over a bare LAN IP needs that HTTPS first. Serving these
  *  files is still right — the handler is what a LAN HTTPS listener serves — but
  *  the transport is a precondition, not an afterthought.
  *

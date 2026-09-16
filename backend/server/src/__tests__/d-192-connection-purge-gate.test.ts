@@ -6,8 +6,24 @@
  *      counts, skips `contact` (unsupported), is connection-scoped + idempotent.
  *    - `handleConnectionDelete` gate: `remove_mirror_data: true` runs the purge
  *      + writes the `source_data_purged` audit + returns `purged`; unchecked /
- *      absent leaves the mirror data (the existing cascade still runs); the
- *      purge is best-effort (a throw never fails the delete rpc).
+ *      absent leaves the mirror data (the existing cascade still runs).
+ *
+ *  ⛔⛔ DECISION REVERSED 2026-09-15 — this header used to end "the purge is
+ *  best-effort (a throw never fails the delete rpc)", and the test below
+ *  asserted it. That behaviour orphaned data permanently: the purge runs BEFORE
+ *  `store.delete` (it must — afterwards `listSources()` cannot reach the
+ *  connection's sources), and the swallow's stated justification in the handler
+ *  was "the purge is idempotent + re-runnable". IT IS NOT. A re-run reads
+ *  `store.get(kind, name)`, gets null, and the purge is gated on
+ *  `existing !== null`, so it never runs again — while the owner, who ticked
+ *  "also remove the mirrored records", was told the delete succeeded.
+ *
+ *  🔑 THE ORIGINAL CONCERN IS PRESERVED, ONLY ITS FALSE PREMISE IS GONE. The
+ *  point of best-effort was that a user must always be able to delete a
+ *  connection. They still can: the purge is only attempted when they opt in, so
+ *  a connection whose purge cannot succeed is deletable by asking for the delete
+ *  WITHOUT the removal. That escape hatch is pinned in
+ *  `d-192-connection-delete-purge-failure.test.ts`.
  */
 
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -250,17 +266,19 @@ describe('handleConnectionDelete — remove_mirror_data gate', () => {
     expect(cascade).toHaveBeenCalledWith('api', 'my_hubspot', 'hubspot');
   });
 
-  it('is best-effort — a purge throw never fails the delete rpc', async () => {
+  it('⛔ a purge throw now FAILS the delete and KEEPS the row (reversed 2026-09-15)', async () => {
     enroll('api', 'my_hubspot', 'hubspot');
     const purgeFn = vi.fn(() => {
       throw new Error('purge boom');
     });
-    const out = await handleConnectionDelete(
+    // Was: `expect(out).toEqual({ deleted: true })` + row gone. That asserted the
+    // orphaning — see the header. The row surviving keeps the residue reachable
+    // and is what makes a retry able to run at all.
+    await expect(handleConnectionDelete(
       { store, purgeConnectionData: purgeFn },
       { kind: 'api', name: 'my_hubspot', remove_mirror_data: true },
-    );
-    expect(out).toEqual({ deleted: true }); // no purged, but rpc succeeds
-    expect(store.get('api', 'my_hubspot')).toBeNull();
+    )).rejects.toMatchObject({ code: 'conflict' });
+    expect(store.get('api', 'my_hubspot')).not.toBeNull();
   });
 
   it('does not purge when no row was deleted (opt-in on a missing connection)', async () => {

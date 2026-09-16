@@ -249,6 +249,46 @@ export const resolveExchangeAdmission = (
     : 'auto_accept';
 };
 
+/** Every `peer_admission` entry whose VALUE is not a legal {@link ExchangeAdmission},
+ *  described for an error message. Empty when the declaration is safe to store.
+ *
+ *  ⛔⛔ THE RESOLVER ABOVE FAILS OPEN ON PURPOSE, AND THAT IS EXACTLY WHY THIS
+ *  EXISTS. `resolveExchangeAdmission` answers an unrecognized value with
+ *  `auto_accept` so a config written against a future version degrades to today's
+ *  behaviour instead of a refusal nobody chose — correct at DISPATCH, where the
+ *  alternative is silently breaking exchanges the owner already admitted. Its own
+ *  comment names where the real fence belongs: *"the fences that fail CLOSED are
+ *  upstream, where admission is actually decided."* **For this field that upstream
+ *  fence did not exist**, so a stored typo inverted the owner's intent in silence:
+ *  `'Refuse'`, `'deny'` or `'ASK'` all persist happily and all resolve
+ *  `auto_accept` — the OPPOSITE of what was written, on a security posture, with
+ *  no error and no signal. The existing ceiling test asserts that very case
+ *  (`{ [RECIPE]: 'ASK' } -> 'auto_accept'`), which is what makes the trap
+ *  reachable by an ordinary capitalisation slip.
+ *
+ *  🔑 SO THE FIX IS AT THE DOOR, NOT AT DISPATCH. Nothing here changes what the
+ *  resolver does with a value that IS stored; it changes which values can be
+ *  stored at all. A closed vocabulary that accepts anything and then quietly
+ *  reinterprets it is a list that matches its own type and still lies.
+ *
+ *  ⚠ KEYS ARE DELIBERATELY NOT VALIDATED. A key is a `recipe_id` or the wildcard,
+ *  and the set of installed recipes is open and changes under this record — a
+ *  ceiling written for a recipe installed tomorrow is legitimate, and refusing it
+ *  would be the same over-reach in the other direction. A key that matches nothing
+ *  falls through to `'*'` or to the default, which is the documented behaviour. */
+export const invalidExchangeAdmissionEntries = (declared: unknown): string[] => {
+  if (declared === undefined) return [];
+  if (declared === null || typeof declared !== 'object' || Array.isArray(declared)) {
+    return [`${MCP_PEER_ADMISSION_CONFIG_KEY} must be an object mapping recipe id (or "*") to one of ${[...EXCHANGE_ADMISSIONS].join(', ')}`];
+  }
+  const bad: string[] = [];
+  for (const [key, value] of Object.entries(declared as Record<string, unknown>)) {
+    if (typeof value === 'string' && EXCHANGE_ADMISSIONS.has(value)) continue;
+    bad.push(`"${key}": ${JSON.stringify(value)}`);
+  }
+  return bad;
+};
+
 /** MCP transports — three flavors of the same JSON-RPC tool surface. */
 export type McpTransport = 'sse' | 'websocket' | 'stdio';
 

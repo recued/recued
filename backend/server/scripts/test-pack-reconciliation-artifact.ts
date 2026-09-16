@@ -213,12 +213,33 @@ const compositionFromHistoricalPack = (slug: PackSlug): CompositionIngredient =>
   return composition;
 };
 
+/** The approved target version for every D-259 launch-safe recovery pack.
+ *
+ *  ⛔ THIS IS A SECOND COPY OF `to_version` IN `src/pack-reconciliation.ts`, and
+ *  it went stale exactly the way a second copy does: D-259 moved the ledger to 3
+ *  (`from_version: 1` became `from_versions: [1, 2]`), all four packs were
+ *  republished at 3, and this literal stayed at 2 — through 62 commits and a
+ *  green suite, because this harness is a RELEASE GATE and vitest never runs it.
+ *  The ledger's own invariants are covered by `d-259-pack-reconciliation.test.ts`;
+ *  what has no test is this file agreeing with them.
+ *
+ *  ⚠ It cannot import the ledger: `LAUNCH_SAFE_PACK_TRANSITIONS` is deliberately
+ *  module-private ("adding an entry is a security decision"), and widening that
+ *  to serve a harness trades a real boundary for a convenience. So it stays a
+ *  literal — named, in one place, next to the reason it must track. When the
+ *  ledger's `to_version` moves, move this with it. */
+const LAUNCH_SAFE_TARGET_VERSION = 3;
+
 const loadTargetPack = (worktree: string, slug: PackSlug): BulkPackManifest => {
   const path = join(worktree, 'community', 'packs', `${slug}.json`);
   const parsed = parseBulkPackManifest(JSON.parse(readFileSync(path, 'utf8')) as unknown);
   if (!parsed.ok) throw new Error(`${slug} candidate target does not validate`);
   assert.equal(parsed.manifest.slug, slug, `${slug} candidate target slug`);
-  assert.equal(parsed.manifest.version, 2, `${slug} candidate target version`);
+  assert.equal(
+    parsed.manifest.version,
+    LAUNCH_SAFE_TARGET_VERSION,
+    `${slug} candidate target version`,
+  );
   return parsed.manifest;
 };
 
@@ -496,7 +517,13 @@ const assertMigrated = (
     const currentInventory = requiredRow(current.inventory, `${fixture.slug} current inventory`);
     assert.deepEqual(
       currentInventory.value,
-      { ...record(priorInventory.value, `${fixture.slug} prior inventory value`), version: '2' },
+      {
+        ...record(priorInventory.value, `${fixture.slug} prior inventory value`),
+        // ⚠ SECOND COPY OF THE SAME NUMBER, as a STRING — the inventory row
+        // stores it that way. Fixing only the manifest assertion above left this
+        // one behind and the rehearsal failed a second time on the same bump.
+        version: String(LAUNCH_SAFE_TARGET_VERSION),
+      },
       `${fixture.slug} inventory changed beyond the approved version bump`,
     );
     assert.deepEqual(

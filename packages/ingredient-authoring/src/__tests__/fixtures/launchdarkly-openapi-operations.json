@@ -5,21 +5,21 @@
     "source": {
       "kind": "openapi",
       "url": "https://app.launchdarkly.com/api/v2/openapi.json",
-      "sha256": "a5b7e5647e9164ae7b7879153f5725fe7e9e4d629ee35f5e77ee5b445574a925",
-      "bytes": 2930982,
+      "sha256": "e1aeb1530d89d7976da82205ee7ed4c2f06555bbf4a9318029777e05816b640e",
+      "bytes": 2986052,
       "openapi": "3.0.3",
       "info_version": "2.0"
     },
-    "official_operation_count": 394,
-    "admitted_operation_count": 392,
-    "excluded_operation_count": 2,
-    "unique_admitted_method_path_count": 392,
+    "official_operation_count": 403,
+    "admitted_operation_count": 398,
+    "excluded_operation_count": 5,
+    "unique_admitted_method_path_count": 398,
     "method_counts": {
-      "GET": 191,
-      "POST": 83,
-      "PUT": 12,
-      "PATCH": 57,
-      "DELETE": 51
+      "GET": 194,
+      "POST": 86,
+      "PUT": 13,
+      "PATCH": 58,
+      "DELETE": 52
     },
     "pack_operation_counts": {
       "launchdarkly": 11,
@@ -27,15 +27,15 @@
       "launchdarkly-flags-targeting": 62,
       "launchdarkly-release-experiment": 93,
       "launchdarkly-insights-usage": 82,
-      "launchdarkly-platform-admin": 84
+      "launchdarkly-platform-admin": 90
     },
-    "beta_operation_count": 135,
+    "beta_operation_count": 134,
     "pagination_counts": {
       "offset": 45,
       "next_path": 1,
       "query_token": 4,
       "query_token_link": 5,
-      "none": 337
+      "none": 343
     },
     "unpaged_collection_count": 51,
     "unpaged_collections": [
@@ -405,8 +405,8 @@
     "response_media": [
       "application/json"
     ],
-    "unsafe_integer_response_operation_count": 223,
-    "unsafe_integer_response_occurrence_count": 1043,
+    "unsafe_integer_response_operation_count": 226,
+    "unsafe_integer_response_occurrence_count": 1053,
     "unsafe_integer_request_operation_count": 18,
     "compatibility_operation_ids": [
       "project.search",
@@ -438,6 +438,24 @@
       "multipart": "The two CSV-only multipart routes remain explicitly excluded until file_ref request-body support exists."
     },
     "exclusions": [
+      {
+        "method": "GET",
+        "path": "/api/v2/projects/{projectKey}/sdk-keys",
+        "code": "credential_bearing_response",
+        "reason": "An SDK key IS a credential — LaunchDarkly's own schema says of the `value` field: \"The string value of the SDK key. Use this when configuring your SDK.\" These reads returned it in an ordinary operation result at risk `read` with approval `never`, so any recipe that could list SDK keys could also read, log and forward them with nothing asked. Ordinary operation results are not a secret result channel. Creating, rotating and deleting SDK keys remain available and approval-gated; only the paths that hand back the secret itself are closed."
+      },
+      {
+        "method": "GET",
+        "path": "/api/v2/projects/{projectKey}/environments/{environmentKey}/sdk-keys",
+        "code": "credential_bearing_response",
+        "reason": "An SDK key IS a credential — LaunchDarkly's own schema says of the `value` field: \"The string value of the SDK key. Use this when configuring your SDK.\" These reads returned it in an ordinary operation result at risk `read` with approval `never`, so any recipe that could list SDK keys could also read, log and forward them with nothing asked. Ordinary operation results are not a secret result channel. Creating, rotating and deleting SDK keys remain available and approval-gated; only the paths that hand back the secret itself are closed."
+      },
+      {
+        "method": "GET",
+        "path": "/api/v2/projects/{projectKey}/environments/{environmentKey}/sdk-keys/{sdkKeyKey}",
+        "code": "credential_bearing_response",
+        "reason": "An SDK key IS a credential — LaunchDarkly's own schema says of the `value` field: \"The string value of the SDK key. Use this when configuring your SDK.\" These reads returned it in an ordinary operation result at risk `read` with approval `never`, so any recipe that could list SDK keys could also read, log and forward them with nothing asked. Ordinary operation results are not a secret result channel. Creating, rotating and deleting SDK keys remain available and approval-gated; only the paths that hand back the secret itself are closed."
+      },
       {
         "method": "POST",
         "path": "/api/v2/segments/{projectKey}/{environmentKey}/{segmentKey}/imports",
@@ -1280,6 +1298,9 @@
       "delete": {},
       "patch": {}
     },
+    "/api/v2/projects/{projectKey}/sdk-keys": {
+      "get": {}
+    },
     "/api/v2/projects/{projectKey}/environments/{environmentKey}/sdk-keys": {
       "get": {},
       "post": {}
@@ -1288,6 +1309,24 @@
       "delete": {},
       "get": {},
       "patch": {}
+    },
+    "/api/v2/projects/{projectKey}/environments/{environmentKey}/sdk-keys/{sdkKeyKey}/views": {
+      "put": {}
+    },
+    "/api/v2/projects/{projectKey}/environments/{environmentKey}/adaptive-triggers": {
+      "get": {},
+      "post": {}
+    },
+    "/api/v2/projects/{projectKey}/environments/{environmentKey}/adaptive-triggers/{triggerID}": {
+      "delete": {},
+      "get": {},
+      "patch": {}
+    },
+    "/api/v2/projects/{projectKey}/environments/{environmentKey}/adaptive-triggers/{triggerID}/enable": {
+      "post": {}
+    },
+    "/api/v2/projects/{projectKey}/environments/{environmentKey}/adaptive-triggers/{triggerID}/disable": {
+      "post": {}
     },
     "/api/v2/engineering-insights/charts/deployments/frequency": {
       "get": {}
@@ -2461,6 +2500,22 @@
         },
         {
           "name": "spec",
+          "in": "query",
+          "type": "string",
+          "format": "string",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "member",
+          "in": "query",
+          "type": "string",
+          "format": "string",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "token",
           "in": "query",
           "type": "string",
           "format": "string",
@@ -4016,6 +4071,12 @@
           "format": null,
           "required": [],
           "properties": {
+            "defaultVariationKey": {
+              "type": "string",
+              "format": null,
+              "item_type": null,
+              "item_format": null
+            },
             "description": {
               "type": "string",
               "format": null,
@@ -5459,6 +5520,22 @@
           "format": null,
           "required": false,
           "exposed": true
+        },
+        {
+          "name": "sort",
+          "in": "query",
+          "type": "string",
+          "format": null,
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "filter",
+          "in": "query",
+          "type": "string",
+          "format": null,
+          "required": false,
+          "exposed": true
         }
       ],
       "request": null,
@@ -5712,6 +5789,12 @@
             "format": null,
             "item_type": null,
             "item_format": null
+          },
+          "usedInCount": {
+            "type": "integer",
+            "format": null,
+            "item_type": null,
+            "item_format": null
           }
         }
       },
@@ -5922,6 +6005,12 @@
           },
           "isRestricted": {
             "type": "boolean",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "usedInCount": {
+            "type": "integer",
             "format": null,
             "item_type": null,
             "item_format": null
@@ -6158,6 +6247,12 @@
           },
           "isRestricted": {
             "type": "boolean",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "usedInCount": {
+            "type": "integer",
             "format": null,
             "item_type": null,
             "item_format": null
@@ -6680,7 +6775,7 @@
       "method": "GET",
       "path": "/api/v2/projects/{projectKey}/ai-tools/{toolKey}/references",
       "tags": [
-        "AI Configs"
+        "AgentControl"
       ],
       "summary": "List AI tool references",
       "deprecated": false,
@@ -10453,7 +10548,7 @@
       "tags": [
         "AgentControl"
       ],
-      "summary": "List agent optimization runs",
+      "summary": "List latest agent optimization result per run",
       "deprecated": false,
       "beta": false,
       "parameters": [
@@ -10915,7 +11010,7 @@
       "method": "GET",
       "path": "/api/v2/projects/{projectKey}/agent-optimizations/{optimizationKey}/runs",
       "tags": [
-        "AI Configs"
+        "AgentControl"
       ],
       "summary": "List agent optimization runs",
       "deprecated": false,
@@ -20362,6 +20457,12 @@
             "item_type": null,
             "item_format": null
           },
+          "unitAggregationField": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
           "denominator": {
             "type": "object",
             "format": null,
@@ -20753,6 +20854,12 @@
             "item_type": null,
             "item_format": null
           },
+          "unitAggregationField": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
           "denominator": {
             "type": "object",
             "format": null,
@@ -21137,6 +21244,12 @@
             "item_format": null
           },
           "traceValueLocation": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "unitAggregationField": {
             "type": "string",
             "format": null,
             "item_type": null,
@@ -28209,6 +28322,7 @@
           "type": "object",
           "format": null,
           "required": [
+            "key",
             "name",
             "kind",
             "maintainerId",
@@ -33092,6 +33206,22 @@
           "format": "int64",
           "required": false,
           "exposed": true
+        },
+        {
+          "name": "member",
+          "in": "query",
+          "type": "string",
+          "format": "string",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "token",
+          "in": "query",
+          "type": "string",
+          "format": "string",
+          "required": false,
+          "exposed": true
         }
       ],
       "request": {
@@ -33180,6 +33310,22 @@
           "in": "query",
           "type": "number",
           "format": "int64",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "member",
+          "in": "query",
+          "type": "string",
+          "format": "string",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "token",
+          "in": "query",
+          "type": "string",
+          "format": "string",
           "required": false,
           "exposed": true
         }
@@ -47965,7 +48111,7 @@
           }
         }
       },
-      "unsafe_response_integer_occurrences": 3,
+      "unsafe_response_integer_occurrences": 4,
       "response_json": {
         "unsafe_integers": "string"
       },
@@ -48171,10 +48317,16 @@
             "format": "int64",
             "item_type": null,
             "item_format": null
+          },
+          "expiry": {
+            "type": "integer",
+            "format": "int64",
+            "item_type": null,
+            "item_format": null
           }
         }
       },
-      "unsafe_response_integer_occurrences": 3,
+      "unsafe_response_integer_occurrences": 4,
       "response_json": {
         "unsafe_integers": "string"
       },
@@ -48319,10 +48471,16 @@
             "format": "int64",
             "item_type": null,
             "item_format": null
+          },
+          "expiry": {
+            "type": "integer",
+            "format": "int64",
+            "item_type": null,
+            "item_format": null
           }
         }
       },
-      "unsafe_response_integer_occurrences": 3,
+      "unsafe_response_integer_occurrences": 4,
       "response_json": {
         "unsafe_integers": "string"
       },
@@ -48481,10 +48639,16 @@
             "format": "int64",
             "item_type": null,
             "item_format": null
+          },
+          "expiry": {
+            "type": "integer",
+            "format": "int64",
+            "item_type": null,
+            "item_format": null
           }
         }
       },
-      "unsafe_response_integer_occurrences": 3,
+      "unsafe_response_integer_occurrences": 4,
       "response_json": {
         "unsafe_integers": "string"
       },
@@ -48547,8 +48711,8 @@
       "tags": [
         "Access tokens"
       ],
-      "summary": "Reset access token",
-      "deprecated": false,
+      "summary": "Reset access token (legacy)",
+      "deprecated": true,
       "beta": false,
       "parameters": [
         {
@@ -48679,10 +48843,16 @@
             "format": "int64",
             "item_type": null,
             "item_format": null
+          },
+          "expiry": {
+            "type": "integer",
+            "format": "int64",
+            "item_type": null,
+            "item_format": null
           }
         }
       },
-      "unsafe_response_integer_occurrences": 3,
+      "unsafe_response_integer_occurrences": 4,
       "response_json": {
         "unsafe_integers": "string"
       },
@@ -49609,134 +49779,6 @@
       "approval": "always",
       "idempotency": "non_idempotent"
     },
-    "launchdarkly-platform-admin.get_sdk_keys": {
-      "pack": "launchdarkly-platform-admin",
-      "op": "get_sdk_keys",
-      "operation_id": "getSdkKeys",
-      "method": "GET",
-      "path": "/api/v2/projects/{projectKey}/environments/{environmentKey}/sdk-keys",
-      "tags": [
-        "SDK Keys (beta)"
-      ],
-      "summary": "Get all environment SDK keys",
-      "deprecated": false,
-      "beta": true,
-      "parameters": [
-        {
-          "name": "LD-API-Version",
-          "in": "header",
-          "type": "string",
-          "format": null,
-          "required": true,
-          "exposed": false
-        },
-        {
-          "name": "projectKey",
-          "in": "path",
-          "type": "string",
-          "format": null,
-          "required": true,
-          "exposed": true
-        },
-        {
-          "name": "environmentKey",
-          "in": "path",
-          "type": "string",
-          "format": null,
-          "required": true,
-          "exposed": true
-        },
-        {
-          "name": "filter",
-          "in": "query",
-          "type": "string",
-          "format": null,
-          "required": false,
-          "exposed": true
-        },
-        {
-          "name": "limit",
-          "in": "query",
-          "type": "number",
-          "format": null,
-          "required": false,
-          "exposed": true
-        },
-        {
-          "name": "offset",
-          "in": "query",
-          "type": "number",
-          "format": null,
-          "required": false,
-          "exposed": true
-        },
-        {
-          "name": "sort",
-          "in": "query",
-          "type": "string",
-          "format": null,
-          "required": false,
-          "exposed": true
-        }
-      ],
-      "request": null,
-      "response_media": [
-        "application/json"
-      ],
-      "response_schema": {
-        "type": "object",
-        "format": null,
-        "required": [
-          "items",
-          "totalCount"
-        ],
-        "properties": {
-          "_links": {
-            "type": "object",
-            "format": null,
-            "item_type": null,
-            "item_format": null
-          },
-          "items": {
-            "type": "array",
-            "format": null,
-            "item_type": "object",
-            "item_format": null
-          },
-          "totalCount": {
-            "type": "integer",
-            "format": null,
-            "item_type": null,
-            "item_format": null
-          }
-        }
-      },
-      "unsafe_response_integer_occurrences": 3,
-      "response_json": {
-        "unsafe_integers": "string"
-      },
-      "result_path": "items",
-      "pagination": {
-        "style": "offset",
-        "page_size": {
-          "placement": "query",
-          "param": "limit",
-          "value": 20,
-          "max": 100
-        },
-        "param": {
-          "placement": "query",
-          "param": "offset"
-        },
-        "start": 0,
-        "increment": "by_page_size"
-      },
-      "api_version": "beta",
-      "content_type": null,
-      "risk": "read",
-      "approval": "never",
-      "idempotency": "safe"
-    },
     "launchdarkly-platform-admin.post_sdk_key": {
       "pack": "launchdarkly-platform-admin",
       "op": "post_sdk_key",
@@ -49816,6 +49858,12 @@
               "type": "integer",
               "format": "int64",
               "item_type": null,
+              "item_format": null
+            },
+            "viewKeys": {
+              "type": "array",
+              "format": null,
+              "item_type": "string",
               "item_format": null
             }
           }
@@ -49994,156 +50042,6 @@
       "risk": "destructive",
       "approval": "always",
       "idempotency": "idempotent"
-    },
-    "launchdarkly-platform-admin.get_sdk_key_by_key": {
-      "pack": "launchdarkly-platform-admin",
-      "op": "get_sdk_key_by_key",
-      "operation_id": "getSdkKeyByKey",
-      "method": "GET",
-      "path": "/api/v2/projects/{projectKey}/environments/{environmentKey}/sdk-keys/{sdkKeyKey}",
-      "tags": [
-        "SDK Keys (beta)"
-      ],
-      "summary": "Get SDK key",
-      "deprecated": false,
-      "beta": true,
-      "parameters": [
-        {
-          "name": "LD-API-Version",
-          "in": "header",
-          "type": "string",
-          "format": null,
-          "required": true,
-          "exposed": false
-        },
-        {
-          "name": "projectKey",
-          "in": "path",
-          "type": "string",
-          "format": null,
-          "required": true,
-          "exposed": true
-        },
-        {
-          "name": "environmentKey",
-          "in": "path",
-          "type": "string",
-          "format": null,
-          "required": true,
-          "exposed": true
-        },
-        {
-          "name": "sdkKeyKey",
-          "in": "path",
-          "type": "string",
-          "format": null,
-          "required": true,
-          "exposed": true
-        }
-      ],
-      "request": null,
-      "response_media": [
-        "application/json"
-      ],
-      "response_schema": {
-        "type": "object",
-        "format": null,
-        "required": [
-          "_createdAt",
-          "_updatedAt",
-          "_version",
-          "isDefault",
-          "key",
-          "kind",
-          "name",
-          "value"
-        ],
-        "properties": {
-          "_links": {
-            "type": "object",
-            "format": null,
-            "item_type": null,
-            "item_format": null
-          },
-          "kind": {
-            "type": "string",
-            "format": null,
-            "item_type": null,
-            "item_format": null
-          },
-          "key": {
-            "type": "string",
-            "format": null,
-            "item_type": null,
-            "item_format": null
-          },
-          "name": {
-            "type": "string",
-            "format": null,
-            "item_type": null,
-            "item_format": null
-          },
-          "description": {
-            "type": "string",
-            "format": null,
-            "item_type": null,
-            "item_format": null
-          },
-          "expiry": {
-            "type": "integer",
-            "format": "int64",
-            "item_type": null,
-            "item_format": null
-          },
-          "value": {
-            "type": "string",
-            "format": null,
-            "item_type": null,
-            "item_format": null
-          },
-          "isDefault": {
-            "type": "boolean",
-            "format": null,
-            "item_type": null,
-            "item_format": null
-          },
-          "_createdByMemberId": {
-            "type": "string",
-            "format": null,
-            "item_type": null,
-            "item_format": null
-          },
-          "_createdAt": {
-            "type": "integer",
-            "format": "int64",
-            "item_type": null,
-            "item_format": null
-          },
-          "_updatedAt": {
-            "type": "integer",
-            "format": "int64",
-            "item_type": null,
-            "item_format": null
-          },
-          "_version": {
-            "type": "integer",
-            "format": null,
-            "item_type": null,
-            "item_format": null
-          }
-        }
-      },
-      "unsafe_response_integer_occurrences": 3,
-      "response_json": {
-        "unsafe_integers": "string"
-      },
-      "result_path": null,
-      "pagination": null,
-      "api_version": "beta",
-      "content_type": null,
-      "risk": "read",
-      "approval": "never",
-      "idempotency": "safe"
     },
     "launchdarkly-platform-admin.patch_sdk_key_by_key": {
       "pack": "launchdarkly-platform-admin",
@@ -50336,6 +50234,932 @@
       "content_type": "application/json",
       "risk": "admin",
       "approval": "always",
+      "idempotency": "non_idempotent"
+    },
+    "launchdarkly-platform-admin.put_sdk_key_views": {
+      "pack": "launchdarkly-platform-admin",
+      "op": "put_sdk_key_views",
+      "operation_id": "putSdkKeyViews",
+      "method": "PUT",
+      "path": "/api/v2/projects/{projectKey}/environments/{environmentKey}/sdk-keys/{sdkKeyKey}/views",
+      "tags": [
+        "SDK Keys (beta)"
+      ],
+      "summary": "Replace SDK key views",
+      "deprecated": false,
+      "beta": true,
+      "parameters": [
+        {
+          "name": "LD-API-Version",
+          "in": "header",
+          "type": "string",
+          "format": null,
+          "required": true,
+          "exposed": false
+        },
+        {
+          "name": "projectKey",
+          "in": "path",
+          "type": "string",
+          "format": null,
+          "required": true,
+          "exposed": true
+        },
+        {
+          "name": "environmentKey",
+          "in": "path",
+          "type": "string",
+          "format": null,
+          "required": true,
+          "exposed": true
+        },
+        {
+          "name": "sdkKeyKey",
+          "in": "path",
+          "type": "string",
+          "format": null,
+          "required": true,
+          "exposed": true
+        },
+        {
+          "name": "expand",
+          "in": "query",
+          "type": "string",
+          "format": null,
+          "required": false,
+          "exposed": true
+        }
+      ],
+      "request": {
+        "documented_media": [
+          "application/json"
+        ],
+        "selected_media": "application/json",
+        "schema": {
+          "type": "object",
+          "format": null,
+          "required": [
+            "viewKeys"
+          ],
+          "properties": {
+            "viewKeys": {
+              "type": "array",
+              "format": null,
+              "item_type": "string",
+              "item_format": null
+            }
+          }
+        },
+        "raw_body": false,
+        "decimal_integer_fields": [],
+        "unsafe_integer_occurrences": 0
+      },
+      "response_media": [
+        "application/json"
+      ],
+      "response_schema": {
+        "type": "object",
+        "format": null,
+        "required": [
+          "_createdAt",
+          "_updatedAt",
+          "_version",
+          "isDefault",
+          "key",
+          "kind",
+          "name",
+          "value"
+        ],
+        "properties": {
+          "_links": {
+            "type": "object",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "kind": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "key": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "name": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "description": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "expiry": {
+            "type": "integer",
+            "format": "int64",
+            "item_type": null,
+            "item_format": null
+          },
+          "value": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "isDefault": {
+            "type": "boolean",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "_createdByMemberId": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "_createdAt": {
+            "type": "integer",
+            "format": "int64",
+            "item_type": null,
+            "item_format": null
+          },
+          "_updatedAt": {
+            "type": "integer",
+            "format": "int64",
+            "item_type": null,
+            "item_format": null
+          },
+          "_version": {
+            "type": "integer",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "viewSummaries": {
+            "type": "array",
+            "format": null,
+            "item_type": "object",
+            "item_format": null
+          }
+        }
+      },
+      "unsafe_response_integer_occurrences": 3,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "result_path": null,
+      "pagination": null,
+      "api_version": "beta",
+      "content_type": "application/json",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "idempotent"
+    },
+    "launchdarkly-platform-admin.list_adaptive_triggers": {
+      "pack": "launchdarkly-platform-admin",
+      "op": "list_adaptive_triggers",
+      "operation_id": "listAdaptiveTriggers",
+      "method": "GET",
+      "path": "/api/v2/projects/{projectKey}/environments/{environmentKey}/adaptive-triggers",
+      "tags": [
+        "Adaptive triggers"
+      ],
+      "summary": "List adaptive triggers",
+      "deprecated": false,
+      "beta": false,
+      "parameters": [
+        {
+          "name": "projectKey",
+          "in": "path",
+          "type": "string",
+          "format": null,
+          "required": true,
+          "exposed": true
+        },
+        {
+          "name": "environmentKey",
+          "in": "path",
+          "type": "string",
+          "format": null,
+          "required": true,
+          "exposed": true
+        },
+        {
+          "name": "resourceKind",
+          "in": "query",
+          "type": "string",
+          "format": null,
+          "required": true,
+          "exposed": true
+        },
+        {
+          "name": "resourceKey",
+          "in": "query",
+          "type": "string",
+          "format": null,
+          "required": true,
+          "exposed": true
+        },
+        {
+          "name": "limit",
+          "in": "query",
+          "type": "number",
+          "format": null,
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "offset",
+          "in": "query",
+          "type": "number",
+          "format": null,
+          "required": false,
+          "exposed": true
+        }
+      ],
+      "request": null,
+      "response_media": [
+        "application/json"
+      ],
+      "response_schema": {
+        "type": "object",
+        "format": null,
+        "required": [
+          "items",
+          "totalCount"
+        ],
+        "properties": {
+          "_links": {
+            "type": "object",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "items": {
+            "type": "array",
+            "format": null,
+            "item_type": "object",
+            "item_format": null
+          },
+          "totalCount": {
+            "type": "integer",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          }
+        }
+      },
+      "unsafe_response_integer_occurrences": 2,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "result_path": "items",
+      "pagination": {
+        "style": "offset",
+        "page_size": {
+          "placement": "query",
+          "param": "limit",
+          "value": 25,
+          "max": 50
+        },
+        "param": {
+          "placement": "query",
+          "param": "offset"
+        },
+        "start": 0,
+        "increment": "by_page_size"
+      },
+      "api_version": "20240415",
+      "content_type": null,
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe"
+    },
+    "launchdarkly-platform-admin.post_adaptive_trigger": {
+      "pack": "launchdarkly-platform-admin",
+      "op": "post_adaptive_trigger",
+      "operation_id": "postAdaptiveTrigger",
+      "method": "POST",
+      "path": "/api/v2/projects/{projectKey}/environments/{environmentKey}/adaptive-triggers",
+      "tags": [
+        "Adaptive triggers"
+      ],
+      "summary": "Create an adaptive trigger",
+      "deprecated": false,
+      "beta": false,
+      "parameters": [
+        {
+          "name": "projectKey",
+          "in": "path",
+          "type": "string",
+          "format": null,
+          "required": true,
+          "exposed": true
+        },
+        {
+          "name": "environmentKey",
+          "in": "path",
+          "type": "string",
+          "format": null,
+          "required": true,
+          "exposed": true
+        }
+      ],
+      "request": {
+        "documented_media": [
+          "application/json"
+        ],
+        "selected_media": "application/json",
+        "schema": {
+          "type": "object",
+          "format": null,
+          "required": [
+            "name",
+            "resourceKey",
+            "resourceKind",
+            "task",
+            "triggerSource"
+          ],
+          "properties": {
+            "name": {
+              "type": "string",
+              "format": null,
+              "item_type": null,
+              "item_format": null
+            },
+            "resourceKind": {
+              "type": "string",
+              "format": null,
+              "item_type": null,
+              "item_format": null
+            },
+            "resourceKey": {
+              "type": "string",
+              "format": null,
+              "item_type": null,
+              "item_format": null
+            },
+            "triggerSource": {
+              "type": "object",
+              "format": null,
+              "item_type": null,
+              "item_format": null
+            },
+            "task": {
+              "type": "object",
+              "format": null,
+              "item_type": null,
+              "item_format": null
+            }
+          }
+        },
+        "raw_body": false,
+        "decimal_integer_fields": [],
+        "unsafe_integer_occurrences": 0
+      },
+      "response_media": [
+        "application/json"
+      ],
+      "response_schema": {
+        "type": "object",
+        "format": null,
+        "required": [
+          "createdAt",
+          "enabled",
+          "id",
+          "name",
+          "resourceKey",
+          "resourceKind",
+          "task",
+          "triggerSource",
+          "updatedAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "item_type": null,
+            "item_format": null
+          },
+          "name": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "resourceKind": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "resourceKey": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "enabled": {
+            "type": "boolean",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "triggerSource": {
+            "type": "object",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "task": {
+            "type": "object",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "createdAt": {
+            "type": "integer",
+            "format": "int64",
+            "item_type": null,
+            "item_format": null
+          },
+          "updatedAt": {
+            "type": "integer",
+            "format": "int64",
+            "item_type": null,
+            "item_format": null
+          }
+        }
+      },
+      "unsafe_response_integer_occurrences": 2,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "result_path": null,
+      "pagination": null,
+      "api_version": "20240415",
+      "content_type": "application/json",
+      "risk": "write",
+      "approval": "ask",
+      "idempotency": "non_idempotent"
+    },
+    "launchdarkly-platform-admin.delete_adaptive_trigger": {
+      "pack": "launchdarkly-platform-admin",
+      "op": "delete_adaptive_trigger",
+      "operation_id": "deleteAdaptiveTrigger",
+      "method": "DELETE",
+      "path": "/api/v2/projects/{projectKey}/environments/{environmentKey}/adaptive-triggers/{triggerID}",
+      "tags": [
+        "Adaptive triggers"
+      ],
+      "summary": "Delete an adaptive trigger",
+      "deprecated": false,
+      "beta": false,
+      "parameters": [
+        {
+          "name": "projectKey",
+          "in": "path",
+          "type": "string",
+          "format": null,
+          "required": true,
+          "exposed": true
+        },
+        {
+          "name": "environmentKey",
+          "in": "path",
+          "type": "string",
+          "format": null,
+          "required": true,
+          "exposed": true
+        },
+        {
+          "name": "triggerID",
+          "in": "path",
+          "type": "string",
+          "format": "uuid",
+          "required": true,
+          "exposed": true
+        }
+      ],
+      "request": null,
+      "response_media": [
+        "application/json"
+      ],
+      "response_schema": {
+        "type": null,
+        "format": null,
+        "required": [],
+        "properties": {}
+      },
+      "unsafe_response_integer_occurrences": 0,
+      "response_json": null,
+      "result_path": null,
+      "pagination": null,
+      "api_version": "20240415",
+      "content_type": null,
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent"
+    },
+    "launchdarkly-platform-admin.get_adaptive_trigger": {
+      "pack": "launchdarkly-platform-admin",
+      "op": "get_adaptive_trigger",
+      "operation_id": "getAdaptiveTrigger",
+      "method": "GET",
+      "path": "/api/v2/projects/{projectKey}/environments/{environmentKey}/adaptive-triggers/{triggerID}",
+      "tags": [
+        "Adaptive triggers"
+      ],
+      "summary": "Get an adaptive trigger",
+      "deprecated": false,
+      "beta": false,
+      "parameters": [
+        {
+          "name": "projectKey",
+          "in": "path",
+          "type": "string",
+          "format": null,
+          "required": true,
+          "exposed": true
+        },
+        {
+          "name": "environmentKey",
+          "in": "path",
+          "type": "string",
+          "format": null,
+          "required": true,
+          "exposed": true
+        },
+        {
+          "name": "triggerID",
+          "in": "path",
+          "type": "string",
+          "format": "uuid",
+          "required": true,
+          "exposed": true
+        }
+      ],
+      "request": null,
+      "response_media": [
+        "application/json"
+      ],
+      "response_schema": {
+        "type": "object",
+        "format": null,
+        "required": [
+          "createdAt",
+          "enabled",
+          "id",
+          "name",
+          "resourceKey",
+          "resourceKind",
+          "task",
+          "triggerSource",
+          "updatedAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "item_type": null,
+            "item_format": null
+          },
+          "name": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "resourceKind": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "resourceKey": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "enabled": {
+            "type": "boolean",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "triggerSource": {
+            "type": "object",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "task": {
+            "type": "object",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "createdAt": {
+            "type": "integer",
+            "format": "int64",
+            "item_type": null,
+            "item_format": null
+          },
+          "updatedAt": {
+            "type": "integer",
+            "format": "int64",
+            "item_type": null,
+            "item_format": null
+          }
+        }
+      },
+      "unsafe_response_integer_occurrences": 2,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "result_path": null,
+      "pagination": null,
+      "api_version": "20240415",
+      "content_type": null,
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe"
+    },
+    "launchdarkly-platform-admin.patch_adaptive_trigger": {
+      "pack": "launchdarkly-platform-admin",
+      "op": "patch_adaptive_trigger",
+      "operation_id": "patchAdaptiveTrigger",
+      "method": "PATCH",
+      "path": "/api/v2/projects/{projectKey}/environments/{environmentKey}/adaptive-triggers/{triggerID}",
+      "tags": [
+        "Adaptive triggers"
+      ],
+      "summary": "Update an adaptive trigger",
+      "deprecated": false,
+      "beta": false,
+      "parameters": [
+        {
+          "name": "projectKey",
+          "in": "path",
+          "type": "string",
+          "format": null,
+          "required": true,
+          "exposed": true
+        },
+        {
+          "name": "environmentKey",
+          "in": "path",
+          "type": "string",
+          "format": null,
+          "required": true,
+          "exposed": true
+        },
+        {
+          "name": "triggerID",
+          "in": "path",
+          "type": "string",
+          "format": "uuid",
+          "required": true,
+          "exposed": true
+        }
+      ],
+      "request": {
+        "documented_media": [
+          "application/json"
+        ],
+        "selected_media": "application/json",
+        "schema": {
+          "type": "object",
+          "format": null,
+          "required": [],
+          "properties": {
+            "name": {
+              "type": "string",
+              "format": null,
+              "item_type": null,
+              "item_format": null
+            },
+            "task": {
+              "type": "object",
+              "format": null,
+              "item_type": null,
+              "item_format": null
+            }
+          }
+        },
+        "raw_body": false,
+        "decimal_integer_fields": [],
+        "unsafe_integer_occurrences": 0
+      },
+      "response_media": [
+        "application/json"
+      ],
+      "response_schema": {
+        "type": "object",
+        "format": null,
+        "required": [
+          "createdAt",
+          "enabled",
+          "id",
+          "name",
+          "resourceKey",
+          "resourceKind",
+          "task",
+          "triggerSource",
+          "updatedAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "item_type": null,
+            "item_format": null
+          },
+          "name": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "resourceKind": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "resourceKey": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "enabled": {
+            "type": "boolean",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "triggerSource": {
+            "type": "object",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "task": {
+            "type": "object",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "createdAt": {
+            "type": "integer",
+            "format": "int64",
+            "item_type": null,
+            "item_format": null
+          },
+          "updatedAt": {
+            "type": "integer",
+            "format": "int64",
+            "item_type": null,
+            "item_format": null
+          }
+        }
+      },
+      "unsafe_response_integer_occurrences": 2,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "result_path": null,
+      "pagination": null,
+      "api_version": "20240415",
+      "content_type": "application/json",
+      "risk": "write",
+      "approval": "ask",
+      "idempotency": "non_idempotent"
+    },
+    "launchdarkly-platform-admin.post_enable_adaptive_trigger": {
+      "pack": "launchdarkly-platform-admin",
+      "op": "post_enable_adaptive_trigger",
+      "operation_id": "postEnableAdaptiveTrigger",
+      "method": "POST",
+      "path": "/api/v2/projects/{projectKey}/environments/{environmentKey}/adaptive-triggers/{triggerID}/enable",
+      "tags": [
+        "Adaptive triggers"
+      ],
+      "summary": "Enable an adaptive trigger",
+      "deprecated": false,
+      "beta": false,
+      "parameters": [
+        {
+          "name": "projectKey",
+          "in": "path",
+          "type": "string",
+          "format": null,
+          "required": true,
+          "exposed": true
+        },
+        {
+          "name": "environmentKey",
+          "in": "path",
+          "type": "string",
+          "format": null,
+          "required": true,
+          "exposed": true
+        },
+        {
+          "name": "triggerID",
+          "in": "path",
+          "type": "string",
+          "format": "uuid",
+          "required": true,
+          "exposed": true
+        }
+      ],
+      "request": null,
+      "response_media": [
+        "application/json"
+      ],
+      "response_schema": {
+        "type": null,
+        "format": null,
+        "required": [],
+        "properties": {}
+      },
+      "unsafe_response_integer_occurrences": 0,
+      "response_json": null,
+      "result_path": null,
+      "pagination": null,
+      "api_version": "20240415",
+      "content_type": null,
+      "risk": "write",
+      "approval": "ask",
+      "idempotency": "non_idempotent"
+    },
+    "launchdarkly-platform-admin.post_disable_adaptive_trigger": {
+      "pack": "launchdarkly-platform-admin",
+      "op": "post_disable_adaptive_trigger",
+      "operation_id": "postDisableAdaptiveTrigger",
+      "method": "POST",
+      "path": "/api/v2/projects/{projectKey}/environments/{environmentKey}/adaptive-triggers/{triggerID}/disable",
+      "tags": [
+        "Adaptive triggers"
+      ],
+      "summary": "Disable an adaptive trigger",
+      "deprecated": false,
+      "beta": false,
+      "parameters": [
+        {
+          "name": "projectKey",
+          "in": "path",
+          "type": "string",
+          "format": null,
+          "required": true,
+          "exposed": true
+        },
+        {
+          "name": "environmentKey",
+          "in": "path",
+          "type": "string",
+          "format": null,
+          "required": true,
+          "exposed": true
+        },
+        {
+          "name": "triggerID",
+          "in": "path",
+          "type": "string",
+          "format": "uuid",
+          "required": true,
+          "exposed": true
+        }
+      ],
+      "request": null,
+      "response_media": [
+        "application/json"
+      ],
+      "response_schema": {
+        "type": null,
+        "format": null,
+        "required": [],
+        "properties": {}
+      },
+      "unsafe_response_integer_occurrences": 0,
+      "response_json": null,
+      "result_path": null,
+      "pagination": null,
+      "api_version": "20240415",
+      "content_type": null,
+      "risk": "write",
+      "approval": "ask",
       "idempotency": "non_idempotent"
     }
   }

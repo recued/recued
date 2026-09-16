@@ -310,10 +310,46 @@ export const createPreapprovalActivations = (deps: PreapprovalAutomationDeps) =>
             .run(row.target_key, row.target_incarnation, row.selector_sequence, now(), row.future_ref);
         }
         projectPreapprovalAutomation(db, () => {
-          const outcome = execution.occurrence_key && row.due_at !== null ? {
+          // ⛔⛔ AN APPROVED EXECUTION THAT NEVER RAN USED TO LEAVE NO TRACE.
+          // The outcome below is keyed on `occurrence_key`, which is only set once
+          // the run is CLAIMED — so `succeeded` and `failed` recorded a status and
+          // `expired` / `invalidated` recorded nothing at all. The owner approved a
+          // specific future execution, it did not happen, and no surface said so.
+          //
+          // 🔑 AND D-266 STRUCTURALLY CANNOT COVER IT. While the activation is live
+          // the schedule is parked `enabled: false`, and `buildMissedRunReport`
+          // skips disabled rows (`packages/scheduler/src/backfill.ts`). By the time
+          // retirement re-enables it, the `next_run_at` written a few lines below
+          // has already advanced PAST the missed occurrence. Neither the parked
+          // window nor the resumed schedule can see it — so this is the only place
+          // the miss can be recorded.
+          //
+          // ⚠ `cancelled` DELIBERATELY STAYS SILENT. The owner cancelled it; they
+          // do not need to be told. Only outcomes they did not choose are reported.
+          const ranTerminal = execution.occurrence_key !== null && row.due_at !== null;
+          const missedUnrun = !ranTerminal && row.due_at !== null
+            && (execution.state === 'expired' || execution.state === 'invalidated');
+          const outcome = ranTerminal ? {
             last_run_at: row.due_at,
             last_status: execution.state === 'succeeded' ? 'success' as const : 'error' as const,
             last_error: execution.state === 'succeeded' ? null : execution.status_reason ?? execution.state,
+          } : missedUnrun ? {
+            // `skipped`, not `error`: nothing ran and nothing failed. The reason
+            // carries the explanation, and the breaker is untouched — this writes
+            // no `consecutive_failures`, so an expired window never disarms a
+            // schedule.
+            //
+            // ⛔ AND DELIBERATELY NO `last_run_at`. The branch above sets it
+            // because that execution was CLAIMED — it started and then failed, so
+            // a timestamp is a fact. An expired or invalidated window never
+            // started, and stamping `last_run_at` would invent a run that did not
+            // happen and move the cron dedupe anchor with it. A pre-existing test
+            // (`d-261-service`: "expires a missed scheduled window without
+            // provider dispatch") pins `last_run_at: null` for exactly this case,
+            // and it was right — the first draft of this branch set it and that
+            // test caught the over-reach.
+            last_status: 'skipped' as const,
+            last_error: execution.status_reason ?? execution.state,
           } : {};
           if (row.target_kind === 'next_schedule') {
             const schedule = deps.schedules.get(row.target_key);

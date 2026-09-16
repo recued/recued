@@ -799,7 +799,14 @@ describe('bootstrapSettingsRoute: Privacy directory + Server in-section sub-tabs
     expect(reachabilityTab!.parent?.getAttribute('aria-label')).toBe(
       'Server sections',
     );
-    expect(reachabilityTab!.getAttribute('tabindex')).toBe('0');
+    // ⚠ D-272 — `connect-device` now LEADS the Server tabs, so it holds the
+    // keyboard stop on a cold load and reachability does not. It is the first
+    // question a beginner has ("port 7717, now what?") and the only Server tab
+    // that needs no caller, so it always mounts.
+    const connectTab = findByAttrValue(host, SETTINGS_ROUTE_SUBTAB_ATTR, 'connect-device');
+    expect(connectTab).not.toBeNull();
+    expect(connectTab!.getAttribute('tabindex')).toBe('0');
+    expect(reachabilityTab!.getAttribute('tabindex')).toBe('-1');
     expect(certsTab!.getAttribute('tabindex')).toBe('-1');
 
     const certsPanel = findByAttrValue(
@@ -814,7 +821,7 @@ describe('bootstrapSettingsRoute: Privacy directory + Server in-section sub-tabs
     expect(certsPanel.getAttribute('aria-labelledby')).toBe(
       certsTab!.getAttribute('id'),
     );
-    // First sub-tab (reachability) active; certificates hidden until clicked.
+    // First sub-tab (connect-device) active; certificates hidden until clicked.
     expect(certsPanel.getAttribute('data-active')).toBe('false');
     // The TLS renew panel is mounted inside the Certificates sub-tab panel.
     expect(findByAttr(certsPanel, TLS_RENEW_PANEL_ATTR)).not.toBeNull();
@@ -823,6 +830,7 @@ describe('bootstrapSettingsRoute: Privacy directory + Server in-section sub-tabs
     expect(certsPanel.getAttribute('data-active')).toBe('true');
     expect(certsTab!.getAttribute('tabindex')).toBe('0');
     expect(reachabilityTab!.getAttribute('tabindex')).toBe('-1');
+    expect(connectTab!.getAttribute('tabindex')).toBe('-1');
     route.dispose();
   });
 
@@ -853,19 +861,28 @@ describe('bootstrapSettingsRoute: Privacy directory + Server in-section sub-tabs
       'certificates',
     )!;
 
-    reachability.keydown('ArrowRight');
-    expect(certificates.getAttribute('aria-selected')).toBe('true');
-    expect(certificates.getAttribute('tabindex')).toBe('0');
-    expect(certificates.focusCalls).toEqual([undefined]);
+    // ⚠ D-272 — three tabs now: connect-device / reachability / certificates.
+    // Wraparound and Home/End are asserted against the REAL set, not a
+    // remembered pair; the strip's whole contract is that it wraps whatever is
+    // mounted.
+    const connect = findByAttrValue(host, SETTINGS_ROUTE_SUBTAB_ATTR, 'connect-device')!;
 
-    certificates.keydown('ArrowRight');
+    connect.keydown('ArrowRight');
     expect(reachability.getAttribute('aria-selected')).toBe('true');
+    expect(reachability.getAttribute('tabindex')).toBe('0');
     expect(reachability.focusCalls).toEqual([undefined]);
 
-    reachability.keydown('End');
+    reachability.keydown('ArrowRight');
+    expect(certificates.getAttribute('aria-selected')).toBe('true');
+    expect(certificates.focusCalls).toEqual([undefined]);
+
+    certificates.keydown('ArrowRight'); // wraps past the end
+    expect(connect.getAttribute('aria-selected')).toBe('true');
+
+    connect.keydown('End');
     expect(certificates.getAttribute('aria-selected')).toBe('true');
     certificates.keydown('Home');
-    expect(reachability.getAttribute('aria-selected')).toBe('true');
+    expect(connect.getAttribute('aria-selected')).toBe('true');
     route.dispose();
   });
 
@@ -901,12 +918,15 @@ describe('bootstrapSettingsRoute: Privacy directory + Server in-section sub-tabs
     ).toBe('true');
     exact.route.dispose();
 
+    // A stale deep link falls back to the FIRST tab, which D-272 made
+    // `connect-device` — the fallback tracks the strip's order, so this asserts
+    // the order rather than a remembered name.
     const stale = mount('removed-tab');
     expect(
       findByAttrValue(
         stale.host,
         SETTINGS_ROUTE_SUBTAB_ATTR,
-        'reachability',
+        'connect-device',
       )?.getAttribute('aria-selected'),
     ).toBe('true');
     stale.route.dispose();

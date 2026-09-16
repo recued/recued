@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
   "source": {
-    "commit": "dfa901b7aab67aaf94f8d7bb8412638175e9d260",
-    "tree": "8d134b8193c5af31343b02df016b88719a387d4d",
-    "committed_at": "2026-09-14T05:15:24-07:00"
+    "commit": "7ebc3c6f7d9ae44a9cfcb4d95e19b9bcf683c52a",
+    "tree": "d95893bc0f9a4104836a22e800881565e98b760d",
+    "committed_at": "2026-09-15T20:48:22-07:00"
   },
-  "export_manifest_sha256": "e8712d3b58bd828647877b856c3d31dbea7a7cb2d3f251241830f86bb965c32c",
-  "version": "26.9.14",
+  "export_manifest_sha256": "c7cca2149cfc568980f403ac40a91e143dab04fcbd6f9839bdb3647bbc1b0009",
+  "version": "26.9.15",
   "license": "AGPL-3.0-only",
   "entrypoints": [
     "backend/server",
@@ -50,6 +50,7 @@
       "apps/webclient/src/__tests__/d-200-slice6g4-intake-recipe-pair-section.test.ts",
       "apps/webclient/src/__tests__/pack-app-model.test.ts",
       "apps/webclient/src/__tests__/recipes-required-file-slugs.test.ts",
+      "apps/webclient/src/__tests__/settings-connect-device-readability.test.ts",
       "backend/server/src/__tests__/audit-exempt-records-read.test.ts",
       "backend/server/src/__tests__/build-externals-declared.test.ts",
       "backend/server/src/__tests__/bundled-foundation-embed.test.ts",
@@ -194,6 +195,7 @@
       "backend/server/src/__tests__/release-manifest-per-channel-path.test.ts",
       "backend/server/src/__tests__/rental-book-business-workflow.test.ts",
       "backend/server/src/__tests__/revived-enrichment-producer-writes.test.ts",
+      "backend/server/src/__tests__/ripgrep-find-live-drive.test.ts",
       "backend/server/src/__tests__/saga-write-seal.test.ts",
       "backend/server/src/__tests__/sea-entry-is-cjs.test.ts",
       "backend/server/src/__tests__/split-pack-op-provenance.test.ts",
@@ -291,6 +293,7 @@
       "packages/ingredient-authoring/src/__tests__/binance-market-data-pack-audit.test.ts",
       "packages/ingredient-authoring/src/__tests__/catalog-bind-tool-target-corpus.test.ts",
       "packages/ingredient-authoring/src/__tests__/cli-argv-pin-shipped-packs.test.ts",
+      "packages/ingredient-authoring/src/__tests__/cli-pack-request-schema.test.ts",
       "packages/ingredient-authoring/src/__tests__/connection-hints-corpus.test.ts",
       "packages/ingredient-authoring/src/__tests__/connection-scope-prefill-corpus.test.ts",
       "packages/ingredient-authoring/src/__tests__/create-invoice-template-boilerplate.test.ts",
@@ -574,7 +577,7 @@
       "packages/recipes/src/__tests__/zendesk-ticket-count-truth-pack-audit.test.ts",
       "packages/recipes/src/__tests__/zendesk-ticket-reply-closure-loop.test.ts"
     ],
-    "sha256": "66e8f5c0d0dfa4b59c4ea3401caa44bace7c774a066a6407cf214732ee40fe30",
+    "sha256": "3ac191243c254274faf116b4f11cc10990032cac18bad7207942bb22d39f6dcd",
     "roots": [
       "apps/auth-worker",
       "backend/api",
@@ -582,11 +585,12 @@
       "community",
       "scripts",
       "distribution",
-      "test/community-pack-catalog"
+      "test/community-pack-catalog",
+      "recued-docs"
     ]
   },
   "internal_reference_scrub": {
-    "files_changed": 1065,
+    "files_changed": 1067,
     "rules": [
       {
         "id": "internal-spec-reference",
@@ -594,7 +598,7 @@
       },
       {
         "id": "internal-design-document",
-        "comments_rewritten": 105
+        "comments_rewritten": 107
       },
       {
         "id": "internal-handover-note",
@@ -684,7 +688,7 @@
     "packages/warehouse-events"
   ],
   "payload": {
-    "file_count": 6017,
-    "sha256": "1df622518118c4984c1e6ed496dcd58f723b0d5c7c41b66803f6c7725ac35f42"
+    "file_count": 6027,
+    "sha256": "ab564428e069963d45335818a0e65f1f087ce723dcbc388a61aa1b598f6543ae"
   }
 }

@@ -18,6 +18,9 @@ export {
   isClosedRequestSchema,
   closedRequestSchemaDefinitionIssues,
   closedRequestSchemaViolation,
+  isFileRefArgumentValue,
+  FILE_REF_JSON_SCHEMA,
+  projectClosedRequestSchemaForJsonSchema,
 } from './closed-request-schema.js';
 
 // Types — conditions
@@ -959,6 +962,8 @@ export type {
   GraphqlRelayPaginationSpec, SinglePagePaginationSpec,
   // D-187 policy-matrix retirement (slice 3) — the op-risk stage-trust ceiling enum.
   TrustCeiling,
+  // D-271 — per-op "the pinned document cannot prove this" declaration.
+  OpenApiAbsentReason, OpenApiAbsentDeclaration,
 } from './ingredient-catalog.js';
 export {
   isCatalogForm, resolveCatalogOperationPolicy, resolveCliReachabilityPolicy, isRiskTierAtMost,
@@ -1035,6 +1040,8 @@ export {
   OPERATION_PAGINATION_STYLES, isOperationPaginationStyle,
   OPERATION_PAGINATION_PLACEMENTS, isOperationPaginationPlacement,
   PAGINATION_MAX_RECORDS, PAGINATION_MAX_PAGES,
+  // D-271 — the closed reason list for an unprovable-by-construction op.
+  OPENAPI_ABSENT_REASONS, OPENAPI_ABSENT_REASON_SET,
 } from './ingredient-catalog.js';
 
 // D-165 §"Contract namespace" / D-166 foundation — schema-driven contract
@@ -5315,6 +5322,7 @@ export {
   MCP_PEER_ADMISSION_CONFIG_KEY,
   EXCHANGE_ADMISSION_WILDCARD,
   resolveExchangeAdmission,
+  invalidExchangeAdmissionEntries,
   peerAdmissionIdentity,
 } from './connection.js';
 export type { ExchangeAdmission, PeerAdmissionDecision } from './connection.js';

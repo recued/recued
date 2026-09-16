@@ -131,16 +131,37 @@ export const renderBootBanner = (options: LogBootBannerOptions): string => {
   const line = (body: string): string => `${V}  ${body.padEnd(contentWidth)}  ${V}`;
   const box = [rule(TL, TR), line(title), rule(ML, MR), ...bodies.map(line), rule(BL, BR)];
 
-  // Where to open the webclient. The hosted app is always reachable + a secure
-  // context; the LOCAL bundled webclient is advertised only when this server
-  // actually serves it (baked image / RECUED_WEBCLIENT_DIR / a source-tree
-  // build). Both this and the Server URL below are loopback — see
-  // `LOOPBACK_HOST` for why the LAN address is deliberately absent.
+  // Where to open the webclient.
+  //
+  // ⛔ THE LOCAL URL LEADS, AND THE ORDER IS THE POINT. Listing the hosted app
+  // first read like the happy path and was not: a beginner picks it, then pastes
+  // the LOOPBACK Server URL printed below into it, and that pairing is the one
+  // combination that half-works. An `https://` page opening a `ws://` socket is
+  // refused by the browser before a byte leaves it — Chrome permits it to
+  // loopback, Safari and Firefox do not — and what the client sees is close 1006,
+  // byte-for-byte an unplugged cable (`net/insecure-origin.ts`). The embedded
+  // webclient has no such problem: it is SAME-ORIGIN with the server it pairs to.
+  //
+  // The hosted app is still named, because it is the only option when this build
+  // ships no bundle — but it is named as what it is, not as the happy path.
+  // Both URLs are loopback; see `LOOPBACK_HOST` for why the LAN address is
+  // deliberately absent, and internal design notes D-272 for the fix.
   const localBase = `http://${LOOPBACK_HOST}:${port}`;
   const webclientTargets = webclientServed
-    ? `     ${HOSTED_WEBCLIENT_URL}   (hosted ${EM_DASH} any device)
-     ${localBase}/webclient/   (this server)`
-    : `     ${HOSTED_WEBCLIENT_URL}   (hosted ${EM_DASH} any device)`;
+    ? `     ${localBase}/webclient/`
+    : `     ${HOSTED_WEBCLIENT_URL}
+     ${WARN}  This build ships no embedded webclient, so the hosted app is the
+        only option here. It reaches a loopback server on Chrome; Safari and
+        Firefox refuse the connection.`;
+  const openLabel = webclientServed
+    ? 'Open Recued on this machine:'
+    : 'Open the Recued webclient:';
+  // Named on every boot so the answer to "how do I use my phone?" is never the
+  // loopback URL above, which would load a page and then refuse to run.
+  const otherDeviceBlock = `
+  From another device (phone, another laptop): not yet ${EM_DASH} a browser needs a
+  certificate to reach this server. Settings ${EM_DASH} Server ${EM_DASH} Connect a device.
+`;
 
   const pairTtl = pairingTtlLabel ?? '15 min';
 
@@ -149,7 +170,7 @@ export const renderBootBanner = (options: LogBootBannerOptions): string => {
   ${WARN}  Server is not encrypted yet ${EM_DASH} operations are blocked until you
      enrol a recovery key. Open the Recued webclient + pair a browser:
 
-  Open the Recued webclient:
+  ${openLabel}
 ${webclientTargets}
 
   Then, in the webclient:
@@ -159,13 +180,13 @@ ${webclientTargets}
      and write it down ${EM_DASH} or enter an existing key to re-pair.
 
   Pairing code expired? Run:  recued pair
-`
+${otherDeviceBlock}`
     : pairingCode ? `
-  Add a browser ${EM_DASH} open the Recued webclient:
+  Add a browser ${EM_DASH} ${openLabel.toLowerCase()}
 ${webclientTargets}
   Then enter Server URL ${localBase} and the pairing code:
   Pairing code: ${pairingCode}  (expires in ${pairTtl})
-` : '';
+${otherDeviceBlock}` : '';
 
   // Posture warning — printed on EVERY boot while the hatch is engaged, not
   // once at the moment it is set. An operator who inherits a server (or comes

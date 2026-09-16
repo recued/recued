@@ -30,10 +30,47 @@ const tableRows = (data: unknown): unknown[] => {
   return [];
 };
 
+/** Bucket rows by one field's value, preserving FIRST-APPEARANCE order.
+ *
+ *  ⛔ Not alphabetical, and not a declared order. A status vocabulary has a
+ *  meaningful sequence (open before done) that the alphabet does not know, and
+ *  v1 declares no column ordering — so the only ordering available that is
+ *  never WRONG is the one the producing step already chose. An author who wants
+ *  a specific sequence sorts the rows in the step, which they can already do.
+ *
+ *  ⚠ Rows whose group value is absent, null or empty land in one trailing
+ *  bucket rendered as "—". They are NOT dropped: a row that vanished because a
+ *  field was missing is the silent-loss shape, and a visible odd-looking bucket
+ *  is how an author discovers they grouped by the wrong field. */
+const groupRows = (
+  rows: unknown[],
+  field: string,
+): Array<{ key: string; label: string; rows: unknown[] }> => {
+  const buckets = new Map<string, { key: string; label: string; rows: unknown[] }>();
+  const UNGROUPED = '\u0000ungrouped';
+  for (const row of rows) {
+    const raw = row && typeof row === 'object'
+      ? (row as Record<string, unknown>)[field]
+      : undefined;
+    const empty = raw === undefined || raw === null || String(raw).trim() === '';
+    const key = empty ? UNGROUPED : String(raw);
+    const existing = buckets.get(key);
+    if (existing) existing.rows.push(row);
+    else buckets.set(key, { key, label: empty ? '—' : String(raw), rows: [row] });
+  }
+  // The no-value bucket sorts last wherever it first appeared; every other
+  // bucket keeps the order the step produced.
+  const out = [...buckets.values()].filter((b) => b.key !== UNGROUPED);
+  const ungrouped = buckets.get(UNGROUPED);
+  if (ungrouped) out.push(ungrouped);
+  return out;
+};
+
 export const renderTableBlock = (
   data: unknown,
   label?: string,
   resolvedColumns?: ResolvedRecordColumnsDescriptor,
+  groupBy?: string,
 ): string => {
   if (!data || typeof data !== 'object') return renderBlockError('table', 'invalid data');
   const d = data as Partial<TableData>;
@@ -64,23 +101,7 @@ export const renderTableBlock = (
   const rows = tableRows(data);
   if (columns.length === 0 || rows.length === 0) return renderBlockEmpty('table');
 
-  return `
-    <div class="block table-block">
-      ${renderBlockLabel(label)}
-      <div class="table-wrap">
-        <table class="data-table" data-sortable>
-          <thead>
-            <tr>
-              ${columns
-                .map((c) => `<th data-sort-field="${e(c.field)}" class="sortable-th${
-                  (c as { numeric?: boolean }).numeric === true ? ' is-numeric' : ''}">${e(String(c.label ?? c.field ?? ''))} <span class="sort-arrow"></span></th>`)
-                .join('')}
-            </tr>
-          </thead>
-          <tbody>
-            ${rows
-              .map(
-                (row) => `
+  const renderRow = (row: unknown): string => `
               <tr>
                 ${columns
                   .map((c) => {
@@ -93,9 +114,39 @@ export const renderTableBlock = (
                   })
                   .join('')}
               </tr>
-            `,
-              )
-              .join('')}
+            `;
+
+  // ⛔ ONE TABLE, WITH GROUP HEADER ROWS — not a table per group, and not
+  // columns. A grouped list is still a list: it keeps one header row, stays
+  // readable by a screen reader in document order, and degrades to the ungrouped
+  // rendering when nothing matches. Laying the groups out side by side is a
+  // stylesheet's job on top of this markup, never a second renderer.
+  const body = groupBy === undefined
+    ? rows.map(renderRow).join('')
+    : groupRows(rows, groupBy)
+      .map((group) => `
+              <tr class="group-row" data-group="${e(group.key)}">
+                <th scope="rowgroup" colspan="${columns.length}">${e(group.label)} <span class="group-count">${group.rows.length}</span></th>
+              </tr>
+              ${group.rows.map(renderRow).join('')}
+            `)
+      .join('');
+
+  return `
+    <div class="block table-block"${groupBy === undefined ? '' : ` data-group-by="${e(groupBy)}"`}>
+      ${renderBlockLabel(label)}
+      <div class="table-wrap">
+        <table class="data-table" data-sortable>
+          <thead>
+            <tr>
+              ${columns
+                .map((c) => `<th data-sort-field="${e(c.field)}" class="sortable-th${
+                  (c as { numeric?: boolean }).numeric === true ? ' is-numeric' : ''}">${e(String(c.label ?? c.field ?? ''))} <span class="sort-arrow"></span></th>`)
+                .join('')}
+            </tr>
+          </thead>
+          <tbody>
+            ${body}
           </tbody>
         </table>
       </div>

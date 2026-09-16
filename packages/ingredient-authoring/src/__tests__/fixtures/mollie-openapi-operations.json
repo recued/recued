@@ -5,9 +5,9 @@
       "kind": "official_public_readme_embedded_multi_document_openapi",
       "retrieved_on": "2026-08-04",
       "document_count": 7,
-      "aggregate_sha256": "bf8eaab1e5ac7359a6833872f5e520f57917715cf2188dc4b872f7ec258bd834",
-      "path_count": 95,
-      "operation_count": 139,
+      "aggregate_sha256": "9bd3eab525f6526b4350b6cc340e80faf64bcd8ddd3adf36d3831dcc75448969",
+      "path_count": 97,
+      "operation_count": 143,
       "documentation": {
         "overview": "https://docs.mollie.com/reference/overview",
         "index": "https://docs.mollie.com/llms.txt",
@@ -16,31 +16,31 @@
         "pagination": "https://docs.mollie.com/reference/pagination"
       }
     },
-    "official_operation_count": 139,
-    "admitted_unique_operation_count": 120,
-    "catalog_operation_count": 120,
+    "official_operation_count": 143,
+    "admitted_unique_operation_count": 124,
+    "catalog_operation_count": 124,
     "exclusion_count": 19,
     "compatibility_operation_count": 19,
-    "root_feature_operation_count": 37,
-    "root_operation_count": 56,
-    "leaf_operation_count": 64,
+    "root_feature_operation_count": 39,
+    "root_operation_count": 58,
+    "leaf_operation_count": 66,
     "official_method_counts": {
-      "DELETE": 16,
-      "GET": 80,
+      "DELETE": 17,
+      "GET": 82,
       "PATCH": 11,
-      "POST": 32
+      "POST": 33
     },
     "admitted_method_counts": {
-      "DELETE": 13,
-      "GET": 75,
+      "DELETE": 14,
+      "GET": 77,
       "PATCH": 7,
-      "POST": 25
+      "POST": 26
     },
     "catalog_method_counts": {
-      "DELETE": 13,
-      "GET": 75,
+      "DELETE": 14,
+      "GET": 77,
       "PATCH": 7,
-      "POST": 25
+      "POST": 26
     },
     "exclusion_counts": {
       "different_basic_auth_authority": 2,
@@ -49,18 +49,18 @@
       "unsupported_request_signature": 1
     },
     "pack_operation_counts": {
-      "mollie": 56,
+      "mollie": 58,
       "mollie-accepting-payments": 22,
-      "mollie-business-accounts": 6,
+      "mollie-business-accounts": 8,
       "mollie-business-operations": 12,
       "mollie-connect": 18,
       "mollie-recurring": 3,
       "mollie-revenue-collection": 3
     },
     "composition_bytes": {
-      "mollie": 107647,
+      "mollie": 111932,
       "mollie-accepting-payments": 37896,
-      "mollie-business-accounts": 10392,
+      "mollie-business-accounts": 14657,
       "mollie-business-operations": 20706,
       "mollie-connect": 23529,
       "mollie-recurring": 6284,
@@ -68,26 +68,26 @@
     },
     "risk_counts": {
       "admin": 9,
-      "destructive": 24,
-      "read": 75,
-      "write": 12
+      "destructive": 25,
+      "read": 77,
+      "write": 13
     },
     "approval_counts": {
-      "always": 43,
+      "always": 45,
       "ask": 2,
-      "never": 75
+      "never": 77
     },
     "idempotency_counts": {
-      "idempotent": 45,
-      "safe": 75
+      "idempotent": 47,
+      "safe": 77
     },
     "request_body_mode_counts": {
-      "none": 66,
-      "projected_object": 17,
-      "raw_object": 18
+      "none": 68,
+      "projected_object": 18,
+      "raw_object": 19
     },
     "beta": {
-      "admitted_operation_count": 9,
+      "admitted_operation_count": 13,
       "operation_keys": [
         "accepting-payments:GET /sessions/{sessionId}",
         "accepting-payments:GET /unmatched-credit-transfers",
@@ -95,7 +95,11 @@
         "accepting-payments:POST /sessions",
         "accepting-payments:POST /unmatched-credit-transfers/{unmatchedCreditTransferId}/match",
         "accepting-payments:POST /unmatched-credit-transfers/{unmatchedCreditTransferId}/return",
+        "business-accounts:DELETE /business-accounts/draft-transfers/{draftTransferId}",
+        "business-accounts:GET /business-accounts/draft-transfers",
+        "business-accounts:GET /business-accounts/draft-transfers/{draftTransferId}",
         "business-accounts:GET /business-accounts/transfers/{businessAccountsTransferId}",
+        "business-accounts:POST /business-accounts/draft-transfers",
         "business-accounts:POST /business-accounts/payee-verifications",
         "mollie-connect:GET /v2/capabilities"
       ],
@@ -127,8 +131,8 @@
     },
     "idempotency": {
       "official_contract": "All Mollie POST endpoints accept Idempotency-Key; keys replay the cached response for one hour.",
-      "new_post_operation_count": 23,
-      "required_key_operation_count": 23,
+      "new_post_operation_count": 24,
+      "required_key_operation_count": 24,
       "compatibility_posts_not_rewritten": [
         "accepting-payments:POST /payments",
         "recurring:POST /customers"
@@ -136,7 +140,7 @@
     },
     "pagination": {
       "automatic_operation_count": 0,
-      "manual_operation_count": 25,
+      "manual_operation_count": 26,
       "manual_operation_keys": [
         "accepting-payments:GET /chargebacks",
         "accepting-payments:GET /payment-links",
@@ -150,6 +154,7 @@
         "accepting-payments:GET /unmatched-credit-transfers",
         "business-accounts:GET /business-accounts/accounts",
         "business-accounts:GET /business-accounts/accounts/{businessAccountId}/transactions",
+        "business-accounts:GET /business-accounts/draft-transfers",
         "business-operations:GET /balances/{balanceId}/transactions",
         "business-operations:GET /payouts",
         "business-operations:GET /settlements/{settlementId}/captures",
@@ -292,11 +297,11 @@
       "page": "create-payment",
       "url": "https://docs.mollie.com/reference/create-payment",
       "api_definition_uri": "/branches/1.0/apis/accepting-payments.json",
-      "embedded_schema_bytes": 1484167,
-      "embedded_schema_sha256": "6dd5372de315e68b33e1b7e22acabbe93fb7dc77c95abca7b48c729e21489314",
-      "updated_at": "2026-08-04T16:51:08.569Z",
+      "embedded_schema_bytes": 1516663,
+      "embedded_schema_sha256": "f5313051acf723466ed0dc7aab3f81d0a06419273f51b07c26ff32e10ef41ee5",
+      "updated_at": "2026-09-15T12:54:39.310Z",
       "legacy_id": "664b11cac0665b0030cc8e38",
-      "oas_public_url": "@molapi/v1.0#1hc2x1fwms7899wi",
+      "oas_public_url": "@molapi/v1.0#zzgkl93pmu2o760m",
       "openapi": "3.1.0",
       "title": "Accepting payments",
       "api_version": "1.0.0",
@@ -311,17 +316,17 @@
       "page": "list-business-accounts",
       "url": "https://docs.mollie.com/reference/list-business-accounts",
       "api_definition_uri": "/branches/1.0/apis/business-accounts.json",
-      "embedded_schema_bytes": 168493,
-      "embedded_schema_sha256": "0bd0eaaba6a97e220804f3ccaf83dbd37fcbc0c5b9857a7efda39e0ae67f9f32",
-      "updated_at": "2026-08-04T16:51:27.294Z",
+      "embedded_schema_bytes": 262882,
+      "embedded_schema_sha256": "a234e423032ccc6f8cded246b95908d1e7091c3d7023e7b529201cbbe982679b",
+      "updated_at": "2026-09-15T12:54:58.476Z",
       "legacy_id": null,
-      "oas_public_url": "@molapi/v1.0#1cu9zkhkmsewbw39",
+      "oas_public_url": "@molapi/v1.0#bb8giqmu2ocypa",
       "openapi": "3.1.0",
       "title": "Business Accounts",
       "api_version": "1.0.0",
       "server": "https://api.mollie.com/v2",
-      "path_count": 7,
-      "operation_count": 7
+      "path_count": 9,
+      "operation_count": 11
     },
     {
       "key": "business-operations",
@@ -330,11 +335,11 @@
       "page": "list-balances",
       "url": "https://docs.mollie.com/reference/list-balances",
       "api_definition_uri": "/branches/1.0/apis/business-operations.json",
-      "embedded_schema_bytes": 1463338,
-      "embedded_schema_sha256": "9104990330ccaccd01c3bd2a2ca0185139461a3e8717f25ae1861b2fc55fdb99",
-      "updated_at": "2026-08-04T16:50:42.361Z",
+      "embedded_schema_bytes": 1508172,
+      "embedded_schema_sha256": "77e781e61900da7f8ce01a640fd0f6b1ed3cff80360d02633e862f4b1f6d444e",
+      "updated_at": "2026-09-15T12:54:07.845Z",
       "legacy_id": "6663810c14fd9600591d6dc0",
-      "oas_public_url": "@molapi/v1.0#3p9ebqblmsewam0j",
+      "oas_public_url": "@molapi/v1.0#5hze0mu2o6its",
       "openapi": "3.1.0",
       "title": "Business operations",
       "api_version": "1.0.0",
@@ -349,11 +354,11 @@
       "page": "get-organization",
       "url": "https://docs.mollie.com/reference/get-organization",
       "api_definition_uri": "/branches/1.0/apis/mollie-connect.json",
-      "embedded_schema_bytes": 1138376,
-      "embedded_schema_sha256": "1e48c2559149e9026af73cc48bd4cb1ad67eca1260c6f04f93e91ba04920d0c9",
-      "updated_at": "2026-08-04T16:50:52.150Z",
+      "embedded_schema_bytes": 1204742,
+      "embedded_schema_sha256": "eaa0c2d40b9a282a822b190c4b85b75b83dffb5db147fa17aed06ac0dc0b2f6e",
+      "updated_at": "2026-09-15T12:54:18.702Z",
       "legacy_id": "66633b28794f8c005bc6a05e",
-      "oas_public_url": "@molapi/v1.0#102rc4ms7899we",
+      "oas_public_url": "@molapi/v1.0#zzgkl9jkmu2ocb6a",
       "openapi": "3.1.0",
       "title": "Mollie Connect",
       "api_version": "1.0.0",
@@ -368,11 +373,11 @@
       "page": "create-order",
       "url": "https://docs.mollie.com/reference/create-order",
       "api_definition_uri": "/branches/1.0/apis/receiving-orders.json",
-      "embedded_schema_bytes": 1364522,
-      "embedded_schema_sha256": "cfb3b221a3c1985a03f08898e68296f3ca587ba41a838fbb914b1c4344d9bdc5",
-      "updated_at": "2026-08-04T16:51:01.295Z",
+      "embedded_schema_bytes": 1390865,
+      "embedded_schema_sha256": "d1f7a8a509035a12ab54bc633d071ae1ea9a54e8685cc72d24e0fe2cba380413",
+      "updated_at": "2026-09-15T12:54:28.730Z",
       "legacy_id": "6660d388576121006f4fc80d",
-      "oas_public_url": "@molapi/v1.0#5l4ot1e7ms789a4r",
+      "oas_public_url": "@molapi/v1.0#zzgkl93pmu2o6iu7",
       "openapi": "3.1.0",
       "title": "Receiving orders",
       "api_version": "1.0.0",
@@ -387,11 +392,11 @@
       "page": "create-customer",
       "url": "https://docs.mollie.com/reference/create-customer",
       "api_definition_uri": "/branches/1.0/apis/recurring.json",
-      "embedded_schema_bytes": 842180,
-      "embedded_schema_sha256": "31ddd7bcf9b73a67f2dabcf346972e1bcb61f2a0821f6e52d54db1c3745db577",
-      "updated_at": "2026-08-04T16:51:16.108Z",
+      "embedded_schema_bytes": 844699,
+      "embedded_schema_sha256": "f5a2df1b6ed88b65601759fd09e5df21fd68c06565e53b746a010b33a1f568a5",
+      "updated_at": "2026-09-15T12:54:46.459Z",
       "legacy_id": "6662d40c2ab82e004f85fd7c",
-      "oas_public_url": "@molapi/v1.0#5l4ot1e1ms7899yf",
+      "oas_public_url": "@molapi/v1.0#s5mcd8omu2ocydn",
       "openapi": "3.1.0",
       "title": "Recurring",
       "api_version": "1.0.0",
@@ -406,11 +411,11 @@
       "page": "create-sales-invoice",
       "url": "https://docs.mollie.com/reference/create-sales-invoice",
       "api_definition_uri": "/branches/1.0/apis/revenue-collection.json",
-      "embedded_schema_bytes": 215907,
-      "embedded_schema_sha256": "09254cb73aea39a7c0134c8d1ce0755929d8a32c35c73049329bc4e32bf74668",
-      "updated_at": "2026-08-04T16:51:21.435Z",
+      "embedded_schema_bytes": 215472,
+      "embedded_schema_sha256": "d3d2e8e94a2327d4c56daac13247347d1255df377511f28b1984af7a5d4c0403",
+      "updated_at": "2026-09-15T12:54:53.768Z",
       "legacy_id": null,
-      "oas_public_url": "@molapi/v1.0#10peziq101msewb90i",
+      "oas_public_url": "@molapi/v1.0#2xdim63cxmu2o75xk",
       "openapi": "3.1.0",
       "title": "Revenue Collection",
       "api_version": "1.0.0",
@@ -1494,6 +1499,86 @@
       "selected": true,
       "pack": "mollie-business-accounts",
       "op": "mollie_api.get_business_account_transaction",
+      "exclusion_category": null,
+      "exclusion_reason": null
+    },
+    {
+      "source": "business-accounts",
+      "key": "business-accounts:GET /business-accounts/draft-transfers",
+      "method": "GET",
+      "path": "/business-accounts/draft-transfers",
+      "wire_path": "/v2/business-accounts/draft-transfers",
+      "official_operation_id": "list-draft-transfers",
+      "deprecated": false,
+      "beta": true,
+      "request_media": [],
+      "success_media": [
+        "application/hal+json"
+      ],
+      "selected": true,
+      "pack": "mollie-business-accounts",
+      "op": "mollie_api.list_draft_transfers",
+      "exclusion_category": null,
+      "exclusion_reason": null
+    },
+    {
+      "source": "business-accounts",
+      "key": "business-accounts:POST /business-accounts/draft-transfers",
+      "method": "POST",
+      "path": "/business-accounts/draft-transfers",
+      "wire_path": "/v2/business-accounts/draft-transfers",
+      "official_operation_id": "create-draft-transfer",
+      "deprecated": false,
+      "beta": true,
+      "request_media": [
+        "application/json"
+      ],
+      "success_media": [
+        "application/hal+json"
+      ],
+      "selected": true,
+      "pack": "mollie",
+      "op": "mollie_api.create_draft_transfer",
+      "exclusion_category": null,
+      "exclusion_reason": null
+    },
+    {
+      "source": "business-accounts",
+      "key": "business-accounts:GET /business-accounts/draft-transfers/{draftTransferId}",
+      "method": "GET",
+      "path": "/business-accounts/draft-transfers/{draftTransferId}",
+      "wire_path": "/v2/business-accounts/draft-transfers/{draftTransferId}",
+      "official_operation_id": "get-draft-transfer",
+      "deprecated": false,
+      "beta": true,
+      "request_media": [],
+      "success_media": [
+        "application/hal+json"
+      ],
+      "selected": true,
+      "pack": "mollie-business-accounts",
+      "op": "mollie_api.get_draft_transfer",
+      "exclusion_category": null,
+      "exclusion_reason": null
+    },
+    {
+      "source": "business-accounts",
+      "key": "business-accounts:DELETE /business-accounts/draft-transfers/{draftTransferId}",
+      "method": "DELETE",
+      "path": "/business-accounts/draft-transfers/{draftTransferId}",
+      "wire_path": "/v2/business-accounts/draft-transfers/{draftTransferId}",
+      "official_operation_id": "cancel-draft-transfer",
+      "deprecated": false,
+      "beta": true,
+      "request_media": [
+        "application/json"
+      ],
+      "success_media": [
+        "application/hal+json"
+      ],
+      "selected": true,
+      "pack": "mollie",
+      "op": "mollie_api.cancel_draft_transfer",
       "exclusion_category": null,
       "exclusion_reason": null
     },
@@ -4042,6 +4127,71 @@
       "manual_pagination": false
     },
     {
+      "source": "business-accounts",
+      "official_key": "business-accounts:DELETE /business-accounts/draft-transfers/{draftTransferId}",
+      "official_operation_id": "cancel-draft-transfer",
+      "pack": "mollie",
+      "op": "mollie_api.cancel_draft_transfer",
+      "method": "DELETE",
+      "path": "/business-accounts/draft-transfers/{draftTransferId}",
+      "wire_path": "/v2/business-accounts/draft-transfers/{draftTransferId}",
+      "binding_path": "/business-accounts/draft-transfers/{{draft_transfer_id}}",
+      "compatibility": false,
+      "security": [
+        {
+          "advancedAccessToken": [
+            "business-account-draft-transfers.write"
+          ]
+        },
+        {
+          "oAuth": [
+            "business-account-draft-transfers.write"
+          ]
+        }
+      ],
+      "required_scopes": [
+        "business-account-draft-transfers.write"
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_required": false,
+      "request_body_mode": "projected_object",
+      "required_body_fields": [],
+      "response_media": [
+        "application/hal+json"
+      ],
+      "selected_response_media": "application/hal+json",
+      "omitted_inputs": [],
+      "sensitive_request_field_count": 0,
+      "sensitive_request_fields_sample": [],
+      "sensitive_request_fields_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "sensitive_response_field_count": 8,
+      "sensitive_response_fields_sample": [
+        "amount",
+        "creditor.account",
+        "creditor.account.iban",
+        "creditor.fullName",
+        "debtor.account",
+        "debtor.account.iban",
+        "debtor.fullName",
+        "debtorIban"
+      ],
+      "sensitive_response_fields_sha256": "2d6f6c284581a1f092513e8a4e8d18bb3359793e7d0fb9a7f68d65f57df3d320",
+      "beta": true,
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "arg_keys": [
+        "draft_transfer_id",
+        "body.testmode"
+      ],
+      "idempotency_key_required": false,
+      "result_path": null,
+      "manual_pagination": false
+    },
+    {
       "source": "accepting-payments",
       "official_key": "accepting-payments:DELETE /payments/{paymentId}",
       "official_operation_id": "cancel-payment",
@@ -4418,8 +4568,7 @@
       "request_body_mode": "raw_object",
       "required_body_fields": [
         "amount",
-        "description",
-        "redirectUrl"
+        "description"
       ],
       "response_media": [
         "application/hal+json"
@@ -4480,6 +4629,85 @@
       "idempotency": "idempotent",
       "arg_keys": [
         "customer_id",
+        "header.Idempotency-Key",
+        "body_raw"
+      ],
+      "idempotency_key_required": true,
+      "result_path": null,
+      "manual_pagination": false
+    },
+    {
+      "source": "business-accounts",
+      "official_key": "business-accounts:POST /business-accounts/draft-transfers",
+      "official_operation_id": "create-draft-transfer",
+      "pack": "mollie",
+      "op": "mollie_api.create_draft_transfer",
+      "method": "POST",
+      "path": "/business-accounts/draft-transfers",
+      "wire_path": "/v2/business-accounts/draft-transfers",
+      "binding_path": "/business-accounts/draft-transfers",
+      "compatibility": false,
+      "security": [
+        {
+          "advancedAccessToken": [
+            "business-account-draft-transfers.write"
+          ]
+        },
+        {
+          "oAuth": [
+            "business-account-draft-transfers.write"
+          ]
+        }
+      ],
+      "required_scopes": [
+        "business-account-draft-transfers.write"
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_required": false,
+      "request_body_mode": "raw_object",
+      "required_body_fields": [
+        "debtorIban",
+        "creditor",
+        "amount",
+        "description"
+      ],
+      "response_media": [
+        "application/hal+json"
+      ],
+      "selected_response_media": "application/hal+json",
+      "omitted_inputs": [],
+      "sensitive_request_field_count": 8,
+      "sensitive_request_fields_sample": [
+        "amount",
+        "creditor.account",
+        "creditor.account.iban",
+        "creditor.fullName",
+        "debtor.account",
+        "debtor.account.iban",
+        "debtor.fullName",
+        "debtorIban"
+      ],
+      "sensitive_request_fields_sha256": "2d6f6c284581a1f092513e8a4e8d18bb3359793e7d0fb9a7f68d65f57df3d320",
+      "sensitive_response_field_count": 8,
+      "sensitive_response_fields_sample": [
+        "amount",
+        "creditor.account",
+        "creditor.account.iban",
+        "creditor.fullName",
+        "debtor.account",
+        "debtor.account.iban",
+        "debtor.fullName",
+        "debtorIban"
+      ],
+      "sensitive_response_fields_sha256": "2d6f6c284581a1f092513e8a4e8d18bb3359793e7d0fb9a7f68d65f57df3d320",
+      "beta": true,
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "arg_keys": [
         "header.Idempotency-Key",
         "body_raw"
       ],
@@ -4847,9 +5075,7 @@
       "request_body_required": false,
       "request_body_mode": "raw_object",
       "required_body_fields": [
-        "amount",
-        "description",
-        "metadata"
+        "amount"
       ],
       "response_media": [
         "application/hal+json"
@@ -8713,6 +8939,69 @@
     },
     {
       "source": "business-accounts",
+      "official_key": "business-accounts:GET /business-accounts/draft-transfers/{draftTransferId}",
+      "official_operation_id": "get-draft-transfer",
+      "pack": "mollie-business-accounts",
+      "op": "mollie_api.get_draft_transfer",
+      "method": "GET",
+      "path": "/business-accounts/draft-transfers/{draftTransferId}",
+      "wire_path": "/v2/business-accounts/draft-transfers/{draftTransferId}",
+      "binding_path": "/business-accounts/draft-transfers/{{draft_transfer_id}}",
+      "compatibility": false,
+      "security": [
+        {
+          "advancedAccessToken": [
+            "business-account-draft-transfers.read"
+          ]
+        },
+        {
+          "oAuth": [
+            "business-account-draft-transfers.read"
+          ]
+        }
+      ],
+      "required_scopes": [
+        "business-account-draft-transfers.read"
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_mode": "none",
+      "required_body_fields": [],
+      "response_media": [
+        "application/hal+json"
+      ],
+      "selected_response_media": "application/hal+json",
+      "omitted_inputs": [],
+      "sensitive_request_field_count": 0,
+      "sensitive_request_fields_sample": [],
+      "sensitive_request_fields_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "sensitive_response_field_count": 8,
+      "sensitive_response_fields_sample": [
+        "amount",
+        "creditor.account",
+        "creditor.account.iban",
+        "creditor.fullName",
+        "debtor.account",
+        "debtor.account.iban",
+        "debtor.fullName",
+        "debtorIban"
+      ],
+      "sensitive_response_fields_sha256": "2d6f6c284581a1f092513e8a4e8d18bb3359793e7d0fb9a7f68d65f57df3d320",
+      "beta": true,
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "arg_keys": [
+        "draft_transfer_id",
+        "query.testmode"
+      ],
+      "idempotency_key_required": false,
+      "result_path": null,
+      "manual_pagination": false
+    },
+    {
+      "source": "business-accounts",
       "official_key": "business-accounts:GET /business-accounts/transfers/{businessAccountsTransferId}",
       "official_operation_id": "get-transfer",
       "pack": "mollie-business-accounts",
@@ -8818,6 +9107,9 @@
       "idempotency": "safe",
       "arg_keys": [
         "business_account_id",
+        "query.creditDebitIndicator",
+        "query.processedAfter",
+        "query.processedBefore",
         "query.from",
         "query.limit",
         "query.sort",
@@ -8875,6 +9167,7 @@
       "approval": "never",
       "idempotency": "safe",
       "arg_keys": [
+        "query.iban",
         "query.from",
         "query.limit",
         "query.sort",
@@ -8882,6 +9175,71 @@
       ],
       "idempotency_key_required": false,
       "result_path": "_embedded.businessAccounts",
+      "manual_pagination": true
+    },
+    {
+      "source": "business-accounts",
+      "official_key": "business-accounts:GET /business-accounts/draft-transfers",
+      "official_operation_id": "list-draft-transfers",
+      "pack": "mollie-business-accounts",
+      "op": "mollie_api.list_draft_transfers",
+      "method": "GET",
+      "path": "/business-accounts/draft-transfers",
+      "wire_path": "/v2/business-accounts/draft-transfers",
+      "binding_path": "/business-accounts/draft-transfers",
+      "compatibility": false,
+      "security": [
+        {
+          "advancedAccessToken": [
+            "business-account-draft-transfers.read"
+          ]
+        },
+        {
+          "oAuth": [
+            "business-account-draft-transfers.read"
+          ]
+        }
+      ],
+      "required_scopes": [
+        "business-account-draft-transfers.read"
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_mode": "none",
+      "required_body_fields": [],
+      "response_media": [
+        "application/hal+json"
+      ],
+      "selected_response_media": "application/hal+json",
+      "omitted_inputs": [],
+      "sensitive_request_field_count": 0,
+      "sensitive_request_fields_sample": [],
+      "sensitive_request_fields_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "sensitive_response_field_count": 8,
+      "sensitive_response_fields_sample": [
+        "_embedded.draft_transfers[].amount",
+        "_embedded.draft_transfers[].creditor.account",
+        "_embedded.draft_transfers[].creditor.account.iban",
+        "_embedded.draft_transfers[].creditor.fullName",
+        "_embedded.draft_transfers[].debtor.account",
+        "_embedded.draft_transfers[].debtor.account.iban",
+        "_embedded.draft_transfers[].debtor.fullName",
+        "_embedded.draft_transfers[].debtorIban"
+      ],
+      "sensitive_response_fields_sha256": "a5efe54bba8ea2ae8855f51a0c835c4ae1482c8306643f00f33b3f9ff6dc461a",
+      "beta": true,
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "arg_keys": [
+        "query.from",
+        "query.limit",
+        "query.status",
+        "query.testmode"
+      ],
+      "idempotency_key_required": false,
+      "result_path": "_embedded.draft_transfers",
       "manual_pagination": true
     },
     {
@@ -9116,9 +9474,8 @@
       "sensitive_request_field_count": 0,
       "sensitive_request_fields_sample": [],
       "sensitive_request_fields_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
-      "sensitive_response_field_count": 11,
+      "sensitive_response_field_count": 10,
       "sensitive_response_fields_sample": [
-        "_links.invoice",
         "amount",
         "invoiceId",
         "periods.<year>.<month>.costs[].amountGross",
@@ -9130,7 +9487,7 @@
         "periods.<year>.<month>.revenue[].amountNet",
         "periods.<year>.<month>.revenue[].amountVat"
       ],
-      "sensitive_response_fields_sha256": "d27feae3de4c5c36c2a37a161845b2ec7ce78fcf169ce1d3c41148141964803d",
+      "sensitive_response_fields_sha256": "f84a80d81658c7e5f31348be6f28ac3a684062f02f3b20b56dbbc635608d51c7",
       "beta": false,
       "risk": "read",
       "approval": "never",
@@ -9179,9 +9536,8 @@
       "sensitive_request_field_count": 0,
       "sensitive_request_fields_sample": [],
       "sensitive_request_fields_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
-      "sensitive_response_field_count": 11,
+      "sensitive_response_field_count": 10,
       "sensitive_response_fields_sample": [
-        "_links.invoice",
         "amount",
         "invoiceId",
         "periods.<year>.<month>.costs[].amountGross",
@@ -9193,7 +9549,7 @@
         "periods.<year>.<month>.revenue[].amountNet",
         "periods.<year>.<month>.revenue[].amountVat"
       ],
-      "sensitive_response_fields_sha256": "d27feae3de4c5c36c2a37a161845b2ec7ce78fcf169ce1d3c41148141964803d",
+      "sensitive_response_fields_sha256": "f84a80d81658c7e5f31348be6f28ac3a684062f02f3b20b56dbbc635608d51c7",
       "beta": false,
       "risk": "read",
       "approval": "never",

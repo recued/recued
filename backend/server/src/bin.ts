@@ -18,6 +18,7 @@ const KNOWN_SUBCOMMANDS = new Set([
   'start',
   'stop',
   'status',
+  'doctor',
   'restart',
   'logs',
   'auth-status',
@@ -387,6 +388,12 @@ const dispatch = async (): Promise<void> => {
       bootTrace.markImport('./cli-context/revert-release.js');
       const { runRevertReleaseProfile } = await import('./cli-context/revert-release.js');
       await runRevertReleaseProfile({ args, bootTrace });
+      return;
+    }
+    case 'doctor': {
+      bootTrace.markImport('./cli-context/doctor.js');
+      const { runDoctorProfile } = await import('./cli-context/doctor.js');
+      await runDoctorProfile({ args, bootTrace });
       return;
     }
     case 'self-test': {

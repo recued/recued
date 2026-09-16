@@ -3,12 +3,12 @@
     "source": {
       "kind": "official_openapi",
       "url": "https://docs.confluent.io/cloud/current/openapi.yaml",
-      "bytes": 2653460,
-      "sha256": "0803fa3bd07e311d202b878cda9cb02e5ac9cab414a02cbe22910ab67e492e95",
+      "bytes": 2728766,
+      "sha256": "a6a73f98a698dfba254e69466df63ba7fbf3bfb453fb2ae6ab09784bd6ea408d",
       "openapi": "3.0.0",
       "title": "Confluent Cloud APIs",
       "api_version": "",
-      "official_path_count": 293,
+      "official_path_count": 299,
       "retrieved_on": "2026-07-15",
       "last_modified_observed": "Wed, 15 Jul 2026 23:16:39 GMT",
       "mutability": "The vendor-hosted current URL is mutable. Generation fails closed unless its bytes and SHA-256 match this reviewed aggregate contract.",
@@ -85,49 +85,50 @@
         ]
       }
     },
-    "official_operation_count": 497,
-    "nondeprecated_operation_count": 490,
-    "admitted_operation_count": 488,
+    "official_operation_count": 504,
+    "nondeprecated_operation_count": 497,
+    "admitted_operation_count": 493,
     "deprecated_operation_count": 7,
-    "transport_exclusion_count": 2,
+    "transport_exclusion_count": 4,
     "official_method_counts": {
       "DELETE": 78,
-      "GET": 240,
-      "PATCH": 46,
-      "POST": 102,
+      "GET": 244,
+      "PATCH": 48,
+      "POST": 103,
       "PUT": 31
     },
     "admitted_method_counts": {
       "DELETE": 77,
-      "GET": 236,
-      "PATCH": 45,
+      "GET": 239,
+      "PATCH": 47,
       "POST": 100,
       "PUT": 30
     },
     "official_lifecycle_counts": {
       "Deprecated": 7,
-      "Early Access": 19,
+      "Early Access": 26,
       "General Availability": 293,
       "Preview": 23,
       "Unspecified": 155
     },
     "admitted_lifecycle_counts": {
-      "Early Access": 19,
+      "Early Access": 24,
       "General Availability": 291,
       "Preview": 23,
       "Unspecified": 155
     },
     "official_profile_counts": {
-      "cloud": 287,
+      "cloud": 292,
       "flink": 29,
       "kafka": 75,
       "partner": 8,
       "resource": 17,
       "schema": 80,
+      "sql": 2,
       "sts": 1
     },
     "admitted_profile_counts": {
-      "cloud": 278,
+      "cloud": 283,
       "flink": 29,
       "kafka": 75,
       "partner": 8,
@@ -239,6 +240,7 @@
       "Signup (partner/v2)": 3,
       "Statement Exceptions (sql/v1)": 1,
       "Statement Results (sql/v1)": 1,
+      "Statements (query/v1alpha1)": 2,
       "Statements (sql/v1)": 6,
       "Status (connect/v1)": 2,
       "Streams Group (v3)": 12,
@@ -249,6 +251,7 @@
       "Topic (v3)": 5,
       "Transit Gateway Attachments (networking/v1)": 5,
       "Types (v1)": 10,
+      "User Notifications (notifications/v1)": 5,
       "Users (iam/v2)": 5
     },
     "admitted_tag_counts": {
@@ -363,6 +366,7 @@
       "Topic (v3)": 5,
       "Transit Gateway Attachments (networking/v1)": 5,
       "Types (v1)": 10,
+      "User Notifications (notifications/v1)": 5,
       "Users (iam/v2)": 5
     },
     "pack_operation_counts": {
@@ -370,7 +374,7 @@
       "confluent-cloud-networking": 64,
       "confluent-cloud-clusters-compute": 37,
       "confluent-cloud-connectors-artifacts": 54,
-      "confluent-cloud-notifications-sharing": 63,
+      "confluent-cloud-notifications-sharing": 68,
       "confluent-resource-tableflow": 17,
       "confluent-kafka-cluster": 75,
       "confluent-schema-registry": 80,
@@ -383,44 +387,44 @@
       "confluent-cloud-networking": 172439,
       "confluent-cloud-clusters-compute": 87354,
       "confluent-cloud-connectors-artifacts": 124408,
-      "confluent-cloud-notifications-sharing": 133454,
+      "confluent-cloud-notifications-sharing": 149067,
       "confluent-resource-tableflow": 45929,
       "confluent-kafka-cluster": 168829,
       "confluent-schema-registry": 141646,
-      "confluent-flink-sql": 81964,
+      "confluent-flink-sql": 82231,
       "confluent-partner": 18970,
       "confluent-sts": 2871
     },
     "body_mode_counts": {
-      "none": 324,
-      "raw_json": 163,
+      "none": 327,
+      "raw_json": 165,
       "structured_form": 1
     },
     "response_body_mode_counts": {
       "file_ref": 2,
-      "json": 386,
-      "none": 91,
+      "json": 390,
+      "none": 92,
       "vendor_json_text": 9
     },
     "success_status_counts": {
-      "200": 345,
+      "200": 349,
       "201": 35,
       "202": 30,
-      "204": 78
+      "204": 79
     },
     "risk_counts": {
-      "admin": 147,
+      "admin": 149,
       "destructive": 98,
-      "read": 243
+      "read": 246
     },
     "approval_counts": {
-      "always": 245,
-      "never": 243
+      "always": 247,
+      "never": 246
     },
     "idempotency_counts": {
-      "idempotent": 151,
+      "idempotent": 153,
       "non_idempotent": 94,
-      "safe": 243
+      "safe": 246
     },
     "profiles": {
       "cloud": {
@@ -530,11 +534,11 @@
       }
     },
     "pagination": {
-      "automatic_operation_count": 71,
-      "next_link_example_count": 71,
+      "automatic_operation_count": 72,
+      "next_link_example_count": 72,
       "style": "query_token_link",
       "result_path_counts": {
-        "data": 70,
+        "data": 71,
         "results.data": 1
       },
       "operation_keys": [
@@ -586,6 +590,7 @@
         "GET /notifications/v1/notification-types",
         "GET /notifications/v1/resource-subscriptions:lookup",
         "GET /notifications/v1/subscriptions",
+        "GET /notifications/v1/user-notifications",
         "GET /org/v2/environments",
         "GET /org/v2/organizations",
         "GET /partner/v2/entitlements",
@@ -618,8 +623,8 @@
       "exact_path_parameter_contract": true,
       "operation_id_uniqueness": true,
       "official_request_body_required_count": 18,
-      "effective_request_body_required_count": 164,
-      "json_body_operation_count": 163,
+      "effective_request_body_required_count": 166,
+      "json_body_operation_count": 165,
       "structured_form_operation_count": 1,
       "binary_capture_operation_count": 2,
       "vendor_json_text_operation_count": 9,
@@ -689,6 +694,7 @@
         "GET /notifications/v1/resource-preferences:lookup:page_size",
         "GET /notifications/v1/resource-subscriptions:lookup:page_size",
         "GET /notifications/v1/subscriptions:page_size",
+        "GET /notifications/v1/user-notifications:page_size",
         "GET /org/v2/environments:page_size",
         "GET /org/v2/organizations:page_size",
         "GET /partner/v2/entitlements:page_size",
@@ -781,10 +787,16 @@
         "GET /networking/v1/transit-gateway-attachments:spec.display_name",
         "GET /networking/v1/transit-gateway-attachments:spec.network",
         "GET /networking/v1/transit-gateway-attachments:status.phase",
-        "GET /tableflow/v1/tableflow-topics:spec.table_formats"
+        "GET /notifications/v1/user-notifications:resource.crn",
+        "GET /notifications/v1/user-notifications:resource.type",
+        "GET /notifications/v1/user-notifications:severity",
+        "GET /tableflow/v1/tableflow-topics:spec.table_formats",
+        "PATCH /notifications/v1/user-notifications:mark-all:resource.crn",
+        "PATCH /notifications/v1/user-notifications:mark-all:resource.type",
+        "PATCH /notifications/v1/user-notifications:mark-all:severity"
       ],
       "csv_path_array_parameters": [],
-      "bounded_array_parameter_count": 52,
+      "bounded_array_parameter_count": 59,
       "array_parameter_safety_max_items": 256,
       "dropped_vendor_patterns": [],
       "read_only_non_get_operation_keys": [
@@ -796,7 +808,7 @@
         "POST /subjects/{subject}",
         "PUT /connect/v1/environments/{environment_id}/clusters/{kafka_cluster_id}/connector-plugins/{plugin_name}/config/validate"
       ],
-      "empty_success_operation_count": 91
+      "empty_success_operation_count": 92
     },
     "source_decision": {
       "admitted": false,
@@ -1119,6 +1131,26 @@
           "query.resource",
           "query.resource_type"
         ],
+        "approval": "never",
+        "pagination": {
+          "style": "query_token_link",
+          "link_from": "metadata.next",
+          "query_param": "page_token",
+          "token_to": {
+            "placement": "query",
+            "param": "page_token"
+          }
+        }
+      },
+      {
+        "recipe_id": "list-notifications-v1-user-notifications-confluent",
+        "operation_id": "listNotificationsV1UserNotifications",
+        "key": "GET /notifications/v1/user-notifications",
+        "pack": "confluent-cloud-notifications-sharing",
+        "profile": "cloud",
+        "op": "user_notifications_notifications_v1.list_notifications_v1_user_notifications",
+        "required_args": [],
+        "supplied_args": [],
         "approval": "never",
         "pagination": {
           "style": "query_token_link",
@@ -4137,6 +4169,9 @@
           "cloud-api-key": []
         },
         {
+          "global-api-key": []
+        },
+        {
           "confluent-sts-access-token": []
         }
       ],
@@ -5056,6 +5091,9 @@
           "cloud-api-key": []
         },
         {
+          "global-api-key": []
+        },
+        {
           "confluent-sts-access-token": []
         }
       ],
@@ -5094,6 +5132,9 @@
       "security": [
         {
           "cloud-api-key": []
+        },
+        {
+          "global-api-key": []
         },
         {
           "confluent-sts-access-token": []
@@ -5136,6 +5177,9 @@
           "cloud-api-key": []
         },
         {
+          "global-api-key": []
+        },
+        {
           "confluent-sts-access-token": []
         }
       ],
@@ -5174,6 +5218,9 @@
       "security": [
         {
           "cloud-api-key": []
+        },
+        {
+          "global-api-key": []
         },
         {
           "confluent-sts-access-token": []
@@ -9598,6 +9645,9 @@
           "cloud-api-key": []
         },
         {
+          "global-api-key": []
+        },
+        {
           "confluent-sts-access-token": []
         }
       ],
@@ -9637,6 +9687,9 @@
       "security": [
         {
           "cloud-api-key": []
+        },
+        {
+          "global-api-key": []
         },
         {
           "confluent-sts-access-token": []
@@ -12811,6 +12864,9 @@
           "cloud-api-key": []
         },
         {
+          "global-api-key": []
+        },
+        {
           "confluent-sts-access-token": []
         }
       ],
@@ -12824,6 +12880,7 @@
         "400",
         "401",
         "403",
+        "404",
         "429",
         "500"
       ],
@@ -12850,6 +12907,9 @@
       "security": [
         {
           "cloud-api-key": []
+        },
+        {
+          "global-api-key": []
         },
         {
           "confluent-sts-access-token": []
@@ -12894,6 +12954,9 @@
           "cloud-api-key": []
         },
         {
+          "global-api-key": []
+        },
+        {
           "confluent-sts-access-token": []
         }
       ],
@@ -12934,6 +12997,9 @@
       "security": [
         {
           "cloud-api-key": []
+        },
+        {
+          "global-api-key": []
         },
         {
           "confluent-sts-access-token": []
@@ -12978,6 +13044,9 @@
           "cloud-api-key": []
         },
         {
+          "global-api-key": []
+        },
+        {
           "confluent-sts-access-token": []
         }
       ],
@@ -13018,6 +13087,9 @@
       "security": [
         {
           "cloud-api-key": []
+        },
+        {
+          "global-api-key": []
         },
         {
           "confluent-sts-access-token": []
@@ -13062,6 +13134,9 @@
           "cloud-api-key": []
         },
         {
+          "global-api-key": []
+        },
+        {
           "confluent-sts-access-token": []
         }
       ],
@@ -13102,6 +13177,9 @@
       "security": [
         {
           "cloud-api-key": []
+        },
+        {
+          "global-api-key": []
         },
         {
           "confluent-sts-access-token": []
@@ -13146,6 +13224,9 @@
           "cloud-api-key": []
         },
         {
+          "global-api-key": []
+        },
+        {
           "confluent-sts-access-token": []
         }
       ],
@@ -13187,6 +13268,9 @@
           "cloud-api-key": []
         },
         {
+          "global-api-key": []
+        },
+        {
           "confluent-sts-access-token": []
         }
       ],
@@ -13212,6 +13296,131 @@
       "exclusion_reason": null,
       "pack": "confluent-cloud-notifications-sharing",
       "op": "subscriptions_notifications_v1.get_notifications_v1_subscription"
+    },
+    {
+      "key": "GET /notifications/v1/user-notifications",
+      "method": "GET",
+      "path": "/notifications/v1/user-notifications",
+      "wire_path": "/notifications/v1/user-notifications",
+      "operation_id": "listNotificationsV1UserNotifications",
+      "tag": "User Notifications (notifications/v1)",
+      "profile": "cloud",
+      "server": "https://api.confluent.cloud",
+      "lifecycle": "Early Access",
+      "deprecated": false,
+      "security": [
+        {
+          "cloud-api-key": []
+        },
+        {
+          "confluent-sts-access-token": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "success_status": "200",
+      "response_statuses": [
+        "200",
+        "400",
+        "401",
+        "403",
+        "429",
+        "500"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "confluent-cloud-notifications-sharing",
+      "op": "user_notifications_notifications_v1.list_notifications_v1_user_notifications"
+    },
+    {
+      "key": "GET /notifications/v1/user-notifications:summary",
+      "method": "GET",
+      "path": "/notifications/v1/user-notifications:summary",
+      "wire_path": "/notifications/v1/user-notifications:summary",
+      "operation_id": "getNotificationsV1UserNotificationsSummary",
+      "tag": "User Notifications (notifications/v1)",
+      "profile": "cloud",
+      "server": "https://api.confluent.cloud",
+      "lifecycle": "Early Access",
+      "deprecated": false,
+      "security": [
+        {
+          "cloud-api-key": []
+        },
+        {
+          "confluent-sts-access-token": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "success_status": "200",
+      "response_statuses": [
+        "200",
+        "400",
+        "401",
+        "403",
+        "404",
+        "429",
+        "500"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "confluent-cloud-notifications-sharing",
+      "op": "user_notifications_notifications_v1.get_notifications_v1_user_notifications_summary"
+    },
+    {
+      "key": "GET /notifications/v1/user-notifications/{id}",
+      "method": "GET",
+      "path": "/notifications/v1/user-notifications/{id}",
+      "wire_path": "/notifications/v1/user-notifications/{id}",
+      "operation_id": "getNotificationsV1UserNotification",
+      "tag": "User Notifications (notifications/v1)",
+      "profile": "cloud",
+      "server": "https://api.confluent.cloud",
+      "lifecycle": "Early Access",
+      "deprecated": false,
+      "security": [
+        {
+          "cloud-api-key": []
+        },
+        {
+          "confluent-sts-access-token": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "success_status": "200",
+      "response_statuses": [
+        "200",
+        "400",
+        "401",
+        "403",
+        "404",
+        "429",
+        "500"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "confluent-cloud-notifications-sharing",
+      "op": "user_notifications_notifications_v1.get_notifications_v1_user_notification"
     },
     {
       "key": "GET /org/v2/environments",
@@ -13718,6 +13927,44 @@
       "exclusion_reason": null,
       "pack": "confluent-cloud-notifications-sharing",
       "op": "integrations_pim_v2.get_pim_v2_integration"
+    },
+    {
+      "key": "GET /query/v1alpha1/jobs/{statement_id}/status",
+      "method": "GET",
+      "path": "/query/v1alpha1/jobs/{statement_id}/status",
+      "wire_path": "/query/v1alpha1/jobs/{statement_id}/status",
+      "operation_id": "getQueryV1alpha1JobStatus",
+      "tag": "Statements (query/v1alpha1)",
+      "profile": "sql",
+      "server": "https://sql.region.provider.confluent.cloud",
+      "lifecycle": "Early Access",
+      "deprecated": false,
+      "security": [
+        {
+          "resource-api-key": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "success_status": "200",
+      "response_statuses": [
+        "200",
+        "400",
+        "401",
+        "403",
+        "429",
+        "500"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": false,
+      "exclusion": "transport_unbuildable",
+      "exclusion_reason": "Confluent serves these on a separate regional SQL origin and labels them v1alpha1. Admitting them requires a seventh connection profile the user would have to enrol independently, which is a connection-shape decision rather than a document re-pin. Re-admit once the surface leaves alpha.",
+      "pack": null,
+      "op": null
     },
     {
       "key": "GET /rtce/v1/regions",
@@ -16735,6 +16982,9 @@
           "cloud-api-key": []
         },
         {
+          "global-api-key": []
+        },
+        {
           "confluent-sts-access-token": []
         }
       ],
@@ -17412,6 +17662,9 @@
           "cloud-api-key": []
         },
         {
+          "global-api-key": []
+        },
+        {
           "confluent-sts-access-token": []
         }
       ],
@@ -17459,6 +17712,9 @@
       "security": [
         {
           "cloud-api-key": []
+        },
+        {
+          "global-api-key": []
         },
         {
           "confluent-sts-access-token": []
@@ -17509,6 +17765,9 @@
           "cloud-api-key": []
         },
         {
+          "global-api-key": []
+        },
+        {
           "confluent-sts-access-token": []
         }
       ],
@@ -17557,6 +17816,9 @@
           "cloud-api-key": []
         },
         {
+          "global-api-key": []
+        },
+        {
           "confluent-sts-access-token": []
         }
       ],
@@ -17588,6 +17850,98 @@
       "exclusion_reason": null,
       "pack": "confluent-cloud-notifications-sharing",
       "op": "subscriptions_notifications_v1.update_notifications_v1_subscription"
+    },
+    {
+      "key": "PATCH /notifications/v1/user-notifications:mark-all",
+      "method": "PATCH",
+      "path": "/notifications/v1/user-notifications:mark-all",
+      "wire_path": "/notifications/v1/user-notifications:mark-all",
+      "operation_id": "markAllNotificationsV1UserNotifications",
+      "tag": "User Notifications (notifications/v1)",
+      "profile": "cloud",
+      "server": "https://api.confluent.cloud",
+      "lifecycle": "Early Access",
+      "deprecated": false,
+      "security": [
+        {
+          "cloud-api-key": []
+        },
+        {
+          "confluent-sts-access-token": []
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": false,
+      "effective_request_body_required": true,
+      "request_body_types": [
+        "object"
+      ],
+      "success_status": "204",
+      "response_statuses": [
+        "204",
+        "400",
+        "401",
+        "403",
+        "404",
+        "429",
+        "500"
+      ],
+      "response_media": [],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "confluent-cloud-notifications-sharing",
+      "op": "user_notifications_notifications_v1.mark_all_notifications_v1_user_notifications"
+    },
+    {
+      "key": "PATCH /notifications/v1/user-notifications/{id}",
+      "method": "PATCH",
+      "path": "/notifications/v1/user-notifications/{id}",
+      "wire_path": "/notifications/v1/user-notifications/{id}",
+      "operation_id": "updateNotificationsV1UserNotification",
+      "tag": "User Notifications (notifications/v1)",
+      "profile": "cloud",
+      "server": "https://api.confluent.cloud",
+      "lifecycle": "Early Access",
+      "deprecated": false,
+      "security": [
+        {
+          "cloud-api-key": []
+        },
+        {
+          "confluent-sts-access-token": []
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": false,
+      "effective_request_body_required": true,
+      "request_body_types": [
+        "object"
+      ],
+      "success_status": "200",
+      "response_statuses": [
+        "200",
+        "400",
+        "401",
+        "403",
+        "404",
+        "409",
+        "422",
+        "429",
+        "500"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "confluent-cloud-notifications-sharing",
+      "op": "user_notifications_notifications_v1.update_notifications_v1_user_notification"
     },
     {
       "key": "PATCH /org/v2/environments/{id}",
@@ -20011,6 +20365,9 @@
           "cloud-api-key": []
         },
         {
+          "global-api-key": []
+        },
+        {
           "confluent-sts-access-token": []
         }
       ],
@@ -21381,6 +21738,9 @@
           "cloud-api-key": []
         },
         {
+          "global-api-key": []
+        },
+        {
           "confluent-sts-access-token": []
         }
       ],
@@ -21429,6 +21789,9 @@
           "cloud-api-key": []
         },
         {
+          "global-api-key": []
+        },
+        {
           "confluent-sts-access-token": []
         }
       ],
@@ -21471,6 +21834,9 @@
       "security": [
         {
           "cloud-api-key": []
+        },
+        {
+          "global-api-key": []
         },
         {
           "confluent-sts-access-token": []
@@ -21520,6 +21886,9 @@
           "cloud-api-key": []
         },
         {
+          "global-api-key": []
+        },
+        {
           "confluent-sts-access-token": []
         }
       ],
@@ -21565,6 +21934,9 @@
       "security": [
         {
           "cloud-api-key": []
+        },
+        {
+          "global-api-key": []
         },
         {
           "confluent-sts-access-token": []
@@ -21966,6 +22338,50 @@
       "exclusion_reason": null,
       "pack": "confluent-cloud-notifications-sharing",
       "op": "integrations_pim_v2.validate_pim_v2_integration"
+    },
+    {
+      "key": "POST /query/v1alpha1",
+      "method": "POST",
+      "path": "/query/v1alpha1",
+      "wire_path": "/query/v1alpha1",
+      "operation_id": "executeQueryV1alpha1Statement",
+      "tag": "Statements (query/v1alpha1)",
+      "profile": "sql",
+      "server": "https://sql.region.provider.confluent.cloud",
+      "lifecycle": "Early Access",
+      "deprecated": false,
+      "security": [
+        {
+          "resource-api-key": []
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": true,
+      "effective_request_body_required": false,
+      "request_body_types": [
+        "object"
+      ],
+      "success_status": "200",
+      "response_statuses": [
+        "200",
+        "202",
+        "400",
+        "401",
+        "403",
+        "404",
+        "429",
+        "500"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": false,
+      "exclusion": "transport_unbuildable",
+      "exclusion_reason": "Confluent serves these on a separate regional SQL origin and labels them v1alpha1. Admitting them requires a seventh connection profile the user would have to enrol independently, which is a connection-shape decision rather than a document re-pin. Re-admit once the surface leaves alpha.",
+      "pack": null,
+      "op": null
     },
     {
       "key": "POST /rtce/v1/rtce-topics",
@@ -26410,6 +26826,9 @@
           "cloud-api-key": []
         },
         {
+          "global-api-key": []
+        },
+        {
           "confluent-sts-access-token": []
         }
       ],
@@ -28171,6 +28590,9 @@
           "cloud-api-key": []
         },
         {
+          "global-api-key": []
+        },
+        {
           "confluent-sts-access-token": []
         }
       ],
@@ -28226,6 +28648,9 @@
       "security": [
         {
           "cloud-api-key": []
+        },
+        {
+          "global-api-key": []
         },
         {
           "confluent-sts-access-token": []
@@ -28285,6 +28710,9 @@
           "cloud-api-key": []
         },
         {
+          "global-api-key": []
+        },
+        {
           "confluent-sts-access-token": []
         }
       ],
@@ -28340,6 +28768,9 @@
       "security": [
         {
           "cloud-api-key": []
+        },
+        {
+          "global-api-key": []
         },
         {
           "confluent-sts-access-token": []
@@ -37200,6 +37631,9 @@
           "cloud-api-key": []
         },
         {
+          "global-api-key": []
+        },
+        {
           "confluent-sts-access-token": []
         }
       ],
@@ -37255,6 +37689,9 @@
       "security": [
         {
           "cloud-api-key": []
+        },
+        {
+          "global-api-key": []
         },
         {
           "confluent-sts-access-token": []
@@ -43972,6 +44409,34 @@
       "parameters": [
         {
           "in": "query",
+          "wire_name": "resource",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "query.resource",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_integer": false
+        },
+        {
+          "in": "query",
+          "wire_name": "resource_type",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "query.resource_type",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_integer": false
+        },
+        {
+          "in": "query",
           "wire_name": "page_size",
           "required": false,
           "official_types": [
@@ -44026,6 +44491,9 @@
       "security": [
         {
           "cloud-api-key": []
+        },
+        {
+          "global-api-key": []
         },
         {
           "confluent-sts-access-token": []
@@ -44083,6 +44551,9 @@
       "security": [
         {
           "cloud-api-key": []
+        },
+        {
+          "global-api-key": []
         },
         {
           "confluent-sts-access-token": []
@@ -44178,6 +44649,9 @@
           "cloud-api-key": []
         },
         {
+          "global-api-key": []
+        },
+        {
           "confluent-sts-access-token": []
         }
       ],
@@ -44233,6 +44707,9 @@
       "security": [
         {
           "cloud-api-key": []
+        },
+        {
+          "global-api-key": []
         },
         {
           "confluent-sts-access-token": []
@@ -44334,6 +44811,9 @@
           "cloud-api-key": []
         },
         {
+          "global-api-key": []
+        },
+        {
           "confluent-sts-access-token": []
         }
       ],
@@ -44389,6 +44869,9 @@
       "security": [
         {
           "cloud-api-key": []
+        },
+        {
+          "global-api-key": []
         },
         {
           "confluent-sts-access-token": []
@@ -44498,6 +44981,9 @@
           "cloud-api-key": []
         },
         {
+          "global-api-key": []
+        },
+        {
           "confluent-sts-access-token": []
         }
       ],
@@ -44553,6 +45039,9 @@
       "security": [
         {
           "cloud-api-key": []
+        },
+        {
+          "global-api-key": []
         },
         {
           "confluent-sts-access-token": []
@@ -44634,6 +45123,9 @@
           "cloud-api-key": []
         },
         {
+          "global-api-key": []
+        },
+        {
           "confluent-sts-access-token": []
         }
       ],
@@ -44651,6 +45143,299 @@
       "wire_path": "/notifications/v1/subscriptions/{id}",
       "tag": "Subscriptions (notifications/v1)",
       "lifecycle": "General Availability",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "id",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "id",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_integer": false
+        }
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "request_body_mode": "none",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_body_mode": "json",
+      "empty_success_statuses": [],
+      "result_path": null,
+      "pagination": null,
+      "response_capture": null,
+      "security": [
+        {
+          "cloud-api-key": []
+        },
+        {
+          "global-api-key": []
+        },
+        {
+          "confluent-sts-access-token": []
+        }
+      ],
+      "server": "https://api.confluent.cloud",
+      "literal_query_fold": null
+    },
+    "GET /notifications/v1/user-notifications": {
+      "key": "GET /notifications/v1/user-notifications",
+      "operation_id": "listNotificationsV1UserNotifications",
+      "pack": "confluent-cloud-notifications-sharing",
+      "profile": "cloud",
+      "op": "user_notifications_notifications_v1.list_notifications_v1_user_notifications",
+      "method": "GET",
+      "path": "/notifications/v1/user-notifications",
+      "wire_path": "/notifications/v1/user-notifications",
+      "tag": "User Notifications (notifications/v1)",
+      "lifecycle": "Early Access",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "query",
+          "wire_name": "read",
+          "required": false,
+          "official_types": [
+            "boolean"
+          ],
+          "admitted_key": "query.read",
+          "admitted_type": "boolean",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_integer": false
+        },
+        {
+          "in": "query",
+          "wire_name": "severity",
+          "required": false,
+          "official_types": [
+            "array"
+          ],
+          "admitted_key": "query.severity",
+          "admitted_type": "array",
+          "serialization": "repeated_query_items",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_integer": false
+        },
+        {
+          "in": "query",
+          "wire_name": "include",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "query.include",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_integer": false
+        },
+        {
+          "in": "query",
+          "wire_name": "resource.type",
+          "required": false,
+          "official_types": [
+            "array"
+          ],
+          "admitted_key": "query.resource.type",
+          "admitted_type": "array",
+          "serialization": "repeated_query_items",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_integer": false
+        },
+        {
+          "in": "query",
+          "wire_name": "resource.crn",
+          "required": false,
+          "official_types": [
+            "array"
+          ],
+          "admitted_key": "query.resource.crn",
+          "admitted_type": "array",
+          "serialization": "repeated_query_items",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_integer": false
+        },
+        {
+          "in": "query",
+          "wire_name": "search",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "query.search",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_integer": false
+        },
+        {
+          "in": "query",
+          "wire_name": "time_range",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "query.time_range",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_integer": false
+        },
+        {
+          "in": "query",
+          "wire_name": "page_size",
+          "required": false,
+          "official_types": [
+            "integer"
+          ],
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "owned_by_automatic_pagination",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_integer": true
+        },
+        {
+          "in": "query",
+          "wire_name": "page_token",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "owned_by_automatic_pagination",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_integer": false
+        },
+        {
+          "in": "query",
+          "wire_name": "sort",
+          "required": false,
+          "official_types": [
+            "array"
+          ],
+          "admitted_key": "query.sort",
+          "admitted_type": "array",
+          "serialization": "csv_query_items",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_integer": false
+        }
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "request_body_mode": "none",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_body_mode": "json",
+      "empty_success_statuses": [],
+      "result_path": "data",
+      "pagination": {
+        "style": "query_token_link",
+        "link_from": "metadata.next",
+        "query_param": "page_token",
+        "token_to": {
+          "placement": "query",
+          "param": "page_token"
+        }
+      },
+      "response_capture": null,
+      "security": [
+        {
+          "cloud-api-key": []
+        },
+        {
+          "confluent-sts-access-token": []
+        }
+      ],
+      "server": "https://api.confluent.cloud",
+      "literal_query_fold": null
+    },
+    "GET /notifications/v1/user-notifications:summary": {
+      "key": "GET /notifications/v1/user-notifications:summary",
+      "operation_id": "getNotificationsV1UserNotificationsSummary",
+      "pack": "confluent-cloud-notifications-sharing",
+      "profile": "cloud",
+      "op": "user_notifications_notifications_v1.get_notifications_v1_user_notifications_summary",
+      "method": "GET",
+      "path": "/notifications/v1/user-notifications:summary",
+      "wire_path": "/notifications/v1/user-notifications:summary",
+      "tag": "User Notifications (notifications/v1)",
+      "lifecycle": "Early Access",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [],
+      "request_media": [],
+      "selected_request_media": null,
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "request_body_mode": "none",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_body_mode": "json",
+      "empty_success_statuses": [],
+      "result_path": null,
+      "pagination": null,
+      "response_capture": null,
+      "security": [
+        {
+          "cloud-api-key": []
+        },
+        {
+          "confluent-sts-access-token": []
+        }
+      ],
+      "server": "https://api.confluent.cloud",
+      "literal_query_fold": null
+    },
+    "GET /notifications/v1/user-notifications/{id}": {
+      "key": "GET /notifications/v1/user-notifications/{id}",
+      "operation_id": "getNotificationsV1UserNotification",
+      "pack": "confluent-cloud-notifications-sharing",
+      "profile": "cloud",
+      "op": "user_notifications_notifications_v1.get_notifications_v1_user_notification",
+      "method": "GET",
+      "path": "/notifications/v1/user-notifications/{id}",
+      "wire_path": "/notifications/v1/user-notifications/{id}",
+      "tag": "User Notifications (notifications/v1)",
+      "lifecycle": "Early Access",
       "risk": "read",
       "approval": "never",
       "idempotency": "safe",
@@ -51419,6 +52204,9 @@
           "cloud-api-key": []
         },
         {
+          "global-api-key": []
+        },
+        {
           "confluent-sts-access-token": []
         }
       ],
@@ -52287,6 +53075,9 @@
           "cloud-api-key": []
         },
         {
+          "global-api-key": []
+        },
+        {
           "confluent-sts-access-token": []
         }
       ],
@@ -52346,6 +53137,9 @@
       "security": [
         {
           "cloud-api-key": []
+        },
+        {
+          "global-api-key": []
         },
         {
           "confluent-sts-access-token": []
@@ -52409,6 +53203,9 @@
           "cloud-api-key": []
         },
         {
+          "global-api-key": []
+        },
+        {
           "confluent-sts-access-token": []
         }
       ],
@@ -52426,6 +53223,201 @@
       "wire_path": "/notifications/v1/subscriptions/{id}",
       "tag": "Subscriptions (notifications/v1)",
       "lifecycle": "General Availability",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "id",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "id",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_integer": false
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "official_request_body_required": false,
+      "effective_request_body_required": true,
+      "request_body_types": [
+        "object"
+      ],
+      "request_body_mode": "raw_json",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_body_mode": "json",
+      "empty_success_statuses": [],
+      "result_path": null,
+      "pagination": null,
+      "response_capture": null,
+      "security": [
+        {
+          "cloud-api-key": []
+        },
+        {
+          "global-api-key": []
+        },
+        {
+          "confluent-sts-access-token": []
+        }
+      ],
+      "server": "https://api.confluent.cloud",
+      "literal_query_fold": null
+    },
+    "PATCH /notifications/v1/user-notifications:mark-all": {
+      "key": "PATCH /notifications/v1/user-notifications:mark-all",
+      "operation_id": "markAllNotificationsV1UserNotifications",
+      "pack": "confluent-cloud-notifications-sharing",
+      "profile": "cloud",
+      "op": "user_notifications_notifications_v1.mark_all_notifications_v1_user_notifications",
+      "method": "PATCH",
+      "path": "/notifications/v1/user-notifications:mark-all",
+      "wire_path": "/notifications/v1/user-notifications:mark-all",
+      "tag": "User Notifications (notifications/v1)",
+      "lifecycle": "Early Access",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "parameters": [
+        {
+          "in": "query",
+          "wire_name": "read",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "query.read",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_integer": false
+        },
+        {
+          "in": "query",
+          "wire_name": "severity",
+          "required": false,
+          "official_types": [
+            "array"
+          ],
+          "admitted_key": "query.severity",
+          "admitted_type": "array",
+          "serialization": "repeated_query_items",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_integer": false
+        },
+        {
+          "in": "query",
+          "wire_name": "resource.type",
+          "required": false,
+          "official_types": [
+            "array"
+          ],
+          "admitted_key": "query.resource.type",
+          "admitted_type": "array",
+          "serialization": "repeated_query_items",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_integer": false
+        },
+        {
+          "in": "query",
+          "wire_name": "resource.crn",
+          "required": false,
+          "official_types": [
+            "array"
+          ],
+          "admitted_key": "query.resource.crn",
+          "admitted_type": "array",
+          "serialization": "repeated_query_items",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_integer": false
+        },
+        {
+          "in": "query",
+          "wire_name": "search",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "query.search",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_integer": false
+        },
+        {
+          "in": "query",
+          "wire_name": "time_range",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "query.time_range",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_integer": false
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "official_request_body_required": false,
+      "effective_request_body_required": true,
+      "request_body_types": [
+        "object"
+      ],
+      "request_body_mode": "raw_json",
+      "success_status": "204",
+      "response_media": [],
+      "selected_response_media": "application/json",
+      "response_body_mode": "none",
+      "empty_success_statuses": [
+        "204"
+      ],
+      "result_path": null,
+      "pagination": null,
+      "response_capture": null,
+      "security": [
+        {
+          "cloud-api-key": []
+        },
+        {
+          "confluent-sts-access-token": []
+        }
+      ],
+      "server": "https://api.confluent.cloud",
+      "literal_query_fold": null
+    },
+    "PATCH /notifications/v1/user-notifications/{id}": {
+      "key": "PATCH /notifications/v1/user-notifications/{id}",
+      "operation_id": "updateNotificationsV1UserNotification",
+      "pack": "confluent-cloud-notifications-sharing",
+      "profile": "cloud",
+      "op": "user_notifications_notifications_v1.update_notifications_v1_user_notification",
+      "method": "PATCH",
+      "path": "/notifications/v1/user-notifications/{id}",
+      "wire_path": "/notifications/v1/user-notifications/{id}",
+      "tag": "User Notifications (notifications/v1)",
+      "lifecycle": "Early Access",
       "risk": "admin",
       "approval": "always",
       "idempotency": "idempotent",
@@ -55480,6 +56472,9 @@
           "cloud-api-key": []
         },
         {
+          "global-api-key": []
+        },
+        {
           "confluent-sts-access-token": []
         }
       ],
@@ -57422,6 +58417,9 @@
           "cloud-api-key": []
         },
         {
+          "global-api-key": []
+        },
+        {
           "confluent-sts-access-token": []
         }
       ],
@@ -57466,6 +58464,9 @@
       "security": [
         {
           "cloud-api-key": []
+        },
+        {
+          "global-api-key": []
         },
         {
           "confluent-sts-access-token": []
@@ -57514,6 +58515,9 @@
           "cloud-api-key": []
         },
         {
+          "global-api-key": []
+        },
+        {
           "confluent-sts-access-token": []
         }
       ],
@@ -57560,6 +58564,9 @@
           "cloud-api-key": []
         },
         {
+          "global-api-key": []
+        },
+        {
           "confluent-sts-access-token": []
         }
       ],
@@ -57604,6 +58611,9 @@
       "security": [
         {
           "cloud-api-key": []
+        },
+        {
+          "global-api-key": []
         },
         {
           "confluent-sts-access-token": []

@@ -123,3 +123,37 @@ test('a SLOW calendar still shows tasks and commitments, and claims nothing whil
   // The calendar event is not invented while its source is silent.
   await expect(page.getByRole('link', { name: 'Design review', exact: true })).toHaveCount(0);
 });
+
+test('a fresh install says so on a FINISHED read, and its capture offer opens the shared Create overlay', async ({ page }) => {
+  // ⛔ THE ZERO STATE IS THE ONE A NEW OWNER ACTUALLY SEES, AND IT HAD NO
+  // BROWSER COVERAGE. The unit suite asserts `renderToday(...)` returns a string
+  // containing `data-today-empty` — which is true of markup nobody can reach and
+  // of a button wired to nothing. `canCreate` is `opts.openCreateOverlay !==
+  // undefined`, so whether the offer renders at all is a property of the COMPOSED
+  // app, not of the renderer the unit test calls directly.
+  //
+  // ⛔ AND EMPTY IS NOT PENDING. `?data=today-empty` answers every Today read
+  // with a real, RESOLVED, empty result. Leaving those reads unstubbed would sit
+  // on "Loading Today…" forever and every assertion below would pass as absent
+  // rather than as pending — a false negative shaped exactly like a missing
+  // feature. The `aria-busy=false` + "not Still reading your sources" pair is
+  // what pins this to a COMPLETED read: the claim "nothing is due" is only
+  // honest once every source has answered.
+  await page.clock.install({ time: new Date('2026-09-08T12:00:00-07:00') });
+  await page.goto('http://127.0.0.1:4319/full-app-harness.html?data=today-empty#data/today');
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const view = page.locator('[data-today-view]');
+  await expect(view).toHaveAttribute('aria-busy', 'false');
+  await expect(view).not.toContainText('Loading Today');
+  await expect(view).not.toContainText('Still reading your sources');
+
+  await expect(view.locator('[data-today-empty]')).toBeVisible();
+  await expect(view).toContainText('Nothing is due in the next seven days.');
+  await expect(view).not.toContainText('Results below may be incomplete');
+
+  // The offer is REACHABLE, not merely rendered — one modal, one commit path, so
+  // a capture made from Today is indistinguishable from one made anywhere else.
+  await view.getByRole('button', { name: 'Capture something', exact: true }).click();
+  await expect(page.locator('[data-recued-create-overlay]')).toBeVisible();
+});

@@ -3,28 +3,28 @@
     "source": {
       "kind": "openapi",
       "url": "https://api-docs.render.com/openapi/render-public-api-1.json",
-      "sha256": "a969bde304f7b51fa447cd91a86ca6992407b0a0b1df735f2047d42a1fe592b6",
-      "bytes": 334383,
+      "sha256": "c6851bc830fa0f01fa58face22c8cf46d4762054c6fe879d724fae5ade72a520",
+      "bytes": 345074,
       "openapi": "3.0.2",
       "info_version": "1.0.0",
       "server": "https://api.render.com/v1",
       "mutability": "The official URL is mutable; generation and publish revalidation fail closed unless its bytes still match this hash."
     },
-    "official_path_count": 130,
-    "official_operation_count": 207,
-    "admitted_operation_count": 177,
+    "official_path_count": 131,
+    "official_operation_count": 208,
+    "admitted_operation_count": 178,
     "excluded_operation_count": 30,
-    "unique_admitted_operation_id_count": 177,
-    "unique_admitted_method_path_count": 177,
+    "unique_admitted_operation_id_count": 178,
+    "unique_admitted_method_path_count": 178,
     "official_method_counts": {
-      "GET": 101,
+      "GET": 102,
       "POST": 46,
       "PATCH": 18,
       "DELETE": 30,
       "PUT": 12
     },
     "admitted_method_counts": {
-      "GET": 86,
+      "GET": 87,
       "PATCH": 15,
       "DELETE": 30,
       "POST": 40,
@@ -32,12 +32,12 @@
     },
     "pack_operation_counts": {
       "render": 26,
-      "render-services-delivery": 41,
+      "render-services-delivery": 42,
       "render-data-observability": 66,
       "render-platform-automation": 44
     },
     "pagination_counts": {
-      "none": 177
+      "none": 178
     },
     "unpaged_collection_count": 57,
     "manual_cursor_operation_ids": [
@@ -500,7 +500,7 @@
       "official_alternatives": [
         "BearerAuth"
       ],
-      "authenticated_operations": 207,
+      "authenticated_operations": 208,
       "no_security_declared_operations": 0
     },
     "source_decision": {
@@ -1242,6 +1242,11 @@
     "/services/{serviceId}/instances": {
       "get": {
         "operationId": "list-instances"
+      }
+    },
+    "/services/{serviceId}/outbound-ips": {
+      "get": {
+        "operationId": "retrieve-service-outbound-ips"
       }
     },
     "/cron-jobs/{cronJobId}/runs": {
@@ -6600,6 +6605,9 @@
           "parentTaskRunId": {
             "type": "string"
           },
+          "parentTaskAttempt": {
+            "type": "number"
+          },
           "rootTaskRunId": {
             "type": "string"
           },
@@ -7098,6 +7106,9 @@
           "parentTaskRunId": {
             "type": "string"
           },
+          "parentTaskAttempt": {
+            "type": "number"
+          },
           "rootTaskRunId": {
             "type": "string"
           },
@@ -7137,6 +7148,9 @@
       "response_schema": {
         "type": "object",
         "properties": {
+          "id": {
+            "type": "string"
+          },
           "email": {
             "type": "string"
           },
@@ -10046,6 +10060,16 @@
           "admitted_name": "query.ownerId",
           "required": true,
           "exposed": true
+        },
+        {
+          "name": "environmentId",
+          "wire_name": "environmentId",
+          "in": "query",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "query.environmentId",
+          "required": false,
+          "exposed": true
         }
       ],
       "request": null,
@@ -11046,6 +11070,54 @@
       "response_json": null,
       "risk": "read",
       "approval": "ask",
+      "idempotency": "safe"
+    },
+    "render-services-delivery.retrieve_service_outbound_ips": {
+      "pack": "render-services-delivery",
+      "op": "retrieve_service_outbound_ips",
+      "operation_id": "retrieve-service-outbound-ips",
+      "method": "GET",
+      "path": "/services/{serviceId}/outbound-ips",
+      "wire_path": "/services/{{service_id}}/outbound-ips",
+      "tags": null,
+      "parameters": [
+        {
+          "name": "serviceId",
+          "wire_name": "serviceId",
+          "in": "path",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "service_id",
+          "required": true,
+          "exposed": true
+        }
+      ],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string"
+          },
+          "dedicatedIpId": {
+            "type": "string"
+          },
+          "ips": {
+            "type": "array"
+          }
+        }
+      },
+      "result_path": null,
+      "pagination": null,
+      "accept": "application/json",
+      "content_type": null,
+      "response_json": null,
+      "risk": "read",
+      "approval": "never",
       "idempotency": "safe"
     },
     "render-services-delivery.run_cron_job": {
