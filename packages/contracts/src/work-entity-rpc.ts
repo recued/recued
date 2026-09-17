@@ -18,7 +18,8 @@
  *  the kind's required fields (no `id`), `update` carries `id` + the
  *  mutable subset. Lifecycle moves (commitment fulfil / cancel, project
  *  archive, task mark-done) are deliberately NOT upsert targets — they
- *  are distinct semantic operations on the ingredient/recipe path.
+ *  are distinct semantic operations. Task completion also has an explicit
+ *  paired-client RPC below for the Today actions.
  *
  *  Spec: D-174 D11 + D-145 § A.1 / A.2. */
 
@@ -127,6 +128,15 @@ export interface WorkEntityUpsertRpcResponse {
   /** Tagged canonical record (`_kind` discriminator) for the
    *  created / updated entity. */
   entity: WorkEntity;
+}
+
+/** Completion stays a separate semantic operation, including its reactive event. */
+export interface WorkEntityTaskMarkDoneRpcRequest {
+  id: string;
+  done: boolean;
+}
+export interface WorkEntityTaskMarkDoneRpcResponse {
+  entity: Extract<WorkEntity, { _kind: 'task' }>;
 }
 
 /** Delete one entity by `(kind, id)`. Default tombstone (`sync_state:

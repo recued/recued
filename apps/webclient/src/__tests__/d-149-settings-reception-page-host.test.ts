@@ -40,13 +40,13 @@ import {
   buildDefaultPacketDeclaration,
   RECEPTION_HOST_MOUNT_ACTIONS,
   RECEPTION_HOST_PROMPT_ACTIONS,
-} from '../settings/reception-page-host.js';
-import { RECEPTION_PAGE_ACTIONS, RECEPTION_PAGE_NATIVE_ACTIONS } from '../settings/reception-page-render.js';
+} from '../reception/page-host.js';
+import { RECEPTION_PAGE_ACTIONS, RECEPTION_PAGE_NATIVE_ACTIONS } from '../reception/page-render.js';
 import type {
   LaunchWizardRunResult,
   ReceptionPageShell,
   ReceptionPageShellState,
-} from '../settings/reception-page-shell.js';
+} from '../reception/page-shell.js';
 
 const NOW = 1_700_000_000_000;
 

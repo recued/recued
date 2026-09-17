@@ -121,6 +121,19 @@ describe('composeExecutionContext', () => {
       expect(kernelDispatchers?.formResponseGet).toEqual(expect.any(Function));
       expect(kernelDispatchers?.webhookEventGet).toEqual(expect.any(Function));
       expect(kernelDispatchers?.scheduleRecipe).toEqual(expect.any(Function));
+      // ⛔ THE KERNEL'S `task-mark-done` MUST NOT BE THE RAW DISPATCHER. Every
+      // recipe that completes a task reaches this slot, and the raw one takes no
+      // per-task lock and re-stamps `completed_at` on a repeat. Asserting the
+      // wrapper in isolation would not catch a composition that forgot to apply
+      // it, which is exactly how it came to be unguarded — so the identity check
+      // belongs here, against the set the executor actually received.
+      expect(collection.workEntityDispatchers?.taskMarkDone).toEqual(expect.any(Function));
+      expect(kernelDispatchers?.taskMarkDone).not.toBe(
+        collection.workEntityDispatchers?.taskMarkDone,
+      );
+      // …while a slot with no guard is passed through by identity, so this is a
+      // one-slot swap and not a re-derivation of the whole set.
+      expect(kernelDispatchers?.taskCreate).toBe(collection.workEntityDispatchers?.taskCreate);
       // The claim-origin resolver is deliberately live: a hostname verified
       // after executor composition must work without restarting the server.
       storageContext.hostnameRegistryStore.upsert({

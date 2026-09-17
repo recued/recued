@@ -25,6 +25,194 @@ test('Today merges all kinds, exposes source freshness, and renders within a mob
   await page.locator('[data-today-view]').screenshot({ path: '/tmp/recued-today-mobile.png' });
 });
 
+const mutations = (page: Page): Promise<unknown[]> => page.evaluate(() =>
+  JSON.parse(sessionStorage.getItem('recued-test-today-mutations') ?? '[]') as unknown[]);
+
+test('completes the original task in Today and keeps the confirmed result through refresh and reopening', async ({ page }) => {
+  await boot(page);
+  await page.getByRole('button', { name: 'Complete Send the proposal', exact: true }).click();
+  await expect(page.locator('[data-today-task-notice]')).toHaveText('Completed “Send the proposal”.');
+  await expect(page.locator('[data-today-task-notice]')).toBeFocused();
+  await expect(page.getByRole('link', { name: 'Send the proposal', exact: true })).toHaveCount(0);
+  await expect(page).toHaveURL(/#data\/today$/);
+  expect(await mutations(page)).toEqual([{ method: 'work_entity.task.mark_done', args: { id: 'late/task', done: true } }]);
+  await page.locator('.today-refresh').click();
+  await expect(page.locator('[data-today-view]')).toHaveAttribute('aria-busy', 'false');
+  await expect(page.getByRole('link', { name: 'Send the proposal', exact: true })).toHaveCount(0);
+  await page.reload();
+  await expect(page.locator('[data-today-view]')).toHaveAttribute('aria-busy', 'false');
+  await expect(page.getByRole('link', { name: 'Send the proposal', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('link', { name: 'Design review', exact: true })).toBeVisible();
+});
+
+test('reschedules only the task due date, keeping its draft and focus through background refresh', async ({ page }) => {
+  await boot(page);
+  await page.getByRole('button', { name: 'Reschedule Send the proposal', exact: true }).click();
+  const due = page.getByLabel('New due date and time', { exact: true });
+  await expect(due).toBeFocused();
+  await due.fill('2026-09-10T09:30');
+  // A programmatic refresh does not take the keyboard owner's focus.
+  await page.evaluate(() => document.querySelector<HTMLButtonElement>('.today-refresh')?.click());
+  await expect(page.locator('[data-today-view]')).toHaveAttribute('aria-busy', 'false');
+  await expect(due).toHaveValue('2026-09-10T09:30');
+  await expect(due).toBeFocused();
+  await page.getByRole('tab', { name: 'Today', exact: true }).click();
+  await page.getByRole('button', { name: 'Data', exact: true }).click();
+  await expect(due).toHaveValue('2026-09-10T09:30');
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.getByRole('button', { name: 'Save due date', exact: true }).click();
+  await expect(page.locator('[data-today-task-notice]')).toHaveText('Rescheduled “Send the proposal”.');
+  await expect(page.locator('[data-today-task-notice]')).toBeFocused();
+  await expect(page.locator('[data-today-group="next"]')).toContainText('Send the proposal');
+  await expect(page.locator('[data-today-group="overdue"]')).not.toContainText('Send the proposal');
+  expect(await mutations(page)).toEqual([{ method: 'work_entity.upsert', args: {
+    kind: 'task', id: 'late/task', due_at: Date.parse('2026-09-10T09:30:00-07:00'),
+  } }]);
+});
+
+test('rescheduling a task below the fold reveals its editor and Cancel returns to the task', async ({ page }) => {
+  await boot(page);
+  const reschedule = page.getByRole('button', { name: 'Reschedule Prepare the demo', exact: true });
+  await reschedule.scrollIntoViewIfNeeded();
+  await reschedule.click();
+  const due = page.getByLabel('New due date and time', { exact: true });
+  await expect(due).toBeFocused();
+  await expect(due).toBeInViewport();
+  const row = page.locator('[data-today-item]').filter({ has: page.getByRole('link', { name: 'Prepare the demo', exact: true }) });
+  await expect(row.locator('[data-today-task-editor]')).toBeVisible();
+  await expect(due).toHaveAccessibleDescription('Changes this task’s due date. Times use your device’s time zone.');
+  await row.screenshot({ path: '/tmp/recued-today-inline-editor.png' });
+  await page.locator('[data-today-task-editor]').getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(reschedule).toBeFocused();
+  await expect(reschedule).toBeInViewport();
+  expect(await mutations(page)).toEqual([]);
+});
+
+test('keeps a reschedule draft when another task action is attempted and supports Escape', async ({ page }) => {
+  await boot(page);
+  const original = page.getByRole('button', { name: 'Reschedule Review the brief', exact: true });
+  await original.click();
+  const due = page.getByLabel('New due date and time', { exact: true });
+  await due.fill('2026-09-12T14:15');
+  const other = page.getByRole('button', { name: 'Complete Send the proposal', exact: true });
+  await expect(other).toBeDisabled();
+  await other.evaluate(button => (button as HTMLButtonElement).click());
+  await expect(due).toHaveValue('2026-09-12T14:15');
+  await expect(due).toBeFocused();
+  expect(await mutations(page)).toEqual([]);
+  await due.press('Escape');
+  await expect(page.locator('[data-today-task-editor]')).toHaveCount(0);
+  await expect(original).toBeFocused();
+});
+
+test('offers a direct retry for a failed task completion', async ({ page }) => {
+  await boot(page);
+  await page.evaluate(() => { document.documentElement.dataset.todayWriteFailure = '1'; });
+  await page.getByRole('button', { name: 'Complete Send the proposal', exact: true }).click();
+  await expect(page.locator('[data-today-task-error]')).toBeFocused();
+  await expect(page.getByRole('link', { name: 'Send the proposal', exact: true })).toBeVisible();
+  await page.evaluate(() => { delete document.documentElement.dataset.todayWriteFailure; });
+  await page.getByRole('button', { name: 'Try again', exact: true }).click();
+  await expect(page.locator('[data-today-task-notice]')).toContainText('Completed');
+  await expect(page.getByRole('link', { name: 'Send the proposal', exact: true })).toHaveCount(0);
+  expect(await mutations(page)).toHaveLength(2);
+});
+
+test('invalid dates and failed writes preserve the reschedule draft for correction and retry', async ({ page }) => {
+  await boot(page);
+  await page.getByRole('button', { name: 'Reschedule Review the brief', exact: true }).click();
+  const due = page.getByLabel('New due date and time', { exact: true });
+  await due.fill('');
+  await page.getByRole('button', { name: 'Save due date', exact: true }).click();
+  await expect(page.locator('[data-today-task-error]')).toContainText('Pick a valid due date');
+  expect(await mutations(page)).toEqual([]);
+  await due.fill('2026-09-09T10:00');
+  await page.evaluate(() => { document.documentElement.dataset.todayWriteFailure = '1'; });
+  await due.press('Enter');
+  await expect(page.locator('[data-today-task-error]')).toContainText('Task source rejected the change');
+  await expect(page.locator('[data-today-task-error]')).toBeFocused();
+  await expect(due).toHaveValue('2026-09-09T10:00');
+  await expect(page.locator('[data-today-group="today"]')).toContainText('Review the brief');
+  await page.evaluate(() => { delete document.documentElement.dataset.todayWriteFailure; });
+  await page.getByRole('button', { name: 'Save due date', exact: true }).click();
+  await expect(page.locator('[data-today-task-notice]')).toHaveText('Rescheduled “Review the brief”.');
+  await expect(page.locator('[data-today-group="next"]')).toContainText('Review the brief');
+  expect(await mutations(page)).toHaveLength(2);
+});
+
+test('does not claim rescheduling succeeded when the source kept its previous due date', async ({ page }) => {
+  await boot(page);
+  await page.evaluate(() => { document.documentElement.dataset.todayVendorWon = '1'; });
+  await page.getByRole('button', { name: 'Reschedule Review the brief', exact: true }).click();
+  const due = page.getByLabel('New due date and time', { exact: true });
+  await due.fill('2026-09-11T10:00');
+  await page.getByRole('button', { name: 'Save due date', exact: true }).click();
+  await expect(page.locator('[data-today-task-error]')).toContainText('The server did not confirm the change');
+  await expect(page.locator('[data-today-task-notice]')).toHaveCount(0);
+  await expect(due).toHaveValue('2026-09-11T10:00');
+  await expect(page.locator('[data-today-group="today"]')).toContainText('Review the brief');
+});
+
+test('keeps a pending completion explicit when the locally changed row disappears on refresh', async ({ page }) => {
+  await boot(page);
+  await page.evaluate(() => { document.documentElement.dataset.todayAwaitingVerify = '1'; });
+  await page.getByRole('button', { name: 'Complete Send the proposal', exact: true }).click();
+  await expect(page.locator('[data-today-task-error]')).toContainText('the source has not confirmed it yet');
+  await expect(page.locator('[data-today-task-notice]')).toHaveCount(0);
+  await page.locator('.today-refresh').click();
+  await expect(page.locator('[data-today-view]')).toHaveAttribute('aria-busy', 'false');
+  await expect(page.getByRole('link', { name: 'Send the proposal', exact: true })).toHaveCount(0);
+  await expect(page.locator('[data-today-task-editor]')).toBeVisible();
+  await expect(page.locator('[data-today-task-error]')).toContainText('the source has not confirmed it yet');
+  expect(await mutations(page)).toHaveLength(1);
+});
+
+for (const unavailable of ['today_readonly', 'today_source_failure']) {
+  test(`hides task actions when the source cannot confirm writes (${unavailable})`, async ({ page }) => {
+    await boot(page, `&${unavailable}=1`);
+    await expect(page.getByRole('link', { name: 'Review the brief', exact: true })).toBeVisible();
+    await expect(page.locator('.today-task-actions')).toHaveCount(0);
+    expect(await mutations(page)).toEqual([]);
+  });
+}
+
+for (const changed of ['readonly', 'deleted'] as const) {
+  test(`rechecks a task that became ${changed} after the Today read`, async ({ page }) => {
+    await boot(page);
+    await page.evaluate((posture) => {
+      if (posture === 'readonly') document.documentElement.dataset.todayReadonly = '1';
+      else document.documentElement.dataset.todayHideTask = 'late/task';
+    }, changed);
+    await page.getByRole('button', { name: 'Complete Send the proposal', exact: true }).click();
+    await expect(page.locator('[data-today-task-error]')).toContainText('This task cannot be changed here now');
+    expect(await mutations(page)).toEqual([]);
+    await page.getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Complete Send the proposal', exact: true })).toBeFocused();
+  });
+}
+
+test('guards duplicate writes and confirms completion while an unrelated calendar read is still pending', async ({ page }) => {
+  await page.clock.install({ time: new Date('2026-09-08T12:00:00-07:00') });
+  await page.goto(`${base}&hold_rpc=collection.list&hold_rpc=work_entity.task.mark_done#data/today`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  const complete = page.getByRole('button', { name: 'Complete Send the proposal', exact: true });
+  await complete.click();
+  await expect(page.locator('[data-today-task-editor]')).toHaveAttribute('aria-busy', 'true');
+  await expect(complete).toHaveAttribute('aria-disabled', 'true');
+  await complete.evaluate(button => (button as HTMLButtonElement).click());
+  const tasksTab = page.getByRole('tab', { name: 'Tasks', exact: true });
+  await expect(tasksTab).toBeDisabled();
+  await tasksTab.evaluate(button => (button as HTMLButtonElement).click());
+  await expect(page.getByRole('tab', { name: 'Today', exact: true })).toHaveAttribute('aria-selected', 'true');
+  expect(await mutations(page)).toHaveLength(1);
+  expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('work_entity.task.mark_done'))).toBe(1);
+  await expect(page.locator('[data-today-task-notice]')).toHaveText('Completed “Send the proposal”.');
+  await expect(page.getByRole('link', { name: 'Send the proposal', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('link', { name: 'Review the brief', exact: true })).toBeVisible();
+  await expect(page.locator('[data-today-view]')).toContainText('Still reading your sources');
+  expect(await mutations(page)).toHaveLength(1);
+});
+
 test('original task, commitment, and source-qualified calendar details return to Today with browser Back', async ({ page }) => {
   await boot(page);
   for (const [title, hash] of [

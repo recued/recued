@@ -1,8 +1,8 @@
-/** D-149 § A.9 + § A.5.x follow-on — Settings → Server → Reception
+/** D-149 § A.9 + § A.5.x follow-on — Reception
  *  per-kind authoring-form renderer acceptance.
  *
  *  `renderAuthoringForm` is a PURE projection of a `<Kind>FormModel`
- *  (from `reception-authoring.ts`) to an HTML string — these tests
+ *  (from `authoring.ts`) to an HTML string — these tests
  *  assert it dispatches over all six kinds, projects every `Authoring*Field`
  *  control with the right `data-field-*` / `data-repeater-*` markup,
  *  routes the preview-vs-upsert action bar by kind, gates submit on the
@@ -33,13 +33,13 @@ import {
   buildStatusLinkFormModel,
   validateSchedulingLinkFormConfig,
   type AuthoringValidationSummary,
-} from '../settings/reception-authoring.js';
+} from '../reception/authoring.js';
 import {
   renderAuthoringForm,
   AUTHORING_FORM_ACTIONS,
   RECEPTION_AUTHORING_STYLES,
   type AuthoringFormView,
-} from '../settings/reception-authoring-render.js';
+} from '../reception/authoring-render.js';
 
 // ── Fixtures ──────────────────────────────────────────────────────
 

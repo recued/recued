@@ -273,6 +273,64 @@ export const renameProfile = (
   ),
 });
 
+/** D-148 — point an EXISTING profile at a different address, keeping its
+ *  identity, its bearer and its label.
+ *
+ *  ⛔ THIS IS WHY `set('server_url', next)` CANNOT BE THE RENAME. That write is
+ *  intercepted by `local-store.ts` and routed to `ensureActiveProfileFor`,
+ *  which treats the URL as the profile's IDENTITY: it adopts an existing
+ *  profile with that URL or MINTS A NEW ONE. A rename routed through it leaves
+ *  the original profile and its bearer behind and activates an empty record —
+ *  the user's server appears to have been forgotten. Retarget mutates the row.
+ *
+ *  ⚠ `next_token` is not optional plumbing. The v1 AAD bound a wrapped bearer
+ *  to `(token_id, server_url, server_public_key)`, so moving the URL under a
+ *  v1 record makes every later unwrap fail AEAD verify — the bearer is gone
+ *  and the user is told to re-pair. The caller re-seals under v2 (which drops
+ *  `server_url`) and hands the new record in, so the address change and the
+ *  record that survives it are ONE write. Passing the old record through
+ *  unchanged is correct only when it is already v2.
+ *
+ *  Refuses (returns the roster untouched) when:
+ *    - the id is unknown — a stale click must not invent a profile;
+ *    - the URL is blank;
+ *    - ⛔ another profile already holds that URL. Two rows with one URL make
+ *      `ensureActiveProfileFor`'s lookup ambiguous, and the duplicate it picks
+ *      decides which bearer gets unwrapped. The caller surfaces this as "you
+ *      are already paired to that address" rather than silently merging. */
+export const retargetProfile = (
+  roster: ProfileRoster,
+  id: string,
+  next_url: string,
+  next_token: WebclientServerProfile['webclient_token'],
+): ProfileRoster => {
+  const target = roster.profiles.find((p) => p.id === id);
+  if (!target) return roster;
+  const url = next_url.trim();
+  if (url.length === 0) return roster;
+  if (roster.profiles.some((p) => p.id !== id && p.server_url === url)) return roster;
+  return {
+    ...roster,
+    profiles: roster.profiles.map((p) =>
+      p.id === id
+        ? {
+            ...p,
+            server_url: url,
+            webclient_token: next_token,
+            // ⚠ The label follows only when it was never chosen. A user who
+            // named this server keeps that name; one who left the default
+            // (the old host) would otherwise be left with a label naming an
+            // address this profile no longer uses.
+            label:
+              p.label === defaultProfileLabel(p.server_url)
+                ? defaultProfileLabel(url)
+                : p.label,
+          }
+        : p,
+    ),
+  };
+};
+
 /** Stamp a successful connect. Drives switcher ordering + the removal
  *  fallback above. */
 export const noteConnected = (

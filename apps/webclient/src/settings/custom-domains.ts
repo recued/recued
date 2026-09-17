@@ -1,4 +1,6 @@
-/** D-235 P5 — Settings → Server → Domains.
+/** D-235 P5 — the Domains flow: a SECTION under Settings → Server → Hostnames,
+ *  mounted below the registry list. ⚠ Called a tab of its own here and in
+ *  shipped copy until 2026-09-16; there is no Domains tab.
  *
  *  The bring-your-own-domain flow: type a hostname, create the DNS it asks for,
  *  watch the checks go green, enrol.

@@ -22,8 +22,8 @@
 
 import { PATH_FOR_ROLE } from '@recued/contracts';
 
-/** True iff the host is loopback / RFC1918 private / link-local / IPv6 ULA /
- *  mDNS `.local` — i.e. NOT reachable from the public internet.
+/** True iff the host is loopback / RFC1918 private / link-local / CGNAT /
+ *  IPv6 ULA / mDNS `.local` — i.e. NOT reachable from the public internet.
  *
  *  STRICTER than reception's `isPublicShareBaseUrl` (which rejects only the
  *  loopback literals). The divergence is intentional: a reception share link
@@ -34,7 +34,14 @@ import { PATH_FOR_ROLE } from '@recued/contracts';
  *  + by reply) rather than a broken one (Codex P2 fold). */
 const isPrivateOrLocalHost = (rawHost: string): boolean => {
   // url.hostname keeps the brackets for an IPv6 literal — strip them.
-  const host = rawHost.toLowerCase().replace(/^\[/, '').replace(/\]$/, '');
+  const bracketless = rawHost.toLowerCase().replace(/^\[/, '').replace(/\]$/, '');
+  // ⚠ STRIP ONE TRAILING FQDN ROOT DOT BEFORE THE SUFFIX TESTS. `new URL()`
+  //   KEEPS it on a name (`nas.local.`) and drops it on an IPv4 literal, so
+  //   without this `nas.local` was recognised and `nas.local.` was not — and
+  //   the unrecognised form got an emailed one-click link to an mDNS host no
+  //   phone off the LAN can resolve. Found by the three-way agreement ratchet
+  //   (`private-host-predicate-agreement.test.ts`), not by any test here.
+  const host = bracketless.endsWith('.') ? bracketless.slice(0, -1) : bracketless;
   if (host.length === 0) return true;
   if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local')) {
     return true;
@@ -55,6 +62,15 @@ const isPrivateOrLocalHost = (rawHost: string): boolean => {
     if (a === 192 && b === 168) return true; // 192.168/16
     if (a === 172 && b >= 16 && b <= 31) return true; // 172.16/12
     if (a === 169 && b === 254) return true; // 169.254/16 link-local
+    // ⛔ 100.64/10 IS NOT REACHABLE FROM THE INTERNET — RFC 6598 shared address
+    //   space, which is both carrier-grade NAT and where a Tailscale tailnet
+    //   addresses its peers. Without this the builder called a CGNAT'd home
+    //   server PUBLIC and emailed a one-click link to an address no inbound
+    //   connection can reach, which is exactly the dead link the Codex P2 fold
+    //   above exists to prevent. `network/resolve-lan-address.ts` already knew
+    //   (`isCgnatIpv4`); this copy did not. ⚠ A /10, NOT A /8 — 100.0.0.1 is a
+    //   genuinely public address.
+    if (a === 100 && b >= 64 && b <= 127) return true; // 100.64/10 RFC 6598
     return false; // any other IPv4 = public
   }
   return false; // a public domain name

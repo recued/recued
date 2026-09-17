@@ -1,4 +1,4 @@
-/** D-149 § A.10 follow-on — Settings → Server → Reception → Intake
+/** D-149 § A.10 follow-on — Reception → Intake
  *  forms → Templates browser renderer.
  *
  *  Covers the projection layer over the P11 template substrate
@@ -28,7 +28,7 @@ import {
   intakeFormConfigFromTemplate,
   useIntakeFormTemplate,
   validateTemplateDisplayName,
-} from '../settings/reception-templates.js';
+} from '../reception/templates.js';
 
 // ════════════════════════════════════════════════════════════════
 // Fixtures — a minimal valid IntakeFormTemplate (mirrors the shape of

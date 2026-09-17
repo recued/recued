@@ -24,6 +24,8 @@
  *     host. */
 
 import { describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 
 import {
   bootstrapSettingsRoute,
@@ -86,8 +88,6 @@ import {
   type TlsRenewCaller,
 } from '../settings/tls-renew-panel.js';
 import {
-  REACHABILITY_PANEL_ATTR,
-  REACHABILITY_PANEL_STYLES,
 } from '../settings/reachability.js';
 import {
   CERT_PIN_STALE_PANEL_ATTR,
@@ -765,7 +765,7 @@ describe('bootstrapSettingsRoute: Privacy directory + Server in-section sub-tabs
     route.dispose();
   });
 
-  it('Server splits into Reachability + Certificates sub-tabs; the TLS panel lives under Certificates', () => {
+  it('Server splits into Connect a device + Certificates sub-tabs; the TLS panel lives under Certificates', () => {
     const host = makeFakeElement('div');
     const doc = makeFakeDocument();
     const route = bootstrapSettingsRoute({
@@ -783,30 +783,27 @@ describe('bootstrapSettingsRoute: Privacy directory + Server in-section sub-tabs
       tlsRenewCaller: async () => SUCCESS_RESULT,
     });
 
-    const reachabilityTab = findByAttrValue(
-      host,
-      SETTINGS_ROUTE_SUBTAB_ATTR,
-      'reachability',
-    );
+    // ⛔ NO REACHABILITY TAB. It was a destination for a diagnostic, mounted
+    // only for probe-havers, and half its content had no producer.
+    expect(findByAttrValue(host, SETTINGS_ROUTE_SUBTAB_ATTR, 'reachability'))
+      .toBeNull();
     const certsTab = findByAttrValue(
       host,
       SETTINGS_ROUTE_SUBTAB_ATTR,
       'certificates',
     );
-    expect(reachabilityTab).not.toBeNull();
     expect(certsTab).not.toBeNull();
-    expect(reachabilityTab!.parent?.getAttribute('role')).toBe('tablist');
-    expect(reachabilityTab!.parent?.getAttribute('aria-label')).toBe(
+    expect(certsTab!.parent?.getAttribute('role')).toBe('tablist');
+    expect(certsTab!.parent?.getAttribute('aria-label')).toBe(
       'Server sections',
     );
     // ⚠ D-272 — `connect-device` now LEADS the Server tabs, so it holds the
-    // keyboard stop on a cold load and reachability does not. It is the first
+    // keyboard stop on a cold load and certificates does not. It is the first
     // question a beginner has ("port 7717, now what?") and the only Server tab
     // that needs no caller, so it always mounts.
     const connectTab = findByAttrValue(host, SETTINGS_ROUTE_SUBTAB_ATTR, 'connect-device');
     expect(connectTab).not.toBeNull();
     expect(connectTab!.getAttribute('tabindex')).toBe('0');
-    expect(reachabilityTab!.getAttribute('tabindex')).toBe('-1');
     expect(certsTab!.getAttribute('tabindex')).toBe('-1');
 
     const certsPanel = findByAttrValue(
@@ -829,7 +826,6 @@ describe('bootstrapSettingsRoute: Privacy directory + Server in-section sub-tabs
     certsTab!.click();
     expect(certsPanel.getAttribute('data-active')).toBe('true');
     expect(certsTab!.getAttribute('tabindex')).toBe('0');
-    expect(reachabilityTab!.getAttribute('tabindex')).toBe('-1');
     expect(connectTab!.getAttribute('tabindex')).toBe('-1');
     route.dispose();
   });
@@ -850,30 +846,21 @@ describe('bootstrapSettingsRoute: Privacy directory + Server in-section sub-tabs
       }),
       tlsRenewCaller: async () => SUCCESS_RESULT,
     });
-    const reachability = findByAttrValue(
-      host,
-      SETTINGS_ROUTE_SUBTAB_ATTR,
-      'reachability',
-    )!;
     const certificates = findByAttrValue(
       host,
       SETTINGS_ROUTE_SUBTAB_ATTR,
       'certificates',
     )!;
 
-    // ⚠ D-272 — three tabs now: connect-device / reachability / certificates.
-    // Wraparound and Home/End are asserted against the REAL set, not a
-    // remembered pair; the strip's whole contract is that it wraps whatever is
-    // mounted.
+    // ⚠ TWO tabs now: connect-device / certificates. Reachability is gone, and
+    // wraparound is asserted against the REAL set rather than a remembered
+    // count — the strip's whole contract is that it wraps whatever is mounted,
+    // which is exactly the property a hard-coded three would have hidden.
     const connect = findByAttrValue(host, SETTINGS_ROUTE_SUBTAB_ATTR, 'connect-device')!;
 
     connect.keydown('ArrowRight');
-    expect(reachability.getAttribute('aria-selected')).toBe('true');
-    expect(reachability.getAttribute('tabindex')).toBe('0');
-    expect(reachability.focusCalls).toEqual([undefined]);
-
-    reachability.keydown('ArrowRight');
     expect(certificates.getAttribute('aria-selected')).toBe('true');
+    expect(certificates.getAttribute('tabindex')).toBe('0');
     expect(certificates.focusCalls).toEqual([undefined]);
 
     certificates.keydown('ArrowRight'); // wraps past the end
@@ -1196,7 +1183,7 @@ describe('D-148 § A.6.5 — bootstrapSettingsRoute: Server section (slice 111)'
     route.dispose();
   });
 
-  it('mounts the Server section + Reachability Doctor when external probe caller is supplied', () => {
+  it('⛔ mounts the Server section on a probe caller, but NO Reachability tab', () => {
     const host = makeFakeElement('div');
     const doc = makeFakeDocument();
     const route = bootstrapSettingsRoute({
@@ -1213,9 +1200,13 @@ describe('D-148 § A.6.5 — bootstrapSettingsRoute: Server section (slice 111)'
       }),
     });
 
+    // ⛔ THE SERVER SECTION STILL MOUNTS ON A PROBE CALLER — there is something
+    // to check — but the reachability panel is GONE, deleted rather than left
+    // as dead code with green tests. Its one live artefact is folded into
+    // Connect a device as detail under an answer the reader already has.
     expect(findByAttrValue(host, SETTINGS_ROUTE_SECTION_ATTR, 'server')).not.toBeNull();
-    expect(findByAttr(host, REACHABILITY_PANEL_ATTR)).not.toBeNull();
-    expect(route.reachabilityPanel()).not.toBeNull();
+    expect(findByAttrValue(host, SETTINGS_ROUTE_SUBTAB_ATTR, 'reachability'))
+      .toBeNull();
     route.dispose();
   });
 
@@ -1313,7 +1304,9 @@ describe('D-148 § A.6.5 — bootstrapSettingsRoute: Server section (slice 111)'
     expect(style.textContent).toContain(SETTINGS_ROUTE_STYLES.trim());
     expect(style.textContent).toContain(CLEAR_THIS_BROWSER_PANEL_STYLES.trim());
     expect(style.textContent).toContain(TLS_RENEW_PANEL_STYLES.trim());
-    expect(style.textContent).toContain(REACHABILITY_PANEL_STYLES.trim());
+    // ⛔ The reachability panel's CSS is not bundled — the panel is DELETED,
+    // shipping the CSS for a panel that never mounts is weight with no reader.
+    expect(style.textContent).not.toContain('reachability-probe-table');
   });
 
   it('dispose tears the TLS panel down + removes the Server section', () => {
@@ -2412,5 +2405,546 @@ describe('D-257 — the async apply outcome reaches the Updates page', () => {
     // called this done at the rpc reply and would never have seen this at all.
     expect(route.hasInFlightWork()).toBe(false);
     route.dispose();
+  });
+});
+
+// ──────────────────────────────────────────────────────────────────
+// D-272 — the check from outside reaches Connect a device
+// ──────────────────────────────────────────────────────────────────
+
+describe('D-272 — the router step is answered by the reachability probe', () => {
+  const probeResponse = (
+    port: number,
+    outcome: 'reachable' | 'blocked' | 'no_response',
+  ) => ({
+    account_id: 'acct-1',
+    hostname: 'alice.recued.cloud',
+    detected_public_ip: '203.0.113.5',
+    resolved_ips: ['203.0.113.5'],
+    probed_at: 1_700_000_000_000,
+    results: [{
+      kind: 'port_reachability' as const,
+      status: outcome === 'reachable' ? ('pass' as const) : ('fail' as const),
+      payload: { kind: 'port_reachability' as const, port, outcome },
+    }],
+  });
+
+  /** ⛔ THE JOIN, NOT EITHER HALF. The fold is tested in the reachability suite
+   *  and the button in the panel suite, each against a stub of the other side.
+   *  What neither can see is whether this route hands the panel the probe at
+   *  all — and a step that renders "we cannot tell" forever because nobody wired
+   *  the caller looks exactly like the honest answer. */
+  const mountRoute = (over: Partial<BootstrapSettingsRouteOptions> = {}) => {
+    const host = makeFakeElement('div');
+    const route = bootstrapSettingsRoute({
+      root: host as unknown as HTMLElement,
+      document: makeFakeDocument() as unknown as Document,
+      localStore: createInMemoryWebclientLocalStore(),
+      ...over,
+    } as BootstrapSettingsRouteOptions);
+    // ⚠ LAST, not first. This fake's `innerHTML = ''` does not drop children, so
+    // a re-rendered panel sits after the one it replaced; in a browser only the
+    // new one exists. Reading the first would assert against the state BEFORE
+    // the thing under test happened, and pass while nothing worked.
+    //
+    // ⛔⛔ AND "LAST MATCH IN THE HOST" CANNOT SAY "THIS RENDER HAS NONE." Taking
+    // the last button anywhere under the host answers "what is the newest button
+    // that ever existed", which is the same thing right up until a render stops
+    // drawing one — then it hands back a button from a render that is gone, and
+    // an `toBeUndefined()` fails against a stale node. Every query is scoped to
+    // the CURRENT panel root instead, so absence is expressible.
+    const currentPanel = (): FakeElement => {
+      const panels = findAllByAttr(host, 'data-recued-connect-device-panel');
+      return panels[panels.length - 1]!;
+    };
+    const routerStep = (): FakeElement => {
+      const steps = findAllByAttr(currentPanel(), 'data-recued-connect-device-step-key')
+        .filter((el) => el.getAttribute('data-recued-connect-device-step-key') === 'router');
+      return steps[steps.length - 1]!;
+    };
+    const checkButton = (): FakeElement | undefined =>
+      findAllByAttr(currentPanel(), 'data-recued-connect-device-check')[0];
+    return {
+      host,
+      route,
+      checkButton,
+      routerDone: (): string | null =>
+        routerStep().getAttribute('data-recued-connect-device-step-done'),
+    };
+  };
+
+  it('⛔ with no probe wired the step stays UNKNOWN and offers no check', () => {
+    // The state this shipped in. It must remain reachable: a self-hoster with no
+    // account has nothing that may ask from outside. `tlsRenewCaller` is here
+    // only to bring the Server section up — Connect a device needs no caller of
+    // its own, but it lives inside a section that does.
+    const m = mountRoute({ tlsRenewCaller: async () => SUCCESS_RESULT });
+    expect(m.routerDone()).toBe('unknown');
+    expect(m.checkButton()).toBeUndefined();
+    m.route.dispose();
+  });
+
+  it('renders a verdict the composition root already holds', () => {
+    const m = mountRoute({
+      reachabilityExternalProbeCaller: async () => probeResponse(443, 'reachable'),
+      reachabilityLastProbe: () => probeResponse(443, 'reachable'),
+    });
+    expect(m.routerDone()).toBe('true');
+    m.route.dispose();
+  });
+
+  it('and the check ON THIS PAGE reaches the same caller', async () => {
+    let calls = 0;
+    let last: ReturnType<typeof probeResponse> | null = null;
+    const m = mountRoute({
+      reachabilityExternalProbeCaller: async () => {
+        calls += 1;
+        last = probeResponse(443, 'blocked');
+        return last;
+      },
+      reachabilityLastProbe: () => last,
+    });
+    m.checkButton()!.click();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(calls).toBe(1);
+    // ⛔ `false`, not `unknown` — the probe answered, and it said no. Leaving it
+    // unknown after a real refusal would be as wrong as ticking it.
+    expect(m.routerDone()).toBe('false');
+    m.route.dispose();
+  });
+
+  it('⛔⛔ D-272 — the check asks about ONE port, and it is THIS card\'s port', async () => {
+    // ⛔ A STUB PROVES THE CALL, NOT THE MESSAGE. Every other test here answers
+    // the probe with `async () => probeResponse(...)`, which DISCARDS the
+    // override — so all of them pass whether this route narrows or sends the
+    // whole listener set. This one reads what the route actually said.
+    //
+    // 🔑 The cost is wall clock, and it lands on the wrong person:
+    // `runDiagnosticChecks` walks ports sequentially under a 5s timeout each, so
+    // four ports plus a TLS handshake is up to ~25s — paid in full by the reader
+    // whose router DROPs, the one this button exists for.
+    const overrides: Array<unknown> = [];
+    const m = mountRoute({
+      networkLocalUrlsCaller: async () => ({
+        urls: [{ url: 'http://localhost:9100', kind: 'loopback' as const }],
+        lan_port: 9100,
+        public_port: 8446,
+      }),
+      reachabilityExternalProbeCaller: async (override?: unknown) => {
+        overrides.push(override);
+        return probeResponse(8446, 'reachable');
+      },
+    });
+    await new Promise((r) => { setTimeout(r, 0); });
+    await Promise.resolve();
+
+    m.checkButton()!.click();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // ⚠ THE RESOLVED PORT, not a second hardcoded 443. The card and the request
+    // read one number; asking about 443 while the card names 8446 would report
+    // another port's answer under this one's label.
+    expect(overrides).toEqual([{ ports: [8446], checks: ['port_reachability'] }]);
+    m.route.dispose();
+  });
+
+  it('⛔⛔ D-272 — a public port the probe MAY NOT BE ASKED ABOUT offers no check', async () => {
+    // ⛔ `normalizePorts` in the worker THROWS `diagnostic_port_not_allowed` on
+    // the first port outside the allowlist — it does not drop it — so narrowing
+    // to a port like 8443 turns an honest "nobody asked" into a 400 the card
+    // would have to render as a failure. 8443 is D-148's pre-amendment `ws`
+    // port, so it is a plausible `public_port`, not a contrived one.
+    let calls = 0;
+    const m = mountRoute({
+      networkLocalUrlsCaller: async () => ({
+        urls: [{ url: 'http://localhost:7717', kind: 'loopback' as const }],
+        lan_port: 7717,
+        public_port: 8443,
+      }),
+      reachabilityExternalProbeCaller: async () => {
+        calls += 1;
+        return probeResponse(8443, 'reachable');
+      },
+    });
+    await new Promise((r) => { setTimeout(r, 0); });
+    await Promise.resolve();
+
+    expect(m.checkButton()).toBeUndefined();
+    // ⛔ `unknown`, never `false`. Nobody asked, and nobody could have.
+    expect(m.routerDone()).toBe('unknown');
+    expect(calls).toBe(0);
+    m.route.dispose();
+  });
+
+  it('⛔⛔ the REAL ports reach the panel, and the verdict follows them', async () => {
+    // The join neither side can see. The panel suite proves it USES a resolved
+    // port; this proves the route SUPPLIES one — and a card that silently kept
+    // quoting 443 would look identical from either side alone.
+    const asked: number[] = [];
+    const m = mountRoute({
+      networkLocalUrlsCaller: async () => ({
+        urls: [{ url: 'http://localhost:9100', kind: 'loopback' as const }],
+        lan_port: 9100,
+        public_port: 8446,
+      }),
+      reachabilityExternalProbeCaller: async () => probeResponse(8446, 'reachable'),
+      reachabilityLastProbe: () => {
+        asked.push(8446);
+        return probeResponse(8446, 'reachable');
+      },
+    });
+    await new Promise((r) => { setTimeout(r, 0); });
+    await Promise.resolve();
+
+    const hrefs = findAllByAttr(m.host, 'href')
+      .map((el) => el.getAttribute('href'))
+      .filter((h): h is string => h !== null && h.includes('/webclient/'));
+    expect(hrefs.some((h) => h.includes(':9100'))).toBe(true);
+    // ⛔ The router step ticks only because the verdict was read for 8446. Read
+    // for 443 it would be `unknown`, since this response says nothing about 443.
+    expect(m.routerDone()).toBe('true');
+    m.route.dispose();
+  });
+
+  /** A server whose LAN listener the bind put on a public address — the shape
+   *  that makes the LAN port worth asking the probe about. ⚠ The FINDING itself
+   *  now renders on Exposure; what stays here is only whether the check action
+   *  includes that port. */
+  const exposedUrls = (publicPort: number) => async () => ({
+    urls: [{ url: 'http://localhost:7717', kind: 'loopback' as const }],
+    lan_port: 7717,
+    public_port: publicPort,
+    lan_exposure: {
+      publicly_routable: true,
+      wildcard: true,
+      public_addresses: ['203.0.113.7'],
+    },
+  });
+
+  it('⛔⛔ D-272 — ONE probe carries BOTH ports, each by its own rule', async () => {
+    // ⛔ THE LITERAL THE ROUTE HARDCODES. Every other test here answers the probe
+    // with `async () => probeResponse(...)`, DISCARDING the override — so all of
+    // them pass whether this sends one port, two, or none. This reads what the
+    // route actually said.
+    //
+    // 🔑 `ports` is the CLOSED allowlist and `extra_port` is the one bounded door
+    // past it: `public_port` must pass the first rule, `lan_port` the second.
+    // Naming the LAN port in `ports` would fail the whole request.
+    const overrides: Array<unknown> = [];
+    const m = mountRoute({
+      networkLocalUrlsCaller: exposedUrls(443),
+      reachabilityExternalProbeCaller: async (override?: unknown) => {
+        overrides.push(override);
+        return probeResponse(443, 'reachable');
+      },
+    });
+    await new Promise((r) => { setTimeout(r, 0); });
+    await Promise.resolve();
+
+    m.checkButton()!.click();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(overrides).toEqual([{
+      ports: [443],
+      checks: ['port_reachability'],
+      extra_port: 7717,
+    }]);
+    m.route.dispose();
+  });
+
+  it('⚠ D-272 — an UNEXPOSED LAN port is left out of the request', async () => {
+    // Each extra port is another SEQUENTIAL 5s timeout for the reader whose
+    // firewall drops. Asking whether the internet reaches a listener that is not
+    // on a public address spends that for an answer already known.
+    const overrides: Array<unknown> = [];
+    const m = mountRoute({
+      networkLocalUrlsCaller: async () => ({
+        urls: [{ url: 'http://localhost:7717', kind: 'loopback' as const }],
+        lan_port: 7717,
+        public_port: 443,
+        lan_exposure: {
+          publicly_routable: false, wildcard: true, public_addresses: [],
+        },
+      }),
+      reachabilityExternalProbeCaller: async (override?: unknown) => {
+        overrides.push(override);
+        return probeResponse(443, 'reachable');
+      },
+    });
+    await new Promise((r) => { setTimeout(r, 0); });
+    await Promise.resolve();
+    m.checkButton()!.click();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(overrides).toEqual([{ ports: [443], checks: ['port_reachability'] }]);
+    m.route.dispose();
+  });
+
+  it('⛔⛔ D-272 — an exposed LAN port is still asked about when `public_port` is NOT', async () => {
+    // 🔑 THE COUPLING THIS REPLACED, now inside one action: 8443 is off the
+    // closed list so the router half cannot run, and the operator whose LAN
+    // listener IS on a public address is the one most likely to be exposed.
+    const overrides: Array<unknown> = [];
+    const m = mountRoute({
+      networkLocalUrlsCaller: exposedUrls(8443),
+      reachabilityExternalProbeCaller: async (override?: unknown) => {
+        overrides.push(override);
+        return probeResponse(7717, 'reachable');
+      },
+    });
+    await new Promise((r) => { setTimeout(r, 0); });
+    await Promise.resolve();
+
+    expect(m.checkButton()).toBeDefined();
+    m.checkButton()!.click();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    // ⛔ `ports` EMPTY — 8443 fails the allowlist, so it is simply not asked
+    // about, and its verdict stays `null` rather than becoming a 400.
+    expect(overrides).toEqual([{
+      ports: [], checks: ['port_reachability'], extra_port: 7717,
+    }]);
+    m.route.dispose();
+  });
+
+  it('⛔ D-272 — nothing askable ⇒ NO REQUEST AT ALL', async () => {
+    // A probe with no ports spends the rate limit and the reader's wait to learn
+    // nothing.
+    const overrides: Array<unknown> = [];
+    const m = mountRoute({
+      networkLocalUrlsCaller: async () => ({
+        urls: [{ url: 'http://localhost:7717', kind: 'loopback' as const }],
+        lan_port: 7717,
+        public_port: 8443,
+        lan_exposure: {
+          publicly_routable: false, wildcard: true, public_addresses: [],
+        },
+      }),
+      reachabilityExternalProbeCaller: async (override?: unknown) => {
+        overrides.push(override);
+        return probeResponse(443, 'reachable');
+      },
+      addressFromHereChecker: async () => true,
+      tlsDomainListCaller: async () => ({
+        entries: [{
+          domain: 'home.example.com', expires_at: Date.now() + 86_400_000,
+          fingerprint: 'fp', issuer: 'test',
+        }],
+      }),
+    } as unknown as Partial<BootstrapSettingsRouteOptions>);
+    await new Promise((r) => { setTimeout(r, 0); });
+    await Promise.resolve();
+    m.checkButton()!.click();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(overrides).toEqual([]);
+    m.route.dispose();
+  });
+
+  it('⛔⛔ D-272 — the from-this-device check rides the SAME action', async () => {
+    // One press, both mechanisms. The reader should not have to know which one
+    // answers their question.
+    const asked: string[] = [];
+    const m = mountRoute({
+      tlsRenewCaller: async () => SUCCESS_RESULT,
+      tlsDomainListCaller: async () => ({
+        entries: [{
+          domain: 'home.example.com', expires_at: Date.now() + 86_400_000,
+          fingerprint: 'fp', issuer: 'test',
+        }],
+      }),
+      addressFromHereChecker: async (url: string) => { asked.push(url); return true; },
+    } as unknown as Partial<BootstrapSettingsRouteOptions>);
+    await new Promise((r) => { setTimeout(r, 0); });
+    await Promise.resolve();
+
+    // ⚠ NO probe caller at all — the free self-hoster with no account still
+    // gets the action, because the browser-side half needs neither.
+    m.checkButton()!.click();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(asked).toEqual(['https://home.example.com/webclient/']);
+    m.route.dispose();
+  });
+
+  it('⛔ D-272 — with NO probe and NO address, no action is offered', async () => {
+    // ⚠ The premise this test used to have — "no exposure, so no exposure
+    // check" — stopped being the question when the three buttons became one.
+    // The action is offered when ANY half can run, so "nothing to check" now
+    // means no probe caller AND no certified address to try from here.
+    const m = mountRoute({ tlsRenewCaller: async () => SUCCESS_RESULT });
+    await new Promise((r) => { setTimeout(r, 0); });
+    await Promise.resolve();
+    expect(m.checkButton()).toBeUndefined();
+    m.route.dispose();
+  });
+
+  it('⛔ D-272 — and a server that does not send it produces NO warning', async () => {
+    // Self-hosted, no deploy order: the field is optional on the wire. Absent
+    // must render as "nobody said", never as a reassurance nobody earned.
+    const m = mountRoute({
+      networkLocalUrlsCaller: async () => ({
+        urls: [{ url: 'http://localhost:7717', kind: 'loopback' as const }],
+        lan_port: 7717,
+      }),
+      tlsRenewCaller: async () => SUCCESS_RESULT,
+    });
+    await new Promise((r) => { setTimeout(r, 0); });
+    await Promise.resolve();
+
+    const notes = findAllByAttr(m.host, 'data-recued-connect-device-note')
+      .map((el) => el.textContent ?? '');
+    expect(notes.some((n) => n.includes('also open on'))).toBe(false);
+    m.route.dispose();
+  });
+
+  it('⚠ a server too old to report ports still renders, on the fallbacks', async () => {
+    // Self-hosted: no deploy order, so the fields are optional on the wire.
+    const m = mountRoute({
+      networkLocalUrlsCaller: async () => ({
+        urls: [{ url: 'http://localhost:7717', kind: 'loopback' as const }],
+      }),
+      tlsRenewCaller: async () => SUCCESS_RESULT,
+    });
+    await new Promise((r) => { setTimeout(r, 0); });
+    const hrefs = findAllByAttr(m.host, 'href')
+      .map((el) => el.getAttribute('href'))
+      .filter((h): h is string => h !== null && h.includes('/webclient/'));
+    expect(hrefs.some((h) => h.includes(':7717'))).toBe(true);
+    m.route.dispose();
+  });
+
+  it('⛔ a probe that answers about ANOTHER port leaves this one unknown', () => {
+    // The fold's trap, asserted through the real wiring: a response full of
+    // passing checks for 8446 says nothing about whether 443 gets through.
+    const m = mountRoute({
+      reachabilityExternalProbeCaller: async () => probeResponse(8446, 'reachable'),
+      reachabilityLastProbe: () => probeResponse(8446, 'reachable'),
+    });
+    expect(m.routerDone()).toBe('unknown');
+    m.route.dispose();
+  });
+});
+
+describe('D-272 follow-on — Devices points at where a device gets added', () => {
+  it('⛔ links to Connect a device rather than duplicating the flow', () => {
+    // Devices says what IS paired; "how do I add another" is the same
+    // question's other half, and it lives with its prerequisites — a
+    // certificate, a forwarded port, an address that resolves. Duplicating the
+    // flow here would let a reader follow it and fail on a prerequisite this
+    // page never mentions.
+    const host = makeFakeElement('div');
+    const route = bootstrapSettingsRoute({
+      root: host as unknown as HTMLElement,
+      document: makeFakeDocument() as unknown as Document,
+      localStore: createInMemoryWebclientLocalStore(),
+      pairListCaller: async () => ({ devices: [] }),
+      pairRevokeCaller: async () => ({ ok: true as const }),
+    } as unknown as BootstrapSettingsRouteOptions);
+
+    const link = findAllByAttr(host, 'data-recued-settings-devices-add-link')[0];
+    expect(link).toBeDefined();
+    const anchors = findAllByAttr(link!, 'href').map((el) => el.getAttribute('href'));
+    // ⚠ `#settings/server/<tab>` is the documented deep-link shape, and
+    // `connect-device` is the tab id — a link to a route that does not exist
+    // would look right and go nowhere.
+    expect(anchors).toContain('#settings/server/connect-device');
+    route.dispose();
+  });
+});
+
+// ──────────────────────────────────────────────────────────────────
+// D-273 — the port-mapping seam, wired end to end.
+//
+// ⛔⛔ THIS EXISTS BECAUSE THE READ HALF SHIPPED DEAD. `networkPortMappingCaller`
+// was declared on the route's options, the projection behind it was written and
+// commented, and NOTHING EVER SUPPLIED ONE — not the production bootstrap, not a
+// test. The option is optional, so `tsc` was happy; the panel falls back to "no
+// router was asked", so its tests were happy. An entire decision's worth of copy
+// (the CGNAT warning, "your router has this switched off", "Recued opened this
+// port", "you set that up yourself") was unreachable in the shipped app for as
+// long as it existed.
+//
+// ⇒ The lesson is not "wire it" but that NO LAYER'S OWN TESTS CAN SEE THIS. Only
+// a test that spans the layers can, so both halves are asserted here: the route
+// really mounts the control when given the callers, and the composition root
+// really builds and forwards them.
+// ──────────────────────────────────────────────────────────────────
+describe('D-273 — the port-mapping seam is wired end to end', () => {
+  const mountServerRoute = (over: Partial<BootstrapSettingsRouteOptions> = {}) => {
+    const host = makeFakeElement('div');
+    const doc = makeFakeDocument();
+    const route = bootstrapSettingsRoute({
+      root: host as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      localStore: createInMemoryWebclientLocalStore(),
+      initialSectionId: 'server',
+      // Any one Server gate opens the section the panel lives in.
+      tlsRenewCaller: async () => ({ ok: true }),
+      ...over,
+    } as BootstrapSettingsRouteOptions);
+    return { host, route };
+  };
+
+  it('the route mounts the control when BOTH callers are supplied', async () => {
+    const { host, route } = mountServerRoute({
+      networkPortMappingCaller: async () => ({ enabled: false, support: 'enabled' }),
+      networkAutoPortMappingSetCaller: async () => {},
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(
+      findByAttrValue(host, 'data-recued-connect-device-step-action', 'port_mapping'),
+    ).not.toBeNull();
+    route.dispose();
+  });
+
+  it('⚠ and does NOT when the write caller is missing — the read alone is not a control', async () => {
+    const { host, route } = mountServerRoute({
+      networkPortMappingCaller: async () => ({ enabled: false, support: 'enabled' }),
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(
+      findByAttrValue(host, 'data-recued-connect-device-step-action', 'port_mapping'),
+    ).toBeNull();
+    route.dispose();
+  });
+
+  it('⛔ the composition root BUILDS both callers off the right rpcs', () => {
+    // Source-level on purpose: the defect was a missing forward in a composition
+    // root, and every layer below it passed its own tests without one.
+    const src = readFileSync(
+      resolve(import.meta.dirname, '..', 'webclient-bootstrap.ts'),
+      'utf-8',
+    );
+    expect(src).toContain("rpcConn.call('network.port_mapping', undefined)");
+    // ⛔ The WRITE goes through the generic config rpc, keyed to this one field.
+    // A second door to the same key is what this deliberately does not build.
+    expect(src).toMatch(/rpcConn\.call\('server\.setConfigField', \{\s*key: 'network\.auto_port_mapping'/);
+  });
+
+  it('⛔⛔ and FORWARDS them — a built-but-unpassed caller is the exact bug', () => {
+    const src = readFileSync(
+      resolve(import.meta.dirname, '..', 'webclient-bootstrap.ts'),
+      'utf-8',
+    );
+    // Word-boundary matches, not bare substrings: the declaration sites contain
+    // these names too, so a test looking for the name alone stays green against
+    // the very deletion it exists to catch.
+    expect(src).toMatch(/^\s*networkPortMappingCaller,\s*$/m);
+    expect(src).toMatch(/^\s*networkAutoPortMappingSetCaller:\s*$/m);
   });
 });

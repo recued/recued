@@ -294,6 +294,8 @@ describe('D-166 contract_definition schema substrate', () => {
         'expiry_at',
         'max_uses',
         'uses_remaining',
+        'use_period',
+        'use_period_start',
         'revoked_at',
         'revocation_reason',
         // D-177 N.3 — session-grant extension (all optional at the shape
@@ -336,6 +338,13 @@ describe('D-166 contract_definition schema substrate', () => {
         expiry_at: 'datetime?',
         max_uses: 'number?',
         uses_remaining: 'number?',
+        // Model — `max_uses` refills per `use_period`; `use_period_start` anchors
+        // the window the counter belongs to. ⛔ BOTH OPTIONAL AND NEITHER IN
+        // `required`, which is what keeps every contract minted before the
+        // vocabulary valid — and reading as `'total'`, the one budget it has
+        // always had.
+        use_period: 'enum:total|day|month?',
+        use_period_start: 'datetime?',
         revoked_at: 'datetime?',
         revocation_reason: 'string?',
         // D-177 N.13 (P6a) — 'delegation' joins the gate-grant vocabulary.

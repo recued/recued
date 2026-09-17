@@ -7,6 +7,88 @@ checkpoint was cut. One entry per published export; the machine-readable
 provenance for each — source commit, tree, payload digest, and what was omitted
 — lives in `.recued-public-export.json`.
 
+## 26.9.17 — 2026-09-17
+
+Almost all of this release answers one complaint: a person who installs Recued
+at home has to become a network administrator before anything outside the house
+can reach them. The server can now ask the router to open its port, the page
+that promised to connect a device finally does it, and moving your server to a
+new address no longer destroys the pairings you already had.
+
+### Added
+
+- **Recued can ask your router to open its port.** It discovers the router,
+  reads what it says it can do, and requests a mapping for the port it is
+  actually serving — the step most self-hosters were previously sent off to do
+  by hand in a web interface written in the language of firewalls. There is a
+  toggle on the setup step that asks for it.
+- **The result is measured, not assumed.** After requesting a mapping, Recued
+  connects to the port from outside and tells you what happened. A router that
+  accepts the request and maps a different port than the one being served is the
+  exact failure this exists to catch, and a claim of success would hide it.
+- **A hairpin check, run from your own device.** Most reachability tests run on
+  the server, which cannot tell you whether *your* laptop on *your* network can
+  reach your server through the router. This one runs on the device reading the
+  page. Its verdict expires after five minutes and belongs to the network it was
+  earned on, because a verdict that follows you to a different network is worse
+  than none.
+- **Use limits can refill.** A limit on how many times something may run can now
+  reset daily, monthly, or never. It refuses at the boundary rather than quietly
+  trimming the request to fit, so you find out.
+- **A screen-scale setting** for displays that render Recued too small or too
+  large.
+
+### Security
+
+- **Router discovery is treated as an untrusted input.** Discovery works by
+  shouting on the local network and using the reply to decide what to fetch
+  next, which means whatever answers gets a say in where Recued sends requests.
+  Those requests are now confined to a genuine private address belonging to the
+  device that answered, so a host on your network cannot use a discovery reply
+  to point Recued at something else.
+
+### Fixed
+
+- **Moving your server to a new address destroyed every paired browser.** The
+  stored token was sealed against the server's URL, so changing that URL made
+  every later use of the token fail to open — by the feature whose whole purpose
+  was to let the address change. Tokens are now sealed without the address and
+  re-sealed as they are used. If you have been putting off moving your server,
+  this is the release that makes it safe.
+- **Notifications sent to the app itself reached nobody.** The in-app channel
+  published an event that no client was listening for. Sends were recorded as
+  delivered and then dropped on the way out, so the logs said the notification
+  had gone out while nothing ever appeared — and one shipped recipe used that
+  channel by default.
+- **A server that was no longer yours kept asking anyway.** When an account was
+  unbound, deleted, or bound to a different server, the old server carried on
+  checking for a subscription that was never coming back — roughly 288 rejected
+  requests a day — and told its owner nothing. It now says so once and stops.
+- **Recued could email you a link to an address nothing can reach.** The check
+  that decides whether your server is reachable from the internet treated a
+  carrier-NAT address as public, so the one-click answer link went out pointing
+  somewhere no incoming connection could arrive. A local `.local` name written
+  with a trailing dot — the form the URL parser actually produces — was not
+  recognised either.
+- **Two screens could refresh each other indefinitely.** Reading a board is not
+  a reason to re-read it.
+
+### Improved
+
+- **"Connect a device" now connects the device.** The page walked you through
+  diagnosing your network and then left you to find the pairing screen somewhere
+  else. The diagnosis panel is gone, its three separate check buttons are one
+  action, and the finding about exposing your server on the local network moved
+  to the page about exposure, where someone looking for it would think to look.
+- **Every surface that completes a task now takes the same lock,** so finishing
+  the same task from two places at once cannot produce two outcomes.
+
+### A note on upgrading
+
+This release adds one database table, for the router port mappings it now keeps
+track of. It adds no columns and rebuilds nothing, so going back to 26.9.15
+afterwards is safe: the older version neither reads nor writes that table.
+
 ## 26.9.15 — 2026-09-15
 
 Mostly the marketplace packs and the checks that are supposed to keep them

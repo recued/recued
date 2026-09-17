@@ -195,6 +195,116 @@ const sharesPrefix = (a: string, b: string, prefixOctets: 1 | 2 | 3): boolean =>
   return true;
 };
 
+/** 100.64.0.0/10 — carrier-grade NAT. Not publicly routable: a host on one of
+ *  these is behind the ISP's NAT and cannot be reached from the internet, which
+ *  is exactly the distinction `isPubliclyRoutableIpv4` exists to make. */
+export const isCgnatIpv4 = (addr: string): boolean => {
+  const p = parseIpv4(addr);
+  return p !== null && p[0] === 100 && p[1] >= 64 && p[1] <= 127;
+};
+
+/** ⛔ "NOT PRIVATE" IS NOT THE SAME AS "REACHABLE FROM THE INTERNET", and the
+ *  gap is where a warning becomes a false alarm. Loopback, RFC1918, link-local
+ *  and CGNAT are all unreachable from outside for different reasons; a check
+ *  that only excluded RFC1918 would call a carrier-NAT'd home machine exposed. */
+const isPubliclyRoutableIpv4 = (addr: string): boolean =>
+  !isLoopbackIpv4(addr)
+  && !isRfc1918Ipv4(addr)
+  && !isLinkLocalIpv4(addr)
+  && !isCgnatIpv4(addr)
+  && parseIpv4(addr) !== null;
+
+/** IPv6 global unicast is `2000::/3`. Everything else this cares about —
+ *  `::1` loopback, `fe80::/10` link-local, `fc00::/7` ULA — is not routable
+ *  from the internet. Deliberately conservative: an address this cannot parse
+ *  is NOT reported as public, because a false "you are exposed" costs the
+ *  reader a search for a problem they do not have. */
+const isPubliclyRoutableIpv6 = (addr: string): boolean => {
+  const head = normalizeBindAddress(addr).split(':')[0] ?? '';
+  if (head.length === 0) return false;
+  const n = Number.parseInt(head, 16);
+  if (!Number.isInteger(n)) return false;
+  return n >= 0x2000 && n <= 0x3fff;
+};
+
+export interface LanBindExposure {
+  /** True when this bind puts the LAN listener on at least one address the
+   *  internet can route to. ⚠ ROUTABLE, NOT REACHED — a host firewall, a cloud
+   *  security group or an unforwarded router can still refuse the connection.
+   *  This is the half that can be known here with certainty; the cloud probe
+   *  answers the other half. */
+  publicly_routable: boolean;
+  /** Whether the bind address is a wildcard, i.e. every interface. */
+  wildcard: boolean;
+  /** The publicly-routable addresses this listener answers on. Sorted, deduped,
+   *  and empty when `publicly_routable` is false. */
+  public_addresses: ReadonlyArray<string>;
+}
+
+/** Does binding `bindAddress` put the LAN listener somewhere the internet can
+ *  route to?
+ *
+ *  🔑 THE QUESTION IS NOT "IS THE BIND A WILDCARD" — that is the DEFAULT.
+ *  `resolveLanAddress` returns `0.0.0.0` whenever it finds exactly one RFC1918
+ *  address (or several plus a matching default route), which is the ordinary
+ *  home case, so warning on the wildcard alone would fire for nearly every
+ *  install and teach the reader to ignore it. The finding is the wildcard
+ *  **plus a publicly-routable address on this host** — the cloud-VM shape
+ *  (a private NIC and a public one), where `0.0.0.0` silently puts a PLAINTEXT
+ *  listener carrying `/ws` and `/mcp` on the public address.
+ *
+ *  ⚠ `0.0.0.0` IS IPv4-ONLY, so it cannot expose an IPv6 address; only the `::`
+ *  wildcard does. A non-wildcard bind is on exactly one address and is judged
+ *  on that address alone.
+ *
+ *  ⚠ There is NO source-address filter in the path router, so "LAN-only" is a
+ *  property of this bind and nothing else. That is why this has to be computed
+ *  rather than assumed. */
+export const describeLanBindExposure = (
+  bindAddress: string,
+  opts: Pick<ResolveLanAddressOptions, 'readInterfaces'> = {},
+): LanBindExposure => {
+  const bind = normalizeBindAddress(bindAddress);
+  const wildcardV4 = bind === '0.0.0.0';
+  const wildcardV6 = bind === '::';
+  const wildcard = wildcardV4 || wildcardV6;
+
+  if (!wildcard) {
+    const isPublic = bind.includes(':')
+      ? isPubliclyRoutableIpv6(bind)
+      : isPubliclyRoutableIpv4(bind);
+    return {
+      publicly_routable: isPublic,
+      wildcard: false,
+      public_addresses: isPublic ? [bind] : [],
+    };
+  }
+
+  const read = opts.readInterfaces ?? networkInterfaces;
+  const found = new Set<string>();
+  for (const list of Object.values(read())) {
+    if (!list) continue;
+    for (const entry of list) {
+      if (!entry || entry.internal) continue;
+      const addr = entry.address;
+      if (typeof addr !== 'string' || addr.length === 0) continue;
+      const family = entry.family as unknown;
+      const v4 = family === 'IPv4' || family === 4;
+      // `::` reaches IPv4 too on a dual-stack socket; `0.0.0.0` never reaches v6.
+      if (v4 ? !isPubliclyRoutableIpv4(addr) : (wildcardV4 || !isPubliclyRoutableIpv6(addr))) {
+        continue;
+      }
+      found.add(normalizeBindAddress(addr));
+    }
+  }
+  const public_addresses = [...found].sort();
+  return {
+    publicly_routable: public_addresses.length > 0,
+    wildcard: true,
+    public_addresses,
+  };
+};
+
 /** Resolve the LAN bind address per § A.7.5. Pure-ish — only side
  *  effect is reading the network interface list (or the test override
  *  via `readInterfaces`). */

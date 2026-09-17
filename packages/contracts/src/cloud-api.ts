@@ -47,6 +47,23 @@ export interface DdnsUpdateResponse {
  *  callers. */
 export type DdnsErrorCode =
   | 'ddns_signature_invalid'
+  /** The publisher proved its identity and is RETIRED — unbound from its
+   *  account, or its account deleted. Terminal: the server should stop
+   *  publishing rather than back off.
+   *
+   *  ⛔⛔ DISTINCT FROM `ddns_subscription_lapsed` BECAUSE THE ANSWERS ARE
+   *  OPPOSITE. A lapse is recoverable — the owner resubscribes and the same
+   *  server resumes — so probing is right. Retirement is not: that machine is
+   *  never coming back under this identity, and a server that cannot tell them
+   *  apart probes forever at 288 rejected requests a day and reports nothing.
+   *
+   *  ⚠ SURFACED ONLY AFTER THE SIGNATURE VERIFIES. The rule that collapses an
+   *  unknown publisher into `ddns_signature_invalid` exists so an
+   *  UNAUTHENTICATED caller cannot probe registration; it is a pre-verification
+   *  rule. Past that point the caller has proved it IS this publisher, so being
+   *  told its own status discloses nothing it is not entitled to — and being
+   *  told nothing is what left it hammering. */
+  | 'ddns_publisher_retired'
   | 'ddns_handle_mismatch'
   | 'ddns_replay_window_exceeded'
   | 'ddns_replay_duplicate'

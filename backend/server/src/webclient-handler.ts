@@ -278,10 +278,40 @@ export const createWebclientBundleHandler = (
     if (hashIdx >= 0) end = Math.min(end, hashIdx);
     const pathRaw = url.slice(0, end);
 
-    // Bare `/webclient` or `/webclient/` → index.html. Other matches
-    // strip the prefix + trailing slash variants.
+    // ⛔⛔ THE BARE PREFIX REDIRECTS; IT MUST NOT SERVE THE DOCUMENT. This
+    // used to answer `/webclient` with index.html and a 200, and that 200 is a
+    // broken page: the shell references EVERY asset relatively (`./boot-shell.js`,
+    // `./webclient-main.js`, `./tokens.css`, `./manifest.webmanifest`), and a
+    // document delivered at `/webclient` resolves them against `/`, not
+    // `/webclient/`. So the browser asked for `/boot-shell.js` and
+    // `/webclient-main.js`, got 404s, and sat on the static splash markup
+    // forever — "Recued loading..." with no error, because the only thing that
+    // reports out loud is the manifest ("Manifest fetch from
+    // http://127.0.0.1:7717/manifest.webmanifest failed, code 404"). Observed on
+    // a real install 2026-09-16; `/webclient/manifest.webmanifest` and
+    // `/webclient/boot-shell.js` were 200 the whole time.
+    //
+    // 🔑 THE RULE WAS ALREADY WRITTEN DOWN — IN THE OTHER HANDLER.
+    // `root-redirect-handler.ts` sends `/` → `/webclient/` and says why: "The
+    // webclient bundle uses RELATIVE asset paths + `scope:'./'`, so the browser
+    // must land on `/webclient/` (not bare `/`) for `./webclient-main.js` + the
+    // service worker to resolve correctly." Exactly the same reasoning forbids
+    // serving at bare `/webclient`, and this handler did it anyway. One rule,
+    // two ends — whoever enters by the apex was protected, whoever typed the
+    // path was not.
+    //
+    // ⚠ The query string rides along so a deep link keeps its parameters. The
+    // fragment never reaches a server. Control characters cannot appear here:
+    // Node's HTTP parser rejects them in the request target before any handler
+    // runs, so the `location` value cannot be split.
     let relative: string;
-    if (pathRaw === WEBCLIENT_PATH_PREFIX || pathRaw === WEBCLIENT_PATH_PREFIX + '/') {
+    if (pathRaw === WEBCLIENT_PATH_PREFIX) {
+      const suffix = url.slice(end);
+      log?.('info', 'webclient: 301 (→ /webclient/)', { path: pathRaw });
+      respond301(res, WEBCLIENT_PATH_PREFIX + '/' + suffix);
+      return;
+    }
+    if (pathRaw === WEBCLIENT_PATH_PREFIX + '/') {
       relative = 'index.html';
     } else if (pathRaw.startsWith(WEBCLIENT_PATH_PREFIX + '/')) {
       relative = pathRaw.slice((WEBCLIENT_PATH_PREFIX + '/').length);
@@ -337,6 +367,24 @@ const respondFile = (
   }
   // Node's `ServerResponse.end` accepts Buffer | Uint8Array | string.
   res.end(file.bytes);
+};
+
+/** Directory-style redirect for the bare prefix — what every static file
+ *  server does for a directory requested without its trailing slash.
+ *
+ *  ⚠ PERMANENT, BUT DELIBERATELY NOT CACHED. `/webclient` → `/webclient/` is
+ *  structural (the prefix is a contract constant), so 301 is the honest status.
+ *  The `no-store` is about the BROWSER: caching this buys one round trip on
+ *  loopback and costs an un-clearable redirect in someone's profile if the
+ *  layout ever moves. Free to keep, expensive to be wrong about.
+ */
+const respond301 = (res: ServerResponse, target: string): void => {
+  if (res.writableEnded || res.headersSent) return;
+  res.statusCode = 301;
+  res.setHeader('location', target);
+  res.setHeader('cache-control', 'no-store');
+  res.setHeader('content-length', '0');
+  res.end();
 };
 
 const respond404 = (res: ServerResponse): void => {

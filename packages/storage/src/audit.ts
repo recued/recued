@@ -256,13 +256,22 @@ export interface AuditEntry {
    *  `chat_message_sent` activity already persists this shape per turn.
    *
    *  ⚠ `model_id` / `attribution` ARE NOT RELIABLY PRESENT and MUST NOT be
-   *  grouped on. `aggregateTokenUsageReports` drops both when it sums two
-   *  reports ("no single id applies") but its single-report path returns the
-   *  report spread — so a ONE-CALL run keeps them and a TWO-CALL run does not.
-   *  A "spend by model" report over these rows would silently see only
-   *  single-call runs and read as complete. Left as the aggregator has it,
-   *  because normalising here would diverge from the chat row that uses the
-   *  same function — one decision, and not this field's to make. */
+   *  grouped on blindly — but the two now differ, and the difference matters.
+   *
+   *  `attribution` still drops whenever two reports are summed, so it is
+   *  present only on one-call runs.
+   *
+   *  `model_id` was amended 2026-09-16 in `aggregateTokenUsageReports` (the one
+   *  summer, shared with chat — so this IS the one decision, taken, rather than
+   *  a divergence): it now SURVIVES when every summed call agrees on it and
+   *  drops the moment two disagree. ⇒ Present means "every call in this run used
+   *  this model". It previously meant "this run made exactly one call", which
+   *  applied the heterogeneity rule to homogeneous runs and lost the id on every
+   *  `foreach`.
+   *  ⛔ THE READER'S OBLIGATION IS UNCHANGED IN SHAPE: a "spend by model" report
+   *  over these rows still silently omits the runs that genuinely mixed models,
+   *  because those carry no id. Absent means "mixed, or no AI call" — never
+   *  zero, and never "one model we forgot to record". */
   total_usage?: TokenUsageReport;
   /** D-232 § 20.19 — the WIRE NAME of the recipe grant that covered this run's
    *  steps, for a run the host dispatched on a granted recipe's behalf (today:
@@ -637,6 +646,13 @@ export type ActivityAction =
   | 'account_bind_conflict'
   | 'account_bind_exchange_failed'
   | 'credential_rotate'
+  // D-175 — the owner renamed their marketplace handle, re-pointing every
+  // server bound to the account at the new name.
+  | 'account_handle_rename'
+  // D-175 — the cloud told this server it is no longer bound to an account
+  // (unbound, deleted, or its credential rotated away). Written ONCE per
+  // disconnection by the announcer, whatever detector noticed.
+  | 'server_account_disconnected'
   // D-145 PB1.5 — capacity_spec walker emission. `capacity_check.ok`
   // is non-reserve (high-volume; one row per successful walk).
   // `capacity_check.gap` is reserve-class so the operator/user audit
@@ -1300,6 +1316,18 @@ export const RESERVE_ACTIONS: ReadonlySet<string> = new Set<string>([
   'account_bind_conflict',
   'account_bind_exchange_failed',
   'credential_rotate',
+  // Reserve-class for the same reason as its siblings, plus one of its own: a
+  // rename moves the name a server answers to, so "which name was this machine
+  // reachable at, and from when" is only answerable if these rows outlive
+  // retention. A pruned rename leaves a hostname in a log with nothing tying it
+  // to the server that served it.
+  'account_handle_rename',
+  // Reserve-class: this is the row that explains why a server stopped serving
+  // its hostname. It is written ONCE per disconnection, so it is the cheapest
+  // row in the ledger and the one most likely to be wanted long afterwards —
+  // "when did this machine leave the account" has no other answer once the
+  // cloud-side authority row has been reconciled away.
+  'server_account_disconnected',
 ]);
 
 /** True when `action` is in the Phase B reserve-class set. Exposed so

@@ -83,3 +83,62 @@ describe('token usage: provider_calls', () => {
     expect(agg?.reasoning_tokens).toBe(3);
   });
 });
+
+/** ⛔ `model_id` ACROSS AN AGGREGATION — amended 2026-09-16.
+ *
+ *  It used to drop unconditionally, justified as "the aggregate spans
+ *  heterogeneous sources, so no single id applies". That is a claim about
+ *  HETEROGENEOUS sources and it was being applied to every sum — so a recipe's
+ *  `foreach`, which repeats ONE step against ONE slot, lost an id that nothing
+ *  in the run disagreed about. The owner's question was the narrow one: the
+ *  field is already there, so what does keeping it cost?
+ *
+ *  ⚠ THE DISAGREEMENT CASE IS WHAT MAKES THE CHANGE HONEST, and it is the half
+ *  a "just keep it" fix would skip: a pool entry that round-robins across models
+ *  must still produce NO id, because there is no true answer to "which model
+ *  wrote this run". Absent must keep meaning "cannot say", never "nobody
+ *  recorded it". */
+describe('token usage: model_id survives agreement, not disagreement', () => {
+  it('⛔⛔ TWO CALLS ON THE SAME MODEL — the id survives the sum', () => {
+    const got = aggregateTokenUsageReports(
+      rep(100, { model_id: 'claude-opus-5' }),
+      rep(200, { model_id: 'claude-opus-5' }),
+    );
+    expect(got?.provider_calls).toBe(2);
+    expect(got?.model_id).toBe('claude-opus-5');
+  });
+
+  it('⛔⛔ TWO DIFFERENT MODELS — the id is DROPPED, there is no true answer', () => {
+    const got = aggregateTokenUsageReports(
+      rep(100, { model_id: 'claude-opus-5' }),
+      rep(200, { model_id: 'gemini-2.0-pro' }),
+    );
+    expect(got?.provider_calls).toBe(2);
+    expect(got?.model_id).toBeUndefined();
+  });
+
+  it('⛔ ONE SIDE UNRECORDED — dropped; a later call may not speak for an earlier one', () => {
+    // The asymmetric case, and the one most likely to be got wrong by a
+    // `prev.model_id ?? next.model_id` shortcut: an absent id is not a wildcard.
+    expect(
+      aggregateTokenUsageReports(rep(100), rep(200, { model_id: 'claude-opus-5' }))?.model_id,
+    ).toBeUndefined();
+    expect(
+      aggregateTokenUsageReports(rep(100, { model_id: 'claude-opus-5' }), rep(200))?.model_id,
+    ).toBeUndefined();
+  });
+
+  it('a THREE-call chain still agrees — the survival is not just a two-report trick', () => {
+    const two = aggregateTokenUsageReports(
+      rep(100, { model_id: 'gpt-4o-mini' }),
+      rep(100, { model_id: 'gpt-4o-mini' }),
+    );
+    const three = aggregateTokenUsageReports(two, rep(100, { model_id: 'gpt-4o-mini' }));
+    expect(three?.provider_calls).toBe(3);
+    expect(three?.model_id).toBe('gpt-4o-mini');
+  });
+
+  it('a lone report keeps its id, as it always did', () => {
+    expect(aggregateTokenUsageReports(undefined, rep(50, { model_id: 'x' }))?.model_id).toBe('x');
+  });
+});

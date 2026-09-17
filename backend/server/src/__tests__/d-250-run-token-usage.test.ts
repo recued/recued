@@ -516,3 +516,51 @@ describe('D-250 § D — the run-scoped sink', () => {
     expect(small.take('new')).toBeUndefined();
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GENERATION PROVENANCE ON A RECIPE RUN — round 17 § C.2.9 rung C, owner-raised
+// 2026-09-16: *"'I use this model/version/endpoint to generate this text' kind
+// of prove"* for recipe AI ops, which are thin (chat already logs everything).
+//
+// 🔑 THE ANSWER WAS THAT IT ALREADY WORKS, FOR THE THIN CASE ONLY — and nothing
+// pinned it. `aggregateTokenUsageReports` SPREADS the single report
+// (`{ ...next! }`, token-usage-report.ts) so `model_id` reaches the persisted
+// anchor, but the multi-report path rebuilds the object from token counts alone
+// and model_id / attribution are gone. `audit.ts:258` warns readers not to group
+// on it; these two tests are what make that warning checkable from the run side.
+//
+// ⚠ `attribution` travels the identical route — same spread, same drop, same
+// line — and is not asserted here only because the shared PROVIDER_USAGE fixture
+// does not set it, and perturbing a fixture four other describes depend on buys
+// less than it risks.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('generation provenance — the attestation a recipe run can actually make', () => {
+  beforeEach(() => { llmMocks.executeLLM.mockClear(); });
+
+  it('⛔⛔ ONE AI CALL — the RESOLVED model id reaches the persisted anchor', async () => {
+    // This is the whole attestation: the run that produced the text says which
+    // model produced it, on a row that survives the run. If this goes red, a
+    // recipe can no longer answer "what generated this" at all.
+    const entry = await runReal(aiRecipe(), { rows: [{ id: 'a' }] });
+    expect(entry?.total_usage).toBeDefined();
+    expect(entry?.total_usage?.model_id).toBe('test-model');
+  });
+
+  it('⛔⛔ THREE CALLS ON ONE SLOT — the id SURVIVES, because nothing disagreed', async () => {
+    // ⚠ THIS TEST ASSERTED THE OPPOSITE WHEN IT WAS WRITTEN, HOURS EARLIER, and
+    // was rewritten deliberately — which is the job it was added to do. The
+    // aggregator dropped `model_id` unconditionally on the reasoning that an
+    // aggregate spans heterogeneous sources; a `foreach` repeating ONE step
+    // against ONE slot is not heterogeneous, so the id was being discarded on
+    // the most common multi-call shape there is. Amended 2026-09-16 to keep it
+    // when every summed call agrees.
+    const entry = await runReal(aiForeachRecipe(), {
+      rows: [{ id: 'a' }, { id: 'b' }, { id: 'c' }],
+    });
+    expect(llmMocks.executeLLM).toHaveBeenCalledTimes(3);
+    expect(entry?.total_usage?.total_tokens).toBe(450);
+    expect(entry?.total_usage?.provider_calls).toBe(3);
+    // The attestation a thin recipe can make now covers its foreach too.
+    expect(entry?.total_usage?.model_id).toBe('test-model');
+  });
+});

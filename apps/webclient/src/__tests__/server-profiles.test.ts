@@ -24,6 +24,7 @@ import {
   projectProfile,
   removeProfile,
   renameProfile,
+  retargetProfile,
   setActiveField,
   switchTo,
   type ProfileRoster,
@@ -459,5 +460,73 @@ describe('beginPendingProfile — the add-a-server attempt', () => {
     const homeId = r.profiles.find((p) => p.server_url === HOME)!.id;
     const next = switchTo(r, homeId);
     expect(next.profiles).toHaveLength(2);
+  });
+});
+
+describe('retargetProfile — moving a paired server to a new address', () => {
+  it('keeps the profile, its id and its bearer; only the address moves', () => {
+    const r = roster(HOME, OFFICE);
+    const id = r.profiles.find((p) => p.server_url === HOME)!.id;
+    const withToken: ProfileRoster = {
+      ...r,
+      profiles: r.profiles.map((p) =>
+        p.id === id
+          ? { ...p, webclient_token: { token_id: 't', ciphertext_b64: 'c', iv_b64: 'i', issued_at: 1 }, label: 'My box' }
+          : p,
+      ),
+    };
+    const next = retargetProfile(withToken, id, 'wss://home.example:4433/ws', {
+      token_id: 't', ciphertext_b64: 'RESEALED', iv_b64: 'i2', issued_at: 2,
+    });
+    const moved = next.profiles.find((p) => p.id === id)!;
+    expect(moved.server_url).toBe('wss://home.example:4433/ws');
+    expect(moved.label).toBe('My box');
+    expect(moved.webclient_token!.ciphertext_b64).toBe('RESEALED');
+    expect(next.profiles).toHaveLength(2);
+    expect(next.activeId).toBe(withToken.activeId);
+  });
+
+  it('follows the label only when it was still the URL-derived default', () => {
+    const r = roster(HOME);
+    const id = r.profiles[0]!.id;
+    // Default label ⇒ follows the new address.
+    const followed = retargetProfile(r, id, 'wss://moved.example/ws', null);
+    expect(followed.profiles[0]!.label).toBe(defaultProfileLabel('wss://moved.example/ws'));
+    // A chosen name survives.
+    const named: ProfileRoster = {
+      ...r,
+      profiles: r.profiles.map((p) => ({ ...p, label: 'Basement' })),
+    };
+    expect(retargetProfile(named, id, 'wss://moved.example/ws', null).profiles[0]!.label)
+      .toBe('Basement');
+  });
+
+  it('⛔ refuses an address another profile already holds', () => {
+    const r = roster(HOME, OFFICE);
+    const id = r.profiles.find((p) => p.server_url === HOME)!.id;
+    // Two rows with one URL make ensureActiveProfileFor's lookup ambiguous,
+    // and the duplicate it picks decides which bearer gets unwrapped.
+    expect(retargetProfile(r, id, OFFICE, null)).toBe(r);
+  });
+
+  it('refuses a stale id and a blank address, leaving the roster identical', () => {
+    const r = roster(HOME);
+    const id = r.profiles[0]!.id;
+    expect(retargetProfile(r, 'no-such-id', 'wss://x.example/ws', null)).toBe(r);
+    expect(retargetProfile(r, id, '   ', null)).toBe(r);
+  });
+
+  it('trims the address it stores', () => {
+    const r = roster(HOME);
+    const id = r.profiles[0]!.id;
+    expect(retargetProfile(r, id, '  wss://moved.example/ws  ', null).profiles[0]!.server_url)
+      .toBe('wss://moved.example/ws');
+  });
+
+  it('re-saving the SAME address is allowed — it is not a self-collision', () => {
+    const r = roster(HOME, OFFICE);
+    const id = r.profiles.find((p) => p.server_url === HOME)!.id;
+    const next = retargetProfile(r, id, HOME, null);
+    expect(next.profiles.find((p) => p.id === id)!.server_url).toBe(HOME);
   });
 });

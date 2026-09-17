@@ -54,6 +54,8 @@ import {
   isReservedPublicContractId,
   isStandingContractDefinition,
   isWellFormedOpenProjection,
+  rolledContractUses,
+  usageCapWindowStart,
   scopedContainmentAdmits,
   type BoundRecipeRef,
   type ContractDefinition,
@@ -62,6 +64,7 @@ import {
   type DoorType,
   type RiskTier,
   type ScopedGrantSource,
+  type UsageCapPeriod,
   type SessionGrantBatchMember,
   type ScopedSenderCandidate,
 } from '@recued/contracts';
@@ -103,6 +106,9 @@ export interface MintContractInput {
   /** Total dispatches the contract permits — seeds `uses_remaining`. Omit for
    *  unlimited (the contract is never use-exhausted). */
   max_uses?: number;
+  /** How often `max_uses` refills. Omit for `'total'` — one budget, never
+   *  refilled, which is what every contract minted before this field meant. */
+  use_period?: UsageCapPeriod;
 }
 
 /** D-177 P2 — caller-supplied fields for
@@ -438,6 +444,30 @@ export interface ContractDefinitionStore {
   recordUse(contract_id: string): ContractDefinition | null;
   /** Atomic admission and reservation for a deferred in-flight attempt. */
   reserveDispatchUse?(contract_id: string): { before: ContractDefinition; after: ContractDefinition } | null;
+  /** Give back a unit taken by {@link reserveDispatchUse} when the attempt never
+   *  crossed the boundary — held for approval, refused downstream, or failed
+   *  before any effect.
+   *
+   *  ⛔⛔ THE ARM THAT DID NOT EXIST, AND ITS ABSENCE IS WHY RESERVING EARLY WAS
+   *  A TRADE. `reserveDispatchUse` charges and never refunds, so the preapproval
+   *  lane accepts that a reserved-then-abandoned attempt costs a use. The
+   *  ordinary lane cannot: it counts BOUNDARY CROSSINGS ("every dispatch
+   *  decrements"), and `execute-handler.ts:4291` records that the decrement was
+   *  deliberately relocated to the proceed point to close an UNDERCOUNT.
+   *  Reserving early without this arm would swing the same field the other way.
+   *
+   *  ⛔ CLAMPED AT `max_uses`, WHICH IS THE SAFETY PROPERTY. A release can only
+   *  ever restore what the owner authorised, so a double-release — a bug, a
+   *  retry, a settle running twice — cannot inflate a budget past its cap. The
+   *  caller also spends its token once (see the overlay), so this clamp is the
+   *  backstop, not the only guard.
+   *
+   *  ⚠ UNBOUNDED CONTRACTS TOOK NOTHING, so releasing one is a no-op rather than
+   *  a free credit: `reserveDispatchUse` leaves `after === before` when there is
+   *  no counter, and this mirrors that exactly.
+   *
+   *  Returns true iff a unit was actually given back. */
+  releaseDispatchUse?(contract_id: string): boolean;
   /** Revoke the contract: stamp `revoked_at = now()` + `revocation_reason`.
    *  Idempotent — a re-revoke leaves the FIRST revocation's `revoked_at` / reason
    *  intact (a revoked contract is already inert). Returns the resulting
@@ -746,7 +776,22 @@ export const createContractDefinitionStore = (
           : {}),
         ...(input.expiry_at !== undefined ? { expiry_at: input.expiry_at } : {}),
         ...(input.max_uses !== undefined
-          ? { max_uses: input.max_uses, uses_remaining: input.max_uses }
+          ? {
+            max_uses: input.max_uses,
+            uses_remaining: input.max_uses,
+            // The window the fresh counter belongs to. Stamped only for a
+            // periodic cap — `'total'` has no window, and writing one would
+            // imply a refill that never comes.
+            ...(input.use_period !== undefined && input.use_period !== 'total'
+              ? {
+                use_period: input.use_period,
+                ...(() => {
+                  const start = usageCapWindowStart(input.use_period, now());
+                  return start !== null ? { use_period_start: start } : {};
+                })(),
+              }
+              : {}),
+          }
           : {}),
       };
       // `put` validates the value_shape (incl. the nested contract_scope) and is an
@@ -777,17 +822,62 @@ export const createContractDefinitionStore = (
     reserveDispatchUse(contract_id) {
       let reservation: { before: ContractDefinition; after: ContractDefinition } | null = null;
       store.transaction(() => {
-        const before = read(contract_id);
-        if (!before || !isContractActive(before, now()) || !isStandingContractDefinition(before)) return;
+        const stored = read(contract_id);
+        if (!stored) return;
+        // ⛔⛔ THE REFILL IS PART OF THE TAKE, NOT A SEPARATE TICK. `isContractActive`
+        //   already reads a rolled window as active, so judging on the stored
+        //   counter here would decrement a refilled budget from 0 to -1 and hand
+        //   back a reservation for a unit that was never there. Same transaction,
+        //   same instant, one write.
+        const before = rolledContractUses(stored, now());
+        if (!isContractActive(before, now()) || !isStandingContractDefinition(before)) return;
         const after = typeof before.uses_remaining === 'number' ? { ...before, uses_remaining: before.uses_remaining - 1 } : before;
-        if (after !== before) store.put(CONTRACT_DEFINITION_SCOPE, [contract_id], after);
+        // `before !== stored` means a refill landed even if the counter arithmetic
+        // did not move it — persist either way, or the window anchor never advances
+        // and the next take refills again.
+        if (after !== before || before !== stored) {
+          store.put(CONTRACT_DEFINITION_SCOPE, [contract_id], after);
+        }
         reservation = { before, after };
       });
       return reservation;
     },
+    releaseDispatchUse(contract_id) {
+      let released = false;
+      store.transaction(() => {
+        const stored = read(contract_id);
+        if (!stored) return;
+        // ⚠ A release that lands AFTER the window rolled credits the NEW window —
+        //   which is correct and harmless: the refill already restored the full
+        //   budget, so the `max_uses` clamp below turns this into a no-op rather
+        //   than a unit carried across a boundary it never belonged to.
+        const current = rolledContractUses(stored, now());
+        // Unbounded took nothing — mirror `reserveDispatchUse`'s own no-op arm
+        // rather than crediting a counter that does not exist.
+        if (typeof current.uses_remaining !== 'number') return;
+        // ⛔ NEVER ABOVE THE AUTHORISED CAP. `max_uses` is the ceiling the owner
+        //   set; a release that could exceed it would turn a settle bug into a
+        //   bigger budget than anyone granted.
+        const ceiling = typeof current.max_uses === 'number'
+          ? current.max_uses
+          : current.uses_remaining;
+        const next = Math.min(ceiling, current.uses_remaining + 1);
+        if (next === current.uses_remaining && current === stored) return;
+        store.put(CONTRACT_DEFINITION_SCOPE, [contract_id], {
+          ...current,
+          uses_remaining: next,
+        });
+        released = next !== current.uses_remaining;
+      });
+      return released;
+    },
     recordUse(contract_id) {
-      const def = read(contract_id);
-      if (!def) return null;
+      const stored = read(contract_id);
+      if (!stored) return null;
+      // A periodic cap refills here too. This path has no active re-check of its
+      // own (its gate was the caller's `shouldMeterUse`), so without the refill a
+      // legacy overlay would keep decrementing a window that had already rolled.
+      const def = rolledContractUses(stored, now());
       // Unbounded — no `max_uses` cap. Both ABSENT and explicit `null` count as
       // unmetered (the `number?` value_shape admits `null`, and
       // `contractLifecycleState` treats null/undefined identically); guarding only
@@ -795,8 +885,9 @@ export const createContractDefinitionStore = (
       // `uses_remaining: 0`, silently exhausting an unlimited contract.
       if (def.uses_remaining === undefined || def.uses_remaining === null) return def;
       const next = Math.max(0, def.uses_remaining - 1);
-      // Already exhausted (0) — clamp leaves it unchanged; skip the redundant write.
-      if (next === def.uses_remaining) return def;
+      // Already exhausted (0) — clamp leaves it unchanged; skip the redundant write
+      // UNLESS a refill just landed, which must still be persisted.
+      if (next === def.uses_remaining && def === stored) return def;
       const updated: ContractDefinition = { ...def, uses_remaining: next };
       store.put(CONTRACT_DEFINITION_SCOPE, [contract_id], updated);
       return updated;

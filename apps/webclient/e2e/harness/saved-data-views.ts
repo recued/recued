@@ -1,5 +1,5 @@
 /** Browser fixture only. Real database durability/authority is exercised by server tests. */
-import { parseSavedDataViewDefinition, parseSavedDataViewAlertSettings, type SavedDataView } from '@recued/contracts';
+import { parseSavedDataViewDefinition, parseSavedDataViewAlertSettings, savedDataViewSupportsAlerts, type SavedDataView } from '@recued/contracts';
 
 export const savedViewsDemoReply = (method: string, args: unknown): {
   result?: unknown; error?: { code: string; message: string };
@@ -37,9 +37,9 @@ export const savedViewsDemoReply = (method: string, args: unknown): {
     const updated: SavedDataView = { ...view, definition, revision: view.revision + 1, updated_at: Date.now() };
     if (Object.hasOwn(input, 'alert')) {
       const alert = parseSavedDataViewAlertSettings(input.alert);
-      if (!alert || definition.tab !== 'task') return { error: { code: 'bad_request', message: 'Invalid task alert settings.' } };
+      if (!alert || !savedDataViewSupportsAlerts(definition)) return { error: { code: 'bad_request', message: 'Invalid alert settings.' } };
       updated.alert = { ...alert, status: alert.enabled ? 'watching' : 'paused', last_checked_at: Date.now(), last_notified_at: null };
-    } else if (definition.tab !== 'task') delete updated.alert;
+    } else if (!savedDataViewSupportsAlerts(definition)) delete updated.alert;
     views[index] = updated;
     sessionStorage.setItem(key, JSON.stringify(views));
     return { result: { view: updated } };

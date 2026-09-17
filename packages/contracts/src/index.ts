@@ -138,6 +138,23 @@ export {
   receptionPairBinding,
   receptionSchedulingPairBinding,
 } from './reception-pair-binding.js';
+
+// D-148 — pre-auth server-identity probe. Both the server and the webclient
+// import `buildIdentityProbePayload` so the signed bytes cannot drift.
+export {
+  IDENTITY_PROBE_PATH,
+  IDENTITY_PROBE_DOMAIN,
+  IDENTITY_PROBE_NONCE_BYTES,
+  buildIdentityProbePayload,
+  isValidIdentityProbeNonce,
+  isValidIdentityFingerprint,
+  isIdentityProbeRequest,
+} from './identity-probe.js';
+export type {
+  IdentityProbeRequest,
+  IdentityProbeResponse,
+} from './identity-probe.js';
+
 export type {
   ReceptionPairBindingInput,
   ReceptionSchedulingPairBindingInput,
@@ -1063,6 +1080,7 @@ export {
 // The store mint/use/expire/revoke ops + the use-resolution gating consume these.
 export type {
   ContractScope, DoorExecutionPolicy, ContractDefinition, ContractLifecycleState,
+  UsageCapPeriod,
   ContractScopeContext,
   MintContractRequest, ContractDefinitionView,
   ContractListRequest, ContractListResponse,
@@ -1082,6 +1100,11 @@ export {
   OWNER_CONTRACT_ID, isReservedOwnerContractId,
   PUBLIC_CONTRACT_ID, isReservedPublicContractId,
   contractLifecycleState, isContractActive, contractScopeMatches,
+  // Model — the usage-cap period vocabulary + its pure window helpers. A
+  // contract's `max_uses` refills per `use_period`; absent means `'total'`,
+  // which is what every row minted before this vocabulary meant.
+  USAGE_CAP_PERIODS, isUsageCapPeriod, contractUsePeriod,
+  usageCapWindowStart, usageCapWindowRolled, rolledContractUses,
   contractScopeAdmitsConnection,
   CONTRACT_GRANT_KINDS, isContractGrantKind, isStandingContractDefinition,
   isCustomerContractGrantKind,
@@ -3618,8 +3641,11 @@ export {
   DIAGNOSTIC_ALLOWED_PORTS,
   DIAGNOSTIC_ACCOUNT_RATE_LIMIT_PER_HOUR,
   DIAGNOSTIC_TARGET_RATE_LIMIT_PER_MINUTE,
+  DIAGNOSTIC_EXTRA_PORT_MIN,
+  DIAGNOSTIC_EXTRA_PORT_MAX,
   isDiagnosticKind,
   isDiagnosticAllowedPort,
+  isDiagnosticExtraPort,
   isDiagnosticOwnershipProofMethod,
 } from './diagnostic.js';
 export type {
@@ -3688,6 +3714,7 @@ export type {
   // LAN-URL kickstart — server's locally-reachable URLs (loopback + LAN)
   LocalServerUrl,
   NetworkLocalUrlsResponse,
+  NetworkPortMappingResponse,
 } from './network.js';
 
 // Total-record builder — replaces the `{} as Record<Union, V>` accumulator that
@@ -4632,25 +4659,10 @@ export type { TokenUsageReport, TokenUsageAttribution } from './token-usage-repo
 
 // D-148 § A.10 — Reachability Doctor.
 export {
-  REACHABILITY_RECOMMENDATION_CODES,
   FREE_REACHABILITY_PROBE_RATE_LIMIT_PER_HOUR,
   FREE_REACHABILITY_TARGET_RATE_LIMIT_PER_MINUTE,
 } from './reachability.js';
 export type {
-  ReachabilityReport,
-  ReachabilityRecommendationCode,
-  ReachabilityNetworkBlock,
-  ReachabilityDnsBlock,
-  ReachabilityTlsBlock,
-  ReachabilityHandshakeTest,
-  ReachabilityPathEntry,
-  ReachabilityReceptionSpecific,
-  ReachabilityHmacTest,
-  ReachabilityWebhookEntry,
-  ReachabilityBridgeEntry,
-  ReachabilityWebclientEntry,
-  ReachabilityRecommendation,
-  ReachabilityPerDomainTlsEntry,
   CloudProbeRequest,
   CloudProbeResponse,
   ProbeTargetKind,
@@ -5209,6 +5221,8 @@ export type {
   WorkEntityGetRpcResponse,
   WorkEntityUpsertRpcRequest,
   WorkEntityUpsertRpcResponse,
+  WorkEntityTaskMarkDoneRpcRequest,
+  WorkEntityTaskMarkDoneRpcResponse,
   WorkEntityDeleteRpcRequest,
   WorkEntityDeleteRpcResponse,
 } from './work-entity-rpc.js';

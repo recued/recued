@@ -1,42 +1,29 @@
-/** D-148 § A.10 + § P6 — Settings → Server → Reachability page renderer.
+/** D-148 § A.10 / D-272 — the cloud diagnostic probe: request, call, and the
+ *  tri-state folds that read one port's answer out of a response.
  *
- *  Pure projection of a `ReachabilityReport` into a render-ready
- *  model. The webclient's UI iterates over the model + emits one
- *  card per port + per webhook + per recommendation. The actual
- *  fetch (the rpc that returns the report) is the caller's
- *  responsibility — this module only builds the model.
+ *  ⚠ THIS FILE USED TO BE A PAGE. The Settings → Server → Reachability renderer
+ *  lived here and was deleted with its tab: a diagnostic given a destination of
+ *  its own, mounted only for probe-havers, projecting a `ReachabilityReport`
+ *  that nothing built — and which has since been deleted from contracts along
+ *  with its builder. What survives is the PLUMBING — everything Connect a
+ *  device calls to ask a question and read the answer — plus the three result
+ *  formatters its folded detail block renders through.
  *
- *  The cloud-probe button surfaces here too: the renderer carries a
- *  `can_run_cloud_probe` flag derived from the cloud-probe rate-limit
- *  hint shipped with the report. */
+ *  ⛔ The name is now wider than the contents and that is deliberate: renaming
+ *  the module would move every import in a commit whose point was deletion. */
 
 import {
   HOSTNAME_LISTENER_PORTS,
+  isDiagnosticAllowedPort,
+  isDiagnosticExtraPort,
   type DiagnosticOwnershipProofMethod,
   type DiagnosticKind,
   type DiagnosticRequest,
   type DiagnosticResponse,
   type DiagnosticResult,
-  ReachabilityRecommendation,
-  ReachabilityRecommendationCode,
-  ReachabilityReport,
-  ReachabilityPathEntry,
-  ReachabilityPerDomainTlsEntry,
-  ReachabilityWebhookEntry,
-  ReachabilityBridgeEntry,
-  ReachabilityWebclientEntry,
 } from '@recued/contracts';
 import { humanizeRpcError } from '../shell/rpc-error-copy.js';
 
-export const REACHABILITY_PANEL_ATTR = 'data-recued-reachability-panel';
-export const REACHABILITY_RUN_EXTERNAL_PROBE_BTN_ATTR =
-  'data-recued-reachability-run-external-probe';
-export const REACHABILITY_PROBE_RESULTS_ATTR =
-  'data-recued-reachability-probe-results';
-export const REACHABILITY_PROBE_ERROR_ATTR =
-  'data-recued-reachability-probe-error';
-
-const RUN_EXTERNAL_PROBE_ACTION = 'reachability-run-external-probe';
 // D-176 Phase 5 — the reachability + diagnostics probes split out of the
 // sync-worker (api host) onto the standalone probe Worker at its own subdomain
 // (spec § 5; `wrangler.probe.toml`). The api host now 404s `/v1/diagnostics/probe`.
@@ -97,100 +84,92 @@ const defaultFetch: FetchLike = async (input, init) => {
   return f(input, init);
 };
 
-/** Per-recommendation remediation copy keyed on the closed-list
- *  code. Used as a fallback when the report itself doesn't ship a
- *  remediation hint. The webclient localizes these — strings here
- *  are the canonical English source.
- *
- *  D-149 P1 codex fold — `ReachabilityRecommendationCode` widened
- *  with three Reception codes per § A.8; the exhaustive Record gets
- *  remediation copy for each so `npm run build` stays green and the
- *  Settings UI never shows a silent blank fallback when the doctor
- *  emits a Reception finding. */
-export const REMEDIATION_COPY: Record<ReachabilityRecommendationCode, string> = {
-  tls_renewal_overdue: 'Get a new certificate: Settings, Server, Key Health, Renew.',
-  tls_renewal_imminent: 'Recued will renew this by itself within 14 days. You do not need to do anything.',
-  ddns_ip_mismatch: 'Refresh your web address: Settings, Server, then Refresh.',
-  webhook_inbound_silent: 'Check your router lets traffic through, and check the shared secret, under Settings, Connections.',
-  webhook_hmac_failure: 'Connect it again under Settings, Connections. The shared secret may have changed.',
-  bridge_offline: 'Check the Browser Bridge is installed and switched on in their browser.',
-  cert_fingerprint_mismatch: 'Somebody may be listening in. Pair every device again, and get a new certificate under Settings, Server, Key Health.',
-  path_unreachable_from_cloud: 'Check your router lets traffic through to this server. If it cannot, switch to your own network only.',
-  nat_traversal_required: 'Set your router to let traffic through by hand. It cannot do it automatically on this network.',
-  exposure_resolution_inconsistent: 'Pick a preset again under Settings, Server, Exposure. Or check the list below it for anything out of place.',
-  reception_listener_silent: 'Your Reception page is open, but nobody has been. Check the links you shared really work, or switch off the ones you are not using, under Settings, Server, Reception.',
-  reception_endpoint_unreachable: 'Recued tested one of your Reception links and it did not work. Find it under Settings, Server, Reception, then share it again or give it a new key.',
-  reception_cert_san_missing_hostname: 'Your certificate does not cover the name your Reception page uses. Get a new one that does. With Pro: Settings, Server, Refresh. Otherwise run your own certificate tool again.',
-  tls_chain_invalid_for_domain: 'One of your certificates no longer traces back to anyone your computer trusts. Upload the certificate again, along with the chain from whoever issued it, under Settings, Server, TLS Certificates.',
-};
-
-/** Severity sort order matching the rpc projection. Errors first
- *  drives the top-of-page recommendation feed. */
-export const RECOMMENDATION_SEVERITY_ORDER = ['error', 'warning', 'info'] as const;
-
-export interface ReachabilityRenderModel {
-  /** Top-of-page severity summary — cardinality of each severity
-   *  level + the most-severe one for the badge. */
-  severity_summary: {
-    error_count: number;
-    warning_count: number;
-    info_count: number;
-    badge: 'healthy' | 'attention' | 'critical';
-  };
-  network_summary: {
-    public_ip: string | null;
-    behind_nat: boolean;
-    handle: string | null;
-    handle_resolves: boolean;
-    handle_resolves_to_expected_ip: boolean;
-  };
-  tls_summary: {
-    fingerprint_short: string;
-    days_until_expiry: number;
-    issuer: string;
-    valid_for_handle: boolean;
-  };
-  per_path: ReachabilityPathEntry[];
-  /** D-148 FU2 — per-domain TLS health rollup from
-   *  `TLSDomainStore.list()`. Empty array when the server has no
-   *  per-domain certs configured. Render position: directly below
-   *  `tls_summary` (the single primary cert), matching the
-   *  per-domain TLS Certificates page hierarchy. */
-  per_domain_tls: ReachabilityPerDomainTlsEntry[];
-  webhooks: ReachabilityWebhookEntry[];
-  bridges: ReachabilityBridgeEntry[];
-  webclients: ReachabilityWebclientEntry[];
-  recommendations: Array<{
-    severity: ReachabilityRecommendation['severity'];
-    code: ReachabilityRecommendationCode;
-    message: string;
-    remediation: string;
-  }>;
-  /** True when the cloud probe is available (rate budget + DNS
-   *  handle present). UI uses this to enable / disable the
-   *  "Run external probe" button. */
-  can_run_cloud_probe: boolean;
-}
-
+/** What the probe caller needs to name a target. */
 export interface ReachabilityDiagnosticTarget {
   account_id: string;
   hostname: string;
   expected_public_ip?: string;
   acme_challenge_token?: string;
   ownership_probe_method?: DiagnosticOwnershipProofMethod;
+  /** Ports to ask `port_reachability` about. Omitted → every hostname listener
+   *  port, which is what the Reachability page wants (an operator asks about
+   *  every listener).
+   *
+   *  🔑 A CALLER THAT READS ONE PORT SHOULD ASK ABOUT ONE PORT, and the reason
+   *  is wall clock, not bytes. `runDiagnosticChecks` walks
+   *  `for (const port of target.ports)` with an `await` inside, each probe under
+   *  a 5s timeout — so four ports is four SEQUENTIAL timeouts for a router that
+   *  DROPs rather than REJECTs, which is the common case and therefore the
+   *  reader this costs. ⛔ The slow path is the FAILING one: the beginner whose
+   *  router is shut waits longest.
+   *
+   *  ⚠ EVERY PORT NAMED HERE MUST BE IN `DIAGNOSTIC_ALLOWED_PORTS`. The worker's
+   *  `normalizePorts` THROWS `diagnostic_port_not_allowed` on the first one that
+   *  is not — it does not drop it — so naming an unlistable port turns a probe
+   *  that would have answered `null` (nobody asked) into a 400 the caller must
+   *  render as a failure. See `isProbeAnswerablePort`. */
+  ports?: ReadonlyArray<number>;
+  /** Checks to run. Omitted → `DEFAULT_DIAGNOSTIC_CHECKS`. Each check is gated
+   *  independently in the worker (`target.checks.includes(...)`), so a caller
+   *  that reads one payload kind pays for one. `acme_challenge` is appended by
+   *  the token, not by this list — the two are independent. */
+  checks?: ReadonlyArray<DiagnosticKind>;
+  /** D-272 — ONE port outside `DIAGNOSTIC_ALLOWED_PORTS`, for the caller asking
+   *  about its own LAN listener (`bind_port` is user-configurable, so it can
+   *  never be allowlisted).
+   *
+   *  ⚠ Use this rather than `ports` for such a port: `ports` is closed-list and
+   *  rejects the whole request. `isProbeAnswerablePort` is the predicate for
+   *  `ports`; `isProbeAskableExtraPort` is the one for this. */
+  extra_port?: number;
 }
+
+/** Whether the probe may be asked about this port through `extra_port`.
+ *
+ *  ⛔ A DIFFERENT QUESTION FROM `isProbeAnswerablePort`, and the two must not be
+ *  swapped: that one asks "is this on the closed list", this one asks "is this
+ *  inside the one bounded door past it". A LAN port like 7717 fails the first
+ *  and passes the second — which is exactly why the door exists. */
+export const isProbeAskableExtraPort = (port: number): boolean =>
+  isDiagnosticExtraPort(port);
+
+/** Whether the cloud probe is allowed to be ASKED about this port at all.
+ *
+ *  ⛔ NOT "is it open" — that is `diagnosticPortReachability`. This is the prior
+ *  question, and it has to be asked BEFORE narrowing a request to a single port:
+ *  a `public_port` the owner moved to, say, 8443 is outside the worker's
+ *  allowlist, and a request naming it is rejected whole.
+ *
+ *  ⇒ A caller that cannot ask must not offer to. Leaving the verdict `null`
+ *  (unknown) is right; showing a button that spends 5s and comes back with
+ *  "try again in a minute" about a port that will never be answerable is the
+ *  "opens then stops" failure in a new place. */
+export const isProbeAnswerablePort = (port: number): boolean =>
+  isDiagnosticAllowedPort(port);
 
 export const buildReachabilityDiagnosticRequest = (
   target: ReachabilityDiagnosticTarget,
 ): DiagnosticRequest => {
+  const baseChecks = target.checks ?? DEFAULT_DIAGNOSTIC_CHECKS;
   const request: DiagnosticRequest = {
     account_id: target.account_id,
     hostname: target.hostname,
-    checks: target.acme_challenge_token
-      ? [...DEFAULT_DIAGNOSTIC_CHECKS, 'acme_challenge']
-      : [...DEFAULT_DIAGNOSTIC_CHECKS],
-    ports: [...HOSTNAME_LISTENER_PORTS],
+    // ⚠ The ACME check follows the TOKEN, not the check list — a caller that
+    // names its own checks and also carries a token still gets it, and a caller
+    // that names it twice does not send it twice.
+    checks:
+      target.acme_challenge_token !== undefined
+      && !baseChecks.includes('acme_challenge')
+        ? [...baseChecks, 'acme_challenge']
+        : [...baseChecks],
+    ports: [...(target.ports ?? HOSTNAME_LISTENER_PORTS)],
   };
+  // ⚠ Sent as its own field, never merged into `ports` here. The worker folds
+  // the two after validating each by its own rule; merging client-side would
+  // push an off-list port through the closed-list check and fail the request.
+  if (target.extra_port !== undefined) {
+    request.extra_port = target.extra_port;
+  }
   if (target.expected_public_ip !== undefined) {
     request.expected_public_ip = target.expected_public_ip;
   }
@@ -242,6 +221,43 @@ export const createReachabilityDiagnosticProbeCaller = (
     return readApiData<DiagnosticResponse>(body);
   };
 
+/** Tri-state read of ONE port's probe outcome, for a caller that must tell
+ *  "checked, refused" from "nobody checked".
+ *
+ *  ⛔ `null` IS NOT `false`. `diagnosticResponseHasReachablePort` below answers a
+ *  different question — "may I show this URL" — where both of those collapse to
+ *  no. A checklist cannot collapse them: an unticked box claims the router was
+ *  looked at and found shut, and nothing looked.
+ *
+ *  ⚠ A PORT THE PROBE NEVER CARRIES IS ALWAYS `null`, by construction — and
+ *  there are now TWO ways to not carry one. The request names ports (defaulting
+ *  to `HOSTNAME_LISTENER_PORTS`, narrowed by callers that read one), and the
+ *  worker allows only `DIAGNOSTIC_ALLOWED_PORTS` on top of that. So 7717 has no
+ *  answer here and reads as unknown rather than as shut, which is the honest
+ *  result: 7717 is the local port, and the question "is it open to the public"
+ *  is not asked of it.
+ *
+ *  ⛔ NARROWING A CALLER'S REQUEST MUST NOT TURN ANOTHER PORT'S `null` INTO A
+ *  `false`. It cannot, because this fold sets `checked` only from a result that
+ *  NAMES the port — an absent port never reaches the `false` return. A fold
+ *  written as `.some(...) === false` over the response would have. */
+export const diagnosticPortReachability = (
+  response: DiagnosticResponse | null | undefined,
+  port: number,
+): boolean | null => {
+  if (response === null || response === undefined) return null;
+  let checked = false;
+  for (const result of response.results) {
+    if (result.payload.kind !== 'port_reachability') continue;
+    if (result.payload.port !== port) continue;
+    checked = true;
+    if (result.payload.outcome === 'reachable') return true;
+  }
+  // `blocked` and `no_response` are both "it did not get in" to a reader who is
+  // deciding whether to go and change a router setting.
+  return checked ? false : null;
+};
+
 export const diagnosticResponseHasReachablePort = (
   response: DiagnosticResponse,
   port: number,
@@ -276,120 +292,92 @@ export const diagnosticResponseShowsReachableUrl = (
   return port === 443 ? diagnosticResponseHasHostnameMatchedTls(response) : true;
 };
 
-export type ReachabilityProbeStatus = 'idle' | 'running' | 'success' | 'error';
+/** D-272 — can THIS browser, on THIS network, reach `url`?
+ *
+ *  🔑 THE ONLY INSTRUMENT THAT CAN SEE NAT HAIRPIN. Everything else on this page
+ *  asks the cloud, which is on the wrong side of the router: it reports the port
+ *  reachable while the phone in the kitchen fails. This runs where the phone is.
+ *
+ *  ⚠⚠ MEASURED IN REAL CHROMIUM, 2026-09-16 — the numbers this design rests on,
+ *  recorded here because the next reader will otherwise re-reason them from the
+ *  spec and get the 404 case wrong:
+ *
+ *  | target (cross-origin, strict TLS) | result |
+ *  |:--|:--|
+ *  | 200 / 404 / 500                   | **RESOLVED**, `type: 'opaque'`, `status: 0` |
+ *  | trusted cert (real CA)            | **RESOLVED** |
+ *  | untrusted cert (self-signed)      | REJECTED `TypeError: Failed to fetch` |
+ *  | connection refused                | REJECTED `TypeError` (0 ms) |
+ *  | DNS failure                       | REJECTED `TypeError` (~1.2 s) |
+ *  | blackholed / DROP                 | never settles — only the abort ends it |
+ *
+ *  ⇒ **`true` IS A STRONG POSITIVE**: DNS resolved, TCP connected, TLS verified
+ *  against a TRUSTED certificate, and an HTTP response came back. That is the
+ *  hairpin question, because hairpin failure is a connection-level failure.
+ *
+ *  ⛔ **`false` NAMES NO CAUSE, AND MUST NOT.** Every rejection is the same
+ *  `TypeError`; TLS, refused and DNS are indistinguishable. Timing separates
+ *  them a little (0 ms / 1.2 s / the full timeout) and that is NOT built on — it
+ *  is environment-dependent, and inventing a router diagnosis from a network
+ *  error on this side of the router is the mistake this whole decision keeps
+ *  naming.
+ *
+ *  ⛔ **AND `true` DOES NOT MEAN THE APP IS SERVED THERE.** Opaque hides the
+ *  status, so a public 404 resolves exactly like a 200 — and `webclient` is
+ *  `{ lan: true, public: false }` by default. Separable on purpose: whether the
+ *  path is exposed is locally knowable from the exposure grid; this answers only
+ *  whether the address answers at all.
+ *
+ *  ⚠ The abort is load-bearing. A router that DROPs never sends anything back,
+ *  so without it the promise hangs for the browser's own connect timeout.
+ *  ⚠ `no-cors` keeps this a plain unauthenticated GET with no preflight and no
+ *  credentials — the server needs no CORS header, and none of the paths that
+ *  have one (only `/auth/pair`, a POST auth surface) are touched. */
+export const ADDRESS_HERE_TIMEOUT_MS = 5000;
 
-export interface ReachabilityProbePanelState {
-  status: ReachabilityProbeStatus;
-  response: DiagnosticResponse | null;
-  error: string | null;
-}
-
-export interface MountReachabilityPanelOptions {
-  host: HTMLElement;
-  report?: ReachabilityReport;
-  runExternalProbe?: ReachabilityExternalProbeCaller;
-  canRunExternalProbe?: boolean;
-  now?: () => number;
-}
-
-export interface ReachabilityPanelMount {
-  getState(): ReachabilityProbePanelState;
-  runExternalProbe(): Promise<void>;
-  updateReport(report: ReachabilityReport): void;
-  whenProbeSettled(): Promise<void>;
-  dispose(): void;
-}
-
-const computeBadge = (
-  errors: number,
-  warnings: number,
-): 'healthy' | 'attention' | 'critical' => {
-  if (errors > 0) return 'critical';
-  if (warnings > 0) return 'attention';
-  return 'healthy';
-};
-
-const shortFingerprint = (full: string): string => {
-  if (full.length <= 12) return full;
-  return `${full.slice(0, 8)}…${full.slice(-4)}`;
-};
-
-const buildRecommendation = (
-  rec: ReachabilityRecommendation,
-): ReachabilityRenderModel['recommendations'][number] => ({
-  severity: rec.severity,
-  code: rec.code,
-  message: rec.message,
-  remediation: rec.remediation ?? REMEDIATION_COPY[rec.code] ?? '',
-});
-
-const sortRecommendationsForDisplay = (
-  recs: ReachabilityRecommendation[],
-): ReachabilityRecommendation[] => {
-  const order: Record<ReachabilityRecommendation['severity'], number> = {
-    error: 0,
-    warning: 1,
-    info: 2,
+export const createAddressReachableFromHereCheck = (
+  opts: { fetcher?: FetchLike; timeoutMs?: number } = {},
+): ((url: string) => Promise<boolean>) =>
+  async (url) => {
+    const fetcher = opts.fetcher ?? defaultFetch;
+    const controller = new AbortController();
+    const timer = setTimeout(
+      () => { controller.abort(); },
+      opts.timeoutMs ?? ADDRESS_HERE_TIMEOUT_MS,
+    );
+    try {
+      await fetcher(url, {
+        // ⚠ Every one of these matters. `no-cors` so an ordinary server with no
+        // CORS header still answers; `omit` so this can never carry a bearer;
+        // `no-store` so a cached hit cannot report reachability that is minutes
+        // old — the whole point is "right now".
+        mode: 'no-cors',
+        method: 'GET',
+        credentials: 'omit',
+        cache: 'no-store',
+        redirect: 'follow',
+        signal: controller.signal,
+      });
+      return true;
+    } catch {
+      // ⛔ EVERY failure lands here and they are not distinguishable. The caller
+      // renders "did not reach", never a reason.
+      return false;
+    } finally {
+      clearTimeout(timer);
+    }
   };
-  return [...recs].sort((a, b) => {
-    const sa = order[a.severity];
-    const sb = order[b.severity];
-    if (sa !== sb) return sa - sb;
-    return a.code.localeCompare(b.code);
-  });
-};
 
-/** Build the render model from a `ReachabilityReport`. Pure
- *  projection — no IO. Caller refetches when the rpc reports a
- *  newer `report_id`. */
-export const buildReachabilityRenderModel = (
-  report: ReachabilityReport,
-  options: { can_run_cloud_probe?: boolean } = {},
-): ReachabilityRenderModel => {
-  const recs = sortRecommendationsForDisplay(report.recommendations);
-  const error_count = recs.filter((r) => r.severity === 'error').length;
-  const warning_count = recs.filter((r) => r.severity === 'warning').length;
-  const info_count = recs.filter((r) => r.severity === 'info').length;
-  return {
-    severity_summary: {
-      error_count,
-      warning_count,
-      info_count,
-      badge: computeBadge(error_count, warning_count),
-    },
-    network_summary: {
-      public_ip: report.network.public_ipv4 ?? report.network.public_ipv6 ?? null,
-      behind_nat: report.network.behind_nat,
-      handle: report.dns.handle ?? null,
-      handle_resolves: report.dns.ddns_resolves,
-      handle_resolves_to_expected_ip: report.dns.resolved_to_expected_ip,
-    },
-    tls_summary: {
-      fingerprint_short: shortFingerprint(report.tls.cert_fingerprint),
-      days_until_expiry: report.tls.days_until_expiry,
-      issuer: report.tls.issuer,
-      valid_for_handle: report.tls.valid_for_handle,
-    },
-    per_path: report.per_path,
-    per_domain_tls: report.per_domain_tls ?? [],
-    webhooks: report.webhooks,
-    bridges: report.bridges,
-    webclients: report.webclients,
-    recommendations: recs.map(buildRecommendation),
-    can_run_cloud_probe: options.can_run_cloud_probe ?? true,
-  };
-};
-
-const statusLabel = (status: DiagnosticResult['status']): string =>
+export const statusLabel = (status: DiagnosticResult['status']): string =>
   status === 'pass' ? 'Pass' : status === 'warn' ? 'Warn' : 'Fail';
 
-const formatDiagnosticKind = (kind: DiagnosticKind): string =>
+export const formatDiagnosticKind = (kind: DiagnosticKind): string =>
   kind
     .split('_')
     .map((part) => part.slice(0, 1).toUpperCase() + part.slice(1))
     .join(' ');
 
-const formatDiagnosticPayload = (result: DiagnosticResult): string => {
+export const formatDiagnosticPayload = (result: DiagnosticResult): string => {
   const payload = result.payload;
   switch (payload.kind) {
     case 'detected_public_ip':
@@ -418,281 +406,3 @@ const formatDiagnosticPayload = (result: DiagnosticResult): string => {
       return payload.class;
   }
 };
-
-const renderExternalProbeResults = (
-  state: ReachabilityProbePanelState,
-): string => {
-  if (state.error) {
-    return `<p class="reachability-error" ${REACHABILITY_PROBE_ERROR_ATTR}>${escapeHtml(
-      state.error,
-    )}</p>`;
-  }
-  if (state.response === null) {
-    if (state.status === 'running') {
-      return '<p class="reachability-muted">External probe running...</p>';
-    }
-    return '';
-  }
-  const counts = state.response.results.reduce(
-    (acc, result) => {
-      acc[result.status] += 1;
-      return acc;
-    },
-    { pass: 0, warn: 0, fail: 0 },
-  );
-  const rows = state.response.results
-    .map((result) => `
-      <tr>
-        <td>${escapeHtml(formatDiagnosticKind(result.kind))}</td>
-        <td><span class="reachability-status reachability-status-${result.status}">${statusLabel(result.status)}</span></td>
-        <td>${escapeHtml(formatDiagnosticPayload(result))}</td>
-        <td>${escapeHtml(result.remediation_hint ?? '')}</td>
-      </tr>`)
-    .join('');
-  return `
-    <div class="reachability-probe-results" ${REACHABILITY_PROBE_RESULTS_ATTR}>
-      <p class="reachability-muted">External probe for ${escapeHtml(state.response.hostname)}: ${counts.pass} pass, ${counts.warn} warn, ${counts.fail} fail</p>
-      <table class="reachability-probe-table">
-        <thead>
-          <tr>
-            <th>Check</th>
-            <th>Status</th>
-            <th>Result</th>
-            <th>Remediation</th>
-          </tr>
-        </thead>
-        <tbody>${rows}</tbody>
-      </table>
-    </div>`;
-};
-
-const renderReachabilityPanel = (
-  report: ReachabilityReport | null,
-  state: ReachabilityProbePanelState,
-  canRunExternalProbe: boolean,
-  hasCaller: boolean,
-): string => {
-  const model = report ? buildReachabilityRenderModel(report) : null;
-  const disabled =
-    state.status === 'running' || !canRunExternalProbe || !hasCaller
-      ? ' disabled'
-      : '';
-  const badge = model
-    ? `<span class="reachability-badge reachability-badge-${model.severity_summary.badge}">${escapeHtml(model.severity_summary.badge)}</span>`
-    : '';
-  const summary = model
-    ? `<dl class="reachability-summary">
-        <div><dt>Hostname</dt><dd>${escapeHtml(model.network_summary.handle ?? 'Not set up')}</dd></div>
-        <div><dt>Public IP</dt><dd>${escapeHtml(model.network_summary.public_ip ?? 'Unknown')}</dd></div>
-        <div><dt>TLS</dt><dd>${escapeHtml(model.tls_summary.issuer)} / ${model.tls_summary.days_until_expiry} day(s)</dd></div>
-      </dl>`
-    : '<p class="reachability-muted">External diagnostics target the paired server hostname.</p>';
-  return `
-    <div class="reachability-panel" ${REACHABILITY_PANEL_ATTR}>
-      <div class="reachability-header">
-        <h3>Reachability Doctor</h3>
-        ${badge}
-      </div>
-      ${summary}
-      <div class="reachability-actions">
-        <button
-          type="button"
-          class="rx-btn rx-btn-secondary"
-          data-action="${RUN_EXTERNAL_PROBE_ACTION}"
-          ${REACHABILITY_RUN_EXTERNAL_PROBE_BTN_ATTR}
-          ${disabled}
-        >${state.status === 'running' ? 'Running...' : 'Check from the outside'}</button>
-      </div>
-      ${renderExternalProbeResults(state)}
-    </div>`;
-};
-
-export const mountReachabilityPanel = (
-  opts: MountReachabilityPanelOptions,
-): ReachabilityPanelMount => {
-  let report: ReachabilityReport | null = opts.report ?? null;
-  let state: ReachabilityProbePanelState = {
-    status: 'idle',
-    response: null,
-    error: null,
-  };
-  let disposed = false;
-  let pendingProbe: Promise<void> | null = null;
-
-  opts.host.setAttribute(REACHABILITY_PANEL_ATTR, '');
-
-  const render = (): void => {
-    if (disposed) return;
-    const canRunExternalProbe =
-      opts.canRunExternalProbe ?? (report ? buildReachabilityRenderModel(report).can_run_cloud_probe : true);
-    opts.host.innerHTML = renderReachabilityPanel(
-      report,
-      state,
-      canRunExternalProbe,
-      opts.runExternalProbe !== undefined,
-    );
-  };
-
-  const setState = (patch: Partial<ReachabilityProbePanelState>): void => {
-    if (disposed) return;
-    state = { ...state, ...patch };
-    render();
-  };
-
-  const runExternalProbe = async (): Promise<void> => {
-    if (disposed) return;
-    if (!opts.runExternalProbe) return;
-    const canRunExternalProbe =
-      opts.canRunExternalProbe ?? (report ? buildReachabilityRenderModel(report).can_run_cloud_probe : true);
-    if (!canRunExternalProbe) return;
-    setState({ status: 'running', error: null });
-    try {
-      const response = await opts.runExternalProbe();
-      setState({ status: 'success', response, error: null });
-    } catch (err) {
-      setState({ status: 'error', error: errorMessage(err) });
-    }
-  };
-
-  const onClick = (ev: Event): void => {
-    if (disposed) return;
-    const target = ev.target as
-      | (HTMLElement & { closest?: (selector: string) => HTMLElement | null })
-      | null;
-    if (!target?.closest) return;
-    const actionEl = target.closest('[data-action]') as HTMLElement | null;
-    if (actionEl?.getAttribute('data-action') !== RUN_EXTERNAL_PROBE_ACTION) return;
-    if (state.status === 'running') return;
-    pendingProbe = runExternalProbe();
-  };
-
-  opts.host.addEventListener('click', onClick);
-  render();
-
-  return {
-    getState: () => state,
-    runExternalProbe: () => {
-      pendingProbe = runExternalProbe();
-      return pendingProbe;
-    },
-    updateReport: (nextReport) => {
-      report = nextReport;
-      render();
-    },
-    whenProbeSettled: () => pendingProbe ?? Promise.resolve(),
-    dispose: () => {
-      if (disposed) return;
-      disposed = true;
-      opts.host.removeEventListener('click', onClick);
-      opts.host.innerHTML = '';
-      opts.host.removeAttribute(REACHABILITY_PANEL_ATTR);
-    },
-  };
-};
-
-export const REACHABILITY_PANEL_STYLES = `
-.reachability-panel {
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 14px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  background: var(--surface);
-}
-.reachability-header,
-.reachability-actions {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-.reachability-header h3 {
-  margin: 0;
-  font-size: 15px;
-  font-weight: 600;
-}
-.reachability-summary {
-  margin: 0;
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
-}
-.reachability-summary div {
-  border: 1px solid var(--border-subtle);
-  border-radius: 6px;
-  padding: 8px;
-  background: var(--surface);
-}
-.reachability-summary dt {
-  margin: 0 0 3px;
-  color: var(--muted);
-  font-size: 11px;
-}
-.reachability-summary dd {
-  margin: 0;
-  overflow-wrap: anywhere;
-}
-.reachability-badge,
-.reachability-status {
-  border-radius: 999px;
-  padding: 3px 8px;
-  font-size: 11px;
-  font-weight: 600;
-}
-.reachability-badge-healthy,
-.reachability-status-pass {
-  background: var(--ok-bg);
-  color: var(--ok-fg);
-}
-.reachability-badge-attention,
-.reachability-status-warn {
-  background: var(--warn-bg);
-  color: var(--warn);
-}
-.reachability-badge-critical,
-.reachability-status-fail,
-.reachability-error {
-  background: var(--danger-bg);
-  color: var(--danger);
-}
-.reachability-muted,
-.reachability-error {
-  margin: 0;
-  line-height: 1.45;
-}
-.reachability-muted {
-  color: var(--muted);
-}
-.reachability-error {
-  border-radius: 6px;
-  padding: 8px;
-}
-.reachability-probe-results {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-.reachability-probe-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 12px;
-}
-.reachability-probe-table th,
-.reachability-probe-table td {
-  text-align: left;
-  padding: 6px 8px;
-  border-bottom: 1px solid var(--border-subtle);
-  vertical-align: top;
-}
-.reachability-probe-table th {
-  color: var(--muted);
-  font-weight: 600;
-}
-@media (max-width: 640px) {
-  .reachability-summary {
-    grid-template-columns: 1fr;
-  }
-}
-`;

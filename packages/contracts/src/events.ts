@@ -111,6 +111,25 @@ export type ServerEvent =
       kind: 'execution';
       recipe_id: string;
       run_id: string;
+      /** D-display-mode — was this run provably read-only (`runIsAuditExemptRender`)?
+       *
+       *  ⛔⛔ THE LOOP THIS EXISTS TO CLOSE. A display board re-reads when another
+       *  run completes. Two clients in display mode showing DIFFERENT boards then
+       *  trigger each other forever: A's refresh looks to B exactly like a real
+       *  change, and B's looks the same to A. Measured on a live two-client drive
+       *  at ~135 runs/second, perfectly symmetric — 1077/1076/1076/1076 completes
+       *  in eight seconds.
+       *
+       *  🔑 THE RULE, WHICH THE FIRST GUARD GOT TOO NARROW. "A run that cannot
+       *  write cannot be the cause of its own staleness" — true, and the general
+       *  form is A READ COMPLETING IS NEVER A REASON TO RE-READ. Not just my own
+       *  read: ANY read. Another display's refresh is a read; it changed nothing.
+       *
+       *  ⚠ Absent on a run that is not terminal, and on a server too old to send
+       *  it. A consumer must treat `undefined` as "do not refresh", NOT as
+       *  "something changed": a stale screen is cheap, and the alternative
+       *  re-opens the loop against every older server. */
+      audit_exempt?: boolean;
       op:
         | 'start'
         | 'progress'
@@ -952,7 +971,7 @@ export type ServerEvent =
        /** D-149 P3 § A.3 — reception endpoint registry mutated. Fires on
         *  every `reception.endpoint.{create, enable, disable, revoke,
        *  extend, rotate_token}` write plus D-200 pair bind/configure/clear so paired
-       *  clients (Mary's other devices viewing Settings → Server → Reception) re-render
+       *  clients (Mary's other devices viewing Reception) re-render
        *  without a follow-up `endpoints.list` round-trip AND so the
        *  reception listener's in-memory registry cache invalidates
        *  within 60s per Must Hold I-5 (revocation propagation).

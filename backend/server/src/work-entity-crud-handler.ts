@@ -30,6 +30,7 @@ import {
   WORK_ENTITY_KIND_SET,
   type ExecutionSource,
   type HandlerSlice,
+  type Task,
   type ServerRpcRegistry,
   type WorkEntity,
   type WorkEntityEdge,
@@ -41,6 +42,8 @@ import {
   type WorkEntityGetRpcResponse,
   type WorkEntityUpsertRpcRequest,
   type WorkEntityUpsertRpcResponse,
+  type WorkEntityTaskMarkDoneRpcRequest,
+  type WorkEntityTaskMarkDoneRpcResponse,
   type WorkEntityDeleteRpcRequest,
   type WorkEntityDeleteRpcResponse,
 } from '@recued/contracts';
@@ -165,6 +168,105 @@ const mapCrudError = (method: string, err: unknown): never => {
     throw new RpcError('bad_request', `${method}: ${err.message}`);
   }
   throw err;
+};
+
+/** Serialize paired task edits through the read/dispatch/write cycle. The
+ * canonical dispatcher may await a provider, so reading before that wait in
+ * two RPCs could otherwise restore old fields or emit completion twice. */
+const taskMutations = new WeakMap<WorkEntityStore, Map<string, Promise<void>>>();
+const withTaskMutation = async <T>(store: WorkEntityStore, id: string, mutate: () => Promise<T>): Promise<T> => {
+  let pending = taskMutations.get(store);
+  if (!pending) { pending = new Map(); taskMutations.set(store, pending); }
+  const result = (pending.get(id) ?? Promise.resolve()).then(mutate);
+  const settled = result.then(() => {}, () => {});
+  pending.set(id, settled);
+  try { return await result; }
+  finally { if (pending.get(id) === settled) pending.delete(id); }
+};
+
+/** ⛔⛔ THE COMPLETION GUARD FOR THE SURFACES THAT ARE NOT THE RPC — the chat
+ *  Tier-1 `work.update` tool and the kernel `task-mark-done` ingredient (every
+ *  recipe). Both used to hold `dispatchers.taskMarkDone` directly, which is a
+ *  RAW write: no serialisation against a concurrent edit, and a repeat
+ *  completion RE-STAMPS `completed_at` (measured — two calls, two different
+ *  times). `handleWorkEntityTaskMarkDone` below has guarded the rpc since the
+ *  mark-done rpc shipped; these two predate it and were never brought across.
+ *
+ *  🔑 IT LIVES HERE SO THE `taskMutations` MAP IS THE SAME ONE. The lock is a
+ *  WeakMap keyed on the store, so a chat completion, a recipe completion and the
+ *  webclient's Today toggle serialise against EACH OTHER — a second map would
+ *  look identical and serialise nothing across surfaces.
+ *
+ *  ⛔ IT IS DELIBERATELY NOT `handleWorkEntityTaskMarkDone`, AND THAT IS NOT AN
+ *  OVERSIGHT. That handler is the rpc DOOR: it rejects anything but `{id, done}`
+ *  with a boolean `done`, and refuses a non-`live` row or a read-through Source.
+ *  The shipped `task-mark-done` ingredient contract is wider on both counts —
+ *  `done` is optional and defaults to true, `completed_at` is an accepted input
+ *  (`kernel-manifests.ts`), and a qualified id addressing a read-through Source
+ *  is the documented `work.search` → complete flow. Routing recipes through the
+ *  door would refuse all three. So the DOOR's policy stays at the door; what is
+ *  shared is the guard the two surfaces were actually missing.
+ *
+ *  ⚠ The write-capability refusal is NOT duplicated here on purpose: the
+ *  dispatcher already throws `WorkEntityWriteCapabilityError` for a
+ *  non-write-capable Source (measured), so repeating it would only add a second
+ *  place to keep in step. */
+export const guardTaskMarkDone = async (
+  deps: Pick<WorkEntityCrudRpcDeps, 'store' | 'dispatchers'>,
+  input: { id: string; done?: boolean; completed_at?: number },
+): Promise<{ task: Task }> => {
+  // No local row under this id ⇒ it is a qualified id naming a read-through
+  // Source, and the dispatcher projects the write onto the vendor. There is
+  // nothing local to lock or to compare against, and inventing a guard for a
+  // row that does not exist here would refuse the flow outright.
+  if (deps.store.readTask(input.id) === null) {
+    return deps.dispatchers.taskMarkDone(input);
+  }
+  // The ingredient's documented default: `task-mark-done` with only an id means
+  // done. Comparing against `input.done` directly would treat the common recipe
+  // call as `undefined !== false` on one side and never match on the other.
+  const done = input.done !== false;
+  return withTaskMutation(deps.store, input.id, async () => {
+    // Re-read INSIDE the lock: the caller's snapshot can be old, and a
+    // concurrent completion may have landed while we queued.
+    const current = deps.store.readTask(input.id);
+    // A retry after a lost response must retain the original completion time.
+    // Pending vendor writes still need their normal retry path.
+    if (current !== null && current.done === done && !current.pending_write) {
+      return { task: current };
+    }
+    return deps.dispatchers.taskMarkDone(input);
+  });
+};
+
+/** The kernel dispatcher table is built by spreading the raw work-entity
+ *  dispatcher set, so the `task-mark-done` ingredient — the path EVERY recipe
+ *  takes — held the unguarded `taskMarkDone`. Swap in the guarded one at that
+ *  seam. The raw set is left untouched for `handleWorkEntityTaskMarkDone`, which
+ *  takes the same lock itself; guarding the shared set instead would make the
+ *  rpc wait on a lock it is already holding. */
+export const withGuardedTaskMarkDone = (
+  dispatchers: WorkEntityDispatchers | undefined,
+  store: WorkEntityStore | undefined,
+): WorkEntityDispatchers | undefined => {
+  if (dispatchers === undefined || store === undefined) return dispatchers;
+  return {
+    ...dispatchers,
+    taskMarkDone: (input) => guardTaskMarkDone({ store, dispatchers }, input),
+  };
+};
+
+const requireWritableStoredTask = (
+  deps: WorkEntityCrudRpcDeps, id: string,
+): Extract<WorkEntity, { _kind: 'task' }> => {
+  const entity = deps.resolver.readEntity('task', id);
+  if (!entity || entity._kind !== 'task') throw new WorkEntityNotFoundError('task', id);
+  const source = deps.store.getSource(entity.source_id);
+  if (entity.sync_state !== 'live' || source?.top_tier_kind !== 'task'
+    || !source.write_capable || source.sync_posture === 'read_through') {
+    throw new WorkEntityWriteCapabilityError(entity.source_id, 'task');
+  }
+  return entity;
 };
 
 /** Require a registered paired client. A connection that hasn't
@@ -401,13 +503,17 @@ export const handleWorkEntityUpsert = async (
   try {
     switch (kind) {
       case 'task': {
-        const { task } = update
-          ? await deps.dispatchers.taskUpdate(
-              safeArgs as unknown as Parameters<WorkEntityDispatchers['taskUpdate']>[0],
-            )
-          : await deps.dispatchers.taskCreate(
-              safeArgs as unknown as Parameters<WorkEntityDispatchers['taskCreate']>[0],
-            );
+        if (update) {
+          const input = safeArgs as Parameters<WorkEntityDispatchers['taskUpdate']>[0];
+          return await withTaskMutation(deps.store, input.id, async () => {
+            requireWritableStoredTask(deps, input.id);
+            const { task } = await deps.dispatchers.taskUpdate(input);
+            return { entity: { _kind: 'task', ...task } };
+          });
+        }
+        const { task } = await deps.dispatchers.taskCreate(
+          safeArgs as unknown as Parameters<WorkEntityDispatchers['taskCreate']>[0],
+        );
         return { entity: { _kind: 'task', ...task } satisfies WorkEntity };
       }
       case 'note': {
@@ -467,7 +573,7 @@ export const handleWorkEntityDelete = async (
   try {
     switch (kind) {
       case 'task':
-        return await deps.dispatchers.taskDelete(input);
+        return await withTaskMutation(deps.store, id, () => deps.dispatchers.taskDelete(input));
       case 'note':
         return await deps.dispatchers.noteDelete(input);
       case 'commitment':
@@ -482,10 +588,36 @@ export const handleWorkEntityDelete = async (
   }
 };
 
+/** Do not route completion through upsert: it intentionally drops `done`.
+ * Re-read the task and Source at dispatch, since the Today snapshot can be old. */
+export const handleWorkEntityTaskMarkDone = async (
+  deps: WorkEntityCrudRpcDeps,
+  args: WorkEntityTaskMarkDoneRpcRequest,
+): Promise<WorkEntityTaskMarkDoneRpcResponse> => {
+  const method = 'work_entity.task.mark_done';
+  const id = requireId(method, args?.id);
+  if (typeof args.done !== 'boolean' || Object.keys(args).some(key => key !== 'id' && key !== 'done')) {
+    throw new RpcError('bad_request', `${method}: provide only id and a boolean done value`, 400);
+  }
+  try {
+    return await withTaskMutation(deps.store, id, async () => {
+      const entity = requireWritableStoredTask(deps, id);
+      // A retry after a lost response must retain the original completion
+      // time. Pending vendor writes still need their normal retry path.
+      if (entity.done === args.done && !entity.pending_write) return { entity };
+      const { task } = await deps.dispatchers.taskMarkDone({ id, done: args.done });
+      return { entity: { _kind: 'task', ...task } };
+    });
+  } catch (error) {
+    return mapCrudError(method, error);
+  }
+};
+
 type WorkEntityCrudMethods =
   | 'work_entity.list'
   | 'work_entity.get'
   | 'work_entity.upsert'
+  | 'work_entity.task.mark_done'
   | 'work_entity.delete';
 
 export const makeWorkEntityCrudHandlers = (
@@ -499,6 +631,7 @@ export const makeWorkEntityCrudHandlers = (
       'work_entity.list',
       'work_entity.get',
       'work_entity.upsert',
+      'work_entity.task.mark_done',
       'work_entity.delete',
     ],
     handlers: {
@@ -524,6 +657,10 @@ export const makeWorkEntityCrudHandlers = (
           args as WorkEntityUpsertRpcRequest,
           buildOwnerHidSource(client),
         );
+      },
+      'work_entity.task.mark_done': async (args, client) => {
+        requireRegisteredClient(client);
+        return handleWorkEntityTaskMarkDone(deps, args);
       },
       'work_entity.delete': async (args, client) => {
         requireRegisteredClient(client);

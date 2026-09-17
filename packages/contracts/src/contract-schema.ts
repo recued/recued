@@ -30,7 +30,7 @@
 // `contract_definition.door_types` value_shape below is DERIVED from it, because spelling
 // the members out a second time is exactly how `'reception'` ended up in the const and not
 // in the schema — which made `ContractStore.put` reject every reception door.
-import { DOOR_TYPES } from './contract-definition.js';
+import { DOOR_TYPES, USAGE_CAP_PERIODS } from './contract-definition.js';
 
 // ════════════════════════════════════════════════════════════════
 // Dispatch roles — the `applies_to` vocabulary
@@ -594,6 +594,8 @@ const VALUE_SHAPES: Readonly<Record<string, ValueShape>> = {
       'expiry_at',
       'max_uses',
       'uses_remaining',
+      'use_period',
+      'use_period_start',
       'revoked_at',
       'revocation_reason',
       'grant_kind',
@@ -642,6 +644,13 @@ const VALUE_SHAPES: Readonly<Record<string, ValueShape>> = {
       expiry_at: 'datetime?',
       max_uses: 'number?',
       uses_remaining: 'number?',
+      // ⛔ DERIVED FROM `USAGE_CAP_PERIODS`, for the reason `door_types` records
+      // two fields below: a hand-spelled enum here is a SECOND source of truth
+      // for a closed set, and when the const grew and the string did not,
+      // `ContractStore.put` rejected every row carrying the new member — on a
+      // real server only, because the tests all faked the definition store.
+      use_period: `enum:${USAGE_CAP_PERIODS.join('|')}?`,
+      use_period_start: 'datetime?',
       revoked_at: 'datetime?',
       revocation_reason: 'string?',
       // D-202 — `quality_delegation` is the owner-minted quality axis (a coarse

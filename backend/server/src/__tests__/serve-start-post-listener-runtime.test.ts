@@ -345,6 +345,20 @@ describe('startPostListenerRuntime', () => {
       // D-148 § A.5.6 lapse-recovery hop. Matched by SHAPE because the runtime
       // builds a closure here rather than forwarding a value.
       applyLifecycle: expect.any(Function),
+      // D-175 — the disconnect seam's two halves, built by the runtime because
+      // the entitlement detector (started earlier) needs the SAME instances. ⚠
+      // Matched by shape for the same reason as `applyLifecycle`; this assertion
+      // is what catches either being dropped on the way to the DDNS detector,
+      // which would leave that half of the seam silent.
+      disconnectAnnouncer: {
+        announce: expect.any(Function),
+        rearm: expect.any(Function),
+      },
+      disownedFlag: {
+        isDisowned: expect.any(Function),
+        markConnected: expect.any(Function),
+        markDisowned: expect.any(Function),
+      },
     });
 
     // ...and the closure has to stay LAZY. `composeLate` fills the cert stack's

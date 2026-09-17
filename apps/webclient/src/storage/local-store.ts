@@ -31,6 +31,7 @@ import {
   projectProfile,
   removeProfile as removeFromRoster,
   renameProfile as renameInRoster,
+  retargetProfile as retargetInRoster,
   setActiveField,
   switchTo,
   type ProfileRoster,
@@ -80,6 +81,21 @@ export interface WebclientProfileStore {
   /** Rename and return the canonical saved label, or null when a stale caller
    *  names a profile that no longer exists. */
   renameProfile(id: string, label: string): Promise<string | null>;
+  /** D-148 — point a profile at a different address, keeping its bearer.
+   *
+   *  ⛔ NOT `set('server_url', next)`: that write is intercepted above and
+   *  treats the URL as the profile's identity, so it would mint or adopt a
+   *  DIFFERENT profile and strand this one's bearer.
+   *
+   *  ⚠ `next_token` must already be re-sealed under an AAD that does not bind
+   *  `server_url`, or the bearer stops unwrapping at the new address. Returns
+   *  the saved URL, or null when the change was refused (unknown id, blank
+   *  URL, or another profile already holds that address). */
+  retargetProfile(
+    id: string,
+    next_url: string,
+    next_token: WebclientServerProfile['webclient_token'],
+  ): Promise<string | null>;
   /** Drop a profile and its stored bearer. Removing the active one falls
    *  back to the most recently connected survivor. */
   removeProfile(id: string): Promise<void>;
@@ -339,6 +355,15 @@ const createProfileBackedStore = (
     async renameProfile(id, label) {
       const next = await mutate((r) => renameInRoster(r, id, label));
       return next.profiles.find((profile) => profile.id === id)?.label ?? null;
+    },
+
+    async retargetProfile(id, next_url, next_token) {
+      const next = await mutate((r) => retargetInRoster(r, id, next_url, next_token));
+      const saved = next.profiles.find((profile) => profile.id === id);
+      // The algebra returns the roster UNTOUCHED on a refusal, so "did it
+      // apply" is read off the stored URL rather than assumed from the call
+      // returning — a refusal and a success are the same control flow here.
+      return saved && saved.server_url === next_url.trim() ? saved.server_url : null;
     },
 
     async removeProfile(id) {

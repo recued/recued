@@ -52,11 +52,13 @@
 
 import {
   isCustomerContractGrantKind,
+  contractUsePeriod,
   type ContractDefinitionView,
   type ContractListRequest,
   type ContractLifecycleState,
   type ContractScope,
 } from '@recued/contracts';
+import { USAGE_CAP_PERIOD_REMAINING_SUFFIX } from '@recued/ui-shared';
 
 import type { BroadcastSubscriber } from '../realtime/subscriber.js';
 import { humanizeRpcError } from '../shell/rpc-error-copy.js';
@@ -236,7 +238,12 @@ const boundFacets = (view: ContractDefinitionView): string[] => {
   }
   if (view.max_uses !== undefined && view.max_uses !== null) {
     const remaining = view.uses_remaining ?? view.max_uses;
-    parts.push(`uses ${remaining}/${view.max_uses}`);
+    // ⛔ THE WINDOW BELONGS IN THE SENTENCE — "uses 3/5" is the same string for
+    //   a budget that never refills and one that refills tonight.
+    parts.push(
+      `uses ${remaining}/${view.max_uses}`
+      + USAGE_CAP_PERIOD_REMAINING_SUFFIX[contractUsePeriod(view)],
+    );
   }
   return parts;
 };

@@ -84,34 +84,61 @@ export interface DdnsUpdateClientOptions {
 
 const trimTrailingSlash = (url: string): string => url.replace(/\/+$/, '');
 
-/** Closed list of cloud error codes documented in `cloud-api.ts`. Used
- *  as a runtime guard so an unexpected `error.code` collapses to
- *  `'network_error'` rather than silently propagating. */
-const DDNS_ERROR_CODES: ReadonlySet<DdnsErrorCode> = new Set<DdnsErrorCode>([
-  'ddns_signature_invalid',
-  'ddns_handle_mismatch',
-  'ddns_replay_window_exceeded',
-  'ddns_replay_duplicate',
-  'ddns_subscription_lapsed',
-  'ddns_rate_limited',
-  'ddns_validation_error',
-]);
+/** Closed list of cloud error codes documented in `cloud-api.ts`. Used as a
+ *  runtime guard so an unexpected `error.code` collapses to `'network_error'`
+ *  rather than silently propagating.
+ *
+ *  ⛔⛔⛔ THIS WAS A HAND-WRITTEN `new Set<DdnsErrorCode>([...])` AND IT SILENTLY
+ *  DISABLED A FEATURE. Adding a member to the union does NOT force adding it to
+ *  a Set literal — the literal is merely assignable — so `ddns_publisher_retired`
+ *  was defined in contracts, returned by the cloud, branched on by the poller,
+ *  and collapsed to `'network_error'` right here. The stand-down could never
+ *  fire, and 8,587 tests were green, because every one of them stubbed the
+ *  update client and handed the poller a value this parser can no longer produce.
+ *  A stub proves the call, not the message.
+ *
+ *  🔑 THE `Record` IS THE FIX, NOT THE EXTRA STRING. Every member of the union is
+ *  a required key, so the next code added to `DdnsErrorCode` is a compile error
+ *  here instead of a quietly dead branch downstream. */
+const DDNS_ERROR_CODE_MEMBERS: Record<DdnsErrorCode, true> = {
+  ddns_signature_invalid: true,
+  ddns_publisher_retired: true,
+  ddns_handle_mismatch: true,
+  ddns_replay_window_exceeded: true,
+  ddns_replay_duplicate: true,
+  ddns_subscription_lapsed: true,
+  ddns_rate_limited: true,
+  ddns_validation_error: true,
+};
+
+const DDNS_ERROR_CODES: ReadonlySet<DdnsErrorCode> = new Set(
+  Object.keys(DDNS_ERROR_CODE_MEMBERS) as DdnsErrorCode[],
+);
 
 const isDdnsErrorCode = (code: unknown): code is DdnsErrorCode =>
   typeof code === 'string' &&
   (DDNS_ERROR_CODES as ReadonlySet<string>).has(code);
 
-const DDNS_PAUSE_ERROR_CODES: ReadonlySet<DdnsPauseErrorCode> =
-  new Set<DdnsPauseErrorCode>([
-    'ddns_pause_validation_error',
-    'ddns_pause_signature_invalid',
-    'ddns_pause_handle_mismatch',
-    'ddns_pause_subscription_lapsed',
-    'ddns_pause_replay_window_exceeded',
-    'ddns_pause_replay_duplicate',
-    'ddns_pause_rate_limited',
-    'ddns_pause_conflict',
-  ]);
+/** ⚠ SAME GUARD AS ITS SIBLING ABOVE, AND FOR THE SAME REASON. This list is
+ *  currently complete — checked — but it was the identical hand-written Set, so
+ *  it carried the identical latent failure: the next `DdnsPauseErrorCode` would
+ *  have been defined, returned, branched on, and silently collapsed to
+ *  `network_error`. Fixing one and leaving the other is leaving the landmine in
+ *  the file you are already standing in. */
+const DDNS_PAUSE_ERROR_CODE_MEMBERS: Record<DdnsPauseErrorCode, true> = {
+  ddns_pause_validation_error: true,
+  ddns_pause_signature_invalid: true,
+  ddns_pause_handle_mismatch: true,
+  ddns_pause_subscription_lapsed: true,
+  ddns_pause_replay_window_exceeded: true,
+  ddns_pause_replay_duplicate: true,
+  ddns_pause_rate_limited: true,
+  ddns_pause_conflict: true,
+};
+
+const DDNS_PAUSE_ERROR_CODES: ReadonlySet<DdnsPauseErrorCode> = new Set(
+  Object.keys(DDNS_PAUSE_ERROR_CODE_MEMBERS) as DdnsPauseErrorCode[],
+);
 
 const isDdnsPauseErrorCode = (code: unknown): code is DdnsPauseErrorCode =>
   typeof code === 'string' &&

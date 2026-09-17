@@ -247,6 +247,13 @@ export interface AccountBindingAuditEntry {
   previous_account_id?: string;
   /** For `account_bind_exchange_failed`: the closed-list reason. */
   reason?: AccountBindingExchangeErrorCode;
+  /** For `account_handle_rename`: the name every server was moved to.
+   *
+   *  ⚠ ITS OWN FIELD, NOT `reason`. `reason` is a CLOSED list of exchange error
+   *  codes; putting a free-form handle there would have type-checked nowhere and
+   *  read as an error everywhere it was rendered. A row that says only "renamed"
+   *  cannot answer the question anyone asks of it afterwards — renamed to what. */
+  handle?: string;
 }
 
 /** D-175 P5 — the auth Worker's bound-servers read response (the seam
@@ -353,6 +360,10 @@ export const ACCOUNT_BINDING_AUDIT_ACTIONS = [
    *  (binding kept; re-pair issues the replacement). Cloud-DO-originated
    *  — appears in the dashboard binding audit feed. */
   'credential_rotate',
+  /** The owner renamed their marketplace handle, so every server bound to the
+   *  account was re-pointed at the new name. Cloud-DO-originated; one row per
+   *  rename, not per server. */
+  'account_handle_rename',
 ] as const;
 
 /** One of the D-175 P5 binding audit action kinds. */

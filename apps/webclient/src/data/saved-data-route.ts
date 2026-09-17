@@ -1,6 +1,6 @@
 /** Server-backed named views wrap the existing Data reader; opening a link only reads. */
 import {
-  SAVED_DATA_VIEW_NAME_LIMIT, parseSavedDataViewDefinition, sameSavedDataViewDefinition,
+  SAVED_DATA_VIEW_NAME_LIMIT, parseSavedDataViewDefinition, sameSavedDataViewDefinition, savedDataViewSupportsAlerts,
   type SavedDataView, type SavedDataViewCreateRequest,
   type SavedDataViewRenameRequest, type SavedDataViewDeleteRequest,
   type SavedDataViewUpdateRequest, type SavedDataViewDefinition,
@@ -68,17 +68,25 @@ const alertSummary = (view: SavedDataView): string => {
   const alert = view.alert;
   if (!alert) return 'Alerts off';
   if (!alert.enabled) return 'Alerts paused';
-  const status = alert.status === 'unavailable' ? 'Alerts waiting for your tasks' : 'Alerts on';
-  return `${status} · ${alert.time_zone}${alert.last_checked_at === null ? ''
+  const status = alert.status === 'unavailable'
+    ? `Alerts waiting for your ${view.definition.tab === 'records' ? 'records' : 'tasks'}` : 'Alerts on';
+  return `${status}${view.definition.tab === 'task' ? ` · ${alert.time_zone}` : ''}${alert.last_checked_at === null ? ''
     : ` · Checked ${new Date(alert.last_checked_at).toLocaleString()}`}`;
 };
-const alertControls = (view: SavedDataView, disabled: boolean): string => {
-  if (view.definition.tab !== 'task') return '';
+const alertControls = (view: SavedDataView, disabled: boolean, pendingId: string | null, explain = false): string => {
+  if (!savedDataViewSupportsAlerts(view.definition)) return '';
   const action = !view.alert ? 'Notify me' : view.alert.enabled ? 'Pause alerts' : 'Resume alerts';
-  return `<div class="saved-data-alert" data-view-alert="${e(view.id)}">
-    <span>${e(alertSummary(view))}</span>
+  const pending = pendingId === view.id;
+  const label = pending ? !view.alert ? 'Turning on alerts…' : view.alert.enabled ? 'Pausing alerts…' : 'Resuming alerts…' : action;
+  const state = !view.alert ? 'off' : !view.alert.enabled ? 'paused' : view.alert.status === 'unavailable' ? 'waiting' : 'on';
+  const summary = alertSummary(view).split(' · ');
+  return `<div class="saved-data-alert" data-view-alert="${e(view.id)}" aria-busy="${pending}">
+    <span class="saved-data-alert-state" data-alert-state="${state}">${e(summary[0]!)}</span>
     <button type="button" data-view-action="alert" data-view-id="${e(view.id)}"
-      aria-label="${e(action)} for ${e(view.name)}" ${disabled ? 'disabled' : ''}>${action}</button></div>`;
+      aria-label="${e(label)} for ${e(view.name)}" ${disabled ? 'disabled' : ''}>${label}</button>
+    ${summary.length > 1 ? `<span class="saved-data-alert-detail">${e(summary.slice(1).join(' · '))}</span>` : ''}
+    ${explain && state === 'waiting' ? `<p class="saved-data-alert-help">Open this view to check its ${view.definition.tab === 'records' ? 'pack and filters' : 'source and filters'}. Alerts resume when the data is available.</p>` : ''}
+  </div>`;
 };
 const STYLES = `
   .saved-data-header { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; }
@@ -103,6 +111,12 @@ const STYLES = `
   .saved-data-modified { font-weight:600; }
   .saved-data-alert { display:flex; flex-wrap:wrap; gap:8px; align-items:center; flex-basis:100%; min-width:0; }
   .saved-data-alert span { overflow-wrap:anywhere; }
+  .saved-data-alert-state { display:inline-flex; padding:4px 8px; border:1px solid var(--border); border-radius:6px; font-size:12px; font-weight:600; }
+  .saved-data-alert-state[data-alert-state=on] { color:var(--accent); background:var(--surface-subtle, var(--surface)); }
+  .saved-data-alert-state[data-alert-state=waiting] { background:var(--warn-soft); }
+  .saved-data-alert-detail { flex-basis:100%; color:var(--muted); font-size:12px; }
+  .saved-data-alert-help { flex-basis:100%; margin:0 0 8px; color:var(--muted); font-size:13px; }
+  .saved-data-opened > .saved-data-alert-help { margin-top:0; }
   .saved-data-conflict { border:1px solid var(--border); border-radius:8px; padding:12px; overflow-wrap:anywhere; }
   @media (max-width:600px) { .saved-data-tools li a { flex-basis:100%; } }
 `;
@@ -132,6 +146,7 @@ export const bootstrapSavedDataRoute = (opts: SavedDataRouteOptions) => {
   let actionError: string | null = null;
   let notice: string | null = null;
   let busy = false;
+  let pendingAlertId: string | null = null;
   let edit: { kind: 'create' | 'rename'; view: SavedDataView | null; name: string } | null = null;
   let deleting: SavedDataView | null = null;
   let listOpen = false;
@@ -166,7 +181,7 @@ export const bootstrapSavedDataRoute = (opts: SavedDataRouteOptions) => {
         <button type="button" data-view-action="new" ${canSave ? '' : 'disabled'}>${selectedView === null ? 'Save current view' : 'Save as new'}</button></header>
       <details ${listOpen ? 'open' : ''}><summary>Saved views${views.length ? ` (${views.length})` : ''}</summary>
         <p>Open a view to reload its current records on this server.</p>
-        ${views.some(view => view.definition.tab === 'task') ? '<p>Task alerts notify you when additional tasks match the saved filters. Checks run every minute while this server runs. Enabling or resuming starts from the current matches.</p>' : ''}
+        ${views.some(view => savedDataViewSupportsAlerts(view.definition)) ? '<p>Alerts notify you when additional tasks or records match the saved filters. Checks run every minute while this server runs. Enabling or resuming starts from the current matches.</p>' : ''}
         ${listing ? '<p role="status">Loading saved views…</p>' : ''}
         ${listError === null ? '' : `<p role="alert">${e(listError)}</p>`}
         <button type="button" data-view-action="refresh" ${listing || busy ? 'disabled' : ''}>Refresh saved views</button>
@@ -175,18 +190,20 @@ export const bootstrapSavedDataRoute = (opts: SavedDataRouteOptions) => {
           <a href="${e(savedDataViewHref(view.id))}" data-view-action="open" data-view-id="${e(view.id)}">${e(view.name)}</a>
           <button type="button" data-view-action="rename" data-view-id="${e(view.id)}" aria-label="Rename ${e(view.name)}" ${busy ? 'disabled' : ''}>Rename</button>
           <button type="button" data-view-action="delete" data-view-id="${e(view.id)}" aria-label="Delete ${e(view.name)}" ${busy ? 'disabled' : ''}>Delete</button>
-          ${alertControls(view, busy)}
+          ${alertControls(view, busy, pendingAlertId)}
         </li>`).join('')}</ul>
       </details>
       ${selectedView === null ? '' : `<div class="saved-data-opened"><p>Opened from <a href="${e(savedDataViewHref(selectedView.id))}" data-view-action="open" data-view-id="${e(selectedView.id)}">${e(selectedView.name)}</a></p>
         ${modified ? '<span class="saved-data-modified" data-view-modified>Modified</span>' : ''}
         <button type="button" data-view-action="update" ${canSave && modified && conflictView === null ? '' : 'disabled'}>Update view</button>
-        ${alertControls(selectedView, busy || conflictView !== null)}
-        ${selectedView.definition.tab === 'task' ? '<p>Alerts use the saved filters and synced task data. Enabling, resuming, or updating the view starts from its current matches.</p>' : ''}</div>`}
+        ${alertControls(selectedView, busy || conflictView !== null, pendingAlertId, true)}
+        ${savedDataViewSupportsAlerts(selectedView.definition) ? `<p class="saved-data-alert-help">${modified
+          ? 'Your unsaved filter changes are not monitored. Update view to use them for alerts.'
+          : 'Checks run every minute while this server is running. Turning alerts on or resuming starts from the current matches.'}</p>` : ''}</div>`}
       ${conflictView === null ? '' : `<div class="saved-data-conflict" role="group" aria-label="Review saved view changes">
         <p>This view changed in another browser. Review its saved settings before replacing them, or save your settings as a new view.</p>
         <p><strong>Currently saved as “${e(conflictView.name)}”:</strong> ${e(settingsSummary(conflictView.definition))}</p>
-        ${conflictView.definition.tab === 'task' ? `<p>${e(alertSummary(conflictView))}</p>` : ''}
+        ${savedDataViewSupportsAlerts(conflictView.definition) ? `<p>${e(alertSummary(conflictView))}</p>` : ''}
         ${lastDefinition === null ? '' : `<p><strong>Your settings:</strong> ${e(settingsSummary(lastDefinition))}</p>`}
         <button type="button" data-view-action="replace" ${canSave ? '' : 'disabled'}>Replace saved settings</button>
       </div>`}
@@ -200,7 +217,7 @@ export const bootstrapSavedDataRoute = (opts: SavedDataRouteOptions) => {
         <button type="button" data-view-action="confirm-delete" ${busy ? 'disabled' : ''}>${busy ? 'Deleting…' : 'Delete view'}</button>
         <button type="button" data-view-action="cancel" ${busy ? 'disabled' : ''}>Cancel</button>
       </div>`}
-      ${actionError === null ? '' : `<p role="alert">${e(actionError)}</p>`}
+      ${actionError === null ? '' : `<p role="alert" tabindex="-1" data-view-error>${e(actionError)}</p>`}
       ${notice === null ? '' : `<p role="status" tabindex="-1" data-view-notice>${e(notice)}</p>`}`;
     if (nameFocused) {
       const input = tools.querySelector<HTMLInputElement>('[data-view-name]');
@@ -402,8 +419,8 @@ export const bootstrapSavedDataRoute = (opts: SavedDataRouteOptions) => {
     }
   };
   const toggleAlert = async (view: SavedDataView): Promise<void> => {
-    if (busy || view.definition.tab !== 'task') return;
-    busy = true; actionError = null; notice = null; render();
+    if (busy || !savedDataViewSupportsAlerts(view.definition)) return;
+    busy = true; pendingAlertId = view.id; actionError = null; notice = null; render();
     const enabled = !view.alert?.enabled;
     try {
       const { view: saved } = await opts.savedViews.update({ id: view.id, expected_revision: view.revision,
@@ -421,7 +438,7 @@ export const bootstrapSavedDataRoute = (opts: SavedDataRouteOptions) => {
           selectedView = saved; conflictView = null; child?.bindSavedView(saved);
         } else conflictView = saved;
       }
-      notice = enabled ? `Alerts on for “${saved.name}”. You’ll be notified when another task matches its saved filters.`
+      notice = enabled ? `Alerts on for “${saved.name}”. You’ll be notified when another ${saved.definition.tab === 'records' ? 'record' : 'task'} matches its saved filters.`
         : `Alerts paused for “${saved.name}”.`;
     } catch (error) {
       if (disposed) return;
@@ -431,8 +448,9 @@ export const bootstrapSavedDataRoute = (opts: SavedDataRouteOptions) => {
     } finally {
       if (!disposed) {
         const returnFocus = canFocusCompletion();
-        busy = false; render();
+        busy = false; pendingAlertId = null; render();
         if (notice !== null && returnFocus) focus('[data-view-notice]');
+        else if (actionError !== null && returnFocus) focus('[data-view-error]');
       }
     }
   };

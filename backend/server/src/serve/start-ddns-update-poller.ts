@@ -19,6 +19,14 @@ export interface StartDdnsUpdatePollerOptions {
     'applyLifecycleUpdate'
   > | undefined;
 
+  /** D-175 — reports a confirmed disconnection to the shared announcer. Absent
+   *  (db-less boot) ⇒ the stand-down still happens, unannounced. */
+  readonly announceDisconnect?: (source: 'ddns_publish') => Promise<boolean> | boolean;
+  /** D-175 — shared disowned state; set here on a retired refusal, cleared by
+   *  the entitlement detector when the cloud confirms ownership again. */
+  readonly disownedFlag?:
+    import('../pro-convenience/disconnect-announcer.js').ServerDisownedFlag;
+
   db: Database.Database | undefined;
   backgroundServices: BackgroundServiceRegistry;
   cloudBaseUrl: string;
@@ -49,6 +57,10 @@ export const startDdnsUpdatePoller = (
     ipStateStore,
     ddnsEnabled,
     ...(options.applyLifecycle ? { applyLifecycle: options.applyLifecycle } : {}),
+    ...(options.announceDisconnect
+      ? { announceDisconnect: options.announceDisconnect }
+      : {}),
+    ...(options.disownedFlag ? { disownedFlag: options.disownedFlag } : {}),
     hostnameRegistry,
     subscriptionState,
   });

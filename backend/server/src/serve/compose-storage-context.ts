@@ -1,5 +1,7 @@
 import {
   MEMORY_RETENTION_DEFAULT_DAYS,
+  defaultDdnsZone,
+  zoneByLabel,
   type Checkpoint,
   type Commit,
   type RecuedPlan,
@@ -90,8 +92,10 @@ import {
 import { createHttpAccountBindingExchangeClient } from '../account-binding/exchange-client.js';
 import { resolveAccountBindingExchangeUrl } from '../account-binding/exchange-url.js';
 import {
+  buildProvisionedSnapshot,
   createProConvenienceProvisioner,
   type ProConvenienceProvisioner,
+  type ProvisionedConvenienceSnapshot,
 } from '../pro-convenience/provisioner.js';
 import {
   createHttpProEntitlementSource,
@@ -99,6 +103,7 @@ import {
   resolveProEntitlementPublicKey,
 } from '../pro-convenience/entitlement-source.js';
 import { createSqliteHandleStateStore } from '../handle/sqlite-store.js';
+import { createSqliteDdnsIpStateStore } from '../ddns/ip-state-store.js';
 import type { HandleStateStore } from '../handle/index.js';
 import { createSqliteDdnsEnabledStore } from '../ddns/ddns-enabled-store.js';
 import { createDdnsUpdateClient } from '../ddns/update-client.js';
@@ -722,10 +727,69 @@ export const composeStorageContext = async (
     };
   };
 
+  // ⛔⛔ THE PRO CARD REPORTED A PLACEHOLDER FOR EVERY ITEM, ALWAYS. `readProvisioned`
+  // is the dep that tells `pro_convenience.status` what is actually provisioned —
+  // and it was supplied ONLY in tests, so on a real server `snap` was always null,
+  // `handle_reserved` always false, and all three items reported
+  // `pending / not_provisioned` ("Not set up yet") no matter what the substrate
+  // held. The card was not mis-describing one case; its live half was never wired.
+  //
+  // 🔑 THREE NARROW READS, NO NEW SUBSTRATE. Each is the same stateless
+  // read-a-row-the-owner-already-writes shape as `readHandleStateForZone` above:
+  //
+  //   handle   — the handle state machine's own row, reserved iff a canonical
+  //              handle is held and its subscription has not lapsed past grace.
+  //   ddns     — the IP state store's cloud-CONFIRMED `last_published_at`, which
+  //              is the only stamp that means the record actually landed.
+  //   acme     — `expires_at` for the hostname, read directly from `tls_domains`.
+  //
+  // ⚠ THE CERT READ IS A COLUMN, NOT THE STORE. `SqliteTlsDomainStore.lookup()`
+  // decrypts the private key and warms a per-handshake cache; it needs the
+  // sub-DEK seam and belongs to the listener path, not to a status read. Building
+  // a second instance here to learn one integer would drag key material into a
+  // display query. This reads `expires_at` and nothing else.
+  let ddnsIpStateStoreForStatus: ReturnType<typeof createSqliteDdnsIpStateStore> | undefined;
+  let certExpiryStmt: ReturnType<typeof db.prepare> | undefined;
+  const readProvisionedConveniences = async (): Promise<ProvisionedConvenienceSnapshot | null> => {
+    const handleState = await readHandleStateForZone();
+    const handle = handleState?.current_handle ?? '';
+    if (handle.length === 0) return { handle_reserved: false };
+
+    // The zone the handle is actually bound to, not an assumed one: a handle
+    // reserved in a non-default zone would otherwise be reported under the wrong
+    // hostname, and the cert lookup below would miss.
+    const zone = (handleState?.ddns_zone !== undefined
+      ? zoneByLabel(handleState.ddns_zone)
+      : undefined) ?? defaultDdnsZone();
+    const hostname = `${handle}${zone.suffix}`;
+
+    ddnsIpStateStoreForStatus ??= createSqliteDdnsIpStateStore(db);
+    const published = ddnsIpStateStoreForStatus.load()?.last_published_at;
+
+    certExpiryStmt ??= db.prepare('SELECT expires_at FROM tls_domains WHERE domain = ?');
+    let certExpiry: number | undefined;
+    try {
+      const row = certExpiryStmt.get(hostname) as { expires_at?: number } | undefined;
+      certExpiry = typeof row?.expires_at === 'number' ? row.expires_at : undefined;
+    } catch {
+      // The table may not exist yet on a server that has never held a cert.
+      // Absent reads as "not provisioned", which is the honest answer.
+      certExpiry = undefined;
+    }
+
+    return buildProvisionedSnapshot({
+      handle,
+      hostname,
+      ...(published !== undefined ? { lastPublishedAt: published } : {}),
+      ...(certExpiry !== undefined ? { certExpiresAt: certExpiry } : {}),
+    });
+  };
+
   const proConvenienceProvisioner: ProConvenienceProvisioner =
     createProConvenienceProvisioner({
       readBinding: () => accountBindingManager.status(),
       readHandleState: readHandleStateForZone,
+      readProvisioned: readProvisionedConveniences,
       entitlement: createHttpProEntitlementSource({
         loadBinding: () => requireSigningIdentityForBinding().keyStore.loadAccountBinding(),
         getEndpointUrl: () =>

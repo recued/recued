@@ -249,7 +249,24 @@ describe('D-175 handle provisioner — gating', () => {
     expect(handle.reserveInitial).not.toHaveBeenCalled();
   });
 
-  it('already reserved → already_reserved, short-circuits before the entitlement round-trip', async () => {
+  /** ⛔⛔ THIS TEST USED TO ASSERT THE OPPOSITE, AND THE ASSERTION IT LOST WAS
+   *  THE BUG. It read "short-circuits before the entitlement round-trip" and
+   *  pinned `entitlement.resolve` as NOT called — a cloud round-trip saved on the
+   *  steady-state tick, which is the common one.
+   *
+   *  ⛔ THAT SAVING COST THE ONLY MOMENT A RENAME IS VISIBLE. The account's
+   *  handle is the cloud's fact, and the binding's copy of it is written once, at
+   *  the exchange. Skipping the mint meant the comparison below had nothing but
+   *  that stale copy to compare against — so it compared the old name to the old
+   *  name, said `already_reserved`, and a renamed account never moved its DNS
+   *  record. The dashboard told the owner it had.
+   *
+   *  🔑 SO THE MINT IS NOW DELIBERATE, AND IS PINNED HERE AS SUCH — a future
+   *  reader who sees a redundant-looking round-trip in the no-op path and
+   *  "optimises" it away reintroduces a silent, user-visible defect. The cost is
+   *  one mint per 5-minute tick against a Worker that already mints on every
+   *  status render. */
+  it('already reserved → already_reserved, but STILL mints (the rename channel)', async () => {
     const handle = mkHandle({ current: reservedState() });
     const entitlement = fixedEntitlement({ state: 'entitled' });
     const out = await provisionHandleFromBinding(
@@ -259,11 +276,21 @@ describe('D-175 handle provisioner — gating', () => {
       outcome: 'already_reserved',
       handle: 'alice',
       publisher_id: FINGERPRINT,
+      // ⚠ The outcome now says whether the cloud confirmed us this tick. It has
+      // to: the same outcome is returned for a reconnected server and for one
+      // whose cloud is unreachable, and two callers act oppositely on that.
+      entitlement_confirmed: true,
     });
     expect(handle.reserveInitial).not.toHaveBeenCalled();
     expect(handle.changeHandle).not.toHaveBeenCalled();
     expect(handle.reReserve).not.toHaveBeenCalled();
-    expect(entitlement.resolve).not.toHaveBeenCalled();
+    expect(
+      entitlement.resolve,
+      'the steady-state tick is the ONLY place a rename can be noticed',
+    ).toHaveBeenCalled();
+    // ⚠ Exactly once. Two resolves in one tick double the cloud traffic AND can
+    // read different handles, so the tick would target one and gate on another.
+    expect(entitlement.resolve).toHaveBeenCalledTimes(1);
   });
 
   it('rebind to a different handle (identity stable) self-heals via change → corrected/change', async () => {
@@ -497,5 +524,150 @@ describe('D-175 handle provisioner — gating', () => {
     expect(
       (handle.reserveInitial.mock.calls[0]![0] as ReserveHandleArgs).publisher_id,
     ).toBe(FINGERPRINT);
+  });
+});
+
+/** THE RENAME FINALLY REACHING THE SERVER.
+ *
+ *  ⛔⛔⛔ THE WHOLE FEATURE WAS ONE STALE FIELD. A dashboard rename wrote
+ *  `publishers.id` and stopped: the cloud's owner record and the server's binding
+ *  both keep a `publisher_handle` written once, at the exchange, and nothing
+ *  refreshed either. So this provisioner compared the old name against the old
+ *  name, returned `already_reserved`, and the DNS record never moved — while the
+ *  rename dialog told the owner it had, and told them to re-point their paired
+ *  browser at a hostname that would never exist.
+ *
+ *  🔑 THE MACHINERY WAS ALL PRESENT. `changeHandle` works, and the cloud sets a
+ *  24h `soft_redirect_until` when it runs. The only missing piece was a fresh,
+ *  TRUSTWORTHY answer to "what is this account called now" — which is why the
+ *  handle rides inside the signed claim rather than beside it.
+ */
+describe('D-175 — a renamed handle migrates the hostname', () => {
+  const entitledWith = (publisher_handle?: string): ProEntitlementSource =>
+    fixedEntitlement({
+      state: 'entitled',
+      ...(publisher_handle !== undefined ? { publisher_handle } : {}),
+    });
+
+  it('moves the hostname when the claim names a handle the binding has never heard of', async () => {
+    // Local state + binding both still say `alice`; only the claim knows `bob`.
+    const handle = mkHandle({ current: reservedState(FINGERPRINT, 'alice') });
+    const out = await provisionHandleFromBinding(
+      baseDeps({
+        handle,
+        loadBinding: () => mkBinding({ publisher_handle: 'alice' }),
+        entitlement: entitledWith('bob'),
+      }),
+    );
+
+    expect(out).toMatchObject({ outcome: 'corrected', via: 'change', handle: 'bob' });
+    expect(handle.changeHandle).toHaveBeenCalledTimes(1);
+    expect(handle.changeHandle.mock.calls[0]![0]).toMatchObject({ next_handle: 'bob' });
+  });
+
+  /** ⚠ THE FALLBACK IS THE COMMON CASE, NOT AN EDGE ONE — every account that has
+   *  never renamed, plus every server talking to a cloud older than the field.
+   *  Overriding with `undefined` would strand all of them on
+   *  `no_publisher_handle` and tear down working DDNS. */
+  it.each([
+    ['the claim carries no handle', undefined],
+  ])('falls back to the binding when %s', async (_label, claimHandle) => {
+    const handle = mkHandle({ current: reservedState(FINGERPRINT, 'alice') });
+    const out = await provisionHandleFromBinding(
+      baseDeps({
+        handle,
+        loadBinding: () => mkBinding({ publisher_handle: 'alice' }),
+        entitlement: entitledWith(claimHandle),
+      }),
+    );
+    expect(out).toMatchObject({ outcome: 'already_reserved', handle: 'alice' });
+    expect(handle.changeHandle).not.toHaveBeenCalled();
+  });
+
+  /** ⛔ A SERVER THAT CANNOT REACH THE CLOUD MUST NOT TEAR DOWN ITS OWN DNS.
+   *  `unavailable` carries no handle, so the binding snapshot stands and the tick
+   *  is a no-op — the failure mode of the opposite reading is that a transient
+   *  network fault renames everybody to nothing. */
+  it('an unavailable mint leaves the existing hostname exactly where it is', async () => {
+    const handle = mkHandle({ current: reservedState(FINGERPRINT, 'alice') });
+    const out = await provisionHandleFromBinding(
+      baseDeps({
+        handle,
+        loadBinding: () => mkBinding({ publisher_handle: 'alice' }),
+        entitlement: fixedEntitlement({ state: 'unavailable', reason: 'network' }),
+      }),
+    );
+    expect(handle.changeHandle).not.toHaveBeenCalled();
+    expect(out).toMatchObject({ outcome: 'already_reserved', handle: 'alice' });
+  });
+
+  /** ⚠ AND THE FRESH NAME MUST REACH THE INITIAL RESERVE TOO, not just the
+   *  corrective. A server that was renamed BEFORE it ever reserved would
+   *  otherwise claim the old name and immediately need correcting. */
+  it('a first reserve uses the renamed handle, not the binding snapshot', async () => {
+    const handle = mkHandle({ current: null });
+    await provisionHandleFromBinding(
+      baseDeps({
+        handle,
+        loadBinding: () => mkBinding({ publisher_handle: 'alice' }),
+        entitlement: entitledWith('bob'),
+      }),
+    );
+    expect(handle.reserveInitial).toHaveBeenCalledTimes(1);
+    expect(handle.reserveInitial.mock.calls[0]![0]).toMatchObject({ handle: 'bob' });
+  });
+});
+
+/** ⛔⛔⛔ THE DETECTOR DID NOT FIRE IN THE COMMON CASE, AND RE-ARMED INSTEAD.
+ *
+ *  A healthy server — bound, handle reserved, local state matching — is the
+ *  steady state, and it is exactly the shape that gets unbound. On the next tick
+ *  the entitlement resolved to `disowned` at step 2 and was then DISCARDED: the
+ *  `already_reserved` fast path returns before any entitlement gate, by design,
+ *  because it is a no-op shortcut.
+ *
+ *  So the provisioning loop saw `already_reserved`, read it as a healthy tick,
+ *  and called `rearmDisconnect()` — clearing the announcement mark on a server
+ *  the cloud had just disowned. The detector never announced, and it undid the
+ *  OTHER detector's announcement, which is the double-notification the whole
+ *  seam exists to prevent.
+ *
+ *  🔑 `already_reserved` NEVER PROVED ENTITLEMENT. It proves local state matches
+ *  the binding — nothing more. Reading it as "the cloud confirmed us" is the
+ *  category error.
+ */
+describe('D-175 — a disowned server is reported, not mistaken for healthy', () => {
+  it('reports disowned even when local state matches perfectly', async () => {
+    const handle = mkHandle({ current: reservedState(FINGERPRINT, 'alice') });
+    const out = await provisionHandleFromBinding(
+      baseDeps({
+        handle,
+        loadBinding: () => mkBinding({ publisher_handle: 'alice' }),
+        entitlement: fixedEntitlement({ state: 'disowned' }),
+      }),
+    );
+
+    expect(
+      out,
+      'the steady-state fast path swallowed the disconnection',
+    ).toEqual({ outcome: 'skipped', reason: 'entitlement_disowned' });
+    // ⚠ And it must not have touched the cloud — every call would fail anyway.
+    expect(handle.changeHandle).not.toHaveBeenCalled();
+    expect(handle.reserveInitial).not.toHaveBeenCalled();
+  });
+
+  /** ⚠ AND BEFORE THE HANDLE CHECKS, for the same reason the cloud reports
+   *  retirement before its handle gates: a disowned server's handle state is
+   *  beside the point, and `no_publisher_handle` would hide the real answer from
+   *  a server that never got as far as reserving one. */
+  it('reports disowned even with no handle to provision', async () => {
+    const out = await provisionHandleFromBinding(
+      baseDeps({
+        handle: mkHandle({ current: null }),
+        loadBinding: () => mkBinding({ publisher_handle: '' }),
+        entitlement: fixedEntitlement({ state: 'disowned' }),
+      }),
+    );
+    expect(out).toEqual({ outcome: 'skipped', reason: 'entitlement_disowned' });
   });
 });

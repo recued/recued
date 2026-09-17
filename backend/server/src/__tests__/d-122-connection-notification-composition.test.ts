@@ -369,7 +369,15 @@ describe('composeConnectionNotification', () => {
     ]);
   });
 
-  it('routes emitInApp through emitNotification with the in-app subtype', async () => {
+  /** ⚠ THE SUBTYPE LEFT THE CALL, AND THIS TEST IS WHY IT NEEDED SAYING. It
+   *  pinned `{ subtype: 'in-app', body }` — a shape that described the payload of
+   *  a bus kind NOBODY SUBSCRIBES TO. The subtype selects this dispatcher from
+   *  the connection row; it was never something the wire read.
+   *
+   *  ⛔ AND NOTE WHAT THIS TEST CANNOT SEE: it mocks `emitNotification`, so it is
+   *  blind to which KIND reaches the bus — which is exactly where the muteness
+   *  lived. The sibling test below closes that. */
+  it('routes emitInApp through emitNotification', async () => {
     const {
       compose,
       emitNotificationMock,
@@ -384,10 +392,7 @@ describe('composeConnectionNotification', () => {
     const bundle = compose(buildDeps({ eventBus: bus }));
     bundle.notificationDeps?.emitInApp?.(body);
 
-    expect(emitNotificationMock.mock.calls[0]).toEqual([
-      bus,
-      { subtype: 'in-app', body },
-    ]);
+    expect(emitNotificationMock.mock.calls[0]).toEqual([bus, { body }]);
   });
 
   it('routes mailRpc.send through handleCollectionMailSend with the collection registry', async () => {

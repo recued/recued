@@ -135,8 +135,14 @@ export interface NotificationBusBody {
 }
 
 /** Callback the handler invokes for in-app dispatch. The boot site
- *  closes over `eventBus.emit({ kind: 'notification', subtype: 'in-app',
- *  body, ... })` from `backend/server/src/events/emit-sites.ts`. Tests
+ *  closes over `eventBus.emit({ kind: 'notification.notify', … })` from
+ *  `backend/server/src/events/emit-sites.ts`.
+ *
+ *  ⚠ IT USED TO SAY `kind: 'notification', subtype: 'in-app'`, AND THAT KIND WAS
+ *  REACHING NOBODY. The bus fans out only the kinds a client NAMES, and neither
+ *  the webclient nor the Bridge named the bare one — so every in-app send was
+ *  counted in `delivered_to[]` and dropped at the fan-out. `notification.notify`
+ *  is named and handled by both (a toast, and an OS notification). Tests
  *  inject a recording stub. Optional in deps so dbless / ext-side
  *  harnesses can run the slack / telegram subtypes without wiring a
  *  bus — calls to in-app surface `NOTIFICATION_TRANSPORT_NOT_IMPLEMENTED`

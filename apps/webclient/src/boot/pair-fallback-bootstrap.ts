@@ -71,7 +71,7 @@ import {
   type WebclientProfileStore,
 } from '../storage/local-store.js';
 import type { WebclientTokenStore } from '../storage/token-store.js';
-import type { ReceptionStatusInput } from '../settings/reception.js';
+import type { ReceptionStatusInput } from '../reception/spine.js';
 import {
   createBrowserPairTabConvergence,
   type PairTabConvergence,
@@ -1459,7 +1459,7 @@ export const runBootstrapWithPairFallback = async (
       // M-REACH-4 — production Settings → Server gets the Reachability
       // Doctor external-probe front-door. Direct bootstrap tests keep this
       // opt-in so their Server-section shape does not change implicitly.
-      enableReachabilityDoctor: true,
+      enableReachabilityProbe: true,
       // D-156 follow-on — the Settings → Devices roster + revoke surface.
       // The bootstrap default is OFF (it predates the self-host owner-id
       // fix that let the bearer-only webclient enumerate itself via

@@ -34,13 +34,13 @@ import {
   RECEPTION_PAGE_SHELL_BROADCAST_KINDS,
   type ReceptionConn,
   type ReceptionPageShellDeps,
-} from '../settings/reception-page-shell.js';
-import type { ReceptionStatusInput } from '../settings/reception.js';
+} from '../reception/page-shell.js';
+import type { ReceptionStatusInput } from '../reception/spine.js';
 import {
   buildEndpointPreviewDispatch,
   buildEndpointCreateDispatch,
   buildReceptionPageUpsertDispatch,
-} from '../settings/reception-authoring.js';
+} from '../reception/authoring.js';
 
 const NOW = 1_700_000_000_000;
 

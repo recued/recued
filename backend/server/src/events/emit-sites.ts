@@ -223,7 +223,12 @@ export const emitApprovalResolved = (bus: EventBus | undefined, approval_id: str
  *  stamps the cursor. */
 export const emitExecution = (
   bus: EventBus | undefined,
-  args: { recipe_id: string; run_id: string; op: 'start' | 'progress' | 'complete' | 'error' },
+  args: {
+    recipe_id: string; run_id: string;
+    op: 'start' | 'progress' | 'complete' | 'error';
+    /** Terminal emits only — see the field's note on `ServerEvent`. */
+    audit_exempt?: boolean;
+  },
 ): void => {
   if (!bus || !args.recipe_id || !args.run_id) return;
   try { bus.emit({ kind: 'execution', ...args }); }
@@ -289,24 +294,44 @@ export const emitEntitlement = (
   catch { /* swallow */ }
 };
 
-/** D-125 P4.3 — `connection.notification` in-app delivery. The
- *  notification handler closes over this with `subtype: 'in-app'` and
- *  the resolved body so a recipe sending an in-app alert fans out
- *  to every paired client subscribed to `notification` via the
- *  same realtime bus that carries warehouse / memory / approval
- *  events. The bus is server-only, so this helper is the integration
- *  point — ext-side runtimes don't have an EventBus and rely on the
- *  paired server's emit + subscribe loop instead. */
+/** D-125 P4.3 — `connection.notification` in-app delivery.
+ *
+ *  ⛔⛔⛔ THIS EMITTED A KIND NOBODY SUBSCRIBES TO, AND SAID SO IN ITS OWN DOC.
+ *  It read "fans out to every paired client subscribed to `notification`" — and
+ *  no client is. The bus fans out ONLY the kinds a client NAMES
+ *  (`events/bus.ts`: `if (!sub.kinds.has(stamped.kind)) continue`), the webclient
+ *  names 53 of the 55 kinds and omits this one, and the Bridge names four
+ *  `notification.*` kinds but not the bare one. So every in-app send was emitted
+ *  and dropped, while `notification-send` counted it in `delivered_to[]` — the
+ *  "green-but-mute" class this file's sibling `default:` arm fails closed to
+ *  prevent, arrived at one layer further out.
+ *
+ *  ⚠ THE FIX IS THE KIND, NOT THE FAN-OUT. `notification.notify` is named AND
+ *  handled by both surfaces — the webclient renders a toast (`notify-toasts.ts`),
+ *  the Bridge an OS notification — which is exactly what "in-app" should mean.
+ *
+ *  ⛔ AND NOT `NotificationBlock.notify`, WHICH WOULD HAVE BEEN WORSE THAN MUTE.
+ *  Its `ChannelSelector` is `{ intent }`, not a channel list, so it fans out to
+ *  whatever the owner configured for informational messages — turning a recipe
+ *  that asked for `in_app` into a post to Slack or Telegram. Silence is a bug;
+ *  sending someone's alert to an external service they did not choose is worse.
+ *
+ *  ⚠ `subtype` NO LONGER REACHES THE WIRE and is gone from the signature. It was
+ *  part of the dead kind's payload; keeping a parameter that nothing reads is how
+ *  the next reader concludes the channel is selectable here. */
 export const emitNotification = (
   bus: EventBus | undefined,
-  args: {
-    subtype: NotificationSubtype;
-    body: { text: string; title?: string; link_url?: string };
-  },
+  args: { body: { text: string; title?: string; link_url?: string } },
 ): void => {
   if (!bus) return;
-  try { bus.emit({ kind: 'notification', ...args }); }
-  catch { /* swallow */ }
+  try {
+    bus.emit({
+      kind: 'notification.notify',
+      ...(args.body.title !== undefined ? { title: args.body.title } : {}),
+      text: args.body.text,
+      ...(args.body.link_url !== undefined ? { link_url: args.body.link_url } : {}),
+    });
+  } catch { /* swallow */ }
 };
 
 /** D-148 § A.7 — exposure transition (M-XSURF-1). The exposure state

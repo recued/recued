@@ -1058,3 +1058,64 @@ describe('R27 account panel — Pro lifecycle line', () => {
     mount.dispose();
   });
 });
+
+/** The card explaining ITSELF on a server that is not the handle's anchor.
+ *
+ *  The case: several servers bound to one account, on one LAN. Exactly one can
+ *  own the forwarded port and exactly one can hold the handle, so the others
+ *  reported "Not set up yet" — which reads as a chore the owner forgot, for an
+ *  arrangement that is both normal and already decided elsewhere. */
+describe('Pro card — handle anchored to another server', () => {
+  const elsewhere = (): ProConvenienceStatusResponse =>
+    proStatus({
+      entitlement: 'entitled',
+      items: {
+        handle: proItem('inactive-elsewhere', { detail: 'handle_on_another_server' }),
+        ddns: proItem('inactive-elsewhere', { detail: 'handle_on_another_server' }),
+        acme: proItem('inactive-elsewhere', { detail: 'handle_on_another_server' }),
+      },
+    });
+
+  it('says where the handle is and why nothing is set up here', async () => {
+    const { host, mount } = mountFixture({ runProStatus: vi.fn(async () => elsewhere()) });
+    await mount.whenLoaded();
+
+    const text = textOf(host);
+    expect(text).toContain('On another server');
+    expect(text).toContain('Only one of your servers can hold the handle at a time');
+    // The two words this exists to stop saying.
+    expect(text).not.toContain('Not set up yet');
+    // And it is not dressed as a fault: the account is fine, the plan is fine.
+    expect(text).not.toContain('Error');
+    mount.dispose();
+  });
+
+  /** ⛔⛔ THE PWA MEETS A NEWER SERVER ACROSS A CACHE LIFETIME, NOT A RELEASE.
+   *  The bundle is served by the server but held by a service worker, so a code
+   *  minted after an upgrade lands in a renderer that predates it. Both switches
+   *  are exhaustive, which is a COMPILE-time guarantee about this build and says
+   *  nothing about the value arriving on the wire — and a bare fall-out assigns
+   *  `textContent = undefined`, which the DOM renders as the word "undefined". */
+  it('does not print "undefined" into the card for vocabulary it predates', async () => {
+    const { host, mount } = mountFixture({
+      runProStatus: vi.fn(async () => proStatus({
+        entitlement: 'entitled',
+        items: {
+          handle: proItem('active'),
+          ddns: proItem(
+            'a-state-from-the-future' as ProConvenienceItemState,
+            { detail: 'a-code-from-the-future' as ProConvenienceItem['detail'] },
+          ),
+          acme: proItem('active', { expires_at: 1_710_000_000_000 }),
+        },
+      })),
+    });
+    await mount.whenLoaded();
+
+    expect(textOf(host)).not.toContain('undefined');
+    // The state chip is required, so it degrades to a visible admission rather
+    // than vanishing; the detail is optional, so it simply drops.
+    expect(textOf(host)).toContain('Unknown');
+    mount.dispose();
+  });
+});

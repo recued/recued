@@ -1,5 +1,5 @@
 /** R19 Slice 2 — Reception ▸ Endpoints ▸ routed authoring section
- *  (`reception-authoring-section.ts`).
+ *  (`authoring-section.ts`).
  *
  *  The full-page authoring form that replaced the transparent modal (the
  *  "can't enable" fix). Driven through the same DOM-free fake pattern the
@@ -20,11 +20,11 @@ import type {
 import {
   mountReceptionAuthoringSection,
   stashReceptionAuthoringSeed,
-} from '../settings/reception-authoring-section.js';
+} from '../reception/authoring-section.js';
 import type {
   ReceptionPageShell,
   ReceptionPageShellState,
-} from '../settings/reception-page-shell.js';
+} from '../reception/page-shell.js';
 
 const NOW = 1_700_000_000_000;
 

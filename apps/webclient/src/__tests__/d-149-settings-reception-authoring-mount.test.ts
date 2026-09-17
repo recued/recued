@@ -1,4 +1,4 @@
-/** D-149 § A.9 + § A.5.x follow-on — Settings → Server → Reception
+/** D-149 § A.9 + § A.5.x follow-on — Reception
  *  working-config container + `mountAuthoringForm` acceptance.
  *
  *  The working-config machinery (`seedWorkingConfig` /
@@ -38,9 +38,9 @@ import {
   removeRepeaterRow,
   mountAuthoringForm,
   type FieldDelegateEvent,
-} from '../settings/reception-authoring-mount.js';
-import { INTAKE_FORM_CALENDAR_END_MODE_KEY } from '../settings/reception-authoring.js';
-import type { ReceptionPageShell } from '../settings/reception-page-shell.js';
+} from '../reception/authoring-mount.js';
+import { INTAKE_FORM_CALENDAR_END_MODE_KEY } from '../reception/authoring.js';
+import type { ReceptionPageShell } from '../reception/page-shell.js';
 
 // ── Fixtures ──────────────────────────────────────────────────────
 

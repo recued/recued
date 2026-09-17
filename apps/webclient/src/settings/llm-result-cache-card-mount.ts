@@ -116,7 +116,7 @@ export interface MountLlmResultCacheCardOptions {
    *  transition. `dispose()` clears `innerHTML` + drops the listener.
    *  The mount uses only `host.innerHTML` + the click delegator, so no
    *  `document` reference is needed (mirrors `devices-page-mount.ts`
-   *  + `reception-prompts-host.ts`'s string-renderer pattern). */
+   *  + `prompts-host.ts`'s string-renderer pattern). */
   host: HTMLElement;
   /** Stats rpc caller (DD#1). Fired on mount + after every successful
    *  clear (DD#4). */
@@ -142,7 +142,7 @@ export interface MountLlmResultCacheCardOptions {
    *
    *  Optional by design: omitting `subscribe` keeps the card on the
    *  prior poll-after-clear cadence (refresh fires on mount + after
-   *  every successful `runClear`). Mirrors `reception-page-shell.ts`'s
+   *  every successful `runClear`). Mirrors `page-shell.ts`'s
    *  subscription discipline — subscribe at creation, unsubscribe on
    *  dispose. */
   subscribe?: BroadcastSubscriber['on'];

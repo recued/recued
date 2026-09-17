@@ -1,4 +1,8 @@
-/** D-148 § A.6.3 — Settings → Server → TLS Certificates page renderer (W3.8).
+/** D-148 § A.6.3 — Settings → Server → Certificates page renderer (W3.8).
+ *
+ *  ⚠ THE TAB IS "Certificates", NOT "TLS Certificates" — this header said the
+ *  latter until 2026-09-16, which is a name a reader scanning the Server tabs
+ *  does not find.
  *
  *  The public listener (port 443) supports multi-domain SNI: each
  *  domain hosted on the server has its own cert + private key. The

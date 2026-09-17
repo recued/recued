@@ -2,13 +2,16 @@ import type { AuditLogStore } from '@recued/storage';
 import type { NotificationBlock, NotificationMessage } from '@recued/notification';
 import type { SavedDataViewAlertNotice, SavedDataViewAlertStore } from './saved-data-view-alert-store.js';
 
-export const savedViewAlertMessage = (notice: SavedDataViewAlertNotice, publicBaseUrl?: string): NotificationMessage => ({
-  title: `${notice.count === 1 ? 'New task' : 'New tasks'} in “${notice.view_name}”`,
-  text: `${notice.count === 1 ? 'A task now matches' : `${notice.count} tasks now match`} your saved view “${notice.view_name}”.`
-    + (notice.titles ?? []).map(title => `\n• ${title}`).join('')
-    + '\nOpen the view to review the matching tasks.',
-  ...(publicBaseUrl ? { link_url: `${publicBaseUrl}/#data/view/${encodeURIComponent(notice.view_id)}` } : {}),
-});
+export const savedViewAlertMessage = (notice: SavedDataViewAlertNotice, publicBaseUrl?: string): NotificationMessage => {
+  const noun = notice.kind === 'records' ? 'record' : 'task';
+  return {
+    title: `New ${noun}${notice.count === 1 ? '' : 's'} in “${notice.view_name}”`,
+    text: `${notice.count === 1 ? `A ${noun} now matches` : `${notice.count} ${noun}s now match`} your saved view “${notice.view_name}”.`
+      + (notice.titles ?? []).map(title => `\n• ${title}`).join('')
+      + `\nOpen the view to review the matching ${noun}s.`,
+    ...(publicBaseUrl ? { link_url: `${publicBaseUrl}/#data/view/${encodeURIComponent(notice.view_id)}` } : {}),
+  };
+};
 
 /** One worker per server, with durable notification history before an atomic
  * push claim. Existing owner channels remain best-effort; a restart never

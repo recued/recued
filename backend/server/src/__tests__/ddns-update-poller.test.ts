@@ -20,6 +20,10 @@ import {
   composeDdnsUpdatePoller,
 } from '../composition/bin/wire-ddns-update-poller.js';
 import {
+  createServerDisownedFlag,
+  type ServerDisownedFlag,
+} from '../pro-convenience/disconnect-announcer.js';
+import {
   createBackgroundServiceRegistry,
   type BackgroundServiceRegistry,
   type IntervalServiceSpec,
@@ -170,6 +174,15 @@ const composeHarness = (
     hostnameRegistry?: Pick<HostnameRegistryStore, 'list'>;
     subscriptionState?: Pick<ProSubscriptionStateStore, 'get'>;
     ddnsEnabled?: { isEnabled: () => boolean };
+    /** The lifecycle seam `recordLapse` writes through. Forwarded so a test can
+     *  assert which stand-downs record a subscription fact and which only pace
+     *  themselves — without it every lapse write is a silent no-op here. */
+    applyLifecycle?: () => { applyLifecycleUpdate: (args: { state: string; now: number }) => Promise<void> };
+    /** ⚠ FORWARDED EXPLICITLY, like every other seam here — this harness spreads
+     *  only the options it names, so an unforwarded one is silently dropped and
+     *  the test asserts against a dep the poller never received. */
+    announceDisconnect?: (source: 'ddns_publish') => Promise<boolean> | boolean;
+    disownedFlag?: ServerDisownedFlag;
     now?: () => number;
     intervalMs?: number;
   } = {},
@@ -202,6 +215,9 @@ const composeHarness = (
     ...(opts.hostnameRegistry ? { hostnameRegistry: opts.hostnameRegistry } : {}),
     ...(opts.subscriptionState ? { subscriptionState: opts.subscriptionState } : {}),
     ...(opts.ddnsEnabled ? { ddnsEnabled: opts.ddnsEnabled } : {}),
+    ...(opts.applyLifecycle ? { applyLifecycle: opts.applyLifecycle as never } : {}),
+    ...(opts.announceDisconnect ? { announceDisconnect: opts.announceDisconnect } : {}),
+    ...(opts.disownedFlag ? { disownedFlag: opts.disownedFlag } : {}),
     ...(opts.now ? { now: opts.now } : {}),
     ...(opts.intervalMs !== undefined ? { intervalMs: opts.intervalMs } : {}),
   });
@@ -223,6 +239,74 @@ afterEach(() => {
   vi.clearAllMocks();
   vi.restoreAllMocks();
   vi.useRealTimers();
+});
+
+/** ⛔⛔ A PERMANENT REFUSAL MUST NOT BE RETRIED PER TICK. The cloud answers
+ *  `ddns_handle_mismatch` when the handle reservation is not owned by this
+ *  publisher_id — because another of the owner's servers now holds it, or the
+ *  denormalized authority copy disagrees. No number of retries fixes either, and
+ *  it fell into the generic "log + retry next tick" branch: one rejected request
+ *  per tick, forever. That is the measured 288/day that made the identical
+ *  behaviour unacceptable for a lapsed subscription, and the lapse branch was
+ *  added to stop it — for one code, leaving its twin hammering.
+ *
+ *  ⚠ PACING ONLY. A lapse is a subscription fact recorded through the state
+ *  machine; this is an OWNERSHIP fact, and writing 'grace' would label a handle
+ *  the owner may still be paying for as lapsed. */
+describe('ddns poller — standing down on an ownership refusal', () => {
+  const mismatch = () => ({ ok: false as const, error: 'ddns_handle_mismatch' as const });
+
+  it('stops re-publishing after the cloud says the handle is not ours', async () => {
+    const update = vi.fn<DdnsUpdateClient['update']>(async () => mismatch());
+    const poller = composeHarness({ update });
+
+    await poller.runTick();
+    expect(update).toHaveBeenCalledTimes(1);
+
+    // Every subsequent tick inside the backoff must not reach the cloud at all.
+    await poller.runTick();
+    await poller.runTick();
+    expect(update, 'a permanent refusal must not be retried every tick').toHaveBeenCalledTimes(1);
+  });
+
+  /** ⚠ AND IT MUST STILL RECOVER UNATTENDED. If the owner moves the handle back,
+   *  the server has to resume without a restart — the same requirement the lapse
+   *  branch carries, for the same reason. */
+  it('resumes once the refusal stops', async () => {
+    // ⚠ Typed as the real result union, not a hand-rolled shape — the `as never`
+    // that was here papered over a wrong generic and would have hidden a genuine
+    // mismatch between the fake and the client contract.
+    let answer: Awaited<ReturnType<DdnsUpdateClient['update']>> = mismatch();
+    const update = vi.fn<DdnsUpdateClient['update']>(async () => answer);
+    const poller = composeHarness({ update });
+
+    await poller.runTick();
+    expect(update).toHaveBeenCalledTimes(1);
+
+    // Past the backoff window, the poller probes again.
+    // Past the first backoff step, which is an hour — not a guess: see
+    // LAPSE_BACKOFF_START_MS in the poller.
+    vi.advanceTimersByTime(61 * 60 * 1000);
+    answer = { ok: true as const, data: updateResponse() };
+    await poller.runTick();
+    expect(update, 'the stand-down must be a pause, not a stop').toHaveBeenCalledTimes(2);
+  });
+
+  it('does not mark the handle lapsed — that is a different fact', async () => {
+    const applyLifecycleUpdate = vi.fn(async () => {});
+    const update = vi.fn<DdnsUpdateClient['update']>(async () => mismatch());
+    const poller = composeHarness({
+      update,
+      applyLifecycle: () => ({ applyLifecycleUpdate }),
+    });
+    await poller.runTick();
+
+    expect(update, 'the refusal must have been reached').toHaveBeenCalledTimes(1);
+    expect(
+      applyLifecycleUpdate,
+      'an ownership refusal must not be recorded as a subscription lapse',
+    ).not.toHaveBeenCalled();
+  });
 });
 
 describe('createDdnsUpdateClient', () => {
@@ -746,7 +830,40 @@ describe('composeDdnsUpdatePoller', () => {
     expect(harness.ipStateStore.save).not.toHaveBeenCalled();
   });
 
+  /** ⚠ THE FIXTURE GAINED `published_targets`, AND THAT IS THE POINT OF THE
+   *  TEST, not noise in it. The property is "this target was acknowledged at
+   *  this IP, so do not post again". A snapshot WITHOUT `published_targets`
+   *  records an IP and a timestamp and nothing about which handle it was for —
+   *  it cannot express "already published" about any particular name, and the
+   *  branch that used to infer one is gone (see the poller). */
   it('skips the POST when the resolved IPv4 matches the last published IPv4', async () => {
+    const ipStateStore = createSpyIpStore({
+      ip_v4: '203.0.113.10',
+      last_published_at: 1_700_000_100_000,
+      published_targets: [{ publisher_id: 'pub_test_01', handle: 'alice' }],
+    });
+    const harness = composeHarness({ ipStateStore });
+
+    await harness.runTick();
+
+    expect(harness.update).not.toHaveBeenCalled();
+    expect(ipStateStore.save).not.toHaveBeenCalled();
+  });
+
+  /** ⛔⛔⛔ THE OUTAGE A RENAME WOULD HAVE CAUSED ON A LEGACY ROW.
+   *
+   *  A pre-D-152 snapshot has no `published_targets`, and the poller used to
+   *  mark every `source: 'handle_state'` target as already acknowledged — sound
+   *  while a handle could not change, an outage once a dashboard rename migrates
+   *  it. The NEW name was marked published without ever being posted; the old
+   *  name stopped being a target; nothing published, so the row was never
+   *  upgraded and the skip repeated every tick. The reservation moves, the cert
+   *  is issued, and the A record is never written — after the ~24h soft redirect
+   *  the server answers at NEITHER name.
+   *
+   *  🔑 The legacy row cannot say which handle it was for, so "I do not know"
+   *  must read as "nothing", not as "whatever it is called now". */
+  it('publishes the handle target on a legacy snapshot — it cannot know what was published', async () => {
     const ipStateStore = createSpyIpStore({
       ip_v4: '203.0.113.10',
       last_published_at: 1_700_000_100_000,
@@ -755,8 +872,17 @@ describe('composeDdnsUpdatePoller', () => {
 
     await harness.runTick();
 
-    expect(harness.update).not.toHaveBeenCalled();
-    expect(ipStateStore.save).not.toHaveBeenCalled();
+    expect(harness.update).toHaveBeenCalledTimes(1);
+    expect(harness.update).toHaveBeenCalledWith(
+      expect.objectContaining({ handle: 'alice', ip_v4: '203.0.113.10' }),
+    );
+    // ⚠ And the redundant post is paid ONCE: the success writes a modern row,
+    // so the next tick dedups normally.
+    expect(ipStateStore.save).toHaveBeenCalledWith(
+      expect.objectContaining({
+        published_targets: [{ publisher_id: 'pub_test_01', handle: 'alice' }],
+      }),
+    );
   });
 
   it('publishes a new registry target even when a legacy singleton snapshot has the same IP', async () => {
@@ -781,14 +907,17 @@ describe('composeDdnsUpdatePoller', () => {
 
     await harness.runTick();
 
-    expect(harness.update).toHaveBeenCalledTimes(1);
+    // ⚠ NOW BOTH, and the registry half is still what this test is for. The
+    // handle target joins it because a legacy row can no longer be read as
+    // "the current handle was already published" — one redundant post, once.
+    expect(harness.update).toHaveBeenCalledTimes(2);
     expect(harness.update).toHaveBeenCalledWith({
       publisher_id: 'publisher-bob',
       handle: 'bob',
       ip_v4: '203.0.113.10',
       timestamp: fixedTimestamp,
     });
-    expect(ipStateStore.save).toHaveBeenCalledWith({
+    expect(ipStateStore.save).toHaveBeenLastCalledWith({
       ip_v4: '203.0.113.10',
       last_published_at: 1_700_000_100_000,
       published_targets: [
@@ -932,5 +1061,189 @@ describe('composeDdnsUpdatePoller', () => {
     await harness.runTick();
 
     expect(harness.update).toHaveBeenCalledTimes(1);
+  });
+});
+
+/** ⛔⛔⛔ AN UNBOUND SERVER PROBED FOREVER FOR A SUBSCRIPTION THAT WAS NEVER
+ *  COMING BACK.
+ *
+ *  `deactivateAuthorityRow` (unbind / account deletion) and the Paddle path
+ *  (a lapsed subscription) both wrote `subscription_active: false`, so the cloud
+ *  answered both with `ddns_subscription_lapsed` and the poller — correctly, for
+ *  what it was told — kept probing on the lapse backoff. The distinction was
+ *  destroyed at WRITE TIME in KV, which is why the fix needed a field on the
+ *  authority row before it could need an error code.
+ *
+ *  🔑 THIS IS THE ONLY REFUSAL THE POLLER TREATS AS TERMINAL. A lapse resolves
+ *  when the owner pays; a handle mismatch now self-heals when the provisioner
+ *  re-targets. Retirement resolves only when the owner BINDS this machine again
+ *  — an action taken elsewhere, not a state that can be waited out.
+ */
+describe('ddns poller — standing down when the cloud says the server is retired', () => {
+  const retired = () => ({ ok: false as const, error: 'ddns_publisher_retired' as const });
+
+  /** ⛔⛔⛔ AND IT HAS TO BE ABLE TO COME BACK. The stand-down used to be a
+   *  PRIVATE `let retired = false` that nothing could clear, so an owner who
+   *  reconnected their server got no DDNS publishing until the process restarted
+   *  — Pro card healthy, provisioner working, hostname quietly stale. A
+   *  stand-down with no resume path is only correct if the state is permanent,
+   *  and this one is not: reconnecting is the whole remedy.
+   *
+   *  🔑 The poller cannot notice the reconnection itself — noticing would mean
+   *  asking the cloud, which is exactly what it has stopped doing. The mint
+   *  detector sees it within a tick and clears the shared flag. */
+  it('resumes when the shared flag is cleared, without a restart', async () => {
+    const disownedFlag = createServerDisownedFlag();
+    let answer: Awaited<ReturnType<DdnsUpdateClient['update']>> = retired();
+    const update = vi.fn<DdnsUpdateClient['update']>(async () => answer);
+    const poller = composeHarness({ update, disownedFlag });
+
+    await poller.runTick();
+    expect(update).toHaveBeenCalledTimes(1);
+    await poller.runTick();
+    expect(update, 'stood down').toHaveBeenCalledTimes(1);
+
+    // The owner reconnects; the mint detector clears the flag.
+    disownedFlag.markConnected();
+    answer = { ok: true as const, data: updateResponse() };
+    await poller.runTick();
+
+    expect(
+      update,
+      'a reconnected server must publish again without restarting',
+    ).toHaveBeenCalledTimes(2);
+  });
+
+  /** ⚠ THE CLOCK HAS TO MOVE, OR THIS TEST CANNOT TELL STOPPED FROM BACKED-OFF.
+   *  The first version looped five ticks without advancing time, and a backoff
+   *  suppresses those too — so replacing the stand-down with `advanceBackoff()`
+   *  left it green. The lapse backoff caps at 6h, so the clock walks a week past
+   *  it: a poller that is merely pacing WILL post again in that window, and a
+   *  retired one never will. */
+  it('stops publishing entirely, rather than backing off', async () => {
+    let clock = 1_700_000_000_000;
+    const update = vi.fn<DdnsUpdateClient['update']>(async () => retired());
+    const poller = composeHarness({ update, now: () => clock, disownedFlag: createServerDisownedFlag() });
+
+    await poller.runTick();
+    expect(update).toHaveBeenCalledTimes(1);
+
+    // A week, in 6-hour strides — every one of them past the backoff ceiling.
+    for (let i = 0; i < 28; i += 1) {
+      clock += 6 * 60 * 60 * 1000;
+      await poller.runTick();
+    }
+    expect(
+      update,
+      'a backoff would have posted again within the week — this must be terminal',
+    ).toHaveBeenCalledTimes(1);
+  });
+
+  /** ⚠ AND IT MUST NOT LOOK LIKE A LAPSE. `recordLapse` writes the handle
+   *  lifecycle through the state machine; retirement is an OWNERSHIP fact about
+   *  this machine, not a subscription fact about the account — the owner may
+   *  still be paying, and labelling their handle lapsed would be wrong. */
+  it('does not write a lapse lifecycle', async () => {
+    const applyLifecycle = vi.fn();
+    const update = vi.fn<DdnsUpdateClient['update']>(async () => retired());
+    const poller = composeHarness({ update, applyLifecycle, disownedFlag: createServerDisownedFlag() });
+
+    await poller.runTick();
+
+    expect(applyLifecycle).not.toHaveBeenCalled();
+  });
+
+  /** ⚠ THE POLLER REPORTS; IT DOES NOT DECIDE. The entitlement mint sees the
+   *  same disconnection on its own five-minute cadence, so the once-only rule
+   *  lives in the announcer — a `console.warn` here plus a notification there
+   *  would tell the owner twice about one event. */
+  it('reports the disconnection exactly once, and only to the announcer', async () => {
+    const announceDisconnect = vi.fn(async () => true);
+    const update = vi.fn<DdnsUpdateClient['update']>(async () => retired());
+    const poller = composeHarness({ update, announceDisconnect, disownedFlag: createServerDisownedFlag() });
+
+    await poller.runTick();
+    await poller.runTick();
+
+    expect(announceDisconnect).toHaveBeenCalledTimes(1);
+    expect(announceDisconnect).toHaveBeenCalledWith('ddns_publish');
+  });
+
+  /** ⚠ AND AN ANNOUNCER THAT THROWS MUST NOT COST THE STAND-DOWN — the point of
+   *  the branch is to stop publishing; telling the owner is the bonus. */
+  it('stands down even when announcing fails', async () => {
+    const announceDisconnect = vi.fn(async () => { throw new Error('bus down'); });
+    const update = vi.fn<DdnsUpdateClient['update']>(async () => retired());
+    const poller = composeHarness({ update, announceDisconnect, disownedFlag: createServerDisownedFlag() });
+
+    await poller.runTick();
+    await poller.runTick();
+
+    expect(update, 'the stand-down must survive a failed announcement').toHaveBeenCalledTimes(1);
+  });
+
+  /** ⛔ NOT PERSISTED, AND THAT IS THE DESIGN. A fresh process re-ASKS rather
+   *  than assuming, so a server rebound while it was down resumes on its first
+   *  tick instead of staying dead until someone notices. One request per process
+   *  start is the price; stopping 288/day was the goal. */
+  it('a fresh process asks again instead of staying dead', async () => {
+    const first = vi.fn<DdnsUpdateClient['update']>(async () => retired());
+    const stopped = composeHarness({ update: first, disownedFlag: createServerDisownedFlag() });
+    await stopped.runTick();
+    await stopped.runTick();
+    expect(first).toHaveBeenCalledTimes(1);
+
+    // A new process — same server, owner has since reconnected it.
+    const second = composeHarness({});
+    await second.runTick();
+    expect(second.update, 'a restart must re-ask, not inherit the stand-down').toHaveBeenCalled();
+  });
+});
+
+/** ⛔⛔⛔ THE FEATURE WAS DEAD ON THE WIRE AND 8,587 TESTS WERE GREEN.
+ *
+ *  `ddns_publisher_retired` was defined in contracts, returned by the cloud and
+ *  branched on by the poller — and collapsed to `'network_error'` in the update
+ *  client, because its runtime allowlist was a hand-written
+ *  `new Set<DdnsErrorCode>([...])`. Adding a member to the union does not force
+ *  adding it to a Set literal; the literal is merely assignable.
+ *
+ *  🔑 EVERY POLLER TEST STUBBED THE CLIENT and handed the branch a value the real
+ *  parser could not produce. A stub proves the call, not the message — so this
+ *  drives the REAL client with a real 403 body, which is the only place the
+ *  allowlist is reachable.
+ */
+describe('update client — a new cloud error code survives the parse', () => {
+  const errorResponse = (code: string, status: number) =>
+    jsonResponse({ error: { code, message: 'nope' } }, { status });
+
+  it('surfaces ddns_publisher_retired instead of collapsing it to network_error', async () => {
+    const { client } = createClientHarness(errorResponse('ddns_publisher_retired', 403));
+    const result = await client.update({
+      publisher_id: 'pub_test_01',
+      handle: 'alice',
+      ip_v4: '203.0.113.10',
+      timestamp: fixedTimestamp,
+    });
+    expect(result.ok).toBe(false);
+    expect(
+      result.ok === false && result.error,
+      'collapsed to network_error — the poller stand-down can never fire',
+    ).toBe('ddns_publisher_retired');
+  });
+
+  /** ⚠ AND THE COLLAPSE ITSELF STILL WORKS — it is the right answer for a code
+   *  this build genuinely does not know, which is what an older server sees when
+   *  the cloud ships one first. Retrying is correct there; silently adopting an
+   *  unknown code would not be. */
+  it('still collapses a code it has never heard of', async () => {
+    const { client } = createClientHarness(errorResponse('ddns_from_the_future', 403));
+    const result = await client.update({
+      publisher_id: 'pub_test_01',
+      handle: 'alice',
+      ip_v4: '203.0.113.10',
+      timestamp: fixedTimestamp,
+    });
+    expect(result.ok === false && result.error).toBe('network_error');
   });
 });

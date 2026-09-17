@@ -108,7 +108,7 @@ export const ROTATION_ERROR_COPY: Record<RotationErrorCode, string> = {
   compromise_already_recorded:
     'This key class is already marked compromised. Run a per-class rotation directly (instead of re-marking compromise) to cascade dependents.',
   acme_helper_unavailable:
-    'ACME helper is unreachable. Check Settings → Server → Pro DDNS, or fall back to the local certbot/caddy hook.',
+    'ACME helper is unreachable. Check Settings → Server → Hostnames, under "Your Pro web address", or fall back to the local certbot/caddy hook.',
   subscription_required:
     'You need Pro for the cloud to get certificates for you. Use your own certbot or caddy instead, or move to Pro.',
   target_not_found: 'No client/vendor matched the rotation target. Refresh the panel + retry.',
@@ -151,8 +151,9 @@ export const requiresRepairFollowup = (result: RotationResult): boolean => {
   return Boolean(result.repair_client_ids && result.repair_client_ids.length > 0);
 };
 
-/** True when the result represents a successful TLS rotation; the UI
- *  refreshes the cert fingerprint + the Reachability Doctor's TLS row. */
+/** True when the result represents a successful TLS rotation; the UI refreshes
+ *  the cert fingerprint. ⚠ It also refreshed the Reachability Doctor's TLS row
+ *  until that tab was deleted (2026-09-16). */
 export const isTlsRotationSuccess = (result: RotationResult): boolean =>
   result.ok && result.op === 'tls_renew';
 

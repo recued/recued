@@ -17,7 +17,7 @@ import type {
 } from '@recued/contracts';
 import { INTAKE_FORM_TEMPLATE_REFS } from '@recued/contracts';
 
-import { mountTemplatesBrowser } from '../settings/reception-templates-mount.js';
+import { mountTemplatesBrowser } from '../reception/templates-mount.js';
 
 // ── Fixtures ──────────────────────────────────────────────────────
 

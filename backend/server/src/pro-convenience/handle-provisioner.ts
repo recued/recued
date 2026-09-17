@@ -67,11 +67,26 @@ export type ProvisionSkipReason =
   | 'entitlement_not_entitled'
   | 'entitlement_pending'
   | 'entitlement_unavailable'
-  | 'entitlement_unbound';
+  | 'entitlement_unbound'
+  /** The cloud says this account no longer owns this server. Terminal — the
+   *  provisioning loop reports it to the disconnect announcer rather than
+   *  treating it as one more transient skip. */
+  | 'entitlement_disowned';
 
 export type ProvisionHandleOutcome =
   | { outcome: 'reserved'; handle: string; publisher_id: string }
-  | { outcome: 'already_reserved'; handle: string; publisher_id: string }
+  /** ⚠ `entitlement_confirmed` EXISTS BECAUSE THIS OUTCOME IS AMBIGUOUS ON ITS
+   *  OWN. It is the steady-state fast path: it proves local state matches the
+   *  binding and says NOTHING about the cloud, because it returns before the
+   *  entitlement gate. Two callers needed "did the cloud confirm us this tick" —
+   *  the disconnect re-arm and the DDNS stand-down — and both were reading this
+   *  outcome as a yes. */
+  | {
+      outcome: 'already_reserved';
+      handle: string;
+      publisher_id: string;
+      entitlement_confirmed: boolean;
+    }
   /** A stale persisted handle state was self-healed. `via: 'change'` —
    *  a rebind (identity stable, handle drifted) corrected through the
    *  cloud change RPC; `via: 're_reserve'` — a `server_identity_key`
@@ -113,6 +128,7 @@ const ENTITLEMENT_SKIP_REASON: Record<
   not_entitled: 'entitlement_not_entitled',
   pending: 'entitlement_pending',
   unavailable: 'entitlement_unavailable',
+  disowned: 'entitlement_disowned',
   unbound: 'entitlement_unbound',
 };
 
@@ -131,10 +147,56 @@ export const provisionHandleFromBinding = async (
   }
   if (!binding) return { outcome: 'skipped', reason: 'unbound' };
 
-  // 2. Publisher handle. The handle NAME is the account's reserved handle
-  //    (carried on the binding); the server cannot invent it. Absent ⇒
-  //    nothing to reserve.
-  const handleName = binding.publisher_handle;
+  // 2. Publisher handle. The handle NAME is the account's, never the server's
+  //    to invent — so it comes from the cloud, and the question is only which
+  //    cloud answer is FRESH.
+  //
+  //    ⛔⛔ THE BINDING'S COPY IS A SNAPSHOT TAKEN AT THE EXCHANGE AND NEVER
+  //    REFRESHED. It has one production writer, and neither a credential
+  //    rotation nor a dashboard rename touches it — so reading only it meant a
+  //    renamed account compared the old name against the old name at step 4,
+  //    reported `already_reserved`, and never moved the DNS record. Meanwhile
+  //    the rename dialog told the owner it had.
+  //
+  //    🔑 THE ENTITLEMENT CLAIM IS THE FRESH ANSWER, and it is one the server may
+  //    act on: `publisher_handle` rides INSIDE the signed payload, verified by
+  //    `verifyClaimEnvelope` against the cloud's Ed25519 key before it reaches
+  //    here. Taking a rename off unsigned response JSON would let anything able
+  //    to shape a mint response re-point somebody's hostname.
+  //
+  //    ⚠ THE MINT ALSO MOVED UP THE FUNCTION, and that is a real cost paid
+  //    deliberately: a steady-state tick now spends one mint where it used to
+  //    short-circuit. It buys the only moment the drift is visible — the
+  //    comparison at step 4 — and `resolve()` is already called on the
+  //    corrective path and on every status render, at a 5-minute cadence.
+  //
+  //    ⚠ ABSENT IS NOT EMPTY. No claimed handle, a cloud older than the field,
+  //    or an unavailable mint all mean "no fresher answer", so the snapshot
+  //    stands. Only a present, verified, non-empty name overrides it.
+  const entitlement = await deps.entitlement.resolve();
+  // ⛔⛔⛔ DISOWNED SHORT-CIRCUITS HERE, BEFORE EVERY OTHER GATE — and it has to,
+  // because the `already_reserved` fast path below returns without consulting
+  // entitlement at all. That shortcut is right for what it was built for (a
+  // steady-state no-op should not pay for a gate), and it meant the steady state
+  // — bound, reserved, matching, i.e. exactly the shape that gets unbound — read
+  // a disconnection and threw it away. The provisioning loop then saw
+  // `already_reserved`, took it for a healthy tick, and RE-ARMED the disconnect
+  // announcement on a server the cloud had just disowned.
+  //
+  // ⚠ AHEAD OF THE HANDLE CHECKS TOO, for the reason the cloud reports
+  // retirement before its own handle gates: a disowned server's handle state is
+  // beside the point, and `no_publisher_handle` would hide the real answer from
+  // a server that never got as far as reserving one.
+  //
+  // 🔑 Nothing below this line can succeed for a disowned server anyway — every
+  // cloud call it would make is signed by a credential the cloud has stopped
+  // honouring.
+  if (entitlement.state === 'disowned') {
+    return { outcome: 'skipped', reason: 'entitlement_disowned' };
+  }
+  const freshHandle =
+    entitlement.state === 'entitled' ? entitlement.publisher_handle : undefined;
+  const handleName = freshHandle ?? binding.publisher_handle;
   if (!handleName || handleName.length === 0) {
     return { outcome: 'skipped', reason: 'no_publisher_handle' };
   }
@@ -184,11 +246,15 @@ export const provisionHandleFromBinding = async (
         outcome: 'already_reserved',
         handle: current.current_handle,
         publisher_id: current.publisher_id,
+        entitlement_confirmed: entitlement.state === 'entitled',
       };
     }
     // STALE → corrective. Pro gate first — fail CLOSED on anything but a
     // verified ownership claim, exactly like the initial reserve.
-    const ent = await deps.entitlement.resolve();
+    // ⚠ Reuses the resolution from step 2 rather than minting a second time in
+    // one tick: re-resolving here would double the cloud round-trips AND could
+    // read a DIFFERENT handle than the one this tick decided to target.
+    const ent = entitlement;
     if (ent.state !== 'entitled') {
       return { outcome: 'skipped', reason: ENTITLEMENT_SKIP_REASON[ent.state] };
     }
@@ -302,9 +368,10 @@ export const provisionHandleFromBinding = async (
 
   // 5. Pro gate (initial reserve path — no persisted state yet). Fail
   //    CLOSED on anything but a verified ownership claim.
-  const ent = await deps.entitlement.resolve();
-  if (ent.state !== 'entitled') {
-    return { outcome: 'skipped', reason: ENTITLEMENT_SKIP_REASON[ent.state] };
+  // ⚠ Same resolution as step 2, for the same two reasons: one mint per tick,
+  // and the gate must judge the claim this tick actually took its handle from.
+  if (entitlement.state !== 'entitled') {
+    return { outcome: 'skipped', reason: ENTITLEMENT_SKIP_REASON[entitlement.state] };
   }
 
   // 6. Reserve. `publisher_id` is ALWAYS the live fingerprint — the

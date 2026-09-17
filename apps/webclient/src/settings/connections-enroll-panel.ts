@@ -34,7 +34,7 @@
  *  exceptions re-render: a `<select>` edit (auth.type drives `showWhen`
  *  field visibility), and the first edit after a failed submit (clears
  *  the stale `dialog.error`, the deliberate single focus cost — same
- *  discipline as `reception-authoring-mount.ts`).
+ *  discipline as `authoring-mount.ts`).
  *
  *  The connections renderer disables Submit live whenever
  *  `validateConnectionForm` fails (unlike reception's submit). With
@@ -71,7 +71,7 @@
  *  hydration is additive, never a mount prerequisite.
  *
  *  Spec: D-125 § 7.1 (the enrollment surface); the host
- *  mirrors `reception-authoring-mount.ts` (innerHTML + dispatcher +
+ *  mirrors `authoring-mount.ts` (innerHTML + dispatcher +
  *  silent field edits). */
 
 import {

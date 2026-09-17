@@ -336,7 +336,14 @@ export interface PathListenerSet {
    *  for a path content-flip) is left exactly as-is — which is what keeps
    *  a live control WS from wedging the rebind via a `server.close()` that
    *  blocks forever on the never-draining upgraded socket. */
-  applyResolution(next: Record<PathRole, PathResolution>): Promise<PathListenerStatus[]>;
+  /** @param ports Optional live port override. Omitted ⇒ the ports this set
+   *  was constructed with. ⛔ A listener whose port CHANGES is stopped and
+   *  rebound — a bound socket cannot move ports any more than it can move
+   *  addresses — and ONLY that listener is touched. */
+  applyResolution(
+    next: Record<PathRole, PathResolution>,
+    ports?: { lan?: number; public?: number },
+  ): Promise<PathListenerStatus[]>;
   /** Stop every active listener. Pending requests drain; a hard
    *  deadline is the caller's responsibility (§ A.6.6 calls out the
    *  30s window on the WS path specifically). */
@@ -742,7 +749,10 @@ export const createPathListenerSet = (options: PathListenerSetOptions): PathList
       );
       return out;
     },
-    applyResolution: async (next: Record<PathRole, PathResolution>) => {
+    applyResolution: async (
+      next: Record<PathRole, PathResolution>,
+      ports?: { lan?: number; public?: number },
+    ) => {
       // (1) Update the shared resolution IN PLACE. Both dispatchers
       // (LAN + public) read `resolution[role][listener]` live on every
       // request/upgrade through this same object reference, so the new
@@ -785,7 +795,27 @@ export const createPathListenerSet = (options: PathListenerSetOptions): PathList
         // every apply, so preserve that — rebuild only this listener when
         // its bound mode no longer matches the cert holder.
         const entry = active.get(listener)!;
-        if (entry.tls !== wantsTls) {
+        // ⛔ A PORT CHANGE IS THE SAME SHAPE AS A TLS-MODE FLIP: the socket is
+        // bound to a number that cannot be swapped underneath it, so this one
+        // listener is stopped and rebound. The OTHER listener is untouched —
+        // which is what keeps a live control WS on the LAN side from wedging
+        // the rebind, the failure the in-place path exists to avoid.
+        //
+        // ⚠ STOP-THEN-START, so a bind failure on the new port leaves this
+        // listener DOWN with a recorded failure rather than silently serving
+        // the old one. `startListener` resolves with `{ listening: false,
+        // failure }` instead of throwing, so the set and the process survive
+        // and the owner can set the port back. ⚠ Binding the new port BEFORE
+        // dropping the old would close that window; it needs the active map to
+        // hold two sockets for one listener, which it cannot express today.
+        // ⚠⚠ PORT 0 MEANS "OS PICKS" AND NEVER EQUALS WHAT WE BOUND. A naive
+        // `entry.port !== port` therefore reported a change on EVERY apply for
+        // an ephemeral-port listener — rebuilding the LAN socket on every
+        // exposure flip and destroying the in-place guarantee this whole branch
+        // exists for. Caught by the two tests that guard exactly that ("port
+        // stable", "does NOT wedge while a live WS is held").
+        const portMoved = port !== 0 && entry.port !== port;
+        if (entry.tls !== wantsTls || portMoved) {
           await stopListener(listener, true);
           return startListener(listener, true, port, bind_address, build);
         }
@@ -801,7 +831,7 @@ export const createPathListenerSet = (options: PathListenerSetOptions): PathList
         await reconcile(
           LAN_LISTENER,
           anyPathLan(resolution),
-          lan_port,
+          ports?.lan ?? lan_port,
           lan_bind_address,
           () => ({ server: buildLanServer(), tls: false }),
           false,
@@ -811,7 +841,7 @@ export const createPathListenerSet = (options: PathListenerSetOptions): PathList
         await reconcile(
           PUBLIC_LISTENER,
           anyPathPublic(resolution),
-          public_port,
+          ports?.public ?? public_port,
           public_bind_address,
           () => buildPublicServer(),
           publicWantsTls,

@@ -79,6 +79,36 @@ export interface ProvisionedConvenienceSnapshot {
   acme_cert_expires_at?: number;
 }
 
+/** Assemble the snapshot from values already read. Pure on purpose: the
+ *  composition site does the three I/O reads, this decides what they MEAN, and
+ *  only this half needs testing.
+ *
+ *  ⛔⛔ THE DEP THIS FEEDS WAS SUPPLIED ONLY IN TESTS. `readProvisioned` was never
+ *  passed in production, so every item reported `pending / not_provisioned`
+ *  forever and the Pro card showed "Not set up yet" whatever the substrate held.
+ *  A seam that exists only in the harness reports the harness.
+ *
+ *  ⚠ NO HANDLE MEANS NOTHING IS PROVISIONED, and that is a real answer rather
+ *  than a missing one: DDNS and the cert are both named after the handle, so
+ *  without one there is nothing for them to point at. */
+export const buildProvisionedSnapshot = (input: {
+  /** Canonical handle held locally; empty when none. */
+  handle: string;
+  /** The `<handle>.<suffix>` the conveniences target. */
+  hostname: string;
+  /** Cloud-CONFIRMED publish stamp — the only one that means the record landed. */
+  lastPublishedAt?: number;
+  certExpiresAt?: number;
+}): ProvisionedConvenienceSnapshot => {
+  if (input.handle.length === 0) return { handle_reserved: false };
+  return {
+    handle_reserved: true,
+    ddns_hostname: input.hostname,
+    ...(input.lastPublishedAt !== undefined ? { ddns_published_at: input.lastPublishedAt } : {}),
+    ...(input.certExpiresAt !== undefined ? { acme_cert_expires_at: input.certExpiresAt } : {}),
+  };
+};
+
 export interface ProConvenienceProvisionerDeps {
   /** Secret-free binding status (typically the account-binding manager's
    *  `status()`). May throw `not_ready` before identity boot — the engine
@@ -215,11 +245,47 @@ export const createProConvenienceProvisioner = (
             entitlement: 'not_entitled',
             items: uniform('inactive-free', 'free_account'),
           };
+        case 'disowned':
+          // ⛔ `error`, NOT `awaiting-server`. The binding still exists locally —
+          // the card would otherwise say "Connect your account first" to someone
+          // who has, and whose server was then disowned. Something is wrong and
+          // the owner has to act.
+          return {
+            ...base,
+            entitlement: 'unavailable',
+            items: uniform('error', 'server_disconnected'),
+          };
         case 'entitled':
           break;
       }
 
-      // 3. Reachability gate (`:636-637`).
+      // 3. Anchor gate. The account's handle is held by ANOTHER of the owner's
+      //    servers ⇒ all three conveniences are decided, because all three are
+      //    named after that handle: the cloud refuses a DDNS publish from the
+      //    wrong fingerprint, and the cert is issued for the name that publish
+      //    would have created.
+      //
+      //    ⛔⛔ THIS RUNS BEFORE REACHABILITY, WHICH IS THE ONLY ORDERING THAT
+      //    HELPS. The case that made this necessary is several servers on one
+      //    LAN, and on one LAN exactly one of them can own the forwarded port —
+      //    so the servers that are not the anchor are precisely the ones with no
+      //    reachability proof. Gate reachability first and every one of them
+      //    reports "Waiting until your server can be reached" forever, which
+      //    names a symptom of the arrangement as if it were a fault in the setup.
+      //
+      //    The hint is unsigned, so this may only pick copy — see
+      //    `ProHandleAnchor`. Note what it does NOT do: it never suppresses an
+      //    actuation attempt. The cloud's `ddns_handle_mismatch` refusal stays
+      //    the authority, and stays the thing the poller backs off on.
+      if (ent.handle_anchor?.state === 'held_by_other') {
+        return {
+          ...base,
+          entitlement: 'entitled',
+          items: uniform('inactive-elsewhere', 'handle_on_another_server'),
+        };
+      }
+
+      // 4. Reachability gate (`:636-637`).
       let reachable = false;
       if (deps.readReachability) {
         const r = await deps.readReachability();
@@ -233,7 +299,7 @@ export const createProConvenienceProvisioner = (
         };
       }
 
-      // 4. Entitled ∧ bound ∧ reachable — report the live provisioned
+      // 5. Entitled ∧ bound ∧ reachable ∧ ours — report the live provisioned
       //    state per item.
       const snap = deps.readProvisioned ? await deps.readProvisioned() : null;
       const ddns_hostname = snap?.ddns_hostname ?? ddnsFromBinding;

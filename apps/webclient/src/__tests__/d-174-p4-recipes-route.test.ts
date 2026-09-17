@@ -1237,6 +1237,10 @@ describe('R24 — Recipes route: list view', () => {
     await rig.route.whenLoaded();
 
     expect(subscribeKinds).toEqual([
+      // D-display-mode P2 — a board left on a screen refreshes when something
+      // ELSE completes. Deliberate: this list is a ratchet, and it caught the
+      // addition, which is what it is for.
+      'execution',
       'pack_installed',
       'pack_uninstalled',
       'chat.inbound_token_changed',

@@ -1,5 +1,5 @@
 /** R19 Slice 3 — Reception ▸ Endpoints ▸ routed Launch Wizard section
- *  (`reception-launch-wizard-section.ts`).
+ *  (`launch-wizard-section.ts`).
  *
  *  The full-page Launch Wizard that replaced the transparent modal (the
  *  same "can't enable" fix Slice 2 applied to the per-kind authoring
@@ -23,17 +23,17 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { ReceptionEndpointCreateResult } from '@recued/contracts';
 
-import { mountReceptionWizardSection } from '../settings/reception-launch-wizard-section.js';
+import { mountReceptionWizardSection } from '../reception/launch-wizard-section.js';
 import type {
   LaunchWizardMount,
   LaunchWizardMountOptions,
-} from '../settings/reception-launch-wizard-mount.js';
-import { mountLaunchWizard } from '../settings/reception-launch-wizard-mount.js';
+} from '../reception/launch-wizard-mount.js';
+import { mountLaunchWizard } from '../reception/launch-wizard-mount.js';
 import type {
   LaunchWizardRunResult,
   ReceptionPageShell,
   ReceptionPageShellState,
-} from '../settings/reception-page-shell.js';
+} from '../reception/page-shell.js';
 
 const NOW = 1_700_000_000_000;
 

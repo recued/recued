@@ -126,6 +126,10 @@ export const createProductionPathListenerCoordinator = (
   // silently keep the old addresses. Track them to detect the change and
   // fall back to a full rebuild instead.
   let activeBind: { lan: string; public: string } | null = null;
+  /** The ports the active set is bound on. ⚠ Tracked separately from
+   *  `activeBind` because a port change does NOT need the full rebuild an
+   *  address change does — the set rebinds the one listener in place. */
+  let activePorts: { lan: number | undefined; public: number | undefined } | null = null;
   // Serialize rebinds — a concurrent `apply()` while a previous one is
   // still draining listeners would race the active reference + bind two
   // sets on the same port. The state machine's own concurrency guard
@@ -157,6 +161,7 @@ export const createProductionPathListenerCoordinator = (
     const statuses = await set.start();
     active = set;
     activeBind = { lan: bind_addresses.lan, public: bind_addresses.public };
+    activePorts = { lan: lan_port, public: public_port };
     lastStatuses = statuses;
     return statuses;
   };
@@ -165,6 +170,7 @@ export const createProductionPathListenerCoordinator = (
     const set = active;
     active = null;
     activeBind = null;
+    activePorts = null;
     if (set) {
       try {
         await set.stop();
@@ -196,7 +202,7 @@ export const createProductionPathListenerCoordinator = (
   });
 
   return {
-    apply: ({ resolution, bind_addresses }) =>
+    apply: ({ resolution, bind_addresses, ports }) =>
       guarded(async () => {
         // D-148 exposure-flip robustness — when a set is already running,
         // reconcile it IN PLACE rather than tearing the whole thing down
@@ -218,9 +224,25 @@ export const createProductionPathListenerCoordinator = (
           (activeBind.lan !== bind_addresses.lan ||
             activeBind.public !== bind_addresses.public);
         if (bindChanged) await stopActive();
+        // ⛔ A PORT CHANGE IS *NOT* AN ADDRESS CHANGE. An address change tears
+        // the whole set down, which the comment above warns can wedge on the
+        // operator's never-draining control WS. A port change goes through
+        // `applyResolution`, which stops and rebinds ONLY the listener whose
+        // port moved and leaves the other serving — so changing `public_port`
+        // never touches the LAN socket the owner may be connected through.
+        const effectivePorts = {
+          ...(ports?.lan !== undefined ? { lan: ports.lan } : {}),
+          ...(ports?.public !== undefined ? { public: ports.public } : {}),
+        };
         const statuses = active
-          ? await active.applyResolution(resolution)
+          ? await active.applyResolution(resolution, effectivePorts)
           : await buildAndStart(resolution, bind_addresses);
+        if (active && activePorts !== null) {
+          activePorts = {
+            lan: ports?.lan ?? activePorts.lan,
+            public: ports?.public ?? activePorts.public,
+          };
+        }
         lastStatuses = statuses;
         const lan = statuses.find((s) => s.listener === 'lan');
         const pub = statuses.find((s) => s.listener === 'public');

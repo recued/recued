@@ -3,7 +3,7 @@
  *  Server-internal table. Per-pair only; no cross-cloud sync (§ Must Hold I-15; D-097 / D-168).
  *  Mirrors the SQL schema in `backend/server/src/storage/reception-store.ts`
  *  + threads the typed shapes the rpc surface returns to webclient
- *  callers (Settings → Server → Reception page).
+ *  callers (Reception page).
  *
  *  Spec: D-149 § A.3 (storage + rpc) + § A.5.x (per-kind
  *  packet declarations). */
@@ -399,7 +399,7 @@ export interface ReceptionAbuseInboxUnbanIpResult {
  *  server-supplied state, never bundles pack content locally). A
  *  malformed / unknown template file is skipped server-side rather than
  *  failing the whole list, so `templates` may carry fewer than the six
- *  `INTAKE_FORM_TEMPLATE_REFS` — the Settings → Reception → Templates
+ *  `INTAKE_FORM_TEMPLATE_REFS` — the Reception → Templates
  *  browser projection (`buildIntakeFormTemplatesBrowserModel`) surfaces
  *  the gap via its `missing_refs` field. */
 export interface ReceptionTemplateListResult {
@@ -490,7 +490,7 @@ export const RECEPTION_RPC_METHODS = [
   // D-149 follow-on § A.10 — Templates browser wire. `reception.template.list`
   // reads the Foundation-pack `intake_form` template manifests from the
   // installed `recued-core/personal-organizer-foundation` pack so the
-  // Settings → Reception → Templates browser projects server-supplied pack
+  // Reception → Templates browser projects server-supplied pack
   // content (D-148 § A.4) rather than bundling it client-side. Read-only,
   // reserved-prefix-gated like every other reception rpc.
   'reception.template.list',

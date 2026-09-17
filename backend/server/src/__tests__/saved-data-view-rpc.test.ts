@@ -97,6 +97,13 @@ it('serves shared saved views over real paired webclient sockets and refuses unp
       result: { entities: [{ id: 'overdue' }], total: 1 },
     });
     expect(await rpc(unpaired, 'work_entity.list', taskQuery)).toMatchObject({ error: { code: 'unauthorized' } });
+    expect(await rpc(unpaired, 'work_entity.task.mark_done', { id: 'overdue', done: true }))
+      .toMatchObject({ error: { code: 'unauthorized' } });
+    expect(await rpc(first, 'work_entity.task.mark_done', { id: 'overdue', done: true }))
+      .toMatchObject({ result: { entity: { _kind: 'task', id: 'overdue', done: true } } });
+    expect(await rpc(second, 'work_entity.list', taskQuery)).toMatchObject({ result: { entities: [], total: 0 } });
+    expect(await rpc(second, 'work_entity.get', { kind: 'task', id: 'overdue' }))
+      .toMatchObject({ result: { entity: { done: true, due_at: 1000 } } });
     expect(MCP_RESERVED_RPC_PREFIXES).toContain('data_views.');
     expect(await rpc(first, 'data_views.update', { id: createdTaskView.id, expected_revision: 2,
       alert: { enabled: true, time_zone: 'America/Los_Angeles' } }))

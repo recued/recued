@@ -87,6 +87,9 @@ export interface PathListenerCoordinator {
   apply(args: {
     resolution: Record<PathRole, PathResolution>;
     bind_addresses: { lan: string; public: string };
+    /** ⚠ LIVE PORTS, omitted ⇒ the ones the coordinator was built with.
+     *  A changed port rebinds ONLY that listener — see the coordinator. */
+    ports?: { lan?: number; public?: number };
   }): Promise<{
     lan: PathListenerCoordinatorStatus;
     public: PathListenerCoordinatorStatus;

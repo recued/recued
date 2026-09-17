@@ -1,4 +1,4 @@
-/** D-149 § A.20.5 follow-on — Settings → Server → Reception → Abuse
+/** D-149 § A.20.5 follow-on — Reception → Abuse
  *  Inbox subview renderer.
  *
  *  Covers the projection layer over `buildAbuseInbox` + the
@@ -27,7 +27,7 @@ import {
   buildAbuseInboxUnbanIpDispatch,
   computeRelativeTimeLabel,
   computeWindowLabel,
-} from '../settings/reception-abuse-inbox.js';
+} from '../reception/abuse-inbox.js';
 
 const MINUTE_MS = 60 * 1000;
 const HOUR_MS = 60 * MINUTE_MS;

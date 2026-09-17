@@ -127,11 +127,21 @@ export type TokenUsageAttribution =
  *  field that misleads the reader into thinking the field was
  *  populated-and-zero).
  *
- *  `model_id` + `attribution` drop on aggregation — the
- *  aggregate represents the sum across heterogeneous sources, so
- *  no single id / attribution applies. Reports that need per-
- *  source breakdown should aggregate within a partition (group by
- *  attribution / model_id first, sum within each group). */
+ *  `attribution` drops on aggregation — the aggregate may span
+ *  heterogeneous sources, so no single attribution applies.
+ *
+ *  `model_id` SURVIVES WHEN EVERY SUMMED CALL AGREES ON IT, and
+ *  drops the moment two disagree (or either is absent). Amended
+ *  2026-09-16: it used to drop unconditionally, which applied the
+ *  heterogeneity rule to homogeneous runs — a `foreach` repeating
+ *  one step against one slot lost an id nothing disagreed about.
+ *  ⇒ Present now means "every call in this run used this model",
+ *  not "this run made exactly one call".
+ *  ⚠ STILL NOT A COMPLETE BASIS FOR "SPEND BY MODEL": a run that
+ *  genuinely mixed models reports no id at all, so such a report
+ *  silently omits exactly the mixed runs. Reports that need a
+ *  per-source breakdown must still aggregate within a partition
+ *  (group by attribution / model_id first, sum within each). */
 export const aggregateTokenUsageReports = (
   prev: TokenUsageReport | undefined,
   next: TokenUsageReport | undefined,
@@ -159,6 +169,19 @@ export const aggregateTokenUsageReports = (
   // make an aggregate of two un-annotated reports claim it covered no calls,
   // which is worse than the ambiguity this field exists to remove.
   const calls = (prev.provider_calls ?? 1) + (next.provider_calls ?? 1);
+  // ⛔ KEEP `model_id` WHEN EVERY CALL SUMMED SO FAR AGREES ON IT. The rule is
+  // "no single id applies", and that is a statement about HETEROGENEOUS sources
+  // — it was being applied unconditionally, so a `foreach` repeating ONE step
+  // against ONE slot lost the id it never actually disagreed about. Requiring
+  // both sides present-and-equal means an absent id keeps the aggregate absent
+  // (an earlier call we cannot vouch for must not be spoken for by a later one).
+  // ⇒ The field's meaning CHANGES and improves: present used to mean "this run
+  // made exactly one call"; it now means "every call in this run used this
+  // model", which is the claim a provenance reader actually wants.
+  // ⚠ `attribution` is deliberately NOT given the same treatment — it is a
+  // structured value needing a deep compare, and nothing has asked for it.
+  const model_id =
+    prev.model_id !== undefined && prev.model_id === next.model_id ? prev.model_id : undefined;
   return {
     input_tokens: prev.input_tokens + next.input_tokens,
     output_tokens: prev.output_tokens + next.output_tokens,
@@ -167,5 +190,6 @@ export const aggregateTokenUsageReports = (
     ...(cache_read !== undefined ? { cache_read_input_tokens: cache_read } : {}),
     ...(cache_write !== undefined ? { cache_write_input_tokens: cache_write } : {}),
     ...(reasoning !== undefined ? { reasoning_tokens: reasoning } : {}),
+    ...(model_id !== undefined ? { model_id } : {}),
   };
 };

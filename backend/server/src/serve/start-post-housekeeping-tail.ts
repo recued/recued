@@ -18,6 +18,7 @@ import {
 import { logBootBanner } from './log-boot-banner.js';
 import { SERVER_VERSION } from '../server-version.js';
 import { startDdnsUpdatePoller } from './start-ddns-update-poller.js';
+
 import { startHostnameReconciliationRunner } from './start-hostname-reconciliation-runner.js';
 import { startRetentionPruners } from './start-retention-pruners.js';
 import type { GatedActionStore } from '../gated-action-store.js';
@@ -98,6 +99,19 @@ export interface StartPostHousekeepingTailOptions {
     import('../handle/index.js').HandleStateMachine,
     'applyLifecycleUpdate'
   > | undefined;
+  /** D-175 — notification bus for the disconnect announcer.
+   *
+   *  ⚠ AN EXPLICIT OPTION, NOT A WIDER `AppContext` PICK: the bus lives on the
+   *  compose OPTIONS, not on `AppContext`, so Picking it does not typecheck —
+   *  and threading the one seam that needs it is narrower than reshaping a
+   *  context every other caller shares. */
+  /** D-175 — the shared disconnect announcer, built by the caller because the
+   *  provisioning loop (started earlier) needs the SAME instance. */
+  readonly disconnectAnnouncer?:
+    import('../pro-convenience/disconnect-announcer.js').DisconnectAnnouncer | undefined;
+  /** D-175 — shared disowned state, forwarded to the DDNS poller. */
+  readonly disownedFlag?:
+    import('../pro-convenience/disconnect-announcer.js').ServerDisownedFlag | undefined;
 }
 
 export const startPostHousekeepingTail = (
@@ -207,12 +221,20 @@ export const startPostHousekeepingTail = (
       : {}),
   });
 
+  // D-175 — one announcement per disconnection, whichever detector notices.
+  // ⛔ BUILT HERE, AT THE COMPOSITION SITE, because it needs the audit log and
+  // the notification bus — neither of which the poller has or should have. The
+  // poller reports; this decides whether anything is said.
   startDdnsUpdatePoller({
     db: storage.db,
     backgroundServices: options.backgroundServices,
     cloudBaseUrl: options.cloudBaseUrl,
     getSigningIdentity: options.getSigningIdentity,
     ...(options.applyLifecycle ? { applyLifecycle: options.applyLifecycle } : {}),
+    ...(options.disconnectAnnouncer
+      ? { announceDisconnect: (source) => options.disconnectAnnouncer!.announce(source) }
+      : {}),
+    ...(options.disownedFlag ? { disownedFlag: options.disownedFlag } : {}),
   });
 
   startHostnameReconciliationRunner({

@@ -1,19 +1,35 @@
 # recued-server — VPS / headless server distribution defaults.
 #
-# Binds to 0.0.0.0 by default so a reverse proxy can reach it. When
-# exposing the server to the internet, put it behind TLS-terminating
-# nginx/Caddy/Traefik — the server has no TLS surface of its own. The
-# pair handshake is authenticated separately (realm token + pair code).
+# Binds to 0.0.0.0 by default so a reverse proxy can reach it. Reaching
+# this server from a browser needs HTTPS, and there are three ways to get
+# it — a reverse proxy in front (nginx/Caddy/Traefik/a tunnel terminating
+# TLS with its own certificate), your own certificate loaded in Settings
+# -> Server -> Certificates, or Pro, which publishes a name and renews a
+# certificate for you. All three are self-hosted traffic; none routes
+# through the cloud.
+#
+# A reverse proxy is the first option, not a requirement: given a
+# certificate the public listener serves TLS itself. The pair handshake is
+# authenticated separately (realm token + pair code).
 
 [bootstrap]
 data_path    = "~/recued-data"
 bind_host    = "0.0.0.0"
 bind_port    = 7717
+# NOT A PORT THE SERVER LISTENS ON, and read by nothing: setting it to 0
+# does NOT turn MCP off. MCP is a path on the listeners above, on over LAN
+# and off publicly until switched on in Settings -> Server -> Exposure.
 mcp_port     = 7718
-# Set webhook_port to a non-zero value to enable the inbound-webhook
-# surface (required for platforms that only push via webhook). Requires
-# public reachability — use a reverse-proxy path like /webhook or open
-# the port in the firewall.
+# AN ON/OFF SWITCH WEARING A PORT'S NAME. Set it to any non-zero value to
+# enable the inbound-webhook surface (required for platforms that only
+# push via webhook); every non-zero value behaves the same.
+#
+# DO NOT FORWARD OR FIREWALL-OPEN THIS NUMBER -- nothing binds it. The
+# webhook paths (/webhook/<slug>, /hook/<recipe>/<slug>,
+# /v1/connection/webhook/<vendor>/<connection>) are served on the PUBLIC
+# port, so that is the one that has to be reachable; you also need
+# RECUED_PUBLIC_REACHABLE=true, which is read per request and needs no
+# restart. D-096: the cloud never relays inbound webhooks.
 webhook_port = 0
 log_path     = "{data_path}/logs"
 

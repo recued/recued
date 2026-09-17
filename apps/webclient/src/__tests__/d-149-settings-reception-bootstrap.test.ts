@@ -34,14 +34,14 @@ import {
   bootstrapReceptionRoute,
   RECEPTION_BOOTSTRAP_STYLES,
   RECEPTION_BOOTSTRAP_STYLES_MARKER,
-} from '../settings/reception-bootstrap.js';
-import { stashReceptionAuthoringSeed } from '../settings/reception-authoring-section.js';
+} from '../reception/bootstrap.js';
+import { stashReceptionAuthoringSeed } from '../reception/authoring-section.js';
 import type {
   LaunchWizardRunResult,
   ReceptionPageShell,
   ReceptionPageShellState,
-} from '../settings/reception-page-shell.js';
-import { buildReceptionPageModel } from '../settings/reception.js';
+} from '../reception/page-shell.js';
+import { buildReceptionPageModel } from '../reception/spine.js';
 
 const NOW = 1_700_000_000_000;
 const DAY_MS = 24 * 60 * 60 * 1000;

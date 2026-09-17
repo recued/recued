@@ -29,13 +29,13 @@ import {
   RECEPTION_RECOMMENDED_EXPOSURE_PROFILE,
 } from '@recued/contracts';
 
-import { mountReceptionRoute } from '../settings/reception-route.js';
+import { mountReceptionRoute } from '../reception/route.js';
 import type {
   LaunchWizardRunResult,
   ReceptionPageShell,
   ReceptionPageShellState,
-} from '../settings/reception-page-shell.js';
-import { buildReceptionPageModel } from '../settings/reception.js';
+} from '../reception/page-shell.js';
+import { buildReceptionPageModel } from '../reception/spine.js';
 
 const NOW = 1_700_000_000_000;
 const DAY_MS = 24 * 60 * 60 * 1000;

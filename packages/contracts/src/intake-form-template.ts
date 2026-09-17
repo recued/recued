@@ -8,7 +8,7 @@
  *  `community/packs/recued-core/personal-organizer-foundation/templates/`.
  *
  *  An `IntakeFormTemplate` is a portable manifest carrying everything the
- *  Settings → Reception → Templates UX needs to pre-populate an
+ *  Reception → Templates UX needs to pre-populate an
  *  `intake_form` endpoint: a `form_definition`, a `submission_processing_rule`,
  *  and `anti_spam_defaults`. The user picks a template, supplies their
  *  display name, reviews, and enables — `intakeFormConfigFromTemplate` is

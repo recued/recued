@@ -3544,6 +3544,7 @@ describe('runBootstrapWithPairFallback: profileStore forwarding', () => {
     activeProfileId: async () => null,
     ensureProfile: async () => 'p1',
     switchProfile: async () => undefined,
+    retargetProfile: async () => null,
     renameProfile: async () => null,
     removeProfile: async () => undefined,
     noteProfileConnected: async () => undefined,

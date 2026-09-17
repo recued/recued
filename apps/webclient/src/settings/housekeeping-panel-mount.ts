@@ -1,4 +1,8 @@
-/** Settings → Server → Housekeeping panel mount (D-174).
+/** Settings → Housekeeping panel mount (D-174).
+ *
+ *  ⚠ A SETTINGS SECTION, SIBLING OF SERVER — not under it. It registers its own
+ *  subview (`registerSubview('housekeeping', …)`) at the same level as Privacy
+ *  and Server. Said "Settings → Server → Housekeeping" until 2026-09-16.
  *
  *  The codebase deferred the full housekeeping-panel mount as a
  *  "~1000+ LOC slice" (see `llm-result-cache-card-mount.ts:11-20`).

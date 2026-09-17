@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 /** D-175 P8 — Pro convenience wiring (server-side DDNS/ACME off the
  *  binding credential).
  *
@@ -30,6 +31,7 @@ import {
 } from '@recued/contracts';
 
 import {
+  buildProvisionedSnapshot,
   createProConvenienceProvisioner,
   type ProConvenienceProvisionerDeps,
   type ProvisionedConvenienceSnapshot,
@@ -536,5 +538,374 @@ describe('D-176 — data-driven DDNS hostname (provisioner)', () => {
       readHandleState: async () => ({ current_handle: 'bob', ddns_zone: 'net' }),
     }).status();
     expect(mismatched.ddns_hostname).toBe('alice.recued.net');
+  });
+});
+
+/** ⛔⛔ THE SEAM THAT ONLY EXISTED IN THIS FILE. `readProvisioned` was supplied by
+ *  the tests above and by NOTHING in production, so a real server always got
+ *  `snap = null` — `handle_reserved: false`, every item `pending /
+ *  not_provisioned`, and a Pro card that said "Not set up yet" no matter what
+ *  was actually provisioned. The card was not mis-describing a case; its live
+ *  half was never connected.
+ *
+ *  🔑 A dep that appears only in a harness reports the harness. These arms cover
+ *  the decision half; the arm below pins that composition still passes it. */
+describe('buildProvisionedSnapshot — what the three reads mean', () => {
+  it('reports nothing provisioned when no handle is held', () => {
+    expect(buildProvisionedSnapshot({ handle: '', hostname: '' }))
+      .toEqual({ handle_reserved: false });
+  });
+
+  it('a held handle is reserved, and names the hostname the items target', () => {
+    expect(buildProvisionedSnapshot({ handle: 'alice', hostname: 'alice.recued.net' }))
+      .toEqual({ handle_reserved: true, ddns_hostname: 'alice.recued.net' });
+  });
+
+  /** ⚠ ABSENT IS NOT ZERO. Omitting the key is what makes the provisioner report
+   *  `pending`; a `0` would read as a real timestamp at the epoch and an expired
+   *  cert. */
+  it('omits the DDNS and cert stamps rather than defaulting them', () => {
+    const snap = buildProvisionedSnapshot({ handle: 'alice', hostname: 'alice.recued.net' });
+    expect(snap).not.toHaveProperty('ddns_published_at');
+    expect(snap).not.toHaveProperty('acme_cert_expires_at');
+  });
+
+  it('carries both stamps when the substrate has them', () => {
+    expect(buildProvisionedSnapshot({
+      handle: 'alice',
+      hostname: 'alice.recued.net',
+      lastPublishedAt: 1_700_000_000_000,
+      certExpiresAt: 1_800_000_000_000,
+    })).toEqual({
+      handle_reserved: true,
+      ddns_hostname: 'alice.recued.net',
+      ddns_published_at: 1_700_000_000_000,
+      acme_cert_expires_at: 1_800_000_000_000,
+    });
+  });
+});
+
+/** ⛔⛔ AND THE WIRING ITSELF, because its absence is exactly the bug. A dep can
+ *  be perfectly implemented and simply not passed — that is how this one hid for
+ *  as long as it did, and no behavioural test can see it from inside the
+ *  provisioner.
+ *
+ *  ⚠ COMMENTS STRIPPED BEFORE MATCHING. The composition site carries a long note
+ *  about `readProvisioned` directly above the call, so a raw text search finds
+ *  the prose whether or not the argument is there — the same way a comment
+ *  quoting code once satisfied an assertion about that code. */
+describe('composition passes readProvisioned in production', () => {
+  it('the real provisioner is constructed with the live seam', () => {
+    const src = readFileSync(
+      new URL('../serve/compose-storage-context.ts', import.meta.url),
+      'utf-8',
+    );
+    const code = src
+      .split('\n')
+      .filter((line) => !/^\s*(\/\/|\*|\/\*)/.test(line))
+      .join('\n');
+    const at = code.indexOf('createProConvenienceProvisioner({');
+    expect(at, 'the production provisioner construction moved').toBeGreaterThan(-1);
+    const call = code.slice(at, code.indexOf('});', at));
+    expect(call, 'readProvisioned must be passed, or the card reports a placeholder forever')
+      .toContain('readProvisioned:');
+  });
+});
+
+/** The handle anchor — why a server that is bound, entitled and perfectly
+ *  healthy shows nothing set up.
+ *
+ *  🔑 THE ORDERING IS THE FEATURE, NOT AN IMPLEMENTATION DETAIL, so it is
+ *  asserted first and directly. Several servers on one LAN share one forwarded
+ *  port, so the servers that do NOT hold the handle are exactly the servers with
+ *  no reachability proof — the two conditions arrive together, always, in the
+ *  case this exists for. Gate reachability first and the anchor branch is
+ *  unreachable in production while every test that sets `reachable: true` still
+ *  passes, which is the shape of a fix that is only true in the harness.
+ *
+ *  ⚠ THE HINT IS UNSIGNED, so the last arm below pins the boundary it must not
+ *  cross: `resolveClaim` — the bearer path actuation uses — is unchanged by it. */
+describe('D-175 — handle anchored to another server', () => {
+  const anchored = (
+    state: 'held_by_me' | 'held_by_other' | 'unanchored',
+  ): ProEntitlementSource =>
+    fixedEntitlement({ state: 'entitled', handle_anchor: { state, handle: 'alice' } });
+
+  it('explains itself instead of blaming reachability, which it would also fail', async () => {
+    const status = await make({
+      entitlement: anchored('held_by_other'),
+      readReachability: async () => ({ reachable: false, checked_at: 1 }),
+      readProvisioned: async () => ({ handle_reserved: false }),
+    }).status();
+
+    expect(status.items.handle.state).toBe('inactive-elsewhere');
+    expect(status.items.handle.detail).toBe('handle_on_another_server');
+    // The assertion that fails if the branch is moved below the reachability
+    // gate: that gate is open here, and it must not be what answers.
+    expect(status.items.handle.detail).not.toBe('not_reachable');
+    expect(status.items.ddns.detail).toBe('handle_on_another_server');
+    expect(status.items.acme.detail).toBe('handle_on_another_server');
+    // Still entitled — nothing is wrong with the account.
+    expect(status.entitlement).toBe('entitled');
+  });
+
+  it('the anchor decides, not the local provisioned snapshot', async () => {
+    // A server can hold a stale local cert + publish stamp for a handle that has
+    // since migrated. Reading those would report `active` for a name that now
+    // resolves elsewhere.
+    const status = await make({
+      entitlement: anchored('held_by_other'),
+      readReachability: async () => ({ reachable: true, checked_at: 1 }),
+      readProvisioned: async () => ({
+        handle_reserved: true,
+        ddns_hostname: 'alice.recued.net',
+        ddns_published_at: 900,
+        acme_cert_expires_at: 9_000,
+      }),
+    }).status();
+
+    expect(status.items.handle.state).toBe('inactive-elsewhere');
+    expect(status.items.acme.state).toBe('inactive-elsewhere');
+    expect(status.items.acme.expires_at).toBeUndefined();
+  });
+
+  it('held_by_me is the ordinary path and the branch stays out of it', async () => {
+    const status = await make({
+      entitlement: anchored('held_by_me'),
+      readReachability: async () => ({ reachable: true, checked_at: 1 }),
+      readProvisioned: async () => ({
+        handle_reserved: true,
+        ddns_hostname: 'alice.recued.net',
+        ddns_published_at: 900,
+        acme_cert_expires_at: 9_000,
+      }),
+    }).status();
+
+    expect(status.items.handle.state).toBe('active');
+    expect(status.items.ddns.state).toBe('active');
+    expect(status.items.acme.state).toBe('active');
+  });
+
+  /** ⛔ UNANCHORED IS NOT "SOMEWHERE ELSE" — it is "nowhere yet, and yours for
+   *  the taking", which is what "Not set up yet" already says correctly. Telling
+   *  an owner whose only server was unbound that their handle lives on another
+   *  server would be false AND would hide the one case they can act on. */
+  it.each([
+    ['unanchored' as const, 'not_provisioned'],
+  ])('%s keeps the claimable copy', async (state, detail) => {
+    const status = await make({
+      entitlement: anchored(state),
+      readReachability: async () => ({ reachable: true, checked_at: 1 }),
+      readProvisioned: async () => ({ handle_reserved: false }),
+    }).status();
+    expect(status.items.handle.state).toBe('pending');
+    expect(status.items.handle.detail).toBe(detail);
+  });
+
+  it('no anchor at all changes nothing (an older cloud, or no handle reserved)', async () => {
+    const status = await make({
+      entitlement: fixedEntitlement({ state: 'entitled' }),
+      readReachability: async () => ({ reachable: false, checked_at: 1 }),
+      readProvisioned: async () => ({ handle_reserved: false }),
+    }).status();
+    expect(status.items.handle.state).toBe('awaiting-reachability');
+    expect(status.items.handle.detail).toBe('not_reachable');
+  });
+});
+
+/** The anchor's trip across the wire. It rides OUTSIDE the signature, so these
+ *  pin both halves of that choice: it is read off the raw body (not the verified
+ *  claim), and being unsigned it may not touch the bearer path. */
+describe('D-175 — handle_anchor on the mint response', () => {
+  const NOW = 1_800_000_000_000;
+  const mintBody = (claim: string, handle_anchor?: unknown) => ({
+    ok: true,
+    entitlement_tier: 'pro',
+    entitlement_claim: claim,
+    expires_at: NOW + 60_000,
+    ...(handle_anchor !== undefined ? { handle_anchor } : {}),
+  });
+  const sourceFor = (signing: EntitlementSigningFixture, body: unknown) =>
+    createHttpProEntitlementSource({
+      loadBinding: () => storedBinding(),
+      getEndpointUrl: () => 'https://auth.test/v1/account/entitlement/mint',
+      getPublicKeyB64: () => signing.public_key_b64,
+      fetchImpl: fetchJson(body),
+      now: () => NOW,
+    });
+  const claimFor = (signing: EntitlementSigningFixture) =>
+    mintEntitlementClaim(signing.privateKey, {
+      v: 1,
+      purpose: 'pro_entitlement_claim',
+      account_id: 'acct_A',
+      entitlement_tier: 'pro',
+      server_fingerprint: 'sha256:ff',
+      iat: NOW,
+      exp: NOW + 60_000,
+    });
+
+  it('carries a well-formed anchor through to the resolution', async () => {
+    const signing = makeEntitlementSigningFixture();
+    const r = await sourceFor(
+      signing,
+      mintBody(claimFor(signing), { state: 'held_by_other', handle: 'alice' }),
+    ).resolve();
+    expect(r).toEqual({
+      state: 'entitled',
+      expires_at: NOW + 60_000,
+      handle_anchor: { state: 'held_by_other', handle: 'alice' },
+    });
+  });
+
+  /** ⚠ THE OLD-SERVER CASE IS THE LIKELY ONE, not the exotic one: the Worker
+   *  deploys on its own schedule and each self-hosted server updates on its
+   *  owner's, so a state this build has never heard of WILL arrive eventually.
+   *  Dropping it must leave an ordinary entitled resolution, never a failure —
+   *  a display hint that can break entitlement is worse than no hint. */
+  it.each([
+    ['an unknown state', { state: 'held_by_a_future_thing', handle: 'alice' }],
+    ['a missing handle', { state: 'held_by_other' }],
+    ['an empty handle', { state: 'held_by_other', handle: '' }],
+    ['a non-object', 'held_by_other'],
+    ['null', null],
+  ])('drops %s and stays entitled', async (_label, anchor) => {
+    const signing = makeEntitlementSigningFixture();
+    const r = await sourceFor(signing, mintBody(claimFor(signing), anchor)).resolve();
+    expect(r).toEqual({ state: 'entitled', expires_at: NOW + 60_000 });
+  });
+
+  /** ⛔⛔ THE LINE THE HINT MAY NOT CROSS. `resolveClaim` is the bearer token
+   *  actuation presents; if an unsigned field could suppress it, anyone able to
+   *  shape a mint response could switch a server's conveniences off. Authority
+   *  over the handle stays with the cloud's own `ddns_handle_mismatch` refusal. */
+  it('does not touch the bearer path, whatever the anchor says', async () => {
+    const signing = makeEntitlementSigningFixture();
+    const claim = claimFor(signing);
+    const bearer = await sourceFor(
+      signing,
+      mintBody(claim, { state: 'held_by_other', handle: 'alice' }),
+    ).resolveClaim();
+    expect(bearer?.entitlement_claim).toBe(claim);
+  });
+});
+
+/** ⛔⛔ WHERE THE RENAMED HANDLE IS READ FROM, WHICH IS THE SECURITY QUESTION.
+ *
+ *  The server ACTS on this name: it moves a DNS record and a certificate to it.
+ *  The `handle_anchor` beside it is read off the raw body on purpose — it only
+ *  picks copy — and reading this one the same way would let anything able to
+ *  shape a mint response re-point somebody's hostname. It must come from the
+ *  payload the Ed25519 signature covers, and nowhere else. */
+describe('D-175 — publisher_handle comes from the VERIFIED claim', () => {
+  const NOW = 1_800_000_000_000;
+  const claimWith = (signing: EntitlementSigningFixture, over: Record<string, unknown> = {}) =>
+    mintEntitlementClaim(signing.privateKey, {
+      v: 1,
+      purpose: 'pro_entitlement_claim',
+      account_id: 'acct_A',
+      entitlement_tier: 'pro',
+      server_fingerprint: 'sha256:ff',
+      iat: NOW,
+      exp: NOW + 60_000,
+      ...over,
+    });
+  const sourceFor = (signing: EntitlementSigningFixture, body: unknown) =>
+    createHttpProEntitlementSource({
+      loadBinding: () => storedBinding(),
+      getEndpointUrl: () => 'https://auth.test/v1/account/entitlement/mint',
+      getPublicKeyB64: () => signing.public_key_b64,
+      fetchImpl: fetchJson(body),
+      now: () => NOW,
+    });
+  const mintBody = (claim: string, extra: Record<string, unknown> = {}) => ({
+    ok: true,
+    entitlement_tier: 'pro',
+    entitlement_claim: claim,
+    expires_at: NOW + 60_000,
+    ...extra,
+  });
+
+  it('carries a signed handle through to the resolution', async () => {
+    const signing = makeEntitlementSigningFixture();
+    const r = await sourceFor(
+      signing,
+      mintBody(claimWith(signing, { publisher_handle: 'bob' })),
+    ).resolve();
+    expect(r).toMatchObject({ state: 'entitled', publisher_handle: 'bob' });
+  });
+
+  /** ⛔⛔⛔ THE ATTACK THIS SHUTS: a response whose signed claim says nothing
+   *  about a handle, with `publisher_handle` bolted onto the JSON beside it. If
+   *  the source read the body, this would silently re-point the server's DNS to a
+   *  name the cloud never authorised. */
+  it('IGNORES a handle bolted onto the response body outside the signature', async () => {
+    const signing = makeEntitlementSigningFixture();
+    const r = await sourceFor(
+      signing,
+      mintBody(claimWith(signing), { publisher_handle: 'attacker-owned' }),
+    ).resolve();
+    expect(r).toEqual({ state: 'entitled', expires_at: NOW + 60_000 });
+  });
+
+  /** ⚠ AND AN EMPTY STRING IS NOT A HANDLE. Present-and-empty is
+   *  indistinguishable from "the handle was removed", and the provisioner would
+   *  act on it — so the whole claim fails shape validation rather than passing a
+   *  name nothing can reserve. */
+  it('rejects a claim whose handle is present but empty', async () => {
+    const signing = makeEntitlementSigningFixture();
+    const r = await sourceFor(
+      signing,
+      mintBody(claimWith(signing, { publisher_handle: '' })),
+    ).resolve();
+    expect(r).toEqual({ state: 'unavailable', reason: 'entitlement_claim_invalid' });
+  });
+});
+
+/** ⛔⛔⛔ THE DETECTOR HAD TO BE PRECISE BEFORE IT COULD BE WIRED.
+ *
+ *  The mint is BEARER-authenticated (an HMAC credential the cloud itself
+ *  issued), not signature-authenticated like the DDNS route — and
+ *  `credential_invalid` means FIVE things, two of which are 400s raised before a
+ *  credential is even read: an unparseable body and a missing field, i.e. a bug
+ *  in US. Wiring a disconnect announcement to that code would have told owners
+ *  their server was disconnected because of a local serialization fault.
+ *
+ *  🔑 So the cloud emits a purpose-built `server_disowned` AFTER the HMAC
+ *  verifies, and the server requires the code AND the 401 together.
+ */
+describe('D-175 — the disowned state is narrower than credential_invalid', () => {
+  const NOW = 1_800_000_000_000;
+  const sourceFor = (body: unknown, status = 200) =>
+    createHttpProEntitlementSource({
+      loadBinding: () => storedBinding(),
+      getEndpointUrl: () => 'https://auth.test/v1/account/entitlement/mint',
+      getPublicKeyB64: () => makeEntitlementSigningFixture().public_key_b64,
+      fetchImpl: fetchJson(body, status),
+      now: () => NOW,
+    });
+
+  it('maps a 401 server_disowned to the terminal disowned state', async () => {
+    const r = await sourceFor({ ok: false, code: 'server_disowned' }, 401).resolve();
+    expect(r).toEqual({ state: 'disowned' });
+  });
+
+  /** ⛔ THE CASES THAT MUST NOT ANNOUNCE. A malformed request is our own bug; a
+   *  rotated credential is the owner's own deliberate act seconds earlier, with
+   *  the binding still standing. Neither is a disconnection, and reporting one
+   *  would be a false alarm the owner cannot act on. */
+  it.each([
+    ['a malformed request (400)', { ok: false, code: 'credential_invalid' }, 400],
+    ['a rotated credential (401)', { ok: false, code: 'credential_invalid' }, 401],
+  ])('does NOT report %s as disowned', async (_label, body, status) => {
+    const r = await sourceFor(body, status).resolve();
+    expect(r.state).not.toBe('disowned');
+  });
+
+  /** ⛔⛔ THE CODE **AND** THE STATUS. Accepting the word on any status would let
+   *  a proxy error page or a future 4xx reuse of it stop a healthy server — and
+   *  the consequence here is terminal, so two agreeing signals are the price. */
+  it('ignores the word server_disowned on a status that cannot mean it', async () => {
+    const r = await sourceFor({ ok: false, code: 'server_disowned' }, 500).resolve();
+    expect(r.state).not.toBe('disowned');
   });
 });

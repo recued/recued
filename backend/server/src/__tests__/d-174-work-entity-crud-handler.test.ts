@@ -8,7 +8,7 @@
  *      RPC-only delete dispatchers (commitment / project),
  *    - error surfaces (unknown kind, missing id, update of a
  *      non-existent row),
- *    - the slice self-gates on absent deps + claims exactly its four
+ *    - the slice self-gates on absent deps + claims its CRUD and completion
  *      methods.
  */
 
@@ -45,6 +45,7 @@ import {
   handleWorkEntityDelete,
   handleWorkEntityGet,
   handleWorkEntityList,
+  handleWorkEntityTaskMarkDone,
   handleWorkEntityUpsert,
   makeWorkEntityCrudHandlers,
   type WorkEntityCrudRpcDeps,
@@ -55,10 +56,12 @@ let db: Database.Database;
 let store: WorkEntityStore;
 let deps: WorkEntityCrudRpcDeps;
 let events: WarehouseEvent[];
+let writeTime: number;
 
 const NOW = 1_700_000_000_000;
 
 beforeEach(() => {
+  writeTime = NOW;
   dir = mkdtempSync(join(tmpdir(), 'd174-crud-'));
   db = new Database(join(dir, 'test.db'));
   db.pragma('journal_mode = WAL');
@@ -85,7 +88,7 @@ beforeEach(() => {
     store,
     resolver,
     bus,
-    now: () => NOW,
+    now: () => writeTime,
   });
   deps = { store, resolver, dispatchers };
 });
@@ -579,6 +582,104 @@ describe('D-174 work_entity.* — validation surfaces', () => {
   });
 });
 
+describe('work_entity.task.mark_done — Today task actions', () => {
+  it('completes the original task with one completion event, preserving its other fields', async () => {
+    const original = store.writeTask({ source_id: 'recued.task', title: 'Send proposal',
+      body: 'Keep these notes', due_at: NOW + 60_000, priority: 'medium', blocks_task_ids: [] }, NOW);
+    const result = await handleWorkEntityTaskMarkDone(deps, { id: original.id, done: true });
+    expect(result.entity).toMatchObject({ ...original, _kind: 'task', done: true, completed_at: NOW });
+    expect(store.readTask(original.id)?.done).toBe(true);
+    expect(eventsFor('task', 'completed')).toHaveLength(1);
+    expect(eventsFor('task', 'completed')[0]?.record_id).toBe(original.id);
+    writeTime += 1000;
+    await handleWorkEntityTaskMarkDone(deps, { id: original.id, done: true });
+    expect(eventsFor('task', 'completed')).toHaveLength(1);
+    expect(eventsFor('task', 'updated')).toHaveLength(1);
+    expect(store.readTask(original.id)?.completed_at).toBe(NOW);
+    await handleWorkEntityTaskMarkDone(deps, { id: original.id, done: false });
+    expect(store.readTask(original.id)).toMatchObject({ done: false, body: original.body, due_at: original.due_at });
+    expect(eventsFor('task', 'completed')).toHaveLength(1);
+  });
+
+  it('reschedules through upsert without changing completion, title, notes or task identity', async () => {
+    const original = store.writeTask({ source_id: 'recued.task', title: 'Prepare demo',
+      body: 'Keep these notes', due_at: NOW, priority: 'high' }, NOW);
+    const result = await handleWorkEntityUpsert(deps, { kind: 'task', id: original.id, due_at: NOW + 86_400_000 });
+    expect(result.entity).toMatchObject({ ...original, _kind: 'task', due_at: NOW + 86_400_000 });
+    expect(eventsFor('task', 'updated')).toHaveLength(1);
+    expect(eventsFor('task', 'completed')).toHaveLength(0);
+    expect(store.listTasks({})).toHaveLength(1);
+  });
+
+  it('serializes overlapping completion and rescheduling without restoring an old field or repeating completion', async () => {
+    const task = store.writeTask({ source_id: 'recued.task', title: 'Concurrent edits', body: 'Keep notes', due_at: NOW }, NOW);
+    await Promise.all([
+      handleWorkEntityTaskMarkDone(deps, { id: task.id, done: true }),
+      handleWorkEntityTaskMarkDone(deps, { id: task.id, done: true }),
+      handleWorkEntityUpsert(deps, { kind: 'task', id: task.id, due_at: NOW + 86_400_000 }),
+    ]);
+    expect(store.readTask(task.id)).toMatchObject({ done: true, due_at: NOW + 86_400_000, body: 'Keep notes' });
+    expect(eventsFor('task', 'completed')).toHaveLength(1);
+    expect(eventsFor('task', 'updated')).toHaveLength(2);
+  });
+
+  it('releases a failed mutation so a subsequent correction can succeed', async () => {
+    const task = store.writeTask({ source_id: 'recued.task', title: 'Retry', due_at: NOW }, NOW);
+    await expect(handleWorkEntityUpsert(deps, { kind: 'task', id: task.id, due_at: NaN })).rejects.toThrow();
+    await handleWorkEntityUpsert(deps, { kind: 'task', id: task.id, due_at: NOW + 60_000 });
+    expect(store.readTask(task.id)?.due_at).toBe(NOW + 60_000);
+  });
+
+  it('orders a concurrent delete after the submitted task edit and refuses later stale edits', async () => {
+    const task = store.writeTask({ source_id: 'recued.task', title: 'Remove after edit', due_at: NOW }, NOW);
+    await Promise.all([
+      handleWorkEntityTaskMarkDone(deps, { id: task.id, done: true }),
+      handleWorkEntityDelete(deps, { kind: 'task', id: task.id }),
+    ]);
+    expect(store.readTask(task.id)).toMatchObject({ sync_state: 'tombstoned', deleted_at: NOW });
+    await expect(handleWorkEntityUpsert(deps, { kind: 'task', id: task.id, due_at: NOW + 60_000 }))
+      .rejects.toMatchObject({ code: 'not_found' });
+  });
+
+  it('does not mistake a pending local completion for a confirmed duplicate', async () => {
+    const task = store.writeTask({ source_id: 'recued.task', title: 'Still pending', done: true }, NOW);
+    const pending = { staged_at: NOW, operation: 'complete', dirty_fields: ['done'], state: 'awaiting_verify' } as const;
+    store.stagePendingWrite('task', task.id, { ...pending, dirty_fields: [...pending.dirty_fields] });
+    const result = await handleWorkEntityTaskMarkDone(deps, { id: task.id, done: true });
+    // The dispatcher is still invoked for a pending write; its state must
+    // remain visible to the caller until the source executor clears it.
+    expect(eventsFor('task', 'updated')).toHaveLength(1);
+    expect(result.entity.pending_write).toEqual(pending);
+  });
+
+  it.each(['readonly', 'read_through', 'stale', 'deleted', 'unregistered'] as const)(
+    'refuses a %s task without changing it or emitting completion', async (posture) => {
+      store.registerSource({ id: 'other.task', top_tier_kind: 'task', source_kind: 'builtin',
+        source_label: 'Other', write_capable: posture !== 'readonly',
+        ...(posture === 'read_through' ? { sync_posture: 'read_through' } : {}) });
+      const task = store.writeTask({ source_id: 'other.task', title: 'Unavailable',
+        ...(posture === 'stale' ? { sync_state: 'stale_unreachable' } : {}) }, NOW);
+      if (posture === 'deleted') store.deleteTask(task.id, { tombstone: true, now: NOW });
+      if (posture === 'unregistered') store.unregisterSource('other.task');
+      await expect(handleWorkEntityTaskMarkDone(deps, { id: task.id, done: true })).rejects.toThrow(RpcError);
+      await expect(handleWorkEntityUpsert(deps, { kind: 'task', id: task.id, due_at: NOW + 60_000 })).rejects.toThrow(RpcError);
+      expect(store.readTask(task.id)?.done).toBe(false);
+      expect(store.readTask(task.id)?.due_at).toBeUndefined();
+      expect(eventsFor('task', 'completed')).toHaveLength(0);
+      expect(eventsFor('task', 'updated')).toHaveLength(0);
+    },
+  );
+
+  it('rejects missing tasks, malformed completion and caller-supplied authority', async () => {
+    await expect(handleWorkEntityTaskMarkDone(deps, { id: 'missing', done: true }))
+      .rejects.toMatchObject({ code: 'not_found' });
+    for (const args of [undefined, { id: '', done: true }, { id: 'x', done: 'true' },
+      { id: 'x', done: true, work_entity_write_preadmitted: true }]) {
+      await expect(handleWorkEntityTaskMarkDone(deps, args as never)).rejects.toMatchObject({ code: 'bad_request' });
+    }
+  });
+});
+
 /** Minimal WsClient fake — only `instance_id` matters for the gate. */
 const ctx = (instance_id: string | null): WsClient =>
   ({
@@ -606,6 +707,9 @@ describe('D-174 work_entity.* — registered-client gate (slice arrows)', () => 
     await expect(
       slice.handlers['work_entity.delete']({ kind: 'task', id: 'x' }, unreg),
     ).rejects.toMatchObject({ code: 'unauthorized' });
+    await expect(
+      slice.handlers['work_entity.task.mark_done']({ id: 'x', done: true }, unreg),
+    ).rejects.toMatchObject({ code: 'unauthorized' });
   });
 
   it('an unregistered upsert never reaches the store (no write, no event)', async () => {
@@ -632,13 +736,14 @@ describe('D-174 makeWorkEntityCrudHandlers slice', () => {
     expect(makeWorkEntityCrudHandlers(undefined)).toBeUndefined();
   });
 
-  it('claims exactly the four CRUD methods', () => {
+  it('claims the CRUD methods and the separate task-completion operation', () => {
     const slice = makeWorkEntityCrudHandlers(deps);
     expect(slice).toBeDefined();
     expect(slice!.methods).toEqual([
       'work_entity.list',
       'work_entity.get',
       'work_entity.upsert',
+      'work_entity.task.mark_done',
       'work_entity.delete',
     ]);
   });

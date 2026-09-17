@@ -1,4 +1,4 @@
-/** R19 — reception sections vocabulary (`reception-sections.ts`).
+/** R19 — reception sections vocabulary (`sections.ts`).
  *
  *  The closed-list section vocabulary + the segment-0 resolver behind the
  *  `#reception/<section>` sub-router. Pure functions — no DOM. */
@@ -13,7 +13,7 @@ import {
   RECEPTION_ROUTE_TABS_ATTR,
   RECEPTION_SECTION_NAV_STYLES,
   resolveReceptionSection,
-} from '../settings/reception-sections.js';
+} from '../reception/sections.js';
 
 describe('R19 — reception sections vocabulary', () => {
   it('lists the sections in frequency order: inbox · records · abuse · endpoints', () => {

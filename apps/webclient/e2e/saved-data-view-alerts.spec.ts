@@ -43,6 +43,8 @@ test('Task alerts enable, pause and resume durably without changing the saved fi
 test('Alert changes preserve local filters and focus while their save is pending', async ({ page }) => {
   await boot(page, 'task', true);
   await opened(page).getByRole('button', { name: 'Notify me for Overdue invoices', exact: true }).click();
+  await expect(opened(page).locator('[data-view-alert]')).toHaveAttribute('aria-busy', 'true');
+  await expect(opened(page).getByRole('button', { name: 'Turning on alerts… for Overdue invoices', exact: true })).toBeDisabled();
   const search = page.getByRole('searchbox', { name: 'Search tasks' });
   await search.fill('Unsaved changes');
   await page.evaluate(() => window.__app.releaseRpcResponses?.('data_views.update'));
@@ -50,6 +52,7 @@ test('Alert changes preserve local filters and focus while their save is pending
   await expect(search).toHaveValue('Unsaved changes');
   await expect(search).toBeFocused();
   await expect(tools(page).locator('[data-view-modified]')).toBeVisible();
+  await expect(opened(page)).toContainText('Your unsaved filter changes are not monitored');
   expect((await stored(page))[0]?.definition).toMatchObject({ query: '' });
 });
 
@@ -63,12 +66,13 @@ test('Alert conflicts require refreshing the saved view and do not overwrite a p
   }, KEY);
   await opened(page).getByRole('button', { name: 'Notify me for Overdue invoices', exact: true }).click();
   await expect(tools(page).getByRole('alert')).toBeVisible();
+  await expect(tools(page).locator('[data-view-error]')).toBeFocused();
   expect((await stored(page))[0]).toMatchObject({ revision: 2, alert: { enabled: false } });
   await page.reload();
   await expect(opened(page)).toContainText('Alerts paused');
 });
 
-test('Non-task views do not offer alerts, and alert toasts link back to their saved view', async ({ page }) => {
+test('Contact views do not offer alerts, and alert toasts link back to their saved view', async ({ page }) => {
   await boot(page, 'contact');
   await expect(tools(page).locator('[data-view-action="alert"]')).toHaveCount(0);
   await page.evaluate(id => window.__app.fireMessage({ type: 'server_event', event: {
@@ -79,6 +83,39 @@ test('Non-task views do not offer alerts, and alert toasts link back to their sa
   await expect(link).toHaveAttribute('href', `#data/view/${ID}`);
   await link.click();
   await expect(page).toHaveURL(new RegExp(`#data/view/${ID}$`));
+});
+
+test('Records alerts preserve saved filters across enable, reload, pause and resume', async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 812 });
+  const definition = { tab: 'records', owner: { publisher: 'publisher-a', pack_slug: 'same-board' }, entity: 'job',
+    filters: { title: { op: 'prefix', value: 'Open' } }, sort: '-amount' };
+  await page.addInitScript(({ key, view }) => {
+    if (!sessionStorage.getItem(key)) sessionStorage.setItem(key, JSON.stringify([view]));
+  }, { key: KEY, view: { id: ID, name: 'Open jobs', definition, revision: 1, created_at: 1, updated_at: 1 } });
+  await page.goto(`${BASE}?data=records-navigation&records_browse=1#data/view/${ID}`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await expect(page.locator('.records-table tbody tr').first()).toContainText('Open 238');
+  await opened(page).getByRole('button', { name: 'Notify me for Open jobs', exact: true }).click();
+  await expect(tools(page).locator('[data-view-notice]')).toContainText('another record matches');
+  expect((await stored(page))[0]).toMatchObject({ definition, revision: 2, alert: { enabled: true } });
+  await page.reload();
+  await expect(opened(page)).toContainText('Alerts on');
+  await opened(page).getByRole('button', { name: 'Pause alerts for Open jobs', exact: true }).click();
+  await expect(tools(page).locator('[data-view-notice]')).toContainText('Alerts paused');
+  await opened(page).getByRole('button', { name: 'Resume alerts for Open jobs', exact: true }).click();
+  await expect(tools(page).locator('[data-view-notice]')).toContainText('Alerts on');
+  expect((await stored(page))[0]).toMatchObject({ definition, revision: 4, alert: { enabled: true } });
+  await page.evaluate(key => {
+    const views = JSON.parse(sessionStorage.getItem(key)!);
+    views[0].alert.status = 'unavailable';
+    sessionStorage.setItem(key, JSON.stringify(views));
+  }, KEY);
+  await tools(page).locator('summary').click();
+  await tools(page).getByRole('button', { name: 'Refresh saved views', exact: true }).click();
+  await expect(opened(page)).toContainText('Alerts resume when the data is available');
+  await tools(page).screenshot({ path: '/tmp/recued-records-alert-controls.png' });
+  await expect(opened(page)).toContainText('Alerts waiting for your records');
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });
 
 test('Refreshing updates alert health without changing filters or their revision', async ({ page }) => {

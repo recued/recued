@@ -95,6 +95,44 @@ describe('composeWebhookAndHookListeners gate matrix', () => {
   );
 });
 
+describe('D-272 — webhook_port is a SWITCH, and that is a property not a sample', () => {
+  it('⛔ the NUMBER never reaches a listener — only whether it is > 0', async () => {
+    // ⛔ THE NAME SAYS "PORT" AND THE CODE SAYS "ON". The gate matrix above
+    // proves 80 and 8443 both compose listeners, which is two samples agreeing;
+    // this asserts the reason they agree — the value is consumed by `> 0` and
+    // then DROPPED, so every non-zero value is the same value.
+    //
+    // 🔑 WHY PIN IT: an operator who reads this key as a port forwards it in
+    // their router, and nothing is listening there. The corrected preset copy
+    // says so; a comment cannot hold. If someone later threads the number into
+    // a listener, this reds and the naming question has to be answered rather
+    // than inherited.
+    await composeWithPort(9000);
+
+    const args = [lastWebhookOptions(), lastHookOptions()];
+    for (const arg of args) {
+      expect(JSON.stringify(arg, (_k, v) => (typeof v === 'function' ? '[fn]' : v)))
+        .not.toContain('9000');
+      // ...and not under a differently-named key either.
+      expect(Object.values(arg)).not.toContain(9000);
+    }
+  });
+
+  it('⛔ and NOTHING in the bundle differs between two non-zero values', async () => {
+    // The user-visible claim, stated over the composer's whole output rather
+    // than over the fields this test happened to think of.
+    const shapeOf = async (port: number): Promise<string> => {
+      resetListenerMocks();
+      const bundle = await composeWithPort(port);
+      return JSON.stringify(
+        { keys: Object.keys(bundle).sort(), defined: Object.entries(bundle)
+          .map(([k, v]) => [k, v !== undefined]).sort() },
+      );
+    };
+    expect(await shapeOf(9000)).toBe(await shapeOf(1));
+  });
+});
+
 describe('composeWebhookAndHookListeners factory args', () => {
   it('passes collection registry, watcher queue, and a shared publicReachable thunk', async () => {
     const deps = makeDeps(80);

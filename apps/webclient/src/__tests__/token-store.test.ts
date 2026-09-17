@@ -94,15 +94,31 @@ describe('D-148 P4 — webclient token store', () => {
   });
 
   it('unwrap with mismatched AAD throws WebclientTokenCorruptError', async () => {
+    // ⚠⚠ THIS USED TO MISMATCH `server_url`, WITH `attacker.example.com` AS THE
+    // FIXTURE — and that name made it read as a reachable attack. It is not: in
+    // production `hydratePairState` reads the ciphertext AND every AAD input
+    // from the same store, so an attacker editing a field edits the value the
+    // AAD is REBUILT from, and both sides move together. What the AAD actually
+    // defends is ciphertext RELOCATION between profiles (its own docstring
+    // says so), which the two cases below exercise.
+    //
+    // 🔑 A fixture's NAME is not a threat model. Mistaking one for the other
+    // cost a correct change a revert and two design documents (2026-09-17).
     const store = createWebclientTokenStore(buildDeps());
-    const record = await store.wrap({
-      token_id: 'tok_abc',
-      bearer: 's',
-      aad: AAD(),
-    });
+    const record = await store.wrap({ token_id: 'tok_abc', bearer: 's', aad: AAD() });
+    // A different server IDENTITY — the binding that survives an address change.
     await expect(
-      store.unwrap(record, { ...AAD(), server_url: 'wss://attacker.example.com' }),
+      store.unwrap(record, { ...AAD(), server_public_key: 'ed25519:SOMEONEELSE' }),
     ).rejects.toBeInstanceOf(WebclientTokenCorruptError);
+  });
+
+  it('⚠ the URL is NO LONGER part of the seal — that is what makes it editable', async () => {
+    // The point of AAD v2: a self-hoster moving `public_port` off 443 keeps
+    // every paired device. Under v1 this threw.
+    const store = createWebclientTokenStore(buildDeps());
+    const record = await store.wrap({ token_id: 'tok_abc', bearer: 's', aad: AAD() });
+    expect(await store.unwrap(record, { ...AAD(), server_url: 'wss://same-server:4433/ws' }))
+      .toBe('s');
   });
 
   it('unwrap with AAD.token_id mismatching record.token_id throws', async () => {
@@ -136,7 +152,9 @@ describe('D-148 P4 — webclient token store', () => {
       store.wrap({
         token_id: 't',
         bearer: 'x',
-        aad: { ...AAD('t'), server_url: '' },
+        // ⚠ `server_public_key`, not `server_url` — the URL left the AAD in v2
+        // and an empty one is no longer a malformed context.
+        aad: { ...AAD('t'), server_public_key: '' },
       }),
     ).rejects.toThrow();
   });

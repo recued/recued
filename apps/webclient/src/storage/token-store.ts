@@ -48,7 +48,11 @@ export const WEBCLIENT_TOKEN_AES_PARAMS = {
  *  `webclient_token_corrupt`. */
 export interface WebclientTokenAad {
   token_id: string;
-  server_url: string;
+  /** ⛔ v1 ONLY, AND ONLY FOR READING. Dropped from the AAD in v2 — see
+   *  `buildAadBytesV2`. Callers still pass it so a v1 record can be opened and
+   *  re-sealed; nothing WRITES it into an AAD any more. Absent ⇒ v1 fallback is
+   *  not attempted, which is correct for a record this client sealed itself. */
+  server_url?: string;
   server_public_key: string;
 }
 
@@ -140,27 +144,73 @@ const defaultRandomBytes = (n: number): Uint8Array => {
 /** Codex P2 #5 fold — canonicalize the AAD into stable bytes. Order
  *  + delimiter are fixed so the wrap path + unwrap path always
  *  produce the same input under the same context. */
-const buildAadBytes = (aad: WebclientTokenAad): Uint8Array => {
-  const json = JSON.stringify({
+/** ⛔ THE CURRENT SEAL: identity, not address.
+ *
+ *  🔑 `server_url` WAS DOING IDENTITY WORK IT IS BAD AT. The AAD's job is
+ *  profile isolation — "a token lifted from one profile into another fails AEAD
+ *  verify". `server_public_key` delivers that AND survives an address change,
+ *  which the URL does not. Binding the credential to WHERE a server was made a
+ *  legitimate move (a self-hoster changing `public_port` off 443) invalidate
+ *  every bearer, so "edit the URL" and "re-pair" were the same operation —
+ *  enforced by AEAD rather than by policy.
+ *
+ *  ⚠ ISOLATION IS UNCHANGED, NOT RELAXED. Two profiles on the same server share
+ *  a key but never a `token_id`, and the wrap path already refuses an AAD whose
+ *  `token_id` differs from the record's. */
+const buildAadBytesV2 = (aad: WebclientTokenAad): Uint8Array =>
+  new TextEncoder().encode(JSON.stringify({
+    domain: 'recued.webclient.token.aad.v2',
+    token_id: aad.token_id,
+    server_public_key: aad.server_public_key,
+  }));
+
+/** ⛔ READ-ONLY. Retained solely so records sealed before 2026-09-17 can be
+ *  opened once and re-sealed under v2. Nothing wraps with this.
+ *
+ *  ⛔⛔ DO NOT DELETE THIS ON THE OLD CRITERION, WHICH WAS FALSE. It read:
+ *  *"Remove once a release has shipped in which every reachable client has
+ *  reconnected at least once — every unwrap re-seals, so the population drains
+ *  on its own."* ⛔ **AN UNWRAP DOES NOT RE-SEAL.** `onLegacyAadRecord` is the
+ *  hook that makes it, and acting on that sentence means deleting the only
+ *  reader of every un-migrated record: bearers unrecoverable, every affected
+ *  install re-pairing.
+ *
+ *  ⚠ THE REAL RETIREMENT ORDER: wire `onLegacyAadRecord` to a persist-the-
+ *  re-sealed-record path → ship it → let a release pass in which clients
+ *  reconnect → THEN delete this. Each step is observable; "everyone has
+ *  reconnected" on its own is not evidence of anything.
+ *
+ *  🔑 WHERE THAT ORDER STANDS: step 1 is DONE — `webclient-main.ts` wires the
+ *  hook to a re-seal of the exact record it opened, and
+ *  `__tests__/d-148-legacy-aad-drain.test.ts` reads that composition so the
+ *  wiring cannot quietly go missing again. Steps 2-4 are NOT.
+ *
+ *  ⛔⛔ AND CHECK THE DEPLOYED BUILD, NOT THIS TREE. Wiring the hook drains
+ *  nobody until a release carrying it reaches clients, and those are different
+ *  facts a comment cannot keep current — `wrangler deployments list` for the
+ *  webclient is the one that can. ⚠ Do NOT try to answer it by grepping the
+ *  shipped bundle for `onLegacyAadRecord`: identifiers are mangled there, so an
+ *  absence reads the same as a rename. (`retargetProfile` is shipped and also
+ *  greps to zero — that is the control that proves the method blind.) */
+const buildAadBytesV1 = (aad: WebclientTokenAad): Uint8Array =>
+  new TextEncoder().encode(JSON.stringify({
     domain: 'recued.webclient.token.aad.v1',
     token_id: aad.token_id,
     server_url: aad.server_url,
     server_public_key: aad.server_public_key,
-  });
-  return new TextEncoder().encode(json);
-};
+  }));
 
 const assertAadShape = (aad: WebclientTokenAad): void => {
   if (
     !aad ||
     typeof aad.token_id !== 'string' ||
-    typeof aad.server_url !== 'string' ||
+    (aad.server_url !== undefined && typeof aad.server_url !== 'string') ||
     typeof aad.server_public_key !== 'string' ||
     aad.token_id.length === 0 ||
-    aad.server_url.length === 0 ||
+
     aad.server_public_key.length === 0
   ) {
-    throw new Error('webclient.token-store: AAD context required (token_id + server_url + server_public_key)');
+    throw new Error('webclient.token-store: AAD context required (token_id + server_public_key)');
   }
 };
 
@@ -169,6 +219,25 @@ export const createWebclientTokenStore = (
     resolveKey: WebclientTokenWrapDeps['resolveKey'];
     encrypt: WebclientTokenWrapDeps['encrypt'];
     decrypt: WebclientTokenWrapDeps['decrypt'];
+    /** Fired when a record opened under the RETIRED v1 AAD.
+     *
+     *  ⛔ THIS IS WHAT MAKES THE MIGRATION CONVERGE. Without it a v1 record is
+     *  read successfully for ever, the population never drains, and v1 support
+     *  can never be retired — a second format, permanently.
+     *
+     *  🔑 A CONSTRUCTION DEP, NOT AN INTERFACE METHOD. Adding a method to
+     *  `WebclientTokenStore` would have obliged NINE test doubles to implement
+     *  something none of them exercise — blast radius bought nothing. The store
+     *  is constructed once in production; whoever constructs it is exactly who
+     *  can persist a re-seal.
+     *
+     *  ⚠ Best-effort by contract. It runs inside the unwrap path, so a throw
+     *  here must never turn a successful read into a failure; the caller wraps
+     *  its own work. */
+    onLegacyAadRecord?: (
+      record: WebclientTokenRecord,
+      aad: WebclientTokenAad,
+    ) => void;
   },
 ): WebclientTokenStore => {
   const randomBytes = deps.randomBytes ?? defaultRandomBytes;
@@ -197,7 +266,8 @@ export const createWebclientTokenStore = (
         key,
         iv,
         plaintext,
-        additional_data: buildAadBytes(aad),
+        // ⛔ ALWAYS v2. There is no path that writes a v1 seal.
+        additional_data: buildAadBytesV2(aad),
       });
       return {
         token_id,
@@ -228,10 +298,42 @@ export const createWebclientTokenStore = (
           key,
           iv,
           ciphertext,
-          additional_data: buildAadBytes(aad),
+          additional_data: buildAadBytesV2(aad),
         });
         return new TextDecoder().decode(plaintext);
-      } catch (err) {
+      } catch (v2Err) {
+        // ⛔⛔ THE FALLBACK IS THE MIGRATION, AND ITS FAILURE MODE IS THAT
+        // EVERYONE RE-PAIRS. A record sealed before 2026-09-17 carries the v1
+        // AAD; opening it here is the ONLY thing standing between an existing
+        // install and a forced re-pair of every device.
+        //
+        // ⚠ ATTEMPTED ONLY WHEN THE CALLER SUPPLIED A URL. A v2-sealed record
+        // that fails to open is corrupt, and retrying it under a v1 AAD built
+        // from an absent `server_url` would turn a clean failure into a second
+        // confusing one.
+        //
+        // ⚠ AND IT CHANGES NOTHING ON DISK HERE. Re-sealing is the owner of
+        // persistence's job, signalled through `onLegacyAadRecord` — a store
+        // that silently rewrote rows during a read would make an unwrap a
+        // write, in the one code path that runs before the app knows whether it
+        // is even online.
+        if (aad.server_url !== undefined && aad.server_url.length > 0) {
+          try {
+            const plaintext = await deps.decrypt({
+              key,
+              iv,
+              ciphertext,
+              additional_data: buildAadBytesV1(aad),
+            });
+            // ⛔ TELL SOMEONE. Without this the record stays v1 for ever: the
+            // migration never converges and v1 support can never be retired.
+            // ⚠ Best-effort and never awaited into the read path — a failing
+            // re-seal must not turn a successful unwrap into a failed one.
+            try { deps.onLegacyAadRecord?.(record, aad); } catch { /* noted, not fatal */ }
+            return new TextDecoder().decode(plaintext);
+          } catch { /* fall through to the v2 error — v1 was the long shot */ }
+        }
+        const err = v2Err;
         // Codex P3 #2 fold — normalize AEAD verify / decrypt failure
         // into a stable error class the caller routes to "re-pair
         // required" UX + audit row.

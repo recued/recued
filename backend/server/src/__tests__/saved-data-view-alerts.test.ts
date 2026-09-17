@@ -197,12 +197,12 @@ describe('saved task view alerts through real task queries, SQLite and notificat
     expect(h.notify).toHaveBeenCalledTimes(1);
   });
 
-  it('validates task-only settings, timezone, and revision without changing the prior state', () => {
+  it('validates supported views, timezone, and revision without changing the prior state', () => {
     const h = open();
     const view = h.views.create({ name: 'Contacts', definition: { tab: 'contact', query: '' } });
-    expect(() => h.configure(view, true)).toThrow(/task views only/);
+    expect(() => h.configure(view, true)).toThrow(/task view or a Records view/);
     const tasks = h.views.create({ name: 'Tasks', definition });
-    expect(() => h.views.update({ id: tasks.id, expected_revision: 1, alert: { enabled: true, time_zone: 'Not/AZone' } })).toThrow(/Invalid task alert/);
+    expect(() => h.views.update({ id: tasks.id, expected_revision: 1, alert: { enabled: true, time_zone: 'Not/AZone' } })).toThrow(/Invalid alert/);
     const enabled = h.configure(tasks, true);
     expect(() => h.configure(tasks, false)).toThrow(/another browser/);
     expect(h.views.get(tasks.id)).toEqual(enabled);

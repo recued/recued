@@ -99,6 +99,18 @@ const isLiveBoundContractKind = (
   def: Pick<ContractDefinition, 'grant_kind'>,
 ): boolean => liveBoundContractKind(def) !== undefined;
 
+/** The outcome of an atomic {@link ContractOverlayResolver.takeDispatchUse}.
+ *
+ *  `unmetered` and `refused` are deliberately DIFFERENT answers to "nothing was
+ *  taken": the first means this contract does not govern this dispatch (or has
+ *  no counter at all) and the call proceeds; the second means it governs it and
+ *  has nothing left, and the call must not proceed. Collapsing them into a
+ *  nullable token is how a budget refusal becomes a silent pass. */
+export type ContractUseTake =
+  | { readonly kind: 'unmetered' }
+  | { readonly kind: 'taken'; readonly token: object; readonly contract_id: string }
+  | { readonly kind: 'refused' };
+
 /** The contract-governance read + use-record surface the policy gates call. */
 export interface ContractOverlayResolver {
   /** True iff an active, in-scope contract governs this dispatch — the signal the
@@ -126,6 +138,34 @@ export interface ContractOverlayResolver {
   recordUse(source: ExecutionSource): void;
   /** Host-private budget token. A new operation always reserves a fresh use. */
   reserveDispatchUse?(source: ExecutionSource, ingredientSlug: string, connectionName?: string): object | null;
+  /** ⛔⛔ THE ORDINARY LANE'S ATOMIC TAKE — check and decrement TOGETHER, before
+   *  the boundary, so a budget can actually refuse.
+   *
+   *  `shouldMeterUse` + {@link recordUse} cannot: the first matches SCOPE only
+   *  and never reads `uses_remaining`, and the second is by its own comment "a
+   *  dumb counter (no clock, no active re-check)" that clamps at 0 instead of
+   *  refusing. The only budget gate was admission, which on this lane happens an
+   *  `await` earlier — so overlapping dispatches all read the same remaining
+   *  count and all proceeded. Driven: eight overlapping calls on a three-use
+   *  door, eight admitted (`dev/contract-use-cap-drive.ts`).
+   *
+   *  ⛔ THE METERED SET IS UNCHANGED, DELIBERATELY. The scope context here is
+   *  IDENTICAL to `shouldMeterUse`'s — same axes, `operation_ids` neutralised the
+   *  same way, `connection_name` left unthreaded the same way — so this changes
+   *  WHEN a unit is taken and whether it can refuse, and never WHICH dispatches
+   *  are metered. Widening the ctx here would silently re-tier a live corpus.
+   *
+   *  ⚠ `'refused'` covers the whole inactive family (revoked / expired /
+   *  exhausted), because the store's reservation gates on `isContractActive` —
+   *  the same wording `bound_contract_inactive` already uses. A caller that
+   *  takes must settle: see {@link settleDispatchUse}. */
+  takeDispatchUse?(source: ExecutionSource, ingredientSlug: string): ContractUseTake;
+  /** Close a {@link takeDispatchUse}. `crossedBoundary` is the SAME predicate the
+   *  late `recordUse` gated on, so the accounting is byte-for-byte what it was —
+   *  a dispatch that crossed keeps its unit, one that was held for approval,
+   *  refused downstream or failed before any effect gives it back. Idempotent:
+   *  a token settles once, so a double-settle cannot credit twice. */
+  settleDispatchUse?(take: ContractUseTake, crossedBoundary: boolean): void;
   /** D-166 P2 / D-196 token↔contract binding — true iff `contract_id` names a
    *  minted contract row whose lifecycle is active and whose kind is valid for a
    *  token-bound door. Ordinary standing contracts and D-196
@@ -271,6 +311,11 @@ export const createContractOverlayResolver = (
   deps: CreateContractOverlayResolverDeps,
 ): ContractOverlayResolver => {
   const now = deps.now ?? ((): number => Date.now());
+  /** Tokens already settled. A token is single-use, so a settle that runs twice
+   *  — a retry, two arms of a try/catch, a caller that both commits and releases
+   *  — cannot credit a second unit back. The store's `max_uses` clamp is the
+   *  backstop under this, not a substitute for it. */
+  const settledTakes = new WeakSet<object>();
   // Shared per-dispatch read-grant checker build — the ONE place that resolves the
   // governing contract + overlays the grant rows. BOTH `resolveReadGrantChecker` (the
   // native-tool read gate) and `resolveContractScopeRestrictions` (the execute-path
@@ -340,6 +385,43 @@ export const createContractOverlayResolver = (
       // The store's `recordUse` is a dumb counter (no clock, no active re-check) —
       // the active gate was the matching `shouldMeterUse` above. Unbounded contracts no-op.
       deps.definitionStore.recordUse(contract_id);
+    },
+    takeDispatchUse(source, ingredientSlug): ContractUseTake {
+      const contract_id = executionSourceContractId(source);
+      if (contract_id === undefined) return { kind: 'unmetered' };
+      const def = deps.definitionStore.get(contract_id);
+      if (!def || !isStandingContractDefinition(def)) return { kind: 'unmetered' };
+      // ⛔ THE SAME CTX `shouldMeterUse` BUILDS, to the letter — `operation_ids`
+      //   neutralised to a wildcard (the op gate owns op admission) and
+      //   `connection_name` left unthreaded. This decides WHICH dispatches are
+      //   metered, and it must not move.
+      if (!contractScopeMatches({ ...def.scope, operation_ids: [] }, {
+        channel: source.channel,
+        actor: source.actor,
+        ingredient_id: ingredientSlug,
+      })) return { kind: 'unmetered' };
+      const reserved = deps.definitionStore.reserveDispatchUse?.(contract_id);
+      // The store gates its reservation on `isContractActive`, so a null here is
+      // the whole inactive family — revoked, expired, or out of uses.
+      if (!reserved) return { kind: 'refused' };
+      // Unbounded: the store left `after === before` and took nothing, so there
+      // is nothing to settle and nothing to give back.
+      if (typeof reserved.before.uses_remaining !== 'number') return { kind: 'unmetered' };
+      return {
+        kind: 'taken',
+        token: issueContractDispatchReservation(reserved.before, reserved.after),
+        contract_id,
+      };
+    },
+    settleDispatchUse(take, crossedBoundary): void {
+      if (take.kind !== 'taken') return;
+      if (settledTakes.has(take.token)) return;
+      settledTakes.add(take.token);
+      // Crossed the boundary ⇒ the reservation IS the charge; keep it. This is
+      // the same condition the late `recordUse` gated on, so what gets counted
+      // is unchanged — only when it was taken, and whether it could refuse.
+      if (crossedBoundary) return;
+      deps.definitionStore.releaseDispatchUse?.(take.contract_id);
     },
     reserveDispatchUse(source, ingredientSlug, connectionName) {
       const id = executionSourceContractId(source); if (!id) return null;

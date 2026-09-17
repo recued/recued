@@ -22,6 +22,39 @@ import { createChatInboundTokenStore } from '../storage/chat-inbound-token-store
 import { fixtureRecipe } from './d-261-fixtures.js';
 
 const root = resolve(import.meta.dirname, '../../../..');
+
+/** The dispatch window, and the third clock this fixture was caught spending.
+ *
+ *  ⛔⛔ IT WAS 180s, AND THE SECOND BOOT LIVES INSIDE IT. Measured 2026-09-16
+ *  under a saturated box, one case per row:
+ *
+ *      pending    second boot  22.7s   elapsed  22.9s   of 180s
+ *      approved   second boot  26.4s   elapsed  41.4s   of 180s
+ *      stdio      second boot 225.6s   elapsed 240.6s   of 180s   ← expired
+ *
+ *  The restarted server took longer to come up than the whole window, so the
+ *  occurrence expired before the boot tick could reach it and the case failed on
+ *  `preapproval_expired` — a product-shaped message for a cost the FIXTURE paid.
+ *  Third time this file has been bitten by that shape; the first two are the
+ *  comments on `openStdio` and on the authority fixture.
+ *
+ *  🔑 WIDENING IS THE RIGHT LEVER *HERE* AND THE WRONG ONE ONE LINE UP, and the
+ *  difference is whether the test SLEEPS on the clock. It sleeps until `run_at`,
+ *  so every second added there is a second of real wall-clock — which is why
+ *  `decision_deadline` was pulled up to meet `run_at` instead of `run_at` being
+ *  pushed out. Nothing ever waits on `dispatch_deadline`; it only has to still
+ *  be open when the restarted server ticks. So this one is free.
+ *
+ *  ⚠ CHOSEN AGAINST THE PER-CASE TIMEOUT (720s), not against a measured boot.
+ *  Larger than it, so a boot slow enough to threaten this window kills the case
+ *  first and says "timeout" rather than "expired". Widening to merely "more than
+ *  we measured" would just move the next flake. ⇒ A REAL expiry bug still fails
+ *  the status assertion, because the product would report `expired` and nothing
+ *  here asserts the window was tight.
+ *
+ *  ⛔ The validator's only constraint is ORDER — `decision_deadline <= run_at <
+ *  dispatch_deadline` (`preapproval.ts:302`). There is no maximum. */
+const DISPATCH_WINDOW_MS = 900_000;
 const children = new Set<ChildProcess>();
 const dirs: string[] = [];
 const sockets = new Set<WebSocket>();
@@ -52,6 +85,19 @@ const rpc = <T>(socket: WebSocket, method: string, args: unknown = {}): Promise<
   socket.on('message', receive); socket.send(JSON.stringify({ type: 'rpc', request_id, method, args }));
 });
 const boot = async (dir: string, bearer: string) => {
+  // ⚠ A RESERVED PORT IS NOT A HELD PORT, and this window is ~20s wide — the
+  //   whole spawn + tsx boot. Measured 2026-09-16 while chasing a different
+  //   flake: if anything takes this port in between, the server logs
+  //   `path listener bind failed … EADDRINUSE` and EXITS CODE 4, which the poll
+  //   below reports as "Foreground boot exited" with that line in the trace. So
+  //   it is self-diagnosing, which is why it is documented rather than rebuilt.
+  //   ⛔ It is also narrower than it looks: the reservation takes `127.0.0.1`
+  //   while the server binds `0.0.0.0`, and under BSD `SO_REUSEADDR` a wildcard
+  //   bind succeeds over a held loopback one — verified, a loopback squatter did
+  //   NOT block the boot. ⇒ The reservation proves the port was free; it does
+  //   not keep it free. If this ever becomes a real flake the fix is `--port 0`
+  //   plus parsing the port back out of the bound log (which carries it, and
+  //   `compose-listeners.ts` supports a configured 0), not a wider reservation.
   const reserve = createServer(); await new Promise<void>(done => reserve.listen(0, '127.0.0.1', done));
   const address = reserve.address(); if (!address || typeof address === 'string') throw new Error('No fixture port');
   const port = address.port; await new Promise<void>(done => reserve.close(() => done()));
@@ -277,7 +323,7 @@ it.each(['pending', 'approved', 'stdio'] as const)('boots the actual owner servi
     // `decision_deadline <= run_at`, so pulling it up to EQUAL `run_at` is the
     // most headroom available without moving `run_at` — which would cost real
     // wall-clock, because the test then sleeps until that instant.
-    decision_deadline: now + (execute ? 15_000 : 90_000), dispatch_deadline: now + 180_000 };
+    decision_deadline: now + (execute ? 15_000 : 90_000), dispatch_deadline: now + DISPATCH_WINDOW_MS };
   let pending: PreapprovalResult;
   if (state === 'stdio') {
     const reply = await stdio!.send(request);
@@ -306,6 +352,14 @@ it.each(['pending', 'approved', 'stdio'] as const)('boots the actual owner servi
   // real scheduler's immediate boot tick must recover this exact occurrence.
   if (execute) await new Promise(done => setTimeout(done, Math.max(0, now + 15_000 - Date.now())));
   const second = await boot(dir, bearer!);
+  // ⛔⛔ NAME THE CAUSE BEFORE THE SYMPTOM — the same guard the review window got,
+  //   on the clock that actually broke. Without it a fixture slow enough to eat
+  //   the window surfaces as `preapproval_expired`, which reads as an approval
+  //   bug and cost a session's investigation before it was measured.
+  const spent = Date.now() - now;
+  expect(spent, `the reopen spent ${String(spent)}ms of the ${String(DISPATCH_WINDOW_MS)}ms dispatch window `
+    + '— the fixture is spending the budget again, and the next symptom is `preapproval_expired`')
+    .toBeLessThan(DISPATCH_WINDOW_MS * 0.8);
   const reopened = await rpc<PreapprovalInspection>(second.socket, 'preapproval.get', { proposal_id: pending.proposal_id });
   const observedDb = await openDatabase(join(dir, 'realm.db'));
   let drift: unknown;

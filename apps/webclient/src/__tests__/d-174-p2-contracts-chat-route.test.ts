@@ -29,6 +29,7 @@ import {
   CONTRACTS_ROUTE_LIST_TAB_ATTR,
   CONTRACTS_ROUTE_NEW_BUTTON_ATTR,
   CONTRACTS_ROUTE_NEW_CAP_ATTR,
+  CONTRACTS_ROUTE_NEW_CAP_PERIOD_ATTR,
   CONTRACTS_ROUTE_NEW_DOOR_ATTR,
   CONTRACTS_ROUTE_NEW_ERROR_ATTR,
   CONTRACTS_ROUTE_NEW_FORM_ATTR,
@@ -1292,6 +1293,78 @@ describe('D-174 contracts route — list → detail shell', () => {
     });
     // Stateless model: the flow only navigates; the shell re-mounts the route.
     expect(navigated).toEqual(['#contracts/door_new/connect']);
+    route.dispose();
+  });
+
+  /** ⛔⛔ "100 A MONTH" WAS UNSAYABLE ON THE SURFACE WHERE THE LIMIT IS SET.
+   *  `max_uses` was a lifetime total with no window, so the only cap an owner
+   *  could author here was "100 calls, ever" — a different product from the one
+   *  they reach for. The substrate gained `use_period`; this is the control.
+   *
+   *  ⚠ The test above is the other half and is load-bearing: its `toEqual`
+   *  proves a default mint carries NO `use_period` at all, so a contract
+   *  authored through this form still looks exactly like every contract minted
+   *  before the vocabulary existed. */
+  it('mints a per-month cap when the owner picks a window', async () => {
+    const minted = agentContract({ contract_id: 'ct_p', display_name: 'x' });
+    const permissionsMintContractCaller = vi.fn<PermissionsMintContractCaller>(
+      async () => minted,
+    );
+    const navigated: string[] = [];
+    const { root, route } = mount({
+      contractsListCaller: vi.fn(async () => ({ contracts: [] })),
+      permissionsMintContractCaller,
+      navigate: (hash: string) => navigated.push(hash),
+      // The new-contract action lives on the "others" tab, not on self.
+      initialListTab: 'others',
+    });
+    await route.whenLoaded();
+    collectByAttr(root, CONTRACTS_ROUTE_NEW_BUTTON_ATTR)[0]!.click();
+    collectByAttr(root, CONTRACTS_ROUTE_NEW_NAME_ATTR)[0]!.value = 'Monthly bot';
+    collectByAttr(root, CONTRACTS_ROUTE_NEW_CAP_ATTR)[0]!.value = '100';
+    collectByAttr(root, CONTRACTS_ROUTE_NEW_CAP_PERIOD_ATTR)[0]!.value = 'month';
+
+    collectByAttr(root, CONTRACTS_ROUTE_NEW_SUBMIT_ATTR)[0]!.click();
+    await tick();
+
+    expect(permissionsMintContractCaller.mock.calls[0]![0]).toEqual({
+      display_name: 'Monthly bot',
+      scope: {},
+      max_uses: 100,
+      use_period: 'month',
+    });
+    expect(navigated).toHaveLength(1);
+    route.dispose();
+  });
+
+  it('does not send a period with no cap to refill', async () => {
+    const minted = agentContract({ contract_id: 'ct_p', display_name: 'x' });
+    const permissionsMintContractCaller = vi.fn<PermissionsMintContractCaller>(
+      async () => minted,
+    );
+    const navigated: string[] = [];
+    const { root, route } = mount({
+      contractsListCaller: vi.fn(async () => ({ contracts: [] })),
+      permissionsMintContractCaller,
+      navigate: (hash: string) => navigated.push(hash),
+      // The new-contract action lives on the "others" tab, not on self.
+      initialListTab: 'others',
+    });
+    await route.whenLoaded();
+    collectByAttr(root, CONTRACTS_ROUTE_NEW_BUTTON_ATTR)[0]!.click();
+    collectByAttr(root, CONTRACTS_ROUTE_NEW_NAME_ATTR)[0]!.value = 'No cap';
+    // A window with no count refills nothing; the rpc refuses the pair outright,
+    // so sending it would surface as an error on a contract the owner authored
+    // as unlimited.
+    collectByAttr(root, CONTRACTS_ROUTE_NEW_CAP_PERIOD_ATTR)[0]!.value = 'day';
+
+    collectByAttr(root, CONTRACTS_ROUTE_NEW_SUBMIT_ATTR)[0]!.click();
+    await tick();
+
+    expect(permissionsMintContractCaller.mock.calls[0]![0]).toEqual({
+      display_name: 'No cap',
+      scope: {},
+    });
     route.dispose();
   });
 

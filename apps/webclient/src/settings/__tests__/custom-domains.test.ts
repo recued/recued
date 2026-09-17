@@ -1,4 +1,4 @@
-/** D-235 P5 — Settings → Server → Domains.
+/** D-235 P5 — the Domains section under Settings → Server → Hostnames.
  *
  *  ⚠ Drives a HAND-ROLLED fake document, which is the repo convention (no DOM
  *  library is installed) and which cannot see layout, CSS, or a real click

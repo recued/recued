@@ -2509,7 +2509,15 @@
     "section": "Which one to pick",
     "eyebrow": "Setup",
     "url": "https://recued.com/docs/setup/lan-access#which-one-to-pick",
-    "body": "| You have | Pick |\n| --- | --- |\n| No domain name | Tailscale |\n| A domain name | Caddy |\n| A domain and a certificate | Upload it |\n\nRecued Pro does this step for you. It gives the server a name. It keeps\nthe certificate fresh. You configure nothing."
+    "body": "| You have | Pick |\n| --- | --- |\n| No domain name | Tailscale |\n| A domain name | Caddy |\n| A domain and a certificate | Upload it |\n\nRecued Pro does this step for you. It gives the server a name. It keeps\nthe certificate fresh. You still open one router port, as below."
+  },
+  {
+    "id": "setup/lan-access#using-it-away-from-home",
+    "doc": "Use Recued on another device",
+    "section": "Using it away from home",
+    "eyebrow": "Setup",
+    "url": "https://recued.com/docs/setup/lan-access#using-it-away-from-home",
+    "body": "At home a certificate is enough. Away from home there is one more step.\nYour router has to let port 443 through to your server.\n\nTailscale is the exception. It needs no router change at all.\n\nYou cannot see the answer from inside your own network. Recued can ask\nfrom outside instead. Open Settings, then Server, then Connect a device.\nThe router step there has a button called Check this now.\n\nA check that gets in ticks the step. A check that does not tells you to\nopen your router settings. If nothing has checked yet, the step says so\nrather than guessing."
   },
   {
     "id": "setup/pairing-and-devices",
@@ -2584,12 +2592,20 @@
     "body": "| Feature | Why |\n| --- | --- |\n| Webclient away from your network | Your browser must reach the server |\n| External AI agents over MCP | The agent's machine must reach the server |\n| Slack and Telegram triggers | The chat platforms send messages straight to your server |\n| Vendor webhooks | Providers such as HubSpot send events over HTTPS |\n| Public endpoint pages | Visitors load forms and pages your server hosts |\n\nOutbound-only integrations need none of this. IMAP mail sync, API polling,\nand Salesforce's streaming subscription are all connections your server\nopens outward. Some vendors can only push webhooks. If your server has no\npublic URL, those vendors fall back to a regular check."
   },
   {
-    "id": "setup/reachability#two-questions-not-one-list",
+    "id": "setup/reachability#three-questions-not-one-list",
     "doc": "Reachability",
-    "section": "Two questions, not one list",
+    "section": "Three questions, not one list",
     "eyebrow": "Setup",
-    "url": "https://recued.com/docs/setup/reachability#two-questions-not-one-list",
-    "body": "Getting a public name is really two choices. They do not depend on each\nother:\n\n1. **Which name?** A domain you already own, or a `<handle>.recued.net` name\n   that Recued gives you.\n2. **Who keeps the certificate current?** You, or Recued.\n\nPro changes only the second answer. Your own domain works either way. That\nis the part worth being clear about, because the upkeep is very different.\n\n| Your setup | Certificate | What you do afterwards |\n| --- | --- | --- |\n| Your domain, TLS ends at a proxy in front | Recued never holds one | Nothing. Your proxy renews it |\n| Your domain, certificate uploaded to Recued | You get it | **Upload a new one about every 90 days.** Recued serves an uploaded certificate but does not renew it |\n| Your domain, **with Pro** | Recued issues and renews it | Nothing, once two DNS records exist |\n| `<handle>.recued.net`, **with Pro** | Recued issues and renews it | Nothing |\n\nEverything except the Pro rows is free forever. Pro unlocks no feature. On\nevery row, your traffic goes straight to your server.\n\nThe middle row used to make paying customers worse off. Bring your own\ndomain, and you were back to a certificate chore every 90 days. Meanwhile\nthe `recued.net` name renewed itself. Now Pro covers your own domain on the\nsame terms."
+    "url": "https://recued.com/docs/setup/reachability#three-questions-not-one-list",
+    "body": "Getting a public name is really three choices. They do not depend on each\nother:\n\n1. **Which name?** A domain you already own, or a `<handle>.recued.net` name\n   that Recued gives you.\n2. **Who keeps the certificate current?** You, or Recued.\n3. **Can traffic get in?** Only you can answer that one. It is the router\n   step below, and nothing buys your way out of it.\n\nPro changes only the second answer. Your own domain works either way. That\nis the part worth being clear about, because the upkeep is very different.\n\n| Your setup | Certificate | What you do afterwards |\n| --- | --- | --- |\n| Your domain, TLS ends at a proxy in front | Recued never holds one | Nothing. Your proxy renews it |\n| Your domain, certificate uploaded to Recued | You get it | **Upload a new one about every 90 days.** Recued serves an uploaded certificate but does not renew it |\n| Your domain, **with Pro** | Recued issues and renews it | Nothing, once two DNS records exist |\n| `<handle>.recued.net`, **with Pro** | Recued issues and renews it | Nothing |\n\nEverything except the Pro rows is free forever. Pro unlocks no feature. On\nevery row, your traffic goes straight to your server.\n\nThe middle row used to make paying customers worse off. Bring your own\ndomain, and you were back to a certificate chore every 90 days. Meanwhile\nthe `recued.net` name renewed itself. Now Pro covers your own domain on the\nsame terms."
+  },
+  {
+    "id": "setup/reachability#letting-traffic-in",
+    "doc": "Reachability",
+    "section": "Letting traffic in",
+    "eyebrow": "Setup",
+    "url": "https://recued.com/docs/setup/reachability#letting-traffic-in",
+    "body": "A name and a certificate are not enough on their own. The name points at\nyour home. Your router still has to pass that traffic to your server.\n\nSo let port 443 through your router, to the machine running Recued. You do\nthis once, in your router's own settings. Recued cannot do it for you, and\nneither can the cloud. Your traffic never goes through the cloud, which is\nthe point of the design and the reason this step is yours.\n\n**Pro does not change this.** Pro gives you the name and the certificate.\nThe router step stays yours either way.\n\nTailscale is the exception. It links your devices privately, so no router\nchange is needed at all. See\n[Use Recued on another device](lan-access.md).\n\nYou cannot check this from inside your own network. A request from your own\nhouse may never reach the router's outside. Open **Settings → Server →\nConnect a device**. The router step there has a button called Check this\nnow. It asks from outside and tells you what it found."
   },
   {
     "id": "setup/reachability#how-the-name-and-certificate-work",

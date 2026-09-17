@@ -13,7 +13,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 // Capture the opts the route passes into the settings host.
 const captured: { opts?: Record<string, any> } = {};
-vi.mock('../settings/reception-settings-host.js', () => ({
+vi.mock('../reception/settings-host.js', () => ({
   mountReceptionSettings: (opts: Record<string, any>) => {
     captured.opts = opts;
     return { update: () => {}, dispose: () => {} };
@@ -22,7 +22,7 @@ vi.mock('../settings/reception-settings-host.js', () => ({
 // The inbox panel is constructed only when an inboxHost is supplied; we
 // supply none, so no mock is needed for it.
 
-import { mountReceptionRoute } from '../settings/reception-route.js';
+import { mountReceptionRoute } from '../reception/route.js';
 
 const makeFakeHost = (): HTMLElement =>
   ({

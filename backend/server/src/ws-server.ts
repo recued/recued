@@ -128,7 +128,9 @@ import {
 } from './hostname-handler.js';
 import {
   makeNetworkHandlers,
+  makePortMappingHandlers,
   type NetworkRpcDeps,
+  type PortMappingRpcDeps,
 } from './network-handler.js';
 import {
   makeEngagementHealthHandlers,
@@ -1132,6 +1134,7 @@ export interface AttachWebSocketOptions {
   /** LAN-URL kickstart — `network.local_urls` deps (the live listen port).
    *  Absent → the method returns `not_configured` (db-less harnesses). */
   networkDeps?: NetworkRpcDeps;
+  portMappingDeps?: PortMappingRpcDeps;
   /** D-139 P2 — Connection-page UX rpc deps (per-entity engagement
    *  health surface + Salesforce capability re-probe). Absent → both
    *  methods return `not_configured` (e.g. db-less harnesses or
@@ -1544,6 +1547,7 @@ const buildWsBinding = (
     supervisionDeps,
     hostnameDeps,
     networkDeps,
+    portMappingDeps,
     engagementHealthDeps,
     enrichmentDeps, notificationDeps, mailGetDeps,
     housekeepingDeps,
@@ -1895,6 +1899,7 @@ const buildWsBinding = (
     makeHostnameHandlers(hostnameDeps),
     // LAN-URL kickstart — network.local_urls (loopback + LAN reachable URLs).
     makeNetworkHandlers(networkDeps),
+    makePortMappingHandlers(portMappingDeps),
     // D-139 P2 — Connection-page UX rpc (per-entity engagement health
     // surface + Salesforce capability re-probe). Salesforce-only
     // re-probe; HubSpot rejects with a hint at

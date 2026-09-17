@@ -1971,7 +1971,16 @@ describe('composeListeners', () => {
       expect(result.lanAdvertisedAddress).toBe('192.168.1.10');
       expect(result.server.wsServer).toBe(listenerMocks.handlerSet.wsHandle);
       expect(result.server.port).toBe(4711);
-      expect(listenerMocks.resolveLanAddress).toHaveBeenCalledTimes(1);
+      // ⚠⚠ THIS ASSERTED `1` AND THEREBY PINNED A DEFECT (audit P2-14). Resolving
+      // ONCE is right for the BIND — the listener's address must not move under
+      // a running socket — and wrong for the port mapping, which closed over the
+      // same boot-time value and kept naming a host we may no longer be after a
+      // DHCP renewal. The planner's DHCP-move branch could never fire because
+      // production never supplied a changed address.
+      // ⇒ What must hold is that the BIND is resolved once and the value it
+      // produced is the one the listener got; the additional reads are the
+      // mapping asking "where am I now".
+      expect(listenerMocks.resolveLanAddress.mock.calls.length).toBeGreaterThanOrEqual(1);
       expect(listenerMocks.createCertChainHolder).toHaveBeenCalledWith(null);
       expect(
         listenerMocks.createProductionPathListenerCoordinator,
@@ -2015,6 +2024,8 @@ describe('composeListeners', () => {
       get: vi.fn((key: string) => {
         if (key === 'network.lan_bind_address') return '192.168.1.121';
         if (key === 'public_port') return 443;
+        // D-273 — the composer now also reads the port-mapping toggle.
+        if (key === 'network.auto_port_mapping') return false;
         throw new Error(`unexpected key ${key}`);
       }),
     };
@@ -2668,5 +2679,40 @@ describe('D-228 slice 3 — installGeneratedPack builds a valid packs.install ca
     const install = await composeWithPackInstall();
     const msg = await errorOf(() => install!({ slug: 'generated-x', schema_version: 1 }));
     expect(msg).not.toContain('install_scope');
+  });
+});
+
+// ──────────────────────────────────────────────────────────────────
+// Audit P2-14 / P2-15 — the composition root's own obligations.
+//
+// ⚠ SOURCE-LEVEL, for the reason the D-273 wiring test is: both defects were a
+// MISSING LINE IN A COMPOSITION ROOT, and every layer below passed its own tests
+// without it. The supervisor's `stop()` is unit-tested; only this proves anyone
+// calls it.
+// ──────────────────────────────────────────────────────────────────
+describe('composeListeners — the port-mapping supervisor is wired to teardown', () => {
+  const SRC = readFileSync(
+    resolve(import.meta.dirname, '..', 'serve', 'compose-listeners.ts'),
+    'utf-8',
+  );
+
+  it('⛔⛔ closeServer DRAINS it — it was started and never stopped', () => {
+    // Its renewal timer and config subscription outlived listener teardown, so a
+    // reconcile could be writing its record while the database closed underneath.
+    const drains = SRC.slice(SRC.indexOf('const closeServer'), SRC.indexOf('const closeServer') + 2500);
+    expect(drains).toMatch(/portMappingSupervisorRef\?\.stop\(\)/);
+  });
+
+  it('⛔ the mapping resolves THIS MACHINE’S ADDRESS PER RECONCILE, not at boot', () => {
+    // It closed over the boot-time value, so a DHCP move left the mapping naming
+    // a host we no longer are — and the planner's DHCP-move branch could never
+    // fire, because production never supplied a changed address.
+    expect(SRC).toMatch(/const readLanAddressNow = \(\): string =>/);
+    // ⚠ Both consumers: the desired mapping AND the actuator resolution (which
+    // is also the interface SSDP leaves by).
+    expect(SRC.match(/lanAddress: readLanAddressNow\(\)/g) ?? []).toHaveLength(2);
+    // ...and the BIND still uses the once-resolved value: a listener's address
+    // must not move under a running socket.
+    expect(SRC).toMatch(/const lanBindAddress = lanResolution\.bind_address;/);
   });
 });

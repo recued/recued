@@ -138,6 +138,8 @@ import {
   DIRECT_MCP_TOOL_CALL_BASE_RESERVATION_KEY,
 } from './seller/customer-surface-usage.js';
 import type { SessionGrantResolver } from './session-grant-resolver.js';
+import type { ContractUseTake } from './policy-contract-overlay.js';
+import { withContractDispatchReservation } from './contract-dispatch-reservation.js';
 import { remoteFileConnectionNamesIn } from './collections/file/remote-file-byte-resolver.js';
 import {
   createBoundExecutor,
@@ -1014,23 +1016,65 @@ const runRawOpThroughGateway = async (
     trigger_source: 'mcp',
   };
 
-  const meterIfDispatched = (): void => {
+  // ⛔⛔ THE UNIT IS TAKEN BEFORE THE BOUNDARY, NOT COUNTED AFTER IT.
+  //
+  // This used to be a `meterIfDispatched()` that ran once the provider had
+  // returned — it reads `captured.outcome`, so it could not run any earlier.
+  // The only budget gate was admission (`isContractLive`), an `await` back, and
+  // `recordUse` clamps at 0 rather than refusing. So overlapping dispatches all
+  // read the same remaining count and all proceeded: driven, eight overlapping
+  // calls on a three-use door were all admitted, with the counter still landing
+  // at 0 so nothing downstream could tell (`dev/contract-use-cap-drive.ts`).
+  // `RPC_WS_MAX_IN_FLIGHT_PER_CLIENT = 64`, so that overlap is designed-for.
+  //
+  // 🔑 WHAT IS COUNTED DOES NOT CHANGE — only when it is taken, and that it can
+  // now refuse. `settle` gates on the SAME `crossedBoundary` predicate the old
+  // meter did, so a held / refused / before-any-effect failure gives the unit
+  // back and a real crossing keeps it. That matters: the decrement was
+  // deliberately relocated to the proceed point to close an UNDERCOUNT
+  // (`execute-handler.ts:4291`), and taking early without the release arm would
+  // swing the same field the other way.
+  //
+  // ⚠ THE LEGACY ARM IS NOT DEAD CODE. An overlay without `takeDispatchUse` —
+  // every hand-built test double, and any resolver older than this change —
+  // keeps the exact previous behaviour instead of silently metering nothing,
+  // which is the fail-open a bare optional call would have introduced.
+  const overlay = deps.contractOverlay;
+  const legacyMeter = overlay !== undefined && overlay.takeDispatchUse === undefined;
+  const take: ContractUseTake = overlay?.takeDispatchUse !== undefined
+    // The metering op axis retired (home #2 — `contract_grant` owns op admission),
+    // so the scope match is channel×actor×ingredient, not op; no op id needed. An
+    // op-PRESENT out-of-scope op never reaches here (the op gate denies before
+    // proceed); an op-ABSENT dispatch by an op-scoped contract DOES meter — a
+    // fail-safe over-count, spec `:253`.
+    ? overlay.takeDispatchUse(executionSource, catalogSlug)
+    : { kind: 'unmetered' };
+
+  const settle = (): void => {
     const crossedBoundary =
       captured?.outcome === 'success'
       || (captured?.outcome === 'failed' && captured.failure_mode === 'error');
-    if (
-      crossedBoundary
-      && deps.contractOverlay !== undefined
-      // The metering op axis retired (home #2 — `contract_grant` owns op admission),
-      // so `shouldMeterUse` matches `admitRawOp`'s gate automatically
-      // (channel×actor×ingredient, not op); no op id needed. An op-PRESENT out-of-scope
-      // op never reaches here (the op gate denies before proceed); an op-ABSENT dispatch
-      // by an op-scoped contract DOES meter — a fail-safe over-count, spec `:253`.
-      && deps.contractOverlay.shouldMeterUse(executionSource, catalogSlug)
-    ) {
-      deps.contractOverlay.recordUse(executionSource);
+    if (legacyMeter) {
+      if (crossedBoundary && overlay !== undefined
+        && overlay.shouldMeterUse(executionSource, catalogSlug)) {
+        overlay.recordUse(executionSource);
+      }
+      return;
     }
+    overlay?.settleDispatchUse?.(take, crossedBoundary);
   };
+
+  // ⛔ REFUSED BEFORE ANY EFFECT. The contract governs this dispatch and has
+  //   nothing left (or went revoked / expired under it), so nothing runs and
+  //   nothing was taken. A plain throw is this file's own idiom for a usage
+  //   denial — the seller reservation above refuses the same way — and it
+  //   surfaces to the agent as an ordinary tool error rather than a silent pass.
+  if (take.kind === 'refused') {
+    throw new Error(
+      'This door\'s use limit is spent: the governing contract was revoked, has expired, '
+        + 'or has no remaining uses.',
+    );
+  }
 
   const stepMeta: RawOpStepMeta = {
     step_id: RAW_OP_STEP_ID,
@@ -1046,17 +1090,25 @@ const runRawOpThroughGateway = async (
   };
 
   try {
-    const result = await runCatalogOperation(
-      ctx,
-      manifest,
-      catalogSlug,
-      { operation, args: opArgs },
-      connectionName,
-      undefined,
-      undefined,
-      stepMeta,
+    // ⛔ THE RESERVATION IS CARRIED INTO THE DISPATCH. Taking the last unit
+    //   makes the contract `exhausted`, so any liveness re-check downstream
+    //   would refuse the very dispatch that reserved it — D-261 F18, the reason
+    //   `contract-dispatch-reservation.ts` credits exactly this in-flight token
+    //   and nothing else.
+    const result = await withContractDispatchReservation(
+      take.kind === 'taken' ? take.token : undefined,
+      () => runCatalogOperation(
+        ctx,
+        manifest,
+        catalogSlug,
+        { operation, args: opArgs },
+        connectionName,
+        undefined,
+        undefined,
+        stepMeta,
+      ),
     );
-    meterIfDispatched();
+    settle();
     return {
       kind: 'result',
       result,
@@ -1065,8 +1117,16 @@ const runRawOpThroughGateway = async (
         : {}),
     };
   } catch (e) {
-    if (isPreflightRequiredSignal(e)) return { kind: 'preflight', signal: e };
-    meterIfDispatched();
+    // Held for approval: no boundary was crossed and the call may never run, so
+    // the unit goes back. The old meter reached the same outcome by never
+    // running on this path; taking early means it has to be given back
+    // explicitly, and a held dispatch that silently kept its use would drain a
+    // door by asking.
+    if (isPreflightRequiredSignal(e)) {
+      overlay?.settleDispatchUse?.(take, false);
+      return { kind: 'preflight', signal: e };
+    }
+    settle();
     throw e;
   }
 };

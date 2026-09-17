@@ -317,6 +317,35 @@ export const RUNTIME_SCHEMA = [
 
   // ─── Network ─────────────────────────────────────────────────
   {
+    // ⛔ NAMED AS THE BOOLEAN IT IS. D-272 spent a whole section on
+    // `webhook_port` / `mcp_port` — feature flags wearing port names, which sent
+    // operators off to forward a number nothing binds. This one decides WHETHER
+    // the server asks the router to forward `public_port`; it is not a port and
+    // must never read like one.
+    key: 'network.auto_port_mapping',
+    section: 'Network',
+    label: 'Ask the router to forward the public port',
+    type: 'boolean',
+    default: false,
+    // ⚠ NO LONGER THE ONLY WAY IN. Settings → Server → Connect a device offers
+    // this switch on the router step itself, which is where a beginner meets
+    // the problem it solves. This entry is still the file-level truth and the
+    // only route for a headless install.
+    // ⛔ AND IT NO LONGER NAMES ONE PROTOCOL. It said "via NAT-PMP"; P2 added
+    // IGD and made it the RUNTIME-PREFERRED one (only IGD can enumerate), so
+    // the sentence named the protocol most owners' routers do not use.
+    description:
+      'Off by default. When on, the server asks your router to forward the '
+      + 'public port to this machine, so Recued works away from home without '
+      + 'you changing a router setting by hand. This opens a port on your '
+      + 'internet connection — the same one you would open yourself, and Recued '
+      + 'takes it down again when you switch this off. The mapping is renewed '
+      + 'while the server runs and expires on its own if it stops. Many routers '
+      + 'ship with this turned off; Recued will say so rather than pretend it '
+      + 'worked. You can also switch this on from Settings, Server, Connect a '
+      + 'device.',
+  },
+  {
     key: 'public_port',
     section: 'Network',
     label: 'Public TLS port',
@@ -325,8 +354,16 @@ export const RUNTIME_SCHEMA = [
     min: 1,
     max: 65535,
     integer: true,
+    // ⚠ LIVE AGAIN, AND THIS COPY HAS BEEN WRONG BOTH WAYS IN ONE DAY. It said
+    // nothing (while the mapping moved and the listener did not), then said
+    // "takes effect on restart" (while the seam, not the system, was what could
+    // not move). The listener now rebinds in place; a port that will not bind is
+    // reported and the old one keeps serving.
     description:
-      'Port used by the public TLS listener. Defaults to 443.',
+      'Port used by the public TLS listener. Defaults to 443. Set this when '
+      + 'something else on the machine already uses 443 — a website, another '
+      + 'server. The change applies straight away; if the new port cannot be '
+      + 'opened, Recued keeps serving the old one and says so.',
   },
   {
     // The LAN listener's bind address. Auto-detection refuses to guess on a

@@ -74,6 +74,26 @@ export const INSTANCE_PREFS = {
   // decides whether to fire a desktop toast. Pair-scoped so a user
   // who silences crash notifications on their laptop still gets them
   // on a desk machine.
+  /** D-display-mode P1 — turn one paired client into a board that keeps itself
+   *  current: a wall monitor, a spare tablet at the counter.
+   *
+   *  ⛔⛔ NOT A VISITOR SURFACE, AND THIS PREF DOES NOT MAKE ONE. The session
+   *  stays the owner's and the render context is unchanged — reception renders
+   *  `{ audience: 'public', interactive: false }`, and nothing here does. The
+   *  safety of a screen in a lobby comes from the device being PAIRED and
+   *  physically controlled, never from this switch. See
+   *  internal design notes § 1.
+   *
+   *  ⚠ Per-device because prefs are stored per instance — the owner's laptop
+   *  and the wall screen hold different values, and the screen keeps its own
+   *  across a reload, which is the whole point after a power cut. */
+  'ui.result_display_mode': {
+    type: 'boolean',
+    default: false,
+    description:
+      'Keep the result on this device up to date on its own, for a screen '
+      + 'left showing a board. Other devices are unaffected.',
+  },
   'ui.notifications.pressure': {
     type: 'boolean',
     default: true,

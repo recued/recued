@@ -155,7 +155,7 @@ import type {
 import type { WorkEntityResolver } from './work-entity-resolver.js';
 import type { WorkEntityEdgeStore } from './storage/work-entity-edge-store.js';
 import type { WorkEntityTargetedReadDeps } from './work-entity-write-executor.js';
-import { handleWorkEntityUpsert } from './work-entity-crud-handler.js';
+import { guardTaskMarkDone, handleWorkEntityUpsert } from './work-entity-crud-handler.js';
 import {
   DEFAULT_LOCAL_CALENDAR_ID,
   DEFAULT_LOCAL_CALENDAR_SLUG,
@@ -3529,10 +3529,14 @@ const createWorkUpdateHandler =
 
     try {
       if (marksDone) {
-        const markDone = (crud.dispatchers as { taskMarkDone?: (i: { id: string; done?: boolean }) => Promise<unknown> })
-          .taskMarkDone;
-        if (!markDone) return executionError('work.update: mark-done dispatcher unavailable');
-        await markDone({ id, done: args.done as boolean });
+        if (!(crud.dispatchers as { taskMarkDone?: unknown }).taskMarkDone) {
+          return executionError('work.update: mark-done dispatcher unavailable');
+        }
+        // ⛔ THROUGH THE GUARD, NOT THE RAW DISPATCHER. Holding
+        // `dispatchers.taskMarkDone` directly skips the per-task lock the
+        // webclient's Today toggle takes, and re-stamps `completed_at` when the
+        // owner says "mark it done" on a task that already is.
+        await guardTaskMarkDone(crud, { id, done: args.done as boolean });
         return { ok: true, result: { updated: true, kind, id, done: args.done as boolean } };
       }
       await handleWorkEntityUpsert(

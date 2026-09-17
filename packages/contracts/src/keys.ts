@@ -245,6 +245,7 @@ export const HIGH_ASSURANCE_AUDIT_KINDS: ReadonlySet<string> = new Set([
   'account_bind_conflict',
   'account_bind_exchange_failed',
   'credential_rotate',
+  'account_handle_rename',
 ]);
 
 /** Type predicate — is this audit-row kind one that requires the

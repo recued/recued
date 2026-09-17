@@ -38,6 +38,8 @@ import type {
   ToolEntry,
 } from '@recued/contracts';
 import { NOTIFICATION_CHANNEL_NAMES } from '@recued/contracts';
+import { DEFAULT_INSTANCE_PREFS, getPref } from '@recued/contracts';
+import type { InstancePrefs } from '@recued/contracts';
 import type { ResolvedTableEditDescriptor } from '@recued/contracts';
 import { openPreapprovalActivation } from '../approvals/preapproval-activation.js';
 import { preapprovalHref } from '../approvals/preapproval-route.js';
@@ -155,6 +157,7 @@ import {
   RECIPES_ROUTE_RESULT_GRID_ROW_ATTR,
   RECIPE_RESULT_PANEL_STYLES,
   copyRecipeResultValue,
+  RECIPE_RESULT_HOST_ATTR,
   createResultActionRegistry,
   exactResultFileReadError,
   openResultPreviewWindow,
@@ -179,6 +182,12 @@ import {
   syncResultTableEditChrome,
   wireResultTableEditRefPickers,
 } from './result-table-edit-host.js';
+import {
+  RESULT_FULLSCREEN_ACTION,
+  domFullscreenApi,
+  syncResultFullscreenChrome,
+  toggleResultFullscreen,
+} from './result-fullscreen-host.js';
 export {
   RECIPES_ROUTE_RESULT_PANEL_ATTR,
   RECIPES_ROUTE_RESULT_SECTION_ATTR,
@@ -457,6 +466,77 @@ export type RecipesPackRecipeRefsCaller = (
   slug: string,
 ) => Promise<Array<{ slug: string; version: number }>>;
 
+/** D-display-mode P1 — the `ui.result_display_mode` pref over the standard
+ *  pair-WS prefs rpc, mirroring the transparency / learning caller pairs. Its
+ *  own pair rather than reusing theirs so a harness can drive one surface
+ *  without standing up a server for the others. Absent ⇒ display mode is simply
+ *  unavailable, which is the right degradation: the panel still renders. */
+export type RecipesDisplayPrefsGetCaller = () => Promise<{ prefs: InstancePrefs }>;
+export type RecipesDisplayPrefsSetCaller = (
+  args: { patch: Partial<InstancePrefs> },
+) => Promise<{ prefs: InstancePrefs }>;
+
+/** D-display-mode P2 — should a completed run make a displayed board re-read?
+ *
+ *  🔑 SELF-EXCLUSION, NOT A DEBOUNCE. A refresh run emits its own `execution`
+ *  events, so a handler reacting to everything re-triggers itself forever. The
+ *  rule falls out of what a display board IS — all-Records reads
+ *  (internal design notes § 3) — so a run that cannot write cannot be the
+ *  cause of its own staleness, and its own events are irrelevant by definition.
+ *  A timer would only slow the loop while making the screen laggy.
+ *
+ *  ⚠ Exported because the route cannot be unit-tested without a DOM and a WS,
+ *  and an inline copy plus a test copy is a twin that drifts. One function, one
+ *  caller, one test.
+ *
+ *  ⛔ `recipe_id` must be a non-empty STRING. `emitExecution` refuses to emit
+ *  without one, but a client that trusts an upstream guard is one upstream
+ *  change from refreshing on every malformed event — which a test caught here
+ *  before it shipped. */
+export const shouldRefreshDisplayedBoard = (args: {
+  displayMode: boolean;
+  busy: boolean;
+  shown: string | undefined;
+  event: { op?: unknown; recipe_id?: unknown; audit_exempt?: unknown };
+  /** D-display-mode P4 — the SERVER's answer for the board's last run, taken
+   *  verbatim from `ServerExecuteResponse.audit_exempt`. */
+  lastRunAuditExempt: boolean | undefined;
+}): boolean => {
+  if (!args.displayMode || args.busy) return false;
+  if (args.shown === undefined || args.shown === '') return false;
+  // ⛔⛔ REFUSE TO AUTO-REFRESH A BOARD THAT IS NOT EXEMPT. A display re-runs on
+  // every change; that is free only while every dispatching step is provably a
+  // Records read. One non-Records step — a vendor read, a notification, an
+  // `ai-*` call — and each tick writes an audit anchor instead, which the
+  // retention pruner then pays for by evicting the OLDEST rows, i.e. the real
+  // history. See internal design notes § 3.
+  //
+  // ⚠ `undefined` is UNKNOWN, NOT YES — a server too old to send the field, or
+  // a board that has not run yet. Refusing is the fail-safe reading: the cost of
+  // being wrong here is a screen that does not refresh, against a log that
+  // quietly fills.
+  if (args.lastRunAuditExempt !== true) return false;
+  if (args.event.op !== 'complete') return false;
+  if (typeof args.event.recipe_id !== 'string' || args.event.recipe_id === '') return false;
+  // ⛔⛔ A READ COMPLETING IS NEVER A REASON TO RE-READ — not just MY read, ANY
+  // read. The first version of this guard excluded only the displayed board,
+  // and two clients in display mode showing DIFFERENT boards then triggered
+  // each other forever: A's refresh reads to B as a real change and B's reads
+  // the same to A. A live two-client drive measured ~135 runs/second, with
+  // symmetric counts (1077 / 1076 / 1076 / 1076 completes in eight seconds).
+  // Unfindable single-client, which is why every unit test and the first drive
+  // passed.
+  //
+  // ⚠ `undefined` MEANS DO NOT REFRESH — the opposite fail-safe to P4's
+  // `lastRunAuditExempt`, and deliberately so. There the question is "may I run
+  // at all", so unknown must refuse. HERE the question is "did something
+  // change", and the cheap failure is a stale screen while the expensive one is
+  // the loop above. An older server that cannot send the field therefore gets a
+  // display that never auto-refreshes, which is the correct degradation.
+  if (args.event.audit_exempt !== false) return false;
+  return args.event.recipe_id !== args.shown;
+};
+
 export interface BootstrapRecipesRouteOptions {
   /** D-269 step 1 — the server's resolved IANA zone, forwarded to the run
    *  modal's scheduled-activation stamp. Absent ⇒ this browser's, as before. */
@@ -466,6 +546,8 @@ export interface BootstrapRecipesRouteOptions {
   /** Shell-owned scrolling element used for list continuity across detail and
    * browser route remounts. Defaults to `root` for embedded/test mounts. */
   scrollRoot?: HTMLElement;
+  displayPrefsGetCaller?: RecipesDisplayPrefsGetCaller;
+  displayPrefsSetCaller?: RecipesDisplayPrefsSetCaller;
   recipesListCaller?: RecipesListCaller;
   recipeExecuteCaller?: RecipeExecuteCaller;
   /** D-200 — paired-client authenticated preview/download for exact file
@@ -2217,6 +2299,14 @@ const renderRecipeDetail = (
   resultGridStates: ReadonlyMap<string, OutputTableEditState> = new Map(),
   recordRefPickers = false,
   canPreapprove = false,
+  // ⛔ LAST, AND THAT MATTERS. Inserted mid-list it typechecked CLEAN while
+  // shifting every trailing argument by one — the neighbours are all booleans,
+  // so the compiler had nothing to object to and `recordRefPickers` would have
+  // arrived as `displayMode`. ⚠ The SEVENTEENTH positional parameter;
+  // `renderTableResultSection` hit the same wall at six. The next addition to
+  // either should convert to an options object rather than push the count again.
+  // `undefined` = the host wired no prefs rpc, so no control is offered.
+  displayMode: boolean | undefined = undefined,
 ): string => {
   const name = recipeDisplayName(entry);
   const triggerKind = deriveTriggerKind(entry);
@@ -2337,6 +2427,7 @@ const renderRecipeDetail = (
         resultFilterStates,
         resultGridStates,
         recordRefPickers,
+        { display_mode: displayMode },
       )}
       ${renderRelatedRecipesSection(
         entry,
@@ -2501,6 +2592,12 @@ export const bootstrapRecipesRoute = (
   let autoRunBusy = new Set<string>();
   let autoRunErrors = new Map<string, string>();
   let resultPanel: RecipesResultPanelSnapshot | null = null;
+  // D-display-mode P1/P2 — this device keeps its board current on its own.
+  // Per-device because prefs are stored per instance: the owner's laptop and
+  // the wall screen hold different values, and the screen keeps its own across
+  // a reload, which is the point after a power cut.
+  let displayMode = getPref(DEFAULT_INSTANCE_PREFS, 'ui.result_display_mode') === true;
+  let displayRefreshBusy = false;
   let resultGridStates = new Map<string, OutputTableEditState>();
   let resultGridRefPickers: RefPicker.RefPickerHandle[] = [];
   let resultFilterStates = new Map<string, RecipesResultFilterState>();
@@ -2796,6 +2893,9 @@ export const bootstrapRecipesRoute = (
         resultGridStates,
         resultRecordSearch !== undefined,
         opts.preapprovalPrepareCaller !== undefined && opts.onPreapprovalPrepared !== undefined,
+        // `undefined` when the host wired no prefs rpc — no control is offered
+        // at all, rather than a dead one.
+        opts.displayPrefsSetCaller === undefined ? undefined : displayMode,
       );
       resultActions = resultActionRegistry.actions;
       resultFiles = resultActionRegistry.files;
@@ -4375,6 +4475,28 @@ export const bootstrapRecipesRoute = (
       restorePreviousResultPanel();
       return;
     }
+    if (action === 'toggle-result-display-mode') {
+      // Optimistic, then authoritative: the screen flips now and the server's
+      // returned prefs win. A rejected write reverts rather than leaving the
+      // control saying something the device is not doing.
+      const setter = opts.displayPrefsSetCaller;
+      if (setter === undefined) return;
+      const next = !displayMode;
+      displayMode = next;
+      render();
+      void setter({ patch: { 'ui.result_display_mode': next } })
+        .then((res) => { displayMode = getPref(res.prefs, 'ui.result_display_mode') === true; render(); })
+        .catch(() => { displayMode = !next; render(); });
+      return;
+    }
+    if (action === RESULT_FULLSCREEN_ACTION) {
+      // ⛔ Called straight from the click, not deferred. `requestFullscreen`
+      // needs a live user activation, and awaiting anything first spends it —
+      // the request then rejects and the panel silently never enlarges.
+      const host = target.closest?.(`[${RECIPE_RESULT_HOST_ATTR}]`) ?? null;
+      if (host !== null) void toggleResultFullscreen(host, domFullscreenApi(doc));
+      return;
+    }
     if (action === 'open-recipe-config') {
       const recipeId = target.getAttribute(RECIPES_ROUTE_RECIPE_ID_ATTR);
       if (recipeId !== null) void openRecipeConfigEditor(recipeId);
@@ -4483,6 +4605,32 @@ export const bootstrapRecipesRoute = (
     }
   };
 
+  // Escape and the window chrome both leave fullscreen without routing through
+  // the click handler, so the toggle's label is only truthful if it re-reads
+  // the document on every change.
+  const onFullscreenChange = (): void => {
+    const host = routeRoot.querySelector?.(`[${RECIPE_RESULT_HOST_ATTR}]`) ?? null;
+    if (host !== null) syncResultFullscreenChrome(routeRoot, host, domFullscreenApi(doc));
+  };
+  // ⚠ `doc` and not the global: this route mounts headless in tests against a
+  // fake document, and a bare `document` reference throws before a single
+  // assertion runs. Optional-called for the same reason — a fake that does not
+  // implement the listener must not take the route down with it.
+  doc.addEventListener?.('fullscreenchange', onFullscreenChange);
+
+  // Soft read, like the LLM-config and transparency reads elsewhere: a failure
+  // leaves the substrate default (OFF) in place rather than taking the route
+  // down. A screen that does not refresh is recoverable; a route that does not
+  // mount is not.
+  if (opts.displayPrefsGetCaller !== undefined) {
+    void opts.displayPrefsGetCaller()
+      .then((res) => {
+        displayMode = getPref(res.prefs, 'ui.result_display_mode') === true;
+        render();
+      })
+      .catch(() => { /* default stands */ });
+  }
+
   routeRoot.addEventListener('click', onClick);
   routeRoot.addEventListener('input', onInput);
   routeRoot.addEventListener('keydown', onKeyDown);
@@ -4491,6 +4639,33 @@ export const bootstrapRecipesRoute = (
   if (opts.subscribe !== undefined) {
     unsubscribers.push(
       // A pack install / uninstall changes the installed-recipe set.
+      // D-display-mode P2 — a board left on a screen keeps itself current.
+      //
+      // 🔑 THE GUARD IS SELF-EXCLUSION, NOT A DEBOUNCE. A refresh run emits its
+      // own `execution` events, so a handler that reacts to everything
+      // re-triggers itself into a loop. The exact rule falls out of what a
+      // display board IS: it is all-Records reads (see
+      // internal design notes § 3, which is also why re-running is free),
+      // and a run that cannot write cannot be the cause of its own staleness.
+      // ⇒ Events for the displayed recipe are IGNORED; anything else completing
+      // is a real change. A timer would only slow the loop down while making the
+      // screen laggy — the wrong fix for a self-trigger.
+      //
+      // ⚠ `complete` only. `start` / `progress` fire repeatedly mid-run and the
+      // data is not settled until the writer commits.
+      opts.subscribe('execution', (event) => {
+        const shown = resultPanel?.render_recipe_id;
+        if (!shouldRefreshDisplayedBoard({
+          displayMode,
+          busy: displayRefreshBusy,
+          shown,
+          event: event as { op?: unknown; recipe_id?: unknown },
+          lastRunAuditExempt: (resultPanel?.result as { audit_exempt?: boolean } | undefined)
+            ?.audit_exempt,
+        })) return;
+        displayRefreshBusy = true;
+        void runRecipeDefaults(shown!).finally(() => { displayRefreshBusy = false; });
+      }),
       opts.subscribe('pack_installed', () => startRefresh()),
       opts.subscribe('pack_uninstalled', () => startRefresh()),
       opts.subscribe('chat.inbound_token_changed', () => startRefresh()),
@@ -4609,6 +4784,11 @@ export const bootstrapRecipesRoute = (
       routeRoot.removeEventListener('click', onClick);
       routeRoot.removeEventListener('input', onInput);
       routeRoot.removeEventListener('keydown', onKeyDown);
+      // ⛔ The one listener not on routeRoot. Discarding the root drops the
+      // other three with it; this one hangs off the DOCUMENT, so a remount
+      // without this line stacks a second handler that syncs a panel the page
+      // no longer shows.
+      doc.removeEventListener?.('fullscreenchange', onFullscreenChange);
       for (const unsubscribe of unsubscribers.splice(0)) {
         try {
           unsubscribe();

@@ -117,6 +117,9 @@ import type { BroadcastSubscriber } from '../realtime/subscriber.js';
 // ════════════════════════════════════════════════════════════════
 
 export const EXPOSURE_PANEL_ATTR = 'data-recued-exposure-panel';
+export const EXPOSURE_LAN_POSTURE_ATTR = 'data-recued-exposure-lan-posture';
+export const EXPOSURE_LAN_STATE_ATTR = 'data-recued-exposure-lan-state';
+export const EXPOSURE_LAN_CHECK_ATTR = 'data-recued-exposure-lan-check';
 export const EXPOSURE_PRESET_ROW_ATTR = 'data-recued-exposure-preset';
 export const EXPOSURE_PATH_ROW_ATTR = 'data-recued-exposure-path';
 export const EXPOSURE_CELL_ATTR = 'data-recued-exposure-cell';
@@ -198,6 +201,55 @@ export type ExposureHasDdnsCaller = () => Promise<boolean>;
 // Options + handle
 // ════════════════════════════════════════════════════════════════
 
+/** D-272 — the LAN listener's bind posture, rendered as a finding.
+ *
+ *  ⛔ MOVED HERE FROM "CONNECT A DEVICE" ON ONE TEST: is it a PREREQUISITE for
+ *  connecting a device, or a fact about what is open? Everything else on that
+ *  page is a prerequisite — a certificate, a forwarded port, an address that
+ *  resolves — and each one is something the reader must get right before a
+ *  device can connect. This is neither: nothing downstream depends on it, and a
+ *  reader can connect every device they own with it unresolved. It is a
+ *  SECURITY FINDING, and this is the page that answers "what is open".
+ *
+ *  ⚠ It sits on a different AXIS from the path grid above it and that is the
+ *  point of having both. The grid says which PATHS are served publicly; this
+ *  says who can reach the listener at all. A path switched off is not reachable
+ *  however the socket is bound — and a socket on a public address is reachable
+ *  whatever the grid says about the paths it serves. */
+export interface ExposureLanPosture {
+  lanPort: number;
+  publiclyRoutable: boolean;
+  publicAddresses: readonly string[];
+  /** ⚠ Tri-state. `null` = nobody has asked from outside; `false` = asked and
+   *  refused. An unchecked box that claims the port was looked at and found
+   *  shut is the mistake D-272 spent a decision on. */
+  reachedFromOutside: boolean | null;
+}
+
+export const EXPOSURE_LAN_HEADING = 'What can reach your local port';
+
+export const exposureLanNote = (posture: ExposureLanPosture): string => {
+  const where = posture.publicAddresses.join(', ');
+  if (!posture.publiclyRoutable) {
+    // ⚠ SAID OUT LOUD RATHER THAN LEFT BLANK. "Nothing here" and "we did not
+    // look" render identically as silence, and this page's whole job is to say
+    // what is open — including when the answer is "only your own network".
+    return `Port ${posture.lanPort} is only reachable from your own network.`;
+  }
+  if (posture.reachedFromOutside === true) {
+    return `⛔ Port ${posture.lanPort} was reached from the internet at ${where}, `
+      + 'and it is not encrypted. Block it in your firewall, or bind it to your '
+      + 'local address only.';
+  }
+  if (posture.reachedFromOutside === false) {
+    return `⚠ Port ${posture.lanPort} is open on ${where}, a public address. `
+      + 'A check from outside could not get in, so something is blocking it. '
+      + 'Worth knowing if that firewall changes.';
+  }
+  return `⚠ Port ${posture.lanPort} is also open on ${where}. That address is `
+    + 'reachable from the internet, and this port is not encrypted.';
+};
+
 export interface MountExposurePanelOptions {
   host: HTMLElement;
   document?: Document;
@@ -212,6 +264,17 @@ export interface MountExposurePanelOptions {
   runSetApex?: ExposureSetApexCaller;
   /** DDNS-configured probe (DD#2). Fired alongside `runGet`. */
   runHasDdns?: ExposureHasDdnsCaller;
+  /** D-272 — the LAN listener's bind posture, from `network.local_urls`.
+   *  Fire-and-forget at mount; absent ⇒ the section does not render, which is
+   *  the honest state for a server too old to report it. */
+  readLanPosture?: () => Promise<Omit<ExposureLanPosture, 'reachedFromOutside'> | undefined>;
+  /** Reads the standing "did outside get in on the LAN port" verdict. ⚠ PULLED
+   *  at every render so a check run anywhere settles this section too — there is
+   *  no second copy to go stale. */
+  readLanReachedFromOutside?: (lanPort: number) => boolean | null;
+  /** Runs a check from outside for the LAN port. Absent ⇒ the finding renders
+   *  without a control, which is still worth saying. */
+  checkLanFromOutside?: (lanPort: number) => Promise<void>;
   /** Live-refresh seam (DD#5). Production wires the bootstrap's
    *  `subscriber.on`; absent ⇒ mount-fetch + post-mutation only. */
   subscribe?: BroadcastSubscriber['on'];
@@ -423,6 +486,60 @@ export const mountExposurePanel = (
   };
 
   // ── Render driver ────────────────────────────────────────────────
+  let lanPosture: Omit<ExposureLanPosture, 'reachedFromOutside'> | null = null;
+  let checkingLan = false;
+
+  const runLanCheck = (): void => {
+    if (opts.checkLanFromOutside === undefined || lanPosture === null || checkingLan) return;
+    checkingLan = true;
+    render();
+    void (async () => {
+      try {
+        await opts.checkLanFromOutside!(lanPosture!.lanPort);
+      } catch {
+        // ⛔ A check that could not RUN says nothing about the port. The verdict
+        // stays where the reader's last real answer left it.
+      } finally {
+        checkingLan = false;
+        render();
+      }
+    })();
+  };
+
+  const renderLanPosture = (): void => {
+    if (lanPosture === null) return;
+    const section = doc.createElement('section');
+    section.className = 'exposure-lan-posture';
+    section.setAttribute(EXPOSURE_LAN_POSTURE_ATTR, 'true');
+    section.setAttribute(
+      EXPOSURE_LAN_STATE_ATTR,
+      lanPosture.publiclyRoutable ? 'public' : 'local',
+    );
+    const heading = doc.createElement('h4');
+    heading.textContent = EXPOSURE_LAN_HEADING;
+    section.appendChild(heading);
+    const reached = opts.readLanReachedFromOutside?.(lanPosture.lanPort) ?? null;
+    const note = doc.createElement('p');
+    note.className = 'exposure-lan-note';
+    note.textContent = exposureLanNote({ ...lanPosture, reachedFromOutside: reached });
+    section.appendChild(note);
+    // ⚠ OFFERED ONLY WHERE IT COULD TELL THE READER SOMETHING NEW. With the
+    // listener on no public address there is nothing outside could reach, so a
+    // check would spend five seconds confirming what the bind already proved.
+    if (lanPosture.publiclyRoutable && opts.checkLanFromOutside !== undefined) {
+      const button = doc.createElement('button');
+      button.setAttribute('type', 'button');
+      button.setAttribute(EXPOSURE_LAN_CHECK_ATTR, 'true');
+      button.textContent = checkingLan
+        ? 'Checking…'
+        : reached !== null ? 'Check again' : 'Check from the internet';
+      if (checkingLan) button.setAttribute('disabled', 'true');
+      button.addEventListener('click', runLanCheck);
+      section.appendChild(button);
+    }
+    wrapper.appendChild(section);
+  };
+
   const render = (): void => {
     if (disposed) return;
     clearChildren(wrapper);
@@ -447,6 +564,7 @@ export const mountExposurePanel = (
     renderGrid(model);
     renderPublicMcpCard(model);
     renderApexPicker(model);
+    renderLanPosture();
     // Modals render last so they overlay (CSS positions them fixed).
     if (publicMcpModal.kind !== 'idle') renderPublicMcpModal();
     if (wsLockoutModal.kind !== 'idle') renderWsLockoutModal();
@@ -483,6 +601,19 @@ export const mountExposurePanel = (
     const ddnsPromise = opts.runHasDdns
       ? opts.runHasDdns().catch(() => false)
       : Promise.resolve(false);
+    // D-272 — the bind posture, alongside the others. ⚠ Advisory like the DDNS
+    // probe: a failure leaves the section unrendered rather than blocking the
+    // grid, because "we could not read the bind" is not a reason to withhold
+    // the path resolution the reader came for.
+    if (opts.readLanPosture !== undefined) {
+      void opts.readLanPosture()
+        .then((posture) => {
+          if (disposed || posture === undefined) return;
+          lanPosture = posture;
+          render();
+        })
+        .catch(() => { /* section stays unrendered — see above */ });
+    }
     let got: { state: ExposureState; apex_mode: RootApexMode };
     try {
       got = await opts.runGet();

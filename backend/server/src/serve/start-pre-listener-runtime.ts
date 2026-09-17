@@ -220,6 +220,7 @@ export const startPreListenerRuntime = async (
       rotationEngine: clientSecurity.rotationEngine,
       passportFetchDeps: clientSecurity.passportFetchDeps,
       passportUserRpcDeps: clientSecurity.passportUserRpcDeps,
+      identityProbeDeps: clientSecurity.identityProbeDeps,
       keyRotateDeps: clientSecurity.keyRotateDeps,
       proAuthMachine: clientSecurity.proAuthStateMachineRef,
       initialAcmeDomainIssuer: () =>

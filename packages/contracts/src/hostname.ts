@@ -94,6 +94,39 @@ export const HOSTNAME_TLS_TOPOLOGIES = [
 ] as const;
 export type HostnameTlsTopology = (typeof HOSTNAME_TLS_TOPOLOGIES)[number];
 
+/** ⛔ NOT A LIST OF PORTS THIS SERVER LISTENS ON. D-272: production binds
+ *  sockets in exactly ONE place — `packages/server-tls/src/path-listener-set.ts`
+ *  — and it binds TWO, `lan_port` and `public_port`. `ws`, `mcp`, `reception`,
+ *  `webhooks`, `oauth`, `ask` and `webclient` are all PATHS on those.
+ *
+ *  🔑 WHAT IT ACTUALLY MEANS: the ports a hostname may be DECLARED to answer
+ *  on. `443` plus the three retired per-role public ports (8446 reception /
+ *  8447 MCP / 8448 webhooks, named in D-152 § A.3.2), kept
+ *  because an `upstream_terminated` topology can still front this server on one
+ *  of them. The registry default is `[443]`, and the Hostnames UI renders one
+ *  checkbox per entry.
+ *
+ *  Its consumers, all of which read it as a DECLARATION:
+ *   - `deriveShareBaseUrlFromHostnameRegistry` — builds the public share URL,
+ *     preferring 443 and otherwise suffixing `:<port>`. The only behavioural
+ *     reader.
+ *   - `DIAGNOSTIC_ALLOWED_PORTS` (= 80 + this set) — what the cloud probe may
+ *     be ASKED about. ⚠ A `public_port` outside that set has no answer at all
+ *     and must read `null` (unknown), never `false`.
+ *   - the Hostnames checkbox grid, derived from this constant rather than
+ *     hand-written.
+ *
+ *  ⚠ "WHY IS `ws` NOT IN HERE" IS A CATEGORY ERROR, NOT A GAP — settled
+ *  2026-09-16, and left OPEN by D-272 with a warning not to invent a reason.
+ *  The reason a reader reaches for ("ws is LAN-only") is false, and the
+ *  `DEFAULT_PORTS` table that appears to say `ws: 8443` is from the FIVE-PROFILE
+ *  / `PortRole` model the 2026-05-11 Path-Consolidation Amendment retired:
+ *  `PortRole`, `DEFAULT_PORTS`, `PortState` and `EXPOSURE_PROFILE_PORT_MAP` exist
+ *  NOWHERE in `packages/`, `backend/` or `apps/` — the single grep hit is a test
+ *  file's comment recording the retirement. ⇒ In the live model no role has a
+ *  port, so there is no ws port to omit. The numbers here are historical, and
+ *  asking which role each one belongs to is asking a question the code stopped
+ *  having an answer to. */
 export const HOSTNAME_LISTENER_PORTS = [443, 8446, 8447, 8448] as const;
 export type HostnameListenerPort = (typeof HOSTNAME_LISTENER_PORTS)[number];
 

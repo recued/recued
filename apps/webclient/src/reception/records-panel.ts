@@ -32,6 +32,19 @@ import type {
   ReceptionRecordListResult,
   ReceptionRecordSummary,
 } from '@recued/contracts';
+// ⛔⛔ THE LOCAL COPY ESCAPED FOUR CHARACTERS, NOT FIVE. It was missing
+//   `'` → `&#39;` — alone among the twenty `escapeHtml` implementations in this
+//   tree, every other one of which escapes `& < > " '`. Nothing was exploitable
+//   today: every call site here lands in text content or a DOUBLE-quoted
+//   attribute, where an unescaped `'` is inert. That is the whole hazard — the
+//   guard is one single-quoted attribute away from being wrong, in a panel that
+//   renders ANONYMOUS VISITOR submissions, and a reader would reasonably assume
+//   a function of this name escapes what the other nineteen escape.
+//
+//   🔑 Output is unchanged for every current call site: `'` and `&#39;` render
+//   identically as text and both are inert inside `"..."`. Strictly more
+//   escaping, same pixels.
+import { escapeHtml } from '@recued/ui-shared';
 import type { Conn } from '@recued/contracts';
 import type { ServerRpcRegistry } from '@recued/contracts';
 
@@ -108,12 +121,6 @@ const OUTCOME_FILTERS: ReadonlyArray<{ id: ReceptionRecordsOutcomeFilter; label:
   { id: 'waiting', label: 'Waiting' },
 ];
 
-const escapeHtml = (value: string): string =>
-  value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
 
 const errMessage = (err: unknown): string =>
   err instanceof Error && err.message.length > 0

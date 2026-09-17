@@ -5,7 +5,17 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { isContractActive, type ContractDefinition } from '@recued/contracts';
 import { canonicalJSONStringifyStrict } from '@recued/crypto';
 
-const material = ({ uses_remaining: _uses, ...definition }: ContractDefinition): string => canonicalJSONStringifyStrict(definition);
+/** The contract's IDENTITY, with its counter state removed.
+ *
+ *  ⛔ `use_period_start` IS COUNTER STATE, NOT DEFINITION. It moves whenever the
+ *  budget refills, and a refill can land in the same transaction as the take
+ *  that triggered it — so leaving it in would make `before` and `after` differ
+ *  on a periodic contract and `issueContractDispatchReservation` would reject
+ *  the very reservation the store had just made. `use_period` itself stays: the
+ *  POLICY is identity, the window pointer is not. */
+const material = (
+  { uses_remaining: _uses, use_period_start: _windowStart, ...definition }: ContractDefinition,
+): string => canonicalJSONStringifyStrict(definition);
 interface Reservation { contract_id: string; definition: string }
 const issued = new WeakMap<object, Reservation>();
 const checking = new AsyncLocalStorage<Reservation | undefined>();

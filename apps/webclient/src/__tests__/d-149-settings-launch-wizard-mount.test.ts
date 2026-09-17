@@ -1,4 +1,4 @@
-/** D-149 § A.20.1 follow-on — Settings → Server → Reception Launch
+/** D-149 § A.20.1 follow-on — Reception Launch
  *  Wizard mount acceptance.
  *
  *  `mountLaunchWizard` is the wizard's step-cursor + per-step
@@ -23,9 +23,9 @@ import { RECEPTION_RECOMMENDED_EXPOSURE_PROFILE } from '@recued/contracts';
 import {
   mountLaunchWizard,
   LAUNCH_WIZARD_MOUNT_STYLES,
-} from '../settings/reception-launch-wizard-mount.js';
-import type { LaunchWizardRunResult } from '../settings/reception-page-shell.js';
-import type { ReceptionPageShell } from '../settings/reception-page-shell.js';
+} from '../reception/launch-wizard-mount.js';
+import type { LaunchWizardRunResult } from '../reception/page-shell.js';
+import type { ReceptionPageShell } from '../reception/page-shell.js';
 
 const NOW = 1_700_000_000_000;
 

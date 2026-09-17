@@ -33,9 +33,14 @@ export interface SavedDataView {
   revision: number;
   created_at: number;
   updated_at: number;
-  /** Task-only monitoring, evaluated by the server even with no browser open. */
+  /** Saved task/Records membership monitoring, even with no browser open. */
   alert?: SavedDataViewAlert;
 }
+
+/** Records alerts need one concrete pack and kind, just like its saved query. */
+export const savedDataViewSupportsAlerts = (definition: SavedDataViewDefinition): boolean =>
+  definition.tab === 'task' || (definition.tab === 'records'
+    && definition.owner !== null && definition.entity !== null);
 
 export interface SavedDataViewAlertSettings {
   enabled: boolean;

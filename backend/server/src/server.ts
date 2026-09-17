@@ -33,6 +33,11 @@ import {
 } from '@recued/server-tls';
 import type { PathResolution, PathRole, RootApexMode, TLSDomainStore } from '@recued/contracts';
 import { DEFAULT_ROOT_APEX_MODE } from '@recued/contracts';
+import {
+  IDENTITY_PROBE_PATH,
+  buildIdentityProbePayload,
+  isIdentityProbeRequest,
+} from '@recued/contracts';
 import type { HandlerResult } from './types.js';
 import type { ExecuteHandlerDeps } from './execute-handler.js';
 import { createWebSocketUpgrade, SELF_HOST_OWNER_ID, type WsServerHandle } from './ws-server.js';
@@ -469,6 +474,8 @@ export interface ServerConfig {
   hostnameDeps?: import('./hostname-handler.js').HostnameRpcDeps;
   /** LAN-URL kickstart — `network.local_urls` deps (live listen port). */
   networkDeps?: import('./network-handler.js').NetworkRpcDeps;
+  /** D-273 — `network.port_mapping`. */
+  portMappingDeps?: import('./network-handler.js').PortMappingRpcDeps;
   /** D-169 P0 — `bridge.capabilityProfile.push` rpc deps. Wires the
    *  per-pair `BridgeRegistry` instance that Slice 4's dispatcher
    *  pre-filters against. Absent → the rpc returns `not_configured`. */
@@ -557,6 +564,22 @@ export interface ServerConfig {
    *  `passport.` is in `MCP_RESERVED_RPC_PREFIXES`, so MCP-channel
    *  agents cannot fetch the passport projection. */
   passportFetchDeps?: import('./passport/fetch-handler.js').PassportFetchRpcDeps;
+  /** D-148 — pre-auth identity probe deps (`POST /auth/identity-probe`).
+   *  Absent → the route 404s exactly as an unknown path would, which is the
+   *  same answer a fingerprint mismatch gets, so a scanner cannot tell a
+   *  server without the feature from one that is not the server it wanted.
+   *
+   *  ⛔ `sign` MUST be handed the output of `buildIdentityProbePayload` and
+   *  nothing else. It is `signWithServerIdentity`, whose key also signs DDNS
+   *  updates and ACME requests — signing a caller-supplied string here would
+   *  be a DNS-takeover oracle. See `packages/contracts/src/identity-probe.ts`. */
+  identityProbeDeps?: {
+    /** Current `server_identity_key` — public half + its `sha256:<hex>`
+     *  fingerprint. Read per request rather than captured, so a key rotation
+     *  takes effect without a restart. */
+    serverIdentityKey: () => { public_key_b64: string; public_key_fingerprint: string };
+    sign: (payload: string) => string;
+  };
   /** R26.4 Delta 2 (D-148 § A.9 P8) — `passport.export` +
    *  `passport.history.list` rpc deps (the user-initiated half). Absent →
    *  both return `not_configured` (db-less harness, or a boot whose audit
@@ -737,6 +760,18 @@ export interface ServerConfig {
  *  `matchesPathRole` lookup. */
 export const SERVER_LEGACY_PATH_ALIASES: ReadonlyArray<PathRouterLegacyAlias> = [
   { kind: 'exact', path: '/auth/pair', role: 'ws' },
+  // ⛔⛔ WITHOUT THIS LINE THE IDENTITY PROBE IS DEAD IN PRODUCTION, and it
+  // shipped without it. `matchesPathRole` claims a path for a role only when
+  // the path IS the role's base or sits under it — `/auth/identity-probe`
+  // matches NO role, exactly like its sibling `/auth/pair`, so the router 404s
+  // it before any handler runs.
+  //
+  // ⚠ Every test of the route passed anyway: they call `handlers.ws` directly,
+  // which is one layer BELOW the thing that decides whether `handlers.ws` is
+  // ever reached. Reasoning about the role's exposure bits is not reasoning
+  // about the router's path matching, and I did the first while believing I had
+  // done the second.
+  { kind: 'exact', path: IDENTITY_PROBE_PATH, role: 'ws' },
   { kind: 'exact', path: '/status', role: 'ws' },
   { kind: 'exact', path: '/status.json', role: 'ws' },
   { kind: 'exact', path: '/v1/models', role: 'llm_gateway' },
@@ -817,6 +852,73 @@ export const createServerHandlerSet = (config: ServerConfig = {}): ServerHandler
         writePairCorsHeaders(res);
         res.statusCode = 204;
         res.end();
+        return;
+      }
+
+      // Pre-auth: identity probe. Proves this server holds the key the caller
+      // names, over a nonce the caller supplies, WITHOUT the caller presenting
+      // a bearer first — the whole point being that a client can check a
+      // candidate address before trusting it with a token.
+      if (pathname === IDENTITY_PROBE_PATH && method === 'POST') {
+        writePairCorsHeaders(res);
+        const probeDeps = config.identityProbeDeps;
+        // ⛔ ONE REFUSAL FOR EVERY "NO" — not configured, malformed, oversized,
+        // or a fingerprint that isn't ours. What that buys is the property
+        // that matters: a caller WITHOUT the fingerprint learns nothing about
+        // WHO this server is — no signature, no key, no yes-or-no about any
+        // particular identity. A caller that DOES hold the pin gets proof.
+        //
+        // ⚠ IT DOES *NOT* HIDE THAT THE ROUTE EXISTS, AND AN EARLIER COMMENT
+        // HERE CLAIMED IT DID ("a scanner cannot distinguish 'wrong server'
+        // from 'no such route'"). That was false in every case, not just the
+        // edge ones: the floor handler's 404 carries a different body
+        // ("No HTTP handler for POST <path>…"), so the two never matched. The
+        // test that was supposed to prove it compared these refusals to EACH
+        // OTHER and never to an unknown path — it asserted the field it was
+        // written against rather than the claim.
+        //
+        // 🔑 Not worth engineering away: `/health` and `/auth/pair` already
+        // announce a Recued server to anyone who asks, so hiding this one route
+        // would buy version-granularity fingerprinting and nothing else. The
+        // uniformity below is kept because a route whose OWN answers vary by
+        // input is a different and avoidable problem.
+        const refuse = (): void => {
+          respond(res, {
+            ok: false,
+            status: 404,
+            error: { code: 'not_found', message: 'not found' },
+          });
+        };
+        if (!probeDeps) { refuse(); return; }
+        // ⚠ CAUGHT HERE, NOT LEFT TO THE OUTER HANDLER. `readJsonBody` throws
+        // `InvalidJsonBodyError` / `RequestBodyTooLargeError`, which `wsHandler`
+        // turns into 400 and 413 — so without this, malformed and oversized
+        // bodies answered differently from every other refusal on this route.
+        let probeBody: unknown;
+        try {
+          probeBody = await readJsonBody(req);
+        } catch {
+          refuse();
+          return;
+        }
+        if (!isIdentityProbeRequest(probeBody)) { refuse(); return; }
+        const identityKey = probeDeps.serverIdentityKey();
+        // Plain comparison: the fingerprint is not a secret (it is the
+        // `publisher_id` the Server Passport already publishes), so there is
+        // no timing channel worth closing here.
+        if (probeBody.expect_fingerprint !== identityKey.public_key_fingerprint) {
+          refuse();
+          return;
+        }
+        // ⛔ The signed bytes are BUILT HERE, never taken from the request. The
+        // nonce rides inside as a shape-checked field.
+        const signature = probeDeps.sign(
+          buildIdentityProbePayload({
+            nonce: probeBody.nonce,
+            server_public_key: identityKey.public_key_b64,
+          }),
+        );
+        respond(res, { ok: true, status: 200, body: { signature } });
         return;
       }
 
@@ -1527,6 +1629,7 @@ export const createServerHandlerSet = (config: ServerConfig = {}): ServerHandler
     supervisionDeps: config.supervisionDeps,
     hostnameDeps: config.hostnameDeps,
     networkDeps: config.networkDeps,
+    portMappingDeps: config.portMappingDeps,
     ...(config.bridgeCapabilityDeps
       ? { bridgeCapabilityDeps: config.bridgeCapabilityDeps }
       : {}),
@@ -1839,6 +1942,11 @@ const respond = (res: ServerResponse, result: HandlerResult<unknown>): void => {
  *  `Access-Control-Allow-Origin: *` is appropriate. */
 const PAIR_CORS_PATHS: ReadonlySet<string> = new Set([
   '/auth/pair',
+  // D-148 — the identity probe has the same cross-origin shape and the same
+  // reason to be safe: the webclient at `app.recued.com` must call a server at
+  // an arbitrary URL, and what authorises the reply is the request body (a
+  // fingerprint the caller must already hold), not browser-managed credentials.
+  IDENTITY_PROBE_PATH,
 ]);
 
 const isPairCorsPath = (pathname: string): boolean => PAIR_CORS_PATHS.has(pathname);

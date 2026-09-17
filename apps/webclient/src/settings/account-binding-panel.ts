@@ -218,6 +218,31 @@ const lifecycleLabel = (value: ProConvenienceStatusResponse['entitlement']): str
   }
 };
 
+/** Runtime door for a Pro vocabulary member this bundle has never heard of.
+ *
+ *  The switches that call it are exhaustive, and passing the value here is what
+ *  enforces that: miss an arm and the parameter no longer narrows to `never`, so
+ *  tsc rejects the call. ⚠ That check reads the contracts package's BUILT
+ *  `dist/*.d.ts` (project references), so it only fires once contracts has been
+ *  rebuilt — a green typecheck straight after editing one of these lists proves
+ *  nothing. Rebuild contracts, then read the result.
+ *
+ *  The runtime half covers what the compiler cannot: this is a PWA behind a
+ *  service worker, so a cached older bundle can be handed a member minted by a
+ *  server that has since been upgraded — and since the server serves the bundle,
+ *  that pairing is a cache-lifetime apart, not a release apart. Without this,
+ *  the switch falls out returning undefined and `textContent = undefined` prints
+ *  the literal word "undefined" into the card.
+ *
+ *  Callers choose their own fallback because the two halves degrade differently:
+ *  `detail` is optional in the contract, so dropping it yields a row the UI
+ *  already renders for every `active` item, while `state` is required — dropping
+ *  THAT yields a shape nothing else produces. */
+const unknownProVocabulary = <T>(member: never, fallback: T): T => {
+  void member;
+  return fallback;
+};
+
 const itemStateLabel = (state: ProConvenienceItem['state']): string => {
   switch (state) {
     case 'active':
@@ -232,13 +257,19 @@ const itemStateLabel = (state: ProConvenienceItem['state']): string => {
       return 'Free account';
     case 'pending':
       return 'Pending';
+    case 'inactive-elsewhere':
+      return 'On another server';
   }
+  // Unlike the detail, a state chip is not optional — show that we do not
+  // recognise it rather than leaving the row without one.
+  return unknownProVocabulary(state, 'Unknown');
 };
 
 // Human copy for the closed-list detail code on a non-active Pro item; the raw
-// code is a display hint, never shown verbatim. Exhaustive over
-// PRO_CONVENIENCE_DETAIL_CODES (tsc flags a missing arm if a code is added).
-const proDetailCopy = (detail: NonNullable<ProConvenienceItem['detail']>): string => {
+// code is a display hint, never shown verbatim.
+const proDetailCopy = (
+  detail: NonNullable<ProConvenienceItem['detail']>,
+): string | undefined => {
   switch (detail) {
     case 'entitlement_endpoint_pending':
       return 'Recued cannot check this yet';
@@ -254,7 +285,19 @@ const proDetailCopy = (detail: NonNullable<ProConvenienceItem['detail']>): strin
       return 'Certificate expired';
     case 'not_provisioned':
       return 'Not set up yet';
+    case 'server_disconnected':
+      // Says what to DO, because unlike every other detail here this one is
+      // fixed by the owner rather than waited out.
+      return 'Disconnected from your account — reconnect it below';
+    case 'handle_on_another_server':
+      // Says WHY, because the state chip beside it already says WHERE. It
+      // deliberately stops short of naming a gesture: the handle does migrate
+      // when another server binds with it as its target, but that is a bind-time
+      // effect, not a button on this card, and copy that implies otherwise sends
+      // people looking for a control that is not here.
+      return 'Only one of your servers can hold the handle at a time';
   }
+  return unknownProVocabulary(detail, undefined);
 };
 
 const renderError = (
@@ -604,9 +647,11 @@ export const mountAccountBindingPanel = (
     }
     const stateEl = append(doc, row, 'span', 'account-bind-pro-state');
     stateEl.textContent = itemStateLabel(item.state);
-    if (item.detail !== undefined) {
+    const detailCopy =
+      item.detail !== undefined ? proDetailCopy(item.detail) : undefined;
+    if (detailCopy !== undefined) {
       const detail = append(doc, row, 'span', 'account-bind-pro-detail');
-      detail.textContent = proDetailCopy(item.detail);
+      detail.textContent = detailCopy;
     }
     if (item.expires_at !== undefined) {
       const expiry = append(doc, row, 'span', 'account-bind-pro-detail');

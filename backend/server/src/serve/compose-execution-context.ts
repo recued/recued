@@ -17,6 +17,7 @@ import {
   createCliReachabilityStore,
 } from '../storage/cli-reachability-store.js';
 import { createGatedReadGrantResolver } from '../read-grant-checker.js';
+import { withGuardedTaskMarkDone } from '../work-entity-crud-handler.js';
 import {
   composeExecutorConfig,
 } from '../composition/bin/wire-executor-config.js';
@@ -450,7 +451,14 @@ export const composeExecutionContext = async (
     notificationChannelDispatchers: collection.channelDispatchers,
     housekeepingState: app.housekeepingStateRef,
     engagementRateControlStore: app.engagementRateControlStoreRef,
-    workEntityDispatchers: collection.workEntityDispatchers,
+    // ⛔ THE KERNEL GETS THE GUARDED SET. `wire-executor-config` spreads this
+    // straight into `KernelDispatchers`, so the `task-mark-done` ingredient —
+    // every recipe that completes a task — used to hold the raw dispatcher:
+    // no per-task lock, and `completed_at` re-stamped on a repeat.
+    workEntityDispatchers: withGuardedTaskMarkDone(
+      collection.workEntityDispatchers,
+      storage.workEntityStoreRef,
+    ),
     // D-173 P1-dispatch — the reception projection's local materialize deps.
     // The SAME per-pair work-entity store + contact path `composeListeners`
     // binds its inbox-side `projectReception` effect over (R2 INT-3), so the

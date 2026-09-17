@@ -9,6 +9,7 @@
 
 import { describe, it, expect } from 'vitest';
 import {
+  describeLanBindExposure,
   resolveLanAddress,
   LOOPBACK_FALLBACK,
 } from '../network/resolve-lan-address.js';
@@ -310,5 +311,90 @@ describe('D-148 W3.5 — resolveLanAddress', () => {
     expect(r.source).toBe('ambiguous_lan_candidates');
     expect(r.candidates[0]!.address).toBe('10.0.0.1');
     expect(r.candidates[1]!.address).toBe('192.168.1.42');
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────
+// D-272 — is the LAN listener somewhere the internet can route to?
+// ────────────────────────────────────────────────────────────────────────
+
+describe('D-272 — describeLanBindExposure', () => {
+  // ⛔ THE WILDCARD ALONE IS NOT THE FINDING. `resolveLanAddress` returns
+  // `0.0.0.0` for the ordinary home case (one RFC1918 address), so warning on
+  // the wildcard would fire for nearly every install and teach the reader to
+  // ignore it. What matters is the wildcard PLUS a publicly-routable address.
+  it('⛔ the ordinary home shape — wildcard, private only — is NOT exposed', () => {
+    const out = describeLanBindExposure('0.0.0.0', {
+      readInterfaces: () => mkInterfaces([
+        { name: 'en0', address: '192.168.1.42' },
+        { name: 'lo0', address: '127.0.0.1', internal: true },
+      ]),
+    });
+    expect(out.wildcard).toBe(true);
+    expect(out.publicly_routable).toBe(false);
+    expect(out.public_addresses).toEqual([]);
+  });
+
+  it('⛔⛔ the cloud-VM shape — a private NIC AND a public one — IS exposed', () => {
+    // The case this exists for: `resolveLanAddress` sees one RFC1918 address,
+    // returns `0.0.0.0`, and the same socket lands on the public address too.
+    // Plaintext, carrying `/ws` and `/mcp`, with no source-address filter.
+    const out = describeLanBindExposure('0.0.0.0', {
+      readInterfaces: () => mkInterfaces([
+        { name: 'ens5', address: '172.31.4.10' },
+        { name: 'ens6', address: '203.0.113.7' },
+      ]),
+    });
+    expect(out.publicly_routable).toBe(true);
+    expect(out.public_addresses).toEqual(['203.0.113.7']);
+  });
+
+  it('⛔ CGNAT is NOT public — a carrier-NATd home is not reachable from outside', () => {
+    // "not RFC1918" would have called this exposed. A false "you are exposed"
+    // costs the reader a hunt for a problem they do not have.
+    const out = describeLanBindExposure('0.0.0.0', {
+      readInterfaces: () => mkInterfaces([{ name: 'wwan0', address: '100.96.3.4' }]),
+    });
+    expect(out.publicly_routable).toBe(false);
+  });
+
+  it('⚠ link-local and loopback are not public either', () => {
+    const out = describeLanBindExposure('0.0.0.0', {
+      readInterfaces: () => mkInterfaces([
+        { name: 'en1', address: '169.254.10.1' },
+        { name: 'lo0', address: '127.0.0.1', internal: true },
+      ]),
+    });
+    expect(out.publicly_routable).toBe(false);
+  });
+
+  it('⚠ `0.0.0.0` is IPv4-only, so it cannot expose a global IPv6 address', () => {
+    // Only the `::` wildcard reaches v6. Reporting a v6 address under an IPv4
+    // wildcard would name an exposure the bind did not create.
+    const rows = [
+      { name: 'en0', address: '192.168.1.42' },
+      { name: 'en0', address: '2001:db8::5', family: 'IPv6' },
+    ];
+    expect(describeLanBindExposure('0.0.0.0', {
+      readInterfaces: () => mkInterfaces(rows),
+    }).publicly_routable).toBe(false);
+    expect(describeLanBindExposure('::', {
+      readInterfaces: () => mkInterfaces(rows),
+    }).public_addresses).toEqual(['2001:db8::5']);
+  });
+
+  it('a NON-wildcard bind is judged on its own address, with no interface read', () => {
+    const boom = (): never => { throw new Error('must not read interfaces'); };
+    expect(describeLanBindExposure('127.0.0.1', { readInterfaces: boom }).publicly_routable)
+      .toBe(false);
+    expect(describeLanBindExposure('192.168.1.42', { readInterfaces: boom }).publicly_routable)
+      .toBe(false);
+    // An operator who pinned the public address of a VPS gets told so.
+    const pinned = describeLanBindExposure('203.0.113.7', { readInterfaces: boom });
+    expect(pinned).toEqual({
+      publicly_routable: true,
+      wildcard: false,
+      public_addresses: ['203.0.113.7'],
+    });
   });
 });

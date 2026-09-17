@@ -355,10 +355,29 @@ export interface ContractDefinition {
   readonly approved_actions_template?: unknown;
   /** Epoch-ms after which the contract is inert. Absent ⇒ never time-expires. */
   readonly expiry_at?: number;
-  /** Total dispatches the contract permits. Absent ⇒ unlimited. */
+  /** Dispatches the contract permits per {@link use_period}. Absent ⇒ unlimited. */
   readonly max_uses?: number;
-  /** Dispatches left (decremented on use). Absent ⇒ unlimited; `<= 0` ⇒ exhausted. */
+  /** Dispatches left (decremented on use). Absent ⇒ unlimited; `<= 0` ⇒ exhausted
+   *  for the CURRENT window (see {@link use_period}). */
   readonly uses_remaining?: number;
+  /** How often {@link max_uses} refills. Absent ⇒ `'total'`, which is what every
+   *  row minted before this field meant and still means: one budget, never
+   *  refilled.
+   *
+   *  ⛔ SEPARATE FROM `expiry_at`, AND THEY COMPOSE. `expiry_at` is a deadline —
+   *  a moment the contract dies. This is a WINDOW — a moment the counter
+   *  refills. "100 calls a month until March" is both; neither field can express
+   *  the other, which is why "100 a month" was unsayable while `max_uses` was
+   *  the only count bound. */
+  readonly use_period?: UsageCapPeriod;
+  /** Epoch-ms start of the window {@link uses_remaining} belongs to — the UTC
+   *  day or month boundary, stamped at mint and re-stamped whenever the counter
+   *  refills. Meaningless (and absent) for `'total'`.
+   *
+   *  ⚠ THE COUNTER IS NOT SELF-DESCRIBING WITHOUT IT. `uses_remaining: 0` means
+   *  "spent" only for the window it was spent IN; without the anchor a rolled
+   *  contract and an exhausted one are the same two fields. */
+  readonly use_period_start?: number;
   /** Epoch-ms the user revoked at. Absent ⇒ not revoked. */
   readonly revoked_at?: number;
   readonly revocation_reason?: string;
@@ -442,6 +461,84 @@ export const SCOPED_GRANT_SOURCES = ['forwarded_item_sender'] as const;
 export type ScopedGrantSource = (typeof SCOPED_GRANT_SOURCES)[number];
 
 // ════════════════════════════════════════════════════════════════
+// Usage-cap period (pure)
+// ════════════════════════════════════════════════════════════════
+
+/** How often a contract's `max_uses` refills.
+ *
+ *  ⛔ `'total'` IS THE DEFAULT AND MUST STAY FIRST-CLASS, not a null. Every row
+ *  minted before this vocabulary existed means exactly `'total'` — one budget,
+ *  never refilled — so absent and `'total'` are the same answer and no migration
+ *  is needed. Reading absence as "no policy" instead would have made an
+ *  unmigrated door ambiguous at the one moment it matters.
+ *
+ *  ⚠ `'day'` and `'month'` are UTC boundaries, matching the two mechanisms that
+ *  already roll a window here (`QuotaTracker`'s `daily_reset_at` and the seller
+ *  plan's `SELLER_USAGE_PERIOD_GRANULARITIES`). A local-calendar period would be
+ *  a third convention on the same page. */
+export const USAGE_CAP_PERIODS = ['total', 'day', 'month'] as const;
+export type UsageCapPeriod = (typeof USAGE_CAP_PERIODS)[number];
+
+export const isUsageCapPeriod = (value: unknown): value is UsageCapPeriod =>
+  typeof value === 'string' && (USAGE_CAP_PERIODS as readonly string[]).includes(value);
+
+/** The contract's period, reading absent as `'total'`. */
+export const contractUsePeriod = (
+  def: Pick<ContractDefinition, 'use_period'>,
+): UsageCapPeriod => (isUsageCapPeriod(def.use_period) ? def.use_period : 'total');
+
+/** Epoch-ms start of the window `nowMs` falls in. `null` for `'total'`, which
+ *  has no window. Pure. */
+export const usageCapWindowStart = (
+  period: UsageCapPeriod,
+  nowMs: number,
+): number | null => {
+  if (period === 'total') return null;
+  const at = new Date(nowMs);
+  return period === 'day'
+    ? Date.UTC(at.getUTCFullYear(), at.getUTCMonth(), at.getUTCDate())
+    : Date.UTC(at.getUTCFullYear(), at.getUTCMonth(), 1);
+};
+
+/** True iff the contract's counter belongs to a window that has since passed —
+ *  i.e. `max_uses` is due to refill before the next dispatch is judged.
+ *
+ *  ⛔ A MISSING ANCHOR ON A PERIODIC ROW COUNTS AS ROLLED, deliberately. That row
+ *  is either hand-shaped or pre-dates the stamp, and the two readings are
+ *  "refill once, now" versus "this door is permanently spent". A budget the
+ *  owner set to refill must not be silently converted into a dead one by a
+ *  missing field. */
+export const usageCapWindowRolled = (
+  def: Pick<ContractDefinition, 'use_period' | 'use_period_start'>,
+  nowMs: number,
+): boolean => {
+  const period = contractUsePeriod(def);
+  if (period === 'total') return false;
+  return def.use_period_start !== usageCapWindowStart(period, nowMs);
+};
+
+/** The contract as its counter will read once any due refill is applied. Pure —
+ *  callers that only need to JUDGE a contract (every lifecycle predicate) use
+ *  this and write nothing; the store applies the same transform inside the same
+ *  transaction as the take, so the judgement and the decrement never disagree.
+ *
+ *  ⚠ An unbounded contract (no `max_uses`) is returned untouched: there is no
+ *  counter to refill, and stamping one would invent a budget. */
+export const rolledContractUses = <T extends ContractDefinition>(
+  def: T,
+  nowMs: number,
+): T => {
+  if (typeof def.max_uses !== 'number') return def;
+  if (!usageCapWindowRolled(def, nowMs)) return def;
+  const start = usageCapWindowStart(contractUsePeriod(def), nowMs);
+  return {
+    ...def,
+    uses_remaining: def.max_uses,
+    ...(start !== null ? { use_period_start: start } : {}),
+  };
+};
+
+// ════════════════════════════════════════════════════════════════
 // Lifecycle predicates (pure)
 // ════════════════════════════════════════════════════════════════
 
@@ -464,6 +561,13 @@ export const contractLifecycleState = (
     def.uses_remaining !== undefined
     && def.uses_remaining !== null
     && def.uses_remaining <= 0
+    // ⛔ A SPENT WINDOW IS NOT A SPENT CONTRACT. A periodic budget whose window
+    //   has rolled is due to refill, so it reads ACTIVE here even though the
+    //   stored counter is still 0 — the refill is applied at the take, inside
+    //   the same transaction that decrements. Judging on the raw counter would
+    //   make every periodic door dead from its first exhausted window onward,
+    //   because nothing writes to a contract that is never dispatched against.
+    && !usageCapWindowRolled(def, nowMs)
   ) {
     return 'exhausted';
   }
@@ -553,9 +657,12 @@ export interface MintContractRequest {
   approved_actions_template?: unknown;
   /** Epoch-ms after which the contract time-expires. Omit for never. */
   expiry_at?: number;
-  /** Total dispatches the contract permits — seeds `uses_remaining`. Omit for
-   *  unlimited. */
+  /** Dispatches the contract permits per {@link use_period} — seeds
+   *  `uses_remaining`. Omit for unlimited. */
   max_uses?: number;
+  /** How often `max_uses` refills. Omit for `'total'` — one budget, never
+   *  refilled, which is what every contract minted before this field meant. */
+  use_period?: UsageCapPeriod;
 }
 
 /** D-187 §6 (step 7 follow-on) — the `collection.contract.setDoorTypes` wire

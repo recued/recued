@@ -147,10 +147,10 @@
 
 import { createRecipeSimulationCaller } from './kitchen/recipe-editor/recipe-simulation-caller.js';
 import type {
+  InstancePrefs,
   Conn,
   DiagnosticResponse,
   HostnameProjection,
-  ReachabilityReport,
   RpcRequest,
   ServerRpcRegistry,
   UpdateOperationStatusResponse,
@@ -200,6 +200,7 @@ import {
   serverSwitchWorkStateHasChatDraft,
   type ServerSwitchWorkState,
 } from './shell/server-switcher.js';
+import { decideAddressChangeConvergence } from './shell/address-change-convergence.js';
 import {
   createServerSwitchWorkTracker,
   type ServerSwitchActiveWork,
@@ -281,8 +282,8 @@ import {
 import {
   bootstrapReceptionRoute,
   type BootstrapReceptionRouteOptions,
-} from './settings/reception-bootstrap.js';
-import { parseReceptionAddress } from './settings/reception-navigation.js';
+} from './reception/bootstrap.js';
+import { parseReceptionAddress } from './reception/navigation.js';
 import { createArchiveDownload } from './settings/archive-download.js';
 import { createArchiveUpload } from './settings/archive-upload.js';
 import { createArchiveRebindStash } from './settings/archive-rebind-stash.js';
@@ -438,6 +439,7 @@ import {
   type DataWorkEntityGetCaller,
   type DataWorkEntityListCaller,
   type DataWorkEntityUpsertCaller,
+  type DataTaskMarkDoneCaller,
   type WorkEntitySourceListCaller,
 } from './data/bootstrap-data-route.js';
 import { bootstrapSavedDataRoute } from './data/saved-data-route.js';
@@ -817,6 +819,7 @@ import type {
   HostnamesUpdateCaller,
   HostnamesVerifyOwnershipCaller,
   NetworkLocalUrlsCaller,
+  NetworkPortMappingCaller,
 } from './settings/hostnames.js';
 import type {
   CustomDomainPreflightCaller,
@@ -855,10 +858,10 @@ import { serverKeyFingerprint } from './auth/server-fingerprint.js';
 import {
   createReceptionPageShell,
   type ReceptionPageShell,
-} from './settings/reception-page-shell.js';
+} from './reception/page-shell.js';
 import type {
   ReceptionStatusInput,
-} from './settings/reception.js';
+} from './reception/spine.js';
 import type {
   WebclientLocalStore,
   WebclientProfileStore,
@@ -2103,9 +2106,11 @@ export interface BootstrapWebclientOptions {
   /** § A.6.5 / slice 111 — telemetry sink invoked after a successful
    *  TLS renew lands in the `done` state. Receives the substrate's
    *  `RotationResult` success branch. Best-effort; throws are
-   *  swallowed by the panel. The Reachability Doctor's TLS row also
-   *  picks up the renewal via the `cert.rotation_notice` broadcast,
-   *  so this hook is purely additive telemetry. */
+   *  swallowed by the panel. ⚠ It used to say the Reachability Doctor's TLS
+   *  row also picked this up via the `cert.rotation_notice` broadcast; that row
+   *  went with the tab (2026-09-16). The broadcast is still emitted and the
+   *  Certificates panel still reacts, so this hook stays purely additive
+   *  telemetry — but it is no longer the second of two readers. */
   onTlsRenewed?: (
     result: Extract<import('@recued/contracts').RotationResult, { ok: true }>,
   ) => void;
@@ -2221,7 +2226,7 @@ export interface BootstrapWebclientOptions {
    *  rpcs over the bootstrap's typed conn. **The bootstrap default stays
    *  OFF**, but the production boot path (`runBootstrapWithPairFallback`)
    *  now passes `true` explicitly — same opt-in-for-tests discipline as
-   *  `enableReachabilityDoctor` / `enablePassportFetchVerify`.
+   *  `enableReachabilityProbe` / `enablePassportFetchVerify`.
    *
    *  The original OFF rationale (Codex 2026-05-18 P5 R3 fold) was that
    *  the server-side handlers gated on `client.user_id`, which the
@@ -2305,19 +2310,23 @@ export interface BootstrapWebclientOptions {
    *  resolution,set_public_mcp_acknowledgement}` on the pair-WS channel (local
    *  UI only; `exposure.` is MCP-reserved). */
   enableExposurePanel?: boolean;
-  /** M-REACH-4 — Settings → Server Reachability Doctor front-door. Defaults OFF
-   *  for direct bootstrap tests; production `runBootstrapWithPairFallback` passes
-   *  true. When enabled, the external-probe button posts to the free
-   *  `/v1/diagnostics/probe` worker unless `reachabilityExternalProbeCaller` is
-   *  supplied. */
-  enableReachabilityDoctor?: boolean;
-  /** Optional initial internal Reachability Doctor report. M-REACH-4 wires the
-   *  external probe front-door; the server report RPC is intentionally outside
-   *  this webclient-only slice, so callers that already have a report can pass it
-   *  here for display. */
-  reachabilityReport?: ReachabilityReport;
+  /** M-REACH-4 — the cloud-probe front door: whether to build a caller that asks
+   *  `probe.recued.com` whether this server can be reached from outside.
+   *  Defaults OFF for direct bootstrap tests; production
+   *  `runBootstrapWithPairFallback` passes true. When enabled, the check posts
+   *  to the free `/v1/diagnostics/probe` worker unless
+   *  `reachabilityExternalProbeCaller` is supplied.
+   *
+   *  ⚠ WAS `enableReachabilityDoctor` UNTIL 2026-09-16. There is no Reachability
+   *  Doctor: the report, its builder and its tab were all deleted, and the
+   *  question folded into Settings → Server → Connect a device. The flag kept
+   *  gating the same thing it always did — the PROBE — under a name for the
+   *  page. ⛔ A flag named after a deleted surface is not cosmetic: it sends the
+   *  next reader looking for a page, and it makes "is this feature still here?"
+   *  unanswerable from the option list. */
+  enableReachabilityProbe?: boolean;
   /** Test/host override for the external-probe button. When omitted and the
-   *  doctor is enabled, the bootstrap builds a fetch-backed caller. */
+   *  probe is enabled, the bootstrap builds a fetch-backed caller. */
   reachabilityExternalProbeCaller?: ReachabilityExternalProbeCaller;
   /** Optional diagnostics Worker base URL. Defaults to `https://probe.recued.com`
    *  (D-176 Phase 5 — the probe Worker's own subdomain, split off the api host). */
@@ -6757,6 +6766,10 @@ export const bootstrapWebclient = async (
     switchWorkTracker.track(
       (input: typeof args) => rpcConn.call('work_entity.delete', input),
     )(args);
+  const dataTaskMarkDoneCaller: DataTaskMarkDoneCaller = (args) =>
+    switchWorkTracker.track(
+      (input: typeof args) => rpcConn.call('work_entity.task.mark_done', input),
+    )(args);
   const dataContactListCaller: DataContactListCaller = (args) =>
     rpcConn.call('contact.list', args);
   const dataContactGetCaller: DataContactGetCaller = (args) =>
@@ -8806,6 +8819,16 @@ export const bootstrapWebclient = async (
   // isolation and neither panel's failure surfaces in the other. Rides the
   // transparency enable flag: both are prefs panels on the same rpc, and a
   // harness that stubs out one has no server for the other either.
+  // D-display-mode P1 — the `ui.result_display_mode` pref on the SAME pair-WS
+  // prefs rpc. Its own thunks rather than reusing the transparency pair, so a
+  // harness driving the Recipes route does not have to stand up a prefs panel.
+  const recipesDisplayPrefsGetCaller = (): Promise<{ prefs: InstancePrefs }> =>
+    rpcConn.call('prefs.get', undefined) as Promise<{ prefs: InstancePrefs }>;
+  const recipesDisplayPrefsSetCaller = (
+    args: { patch: Partial<InstancePrefs> },
+  ): Promise<{ prefs: InstancePrefs }> =>
+    rpcConn.call('prefs.set', args) as Promise<{ prefs: InstancePrefs }>;
+
   const learningPrefsGetCaller: LearningPrefsGetCaller | undefined =
     options.enableTransparencyPanel === false
       ? undefined
@@ -8973,7 +8996,8 @@ export const bootstrapWebclient = async (
     options.enableHostnamesPanel === false
       ? undefined
       : (args) => rpcConn.call('collection.hostname.verifyOwnership', args);
-  // D-235 P5 — Settings → Server → Domains. Both are READ-ONLY on the server
+  // D-235 P5 — the Domains section under Settings → Server → Hostnames. Both
+  // are READ-ONLY on the server
   // (preflight resolves DNS and mutates nothing), so they ride the same gate as
   // the rest of the hostname surface without further conditions. ⚠ An older
   // server has neither method; the panel surfaces the rpc error rather than
@@ -8994,6 +9018,40 @@ export const bootstrapWebclient = async (
   // side and renders nothing.
   const networkLocalUrlsCaller: NetworkLocalUrlsCaller = () =>
     rpcConn.call('network.local_urls', undefined);
+  // D-273 — what the router says about forwarding the public port, read by the
+  // Connect a device router step.
+  //
+  // ⛔⛔ THIS WAS THE MISSING HALF. The rpc has been live on the server since
+  // D-273 P3 and the settings route has carried a `networkPortMappingCaller`
+  // option and the projection behind it — but NOTHING EVER SUPPLIED ONE, in
+  // production or in a test. So the step never received `port_mapping`, and
+  // every sentence the copy earns from it was unreachable: the CGNAT warning,
+  // "your router has this switched off", "Recued opened this port", "you set
+  // that up yourself". A whole decision's worth of copy, dead on the wire.
+  // ⚠ Built unconditionally for the same reason as its sibling above: a
+  // harmless local read on any paired server. An older server that does not
+  // know the method throws, the panel catches it, and the step keeps the
+  // wording it had — which is exactly "nobody asked".
+  const networkPortMappingCaller: NetworkPortMappingCaller = () =>
+    rpcConn.call('network.port_mapping', undefined);
+  // D-273 — the write half of the router step: turn automatic port forwarding
+  // on or off from the page that tells the reader they want it.
+  //
+  // ⛔ NOT GATED ON `enableAiModelsPage`. It calls the same `server.setConfigField`
+  // the AI / Models page does, but that page's flag says "render a page about
+  // models", which has nothing to do with whether a network setting may be
+  // written. Reaching through `aiModelsSetConfigFieldCaller` would have tied one
+  // surface's availability to another's feature flag — so this is its own caller
+  // on the same method.
+  //
+  // ⚠ NARROWED HERE, at the only place that knows which key is meant. The panel
+  // receives a boolean setter and cannot name a second key.
+  const networkAutoPortMappingSetCaller = async (enabled: boolean): Promise<void> => {
+    await rpcConn.call('server.setConfigField', {
+      key: 'network.auto_port_mapping',
+      value: enabled,
+    });
+  };
 
   // R27 delta-B — Pro DDNS pause/resume rpc callers for the Hostnames panel's
   // "Pro web address (DDNS)" control. Owner-only + MCP-reserved server-side;
@@ -9079,7 +9137,7 @@ export const bootstrapWebclient = async (
 
   let lastReachabilityProbeResponse: DiagnosticResponse | null = null;
   const baseReachabilityExternalProbeCaller: ReachabilityExternalProbeCaller | undefined =
-    options.enableReachabilityDoctor === true
+    options.enableReachabilityProbe === true
       ? options.reachabilityExternalProbeCaller
         ?? createReachabilityDiagnosticProbeCaller({
           ...(options.diagnosticsFetch !== undefined
@@ -9100,18 +9158,13 @@ export const bootstrapWebclient = async (
             if (hostname === null) {
               throw new Error('diagnostics hostname is unavailable');
             }
-            const expectedPublicIp =
-              options.reachabilityReport?.network.public_ipv4
-              ?? options.reachabilityReport?.network.public_ipv6
-              ?? undefined;
-            const target = {
-              account_id: accountId,
-              hostname,
-              ...(expectedPublicIp !== undefined
-                ? { expected_public_ip: expectedPublicIp }
-                : {}),
-            };
-            return target;
+            // `expected_public_ip` is deliberately absent: its only supplier
+            // was `buildReachabilityReport`, deleted with the rest of the
+            // report family. The probe worker already falls back to its own
+            // `detected_public_ip` when the field is omitted
+            // (`diagnostics-worker/probe-handlers.ts`), so omitting it costs
+            // the cross-check, not the probe.
+            return { account_id: accountId, hostname };
           },
         })
       : undefined;
@@ -10006,6 +10059,14 @@ export const bootstrapWebclient = async (
           root: host,
           scrollRoot: appShell.contentRoot,
           ...(options.document !== undefined ? { document: options.document } : {}),
+          // D-display-mode P1 — absent ⇒ the panel offers no display control at
+          // all, rather than a dead one. Rides the transparency enable flag for
+          // the same reason the learning pair does: a harness that stubs out the
+          // prefs rpc has no server for this either.
+          ...(options.enableTransparencyPanel === false ? {} : {
+            displayPrefsGetCaller: recipesDisplayPrefsGetCaller,
+            displayPrefsSetCaller: recipesDisplayPrefsSetCaller,
+          }),
           recipesListCaller,
           recipeExecuteCaller: switchWorkTracker.track(recipeExecuteCaller),
           runnabilityCaller: recipesRunnabilityCaller,
@@ -10156,6 +10217,7 @@ export const bootstrapWebclient = async (
         workEntityListCaller: dataWorkEntityListCaller,
         workEntityGetCaller: dataWorkEntityGetCaller,
         workEntityUpsertCaller: dataWorkEntityUpsertCaller,
+        taskMarkDoneCaller: dataTaskMarkDoneCaller,
         workEntityDeleteCaller: dataWorkEntityDeleteCaller,
         contactListCaller: dataContactListCaller,
         contactGetCaller: dataContactGetCaller,
@@ -10800,6 +10862,44 @@ export const bootstrapWebclient = async (
         // needing its own `server.seller.*` method.
         recipeExecuteCaller: switchWorkTracker.track(recipeExecuteCaller),
         ...(options.document !== undefined ? { document: options.document } : {}),
+        // D-148 — Settings → Servers. ⛔ WIRED HERE OR NOWHERE: the section is
+        // gated on these deps, so an option accepted by the route and never
+        // passed by the boot would leave a fully-tested panel that no user can
+        // reach, with nothing to read as broken.
+        ...(options.profileStore !== undefined
+          ? {
+              serverAddressDeps: {
+                listProfiles: () => options.profileStore!.listProfiles(),
+                tokenStore: options.tokenStore,
+                retarget: (id, next_url, next_token) =>
+                  options.profileStore!.retargetProfile(id, next_url, next_token),
+                activeProfileId: () => options.profileStore!.activeProfileId(),
+                // ⛔ THE DIRTY-WORK POLICY LIVES HERE, WHERE THE LEASES DO.
+                // A reload is a discard: an in-flight chat turn, an unsaved
+                // recipe or a running execution would go with it. The settings
+                // panel cannot see any of that, so it asks and we decide —
+                // the same `currentServerSwitchWorkState()` authority the
+                // server switcher already consults.
+                //
+                // ⚠ `intentionalServerSwitchReload` is NOT armed. That marker
+                // belongs to the switch flow's receipt replay; this reload has
+                // no receipt to replay, and claiming one would make the next
+                // boot look for a switch that never happened.
+                onActiveAddressChanged: () => {
+                  const decision = decideAddressChangeConvergence({
+                    workState: currentServerSwitchWorkState(),
+                    canReload: reloadForServerSwitch !== undefined,
+                    // ⛔ THE SAME PREDICATE THE UNLOAD GUARD USES. Reloading
+                    // into a native "Leave site?" dialog the user can CANCEL
+                    // would leave them on the old address with nothing said.
+                    unloadWouldLoseWork: unloadWouldLoseWork(),
+                  });
+                  if (decision === 'reloading') reloadForServerSwitch!();
+                  return decision;
+                },
+              },
+            }
+          : {}),
         ...(hashSource !== null
           ? {
               initialSectionId: deepLinkSegment('settings'),
@@ -11449,25 +11549,29 @@ export const bootstrapWebclient = async (
         // the CRUD callers off. Always defined; the panel renders the section
         // only when the call resolves with addresses.
         networkLocalUrlsCaller,
+        networkPortMappingCaller,
+        networkAutoPortMappingSetCaller:
+          switchWorkTracker.track(networkAutoPortMappingSetCaller),
         // R27 delta-B — Pro DDNS toggle callers, forwarded independently (the
         // route gates the section on pro-convenience-published + composes the
         // self-disconnect context).
         ddnsStatusCaller,
         ddnsSetEnabledCaller: switchWorkTracker.track(ddnsSetEnabledCaller),
-        ...(options.enableReachabilityDoctor === true
-          && (options.reachabilityReport !== undefined
-            || reachabilityExternalProbeCaller !== undefined)
+        ...(options.enableReachabilityProbe === true
+          && reachabilityExternalProbeCaller !== undefined
           ? {
-              ...(options.reachabilityReport !== undefined
-                ? { reachabilityReport: options.reachabilityReport }
-                : {}),
-              ...(reachabilityExternalProbeCaller !== undefined
-                ? {
-                    reachabilityExternalProbeCaller: switchWorkTracker.track(
-                      reachabilityExternalProbeCaller,
-                    ),
-                  }
-                : {}),
+              reachabilityExternalProbeCaller: switchWorkTracker.track(
+                reachabilityExternalProbeCaller,
+              ),
+              // 🔑 THE LAST CHECK, NOW READ BY SOMETHING. This cache has been
+              // written on every probe since `3643935ea` and read by nothing.
+              // Settings — Server — Connect a device folds it into the one step
+              // this machine cannot answer for itself: whether the router lets
+              // port 443 through. It is held HERE rather than in the route
+              // because it must outlive a route mount — a check run before the
+              // reader opened Settings still counts.
+              reachabilityLastProbe: (): DiagnosticResponse | null =>
+                lastReachabilityProbeResponse,
             }
           : {}),
         ...(accountBindingStatusCaller !== undefined
@@ -13600,23 +13704,36 @@ export const bootstrapWebclient = async (
   // work, or persistent Attention chrome owns an unresolved decision,
   // closing/reloading the tab asks first. Routes never register their own
   // listeners.
-  const onBeforeUnload = (event: BeforeUnloadEvent): void => {
+  /** Would leaving this tab right now lose something?
+   *
+   *  ⛔ EXTRACTED SO THE UNLOAD GUARD AND THE ADDRESS-CHANGE RELOAD CANNOT
+   *  DISAGREE. They were two hand-written lists of "is there work", and they
+   *  differed by two entries: `approvalAttentionPopover.hasInFlightWork()` and
+   *  `drawerCreateOverlay.hasInFlightWork()` are checked here and are NOT part
+   *  of `currentServerSwitchWorkSnapshot()`. A tab could therefore be
+   *  `workState === 'clean'` while this still returned true — so an
+   *  address-change reload would raise the browser's native "Leave site?"
+   *  dialog, and a user who clicked Cancel would be left on the old address
+   *  with the panel saying nothing, which is the exact state that reload
+   *  exists to prevent. */
+  const unloadWouldLoseWork = (): boolean => {
     const guardedInFlightPrompt =
       mountedRouteHandle.inFlightWorkPrompt?.()?.trim() ?? '';
-    if (
-      !intentionalServerSwitchReload
-      && (
-        approvalAttentionPopover?.hasInFlightWork() === true
-        || drawerCreateOverlay?.hasUnsavedChanges() === true
-        || drawerCreateOverlay?.hasInFlightWork() === true
-        || globalRunPalette?.hasInFlightWork() === true
-        || mountedRouteHandle.hasUnsavedChanges?.() === true
-        || (
-          guardedInFlightPrompt.length > 0
-          && mountedRouteHandle.hasInFlightWork?.() === true
-        )
+    return (
+      approvalAttentionPopover?.hasInFlightWork() === true
+      || drawerCreateOverlay?.hasUnsavedChanges() === true
+      || drawerCreateOverlay?.hasInFlightWork() === true
+      || globalRunPalette?.hasInFlightWork() === true
+      || mountedRouteHandle.hasUnsavedChanges?.() === true
+      || (
+        guardedInFlightPrompt.length > 0
+        && mountedRouteHandle.hasInFlightWork?.() === true
       )
-    ) {
+    );
+  };
+
+  const onBeforeUnload = (event: BeforeUnloadEvent): void => {
+    if (!intentionalServerSwitchReload && unloadWouldLoseWork()) {
       event.preventDefault();
       // Chrome requires a set returnValue for the native prompt.
       event.returnValue = '';

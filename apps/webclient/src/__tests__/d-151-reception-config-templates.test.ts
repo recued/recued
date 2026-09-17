@@ -1,7 +1,7 @@
-/** D-151 — non-intake config templates in the Settings → Reception
- *  Templates gallery: the projection (`reception-config-templates.ts`) +
+/** D-151 — non-intake config templates in the Reception
+ *  Templates gallery: the projection (`config-templates.ts`) +
  *  the mount rendering / "Use template" dispatch
- *  (`reception-templates-mount.ts`). The mount drives through the same
+ *  (`templates-mount.ts`). The mount drives through the same
  *  DOM-free fake-host pattern the D-149 intake mount test uses. */
 
 import { describe, expect, it, vi } from 'vitest';
@@ -18,8 +18,8 @@ import {
   buildReceptionConfigTemplateCardModel,
   buildReceptionConfigTemplatesBrowserModel,
   receptionConfigTemplateAuthoringSeed,
-} from '../settings/reception-config-templates.js';
-import { mountTemplatesBrowser } from '../settings/reception-templates-mount.js';
+} from '../reception/config-templates.js';
+import { mountTemplatesBrowser } from '../reception/templates-mount.js';
 
 // ── Fixtures ──────────────────────────────────────────────────────
 

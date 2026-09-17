@@ -20,6 +20,11 @@ const entities: WorkEntity[] = [
     lifecycle_changed_at: NOW, due_status_changed_at: NOW, derivation: 'user_declared', blocks_task_ids: [], blocks_project_ids: [],
   },
 ];
+const taskStateKey = 'recued-test-today-entities';
+const currentEntities = (): WorkEntity[] => {
+  const saved = sessionStorage.getItem(taskStateKey);
+  return saved ? JSON.parse(saved) as WorkEntity[] : entities;
+};
 const records: CollectionRecord[] = [
   { record_id: 'cal:event/one', source_id: 'original-event', received_at: NOW, modified_at: NOW, size_bytes: 0,
     hot_fields: { summary: 'Design review', start_at: NOW + 3 * HOUR, end_at: NOW + 4 * HOUR, status: 'confirmed', is_all_day: false } },
@@ -52,13 +57,40 @@ export const todayEmptyDemoReply = (method: string): { result?: unknown } | null
 export const todayDemoReply = (method: string, raw: unknown): { result?: unknown; error?: { code: string; message: string } } | null => {
   const params = new URLSearchParams(location.search);
   if (params.get('data') !== 'today') return null;
-  const args = raw as { kind?: string; id?: string; slug?: string; record_id?: string; offset?: number; limit?: number; calendar_window?: { from: number; before: number }; filters?: { is_all_day?: boolean } };
-  if (method === 'work_entity.source.list') return { result: { sources: [source('task'), source('commitment')] } };
+  const args = raw as { kind?: string; id?: string; done?: boolean; due_at?: number; slug?: string; record_id?: string; offset?: number; limit?: number; calendar_window?: { from: number; before: number }; filters?: { is_all_day?: boolean } };
+  if (method === 'work_entity.source.list') {
+    if (params.get('today_source_failure') === '1') return { error: { code: 'UNAVAILABLE', message: 'Task source is unavailable.' } };
+    return { result: { sources: [
+      { ...source('task'), write_capable: params.get('today_readonly') !== '1' && document.documentElement.dataset.todayReadonly !== '1' },
+      source('commitment'),
+    ] } };
+  }
+  const visible = currentEntities().filter(entity => entity.id !== document.documentElement.dataset.todayHideTask);
   if (method === 'work_entity.list') {
-    const rows = entities.filter((entity) => entity._kind === args.kind && entity.id !== document.documentElement.dataset.todayHideTask);
+    const rows = visible.filter((entity) => entity._kind === args.kind);
     return { result: { entities: rows.slice(args.offset ?? 0, (args.offset ?? 0) + 1), total: rows.length } };
   }
-  if (method === 'work_entity.get') return { result: { entity: entities.find((entity) => entity.id === args.id) ?? null } };
+  if (method === 'work_entity.get') return { result: { entity: visible.find((entity) => entity.id === args.id) ?? null } };
+  if (method === 'work_entity.task.mark_done' || (method === 'work_entity.upsert' && args.kind === 'task')) {
+    const log = JSON.parse(sessionStorage.getItem('recued-test-today-mutations') ?? '[]') as unknown[];
+    log.push({ method, args });
+    sessionStorage.setItem('recued-test-today-mutations', JSON.stringify(log));
+    if (document.documentElement.dataset.todayWriteFailure === '1') {
+      return { error: { code: 'unavailable', message: 'Task source rejected the change. Try again.' } };
+    }
+    const original = visible.find(entity => entity._kind === 'task' && entity.id === args.id);
+    if (original?._kind !== 'task') return { error: { code: 'not_found', message: 'Task is no longer available.' } };
+    if (document.documentElement.dataset.todayVendorWon === '1') return { result: { entity: original } };
+    const updated = { ...original, updated_at: Date.now(),
+      ...(method === 'work_entity.task.mark_done' ? { done: args.done, completed_at: Date.now() } : { due_at: args.due_at }),
+      ...(document.documentElement.dataset.todayAwaitingVerify === '1' ? { pending_write: {
+        staged_at: Date.now(), operation: method === 'work_entity.task.mark_done' ? 'complete' : 'update',
+        dirty_fields: method === 'work_entity.task.mark_done' ? ['done'] : ['due_at'], state: 'awaiting_verify',
+      } } : {}),
+    };
+    sessionStorage.setItem(taskStateKey, JSON.stringify(currentEntities().map(entity => entity.id === updated.id ? updated : entity)));
+    return { result: { entity: updated } };
+  }
   if (method === 'collection.listInstances') return { result: { instances: [
     { platform: 'calendar', slug: 'work-calendar', adapter_type: 'gcal', auth_state: 'healthy', caps: {}, last_synced_at: NOW - 48 * HOUR },
   ] } };

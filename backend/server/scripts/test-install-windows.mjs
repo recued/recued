@@ -231,6 +231,13 @@ const srv = createServer((req, rep) => {
     out.on('error', () => { rep.statusCode = 500; rep.end('write failed'); });
     return;
   }
+  if (req.method === 'GET' && req.url?.startsWith('/__src/')) {
+    const safe = decodeURIComponent(req.url.slice('/__src/'.length)).replace(/[^A-Za-z0-9._-]/g, '_');
+    const dest = join(fixtureRoot, safe);
+    if (!safe || !existsSync(dest)) { rep.statusCode = 404; rep.end('no such source'); return; }
+    rep.end(readFileSync(dest));
+    return;
+  }
   const requestPath = decodeURIComponent((req.url ?? '/').split('?')[0]);
   if (/\/manifest\.json(?:\.minisig)?$/.test(requestPath)) {
     manifestRequests.push(requestPath);
@@ -260,7 +267,25 @@ const sshBase = ['-o', 'StrictHostKeyChecking=no', '-o', 'UserKnownHostsFile=/de
 
 /** Compile the minimum executable contract the installer itself calls. Add-Type
  * runs on the Windows guest, so this is a genuine PE that both ARM64 and x64
- * Windows can execute as an AnyCPU .NET Framework console application. */
+ * Windows can execute as an AnyCPU .NET Framework console application.
+ *
+ * !!! EVERY BYTE OF `source` RIDES AN EncodedCommand, which is base64 of UTF-16LE
+ * -- so one line of C# costs ~2.7x its length against the ~8191-char Windows
+ * command-line ceiling. A ten-line comment pushed it over and the guest answered
+ * "The command line is too long." Explain things HERE, in JS, which never leaves
+ * this machine. `assertFixtureFits` keeps the failure legible if it happens again.
+ *
+ * !!! `update-lease claim` MUST NOT CREATE --bin-dir, AND THE VERSION THAT DID
+ * HID A DEFECT THAT BROKE EVERY FRESH WINDOWS INSTALL. The real payload writes
+ * its lease staging file straight into --bin-dir (`acquireUpdateLease`), so an
+ * absent directory is an ENOENT that `runUpdateLeaseProfile` reports as
+ * LEASE_UNAVAILABLE (20). install.ps1 created $Prefix two steps AFTER the claim,
+ * so on a fresh host the real binary exited 20 and the install died -- while this
+ * stand-in, being MORE CAPABLE than the thing it stands in for, silently made the
+ * directory and returned 0. Arm 1 installs into a prefix that does not exist and
+ * was green throughout, on every run, while the shipped installer could not
+ * complete a single fresh install. A double may be SIMPLER than what it replaces;
+ * it may never be STRONGER. */
 const compileFixture = async (version, legacyRouter = false, startFailsOnce = false) => {
   const capabilityVerbs = legacyRouter ? '' : `
     if (args.Length == 1 && args[0] == "self-test") {
@@ -271,8 +296,12 @@ const compileFixture = async (version, legacyRouter = false, startFailsOnce = fa
     if (args.Length >= 2 && args[0] == "update-lease" && args[1] == "claim") {
       string dir = Value(args, "--bin-dir");
       string pid = Value(args, "--pid");
+      // No CreateDirectory here -- the real payload has no such capability.
+      if (!Directory.Exists(dir)) {
+        Console.Error.WriteLine("update-lease: cannot take the lease at " + Path.Combine(dir, "recued-update.lock") + ": ENOENT: no such file or directory");
+        return 20;
+      }
       string token = Guid.NewGuid().ToString("N");
-      Directory.CreateDirectory(dir);
       File.WriteAllText(Path.Combine(dir, "recued-update.lock"), "{\\\"pid\\\":" + pid + ",\\\"token\\\":\\\"" + token + "\\\"}");
       Console.WriteLine(token);
       return 0;
@@ -317,10 +346,19 @@ ${startBehavior}
     return 0;
   }
 }`;
+  // !!! THE C# DOES NOT RIDE THE COMMAND LINE. It used to be interpolated into
+  // this script, which is base64-of-UTF-16LE'd into one `powershell
+  // -EncodedCommand` argument: the 26.9.2 fixture reached 8056 of the ~8191-char
+  // Windows ceiling, so the harness was ~130 characters from breaking and a
+  // ten-line comment did break it ("The command line is too long", which names
+  // nothing). The guest already reaches the feed server; let it fetch the source.
+  const sourceName = `fixture-${version}.cs`;
+  if (!/^[\x00-\x7F]*$/.test(source)) fail(`the ${version} fixture source is not ASCII`);
+  writeFileSync(join(fixtureRoot, sourceName), source, 'ascii');
   const script = `$ErrorActionPreference = 'Stop'
-$source = @'
-${source}
-'@
+$srcFile = Join-Path $env:TEMP '${sourceName}'
+Invoke-WebRequest ${BASE}/__src/${sourceName} -OutFile $srcFile -UseBasicParsing
+$source = Get-Content -Raw $srcFile
 $guestOut = Join-Path $env:TEMP 'recued-${version}.exe'
 Remove-Item -Force $guestOut -ErrorAction SilentlyContinue
 Add-Type -TypeDefinition $source -Language CSharp -OutputAssembly $guestOut -OutputType ConsoleApplication
@@ -328,6 +366,14 @@ Add-Type -TypeDefinition $source -Language CSharp -OutputAssembly $guestOut -Out
 Invoke-WebRequest -Method Put -InFile $guestOut -Uri ${BASE}/__fixture/recued-${version}.exe -UseBasicParsing
 Write-Output FIXTURE-OK`;
   const encoded = Buffer.from(script, 'utf16le').toString('base64');
+  // `ssh host "powershell -EncodedCommand <b64>"` is one Windows command line.
+  // Overflowing it fails as "The command line is too long", which names neither
+  // this file nor the line that grew.
+  if (encoded.length > 7600) {
+    fail(`the ${version} fixture EncodedCommand is ${encoded.length} chars, over the ~8191 `
+      + 'Windows command-line ceiling. Shorten the C# source (comments belong in this file, '
+      + 'not in `source` -- UTF-16 + base64 makes each C# byte cost ~2.7 here).');
+  }
   const result = await run('sshpass', ['-e', 'ssh', ...sshBase, '-p', VM.port,
     `${VM.user}@${VM.host}`, `powershell -NoProfile -EncodedCommand ${encoded}`], { SSHPASS: VM.pass });
   if (result.code !== 0 || !result.out.includes('FIXTURE-OK')) {

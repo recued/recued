@@ -3,12 +3,11 @@ import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import {
   RpcError, SAVED_DATA_VIEW_LIMIT, SAVED_DATA_VIEW_NAME_LIMIT,
-  parseSavedDataViewDefinition, parseSavedDataViewAlertSettings, sameSavedDataViewDefinition, type SavedDataView,
+  parseSavedDataViewDefinition, parseSavedDataViewAlertSettings, sameSavedDataViewDefinition, savedDataViewSupportsAlerts, type SavedDataView,
   type SavedDataViewCreateRequest, type SavedDataViewRenameRequest,
   type SavedDataViewDeleteRequest, type SavedDataViewUpdateRequest,
 } from '@recued/contracts';
-import { createSavedDataViewAlertStore, type SavedDataViewAlertStore } from './saved-data-view-alert-store.js';
-import type { SavedTaskViewReader } from './saved-data-view-task-reader.js';
+import { createSavedDataViewAlertStore, type SavedDataViewAlertStore, type SavedDataViewMatchReader } from './saved-data-view-alert-store.js';
 
 export interface SavedDataViewStore {
   alerts: SavedDataViewAlertStore;
@@ -44,10 +43,10 @@ const decode = (row: unknown): SavedDataView | null => {
 
 export const createSavedDataViewStore = (
   db: Database.Database,
-  options: { readTasks?: SavedTaskViewReader; now?: () => number } = {},
+  options: { readTasks?: SavedDataViewMatchReader; readRecords?: SavedDataViewMatchReader; now?: () => number } = {},
 ): SavedDataViewStore => {
   db.exec('CREATE TABLE IF NOT EXISTS saved_data_views (id TEXT PRIMARY KEY NOT NULL, data TEXT NOT NULL)');
-  const alerts = createSavedDataViewAlertStore(db, options.readTasks, options.now);
+  const alerts = createSavedDataViewAlertStore(db, { task: options.readTasks, records: options.readRecords }, options.now);
   const get = (id: string): SavedDataView | null =>
     decode(db.prepare('SELECT data FROM saved_data_views WHERE id = ?').get(requireId(id)));
   const write = (view: SavedDataView): void => {
@@ -80,7 +79,7 @@ export const createSavedDataViewStore = (
     update: db.transaction((request: SavedDataViewUpdateRequest) => {
       const view = current(request);
       if (!Object.hasOwn(request, 'definition') && !Object.hasOwn(request, 'alert')) {
-        throw new RpcError('bad_request', 'Provide saved view settings or task alert settings.', 400);
+        throw new RpcError('bad_request', 'Provide saved view settings or alert settings.', 400);
       }
       const definition = Object.hasOwn(request, 'definition')
         ? parseSavedDataViewDefinition(request.definition) : view.definition;
@@ -88,9 +87,9 @@ export const createSavedDataViewStore = (
       const updated: SavedDataView = { ...view, definition, revision: view.revision + 1, updated_at: Date.now() };
       if (Object.hasOwn(request, 'alert')) {
         const settings = parseSavedDataViewAlertSettings(request.alert);
-        if (settings === null) throw new RpcError('bad_request', 'Invalid task alert settings.', 400);
+        if (settings === null) throw new RpcError('bad_request', 'Invalid alert settings.', 400);
         updated.alert = alerts.configure(updated, settings);
-      } else if (definition.tab !== 'task') {
+      } else if (!savedDataViewSupportsAlerts(definition)) {
         delete updated.alert;
         alerts.clear(view.id);
       } else if (view.alert?.enabled && !sameSavedDataViewDefinition(view.definition, definition)) {

@@ -8723,7 +8723,7 @@ void (async (): Promise<void> => {
             exposureProfile: 'community-shareable',
             hashSource,
             now: () => FIXED_NOW,
-            enableReachabilityDoctor: true,
+            enableReachabilityProbe: true,
             enablePassportFetchVerify: false,
           }),
           document,
@@ -8776,7 +8776,7 @@ void (async (): Promise<void> => {
             exposureProfile: 'community-shareable',
             hashSource,
             now: () => FIXED_NOW,
-            enableReachabilityDoctor: true,
+            enableReachabilityProbe: true,
             enablePassportFetchVerify: false,
           }),
           document,
@@ -9012,7 +9012,7 @@ void (async (): Promise<void> => {
           exposureProfile: 'community-shareable',
           hashSource,
           now: () => FIXED_NOW,
-          enableReachabilityDoctor: true,
+          enableReachabilityProbe: true,
           enablePassportFetchVerify: false,
         }),
         document,
@@ -9054,7 +9054,7 @@ void (async (): Promise<void> => {
       // can land on Settings -> Server -> Reachability. The cloud probe stays
       // inert until its explicit button is clicked, so this adds no network
       // dependency to the deterministic harness.
-      enableReachabilityDoctor: true,
+      enableReachabilityProbe: true,
       enableDevicesPage: searchParams.get('devices') === 'ready'
         || searchParams.get('devices') === 'fail-once-slow-retry'
         || searchParams.get('devices') === 'fail-twice-slow-retry',

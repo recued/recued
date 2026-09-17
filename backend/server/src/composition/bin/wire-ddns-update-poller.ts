@@ -82,6 +82,15 @@ export interface ComposeDdnsUpdatePollerDeps {
    *  Absent (db-less / test harnesses) → the poller still backs off, it just
    *  cannot record the state transition. */
   applyLifecycle?: () => Pick<HandleStateMachine, 'applyLifecycleUpdate'> | undefined;
+  /** D-175 — reports a confirmed disconnection. OPTIONAL: absent ⇒ the
+   *  stand-down still happens, it is just not announced. The announcer owns the
+   *  once-only rule, because two detectors see this same fact (see its header);
+   *  the poller's job ends at reporting. */
+  announceDisconnect?: (source: 'ddns_publish') => Promise<boolean> | boolean;
+  /** D-175 — shared disowned state. The poller SETS it on a retired refusal and
+   *  READS it to stand down; the entitlement detector CLEARS it when the cloud
+   *  confirms ownership again. Absent ⇒ no stand-down (harness boots). */
+  disownedFlag?: import('../../pro-convenience/disconnect-announcer.js').ServerDisownedFlag;
   /** Polling cadence. Defaults to `DDNS_UPDATE_INTERVAL_MS` (5 min). */
   intervalMs?: number;
   /** Clock override for tests. Defaults to `Date.now`. */
@@ -232,11 +241,18 @@ export const composeDdnsUpdatePoller = (
   let lapseProbeAfter = 0;   // 0 → probe on the next tick (fresh process)
   let lapseBackoffMs = 0;
 
-  const recordLapse = async (): Promise<void> => {
+  /** The pacing half of a stand-down, without any claim about WHY. Lifted out of
+   *  `recordLapse` so a second permanent refusal can reuse the proven backoff
+   *  without borrowing the lapse's meaning. */
+  const advanceBackoff = (): void => {
     lapseBackoffMs = lapseBackoffMs === 0
       ? LAPSE_BACKOFF_START_MS
       : Math.min(lapseBackoffMs * 2, LAPSE_BACKOFF_MAX_MS);
     lapseProbeAfter = now() + lapseBackoffMs;
+  };
+
+  const recordLapse = async (): Promise<void> => {
+    advanceBackoff();
     const lifecycle = deps.applyLifecycle?.();
     if (!lifecycle) return;
     try {
@@ -315,6 +331,18 @@ export const composeDdnsUpdatePoller = (
       // whole tick so the poller neither re-publishes nor burns a rate token.
       if (deps.ddnsEnabled && !deps.ddnsEnabled.isEnabled()) return;
 
+      // ⛔ Nothing below this line can succeed for a disowned server, and the
+      // checks in between cost a public-IP fetch and a store read per tick.
+      //
+      // ⚠ THE FLAG IS SHARED, NOT PRIVATE, AND THAT IS THE FIX FOR A REAL BUG.
+      // It used to be a local `let retired = false` that nothing could clear, so
+      // a server reconnected by its owner kept publishing NOTHING until the
+      // process restarted — Pro card healthy, provisioner working, hostname
+      // quietly stale. The mint notices a reconnection within a tick and clears
+      // it; this poller cannot notice at all without asking the cloud, which is
+      // exactly what it has stopped doing.
+      if (deps.disownedFlag?.isDisowned()) return;
+
       const handleState = await deps.handleStateStore.load();
       // A lapsed handle stays a publish TARGET ('grace' is in
       // `activeHandleState`, because the handle is still the user's) — so the
@@ -348,11 +376,30 @@ export const composeDdnsUpdatePoller = (
       const publishedKeys = priorMatchesIp
         ? snapshotTargetKeys(prior)
         : new Set<string>();
-      if (priorMatchesIp && prior?.published_targets === undefined) {
-        for (const target of targets) {
-          if (target.source === 'handle_state') publishedKeys.add(targetKey(target));
-        }
-      }
+      // ⛔⛔⛔ A COMPAT BRANCH LIVED HERE AND BECAME AN OUTAGE THE DAY HANDLES
+      //    STARTED MOVING. A pre-D-152 snapshot carries no `published_targets`,
+      //    and it assumed the singleton publish had been for whatever the
+      //    handle state names NOW — marking every `source: 'handle_state'`
+      //    target as already acknowledged so an upgrade cost no redundant post.
+      //
+      //    That identified the legacy publish by SOURCE, which was sound only
+      //    while a server's handle could never change. A dashboard rename now
+      //    migrates it, so on a legacy row the NEW name was marked published
+      //    without ever being posted, the old name stopped being a target, and
+      //    — because nothing published — the row was never upgraded, so the
+      //    skip repeated every tick forever. Result: the reservation moves, the
+      //    certificate is issued, and the A record for the new hostname is
+      //    never written. After the ~24h soft redirect the server is reachable
+      //    at NEITHER name.
+      //
+      //    🔑 THE ASSUMPTION WAS UNKNOWABLE BY CONSTRUCTION — a legacy row
+      //    records an IP and a timestamp and NOTHING about which handle it was
+      //    for, so no amount of care here can recover it. The only honest
+      //    reading of "I do not know what was published" is "nothing", which
+      //    costs exactly one redundant publish, once, per server: the very next
+      //    success writes a modern row and ordinary per-target dedup resumes.
+      //    One cloud call against a 24/hour budget, versus an outage that
+      //    cannot self-heal.
 
       for (const target of targets) {
         if (priorMatchesIp && publishedKeys.has(targetKey(target))) {
@@ -397,8 +444,54 @@ export const composeDdnsUpdatePoller = (
         // Failure → log + retry next tick. The poller does NOT update
         // the IP state on failure; the next tick re-detects the change
         // + retries.
+        if (result.error === 'ddns_publisher_retired') {
+          // ⛔⛔⛔ TERMINAL, AND THE ONLY REFUSAL HERE THAT IS. The cloud has
+          // verified our signature and told us this server is no longer bound to
+          // an account — unbound, or the account deleted. Retrying cannot change
+          // that: the row only returns to `active` when the OWNER binds this
+          // machine again, which is an action taken elsewhere, not a state we
+          // can wait out.
+          //
+          // ⚠ DELIBERATELY NOT PERSISTED. One request per process start is the
+          // price, and it buys correctness: on boot we re-ASK rather than assume,
+          // so a server rebound while it was down resumes publishing on its first
+          // tick instead of staying dead until someone notices. Stopping 288
+          // requests a day is the goal; stopping the 289th is not worth a stored
+          // flag that can go stale against a fact only the cloud holds.
+          deps.disownedFlag?.markDisowned();
+          console.warn(
+            '[ddns-update-poll] this server is no longer bound to a recued.com '
+              + 'account — publishing stopped. Reconnect it from Settings > Account.',
+          );
+          // ⚠ REPORT, DO NOT DECIDE. The entitlement mint sees this same fact on
+          // its own five-minute cadence, so whether the owner is told — and told
+          // ONCE — is the announcer's call, not this branch's.
+          try {
+            await deps.announceDisconnect?.('ddns_publish');
+          } catch {
+            /* announcing must never be able to break the stand-down */
+          }
+          return;
+        }
         if (result.error === 'ddns_subscription_lapsed') {
           await recordLapse();
+        } else if (result.error === 'ddns_handle_mismatch') {
+          // ⛔⛔ THE SAME PATHOLOGY THE LAPSE BRANCH EXISTS TO STOP, FOR A REFUSAL
+          // THAT IS JUST AS PERMANENT. The cloud answers this when the handle
+          // reservation is not owned by this publisher_id — because another of
+          // the owner's servers now holds it, or the denormalized authority copy
+          // disagrees. Either way no number of retries fixes it, and without a
+          // stand-down this is one rejected request per tick forever: the
+          // measured 288/day that made the lapse case unacceptable.
+          //
+          // ⚠ PACING ONLY, NO 'grace' WRITE. A lapse is a subscription fact and
+          // `recordLapse` records it through the state machine; this is an
+          // OWNERSHIP fact and writing 'grace' would label a handle the owner may
+          // still be paying for as lapsed. The in-process timer is enough to
+          // bound the damage, and `recordRecovery()` clears it the moment a
+          // publish succeeds — so if the owner moves the handle back, the server
+          // recovers unattended rather than needing a restart.
+          advanceBackoff();
         }
         console.warn(
           `[ddns-update-poll] cloud rejected update for ${target.handle}: ${result.error}`,

@@ -20,15 +20,17 @@
  */
 
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import type { RotationResult } from '@recued/contracts';
-import type { ReceptionStatusInput } from '../settings/reception.js';
-import type { ReceptionPageShellState } from '../settings/reception-page-shell.js';
+import type { ReceptionStatusInput } from '../reception/spine.js';
+import type { ReceptionPageShellState } from '../reception/page-shell.js';
 import {
   renderReceptionPage,
   RECEPTION_COMPOSE_FAB_ATTR,
   RECEPTION_COMPOSE_LINK_ATTR,
   RECEPTION_SETTINGS_LINK_ATTR,
-} from '../settings/reception-page-render.js';
+} from '../reception/page-render.js';
 import {
   bootstrapSettingsRoute,
   SETTINGS_ROUTE_ACTIVE_ATTR,
@@ -252,6 +254,13 @@ const findByAttr = (root: FakeElement, attr: string): FakeElement | null => {
   return null;
 };
 
+/** Every element in the tree, for assertions about which sections mounted. */
+const walkAll = (root: FakeElement, out: FakeElement[] = []): FakeElement[] => {
+  out.push(root);
+  for (const c of root.children) walkAll(c, out);
+  return out;
+};
+
 const findByAttrValue = (
   root: FakeElement,
   attr: string,
@@ -294,6 +303,188 @@ describe('D-148 IA — Settings is a top-level route (no Reception back link)', 
     // And nothing in the tree links back up to Reception.
     expect(findAnchorByHref(host, '#reception')).toBeNull();
     route.dispose();
+  });
+
+  // D-148 — the Servers section. ⛔ A COMPOSITION PIN: the panel and its
+  // orchestration have their own suites, and every one of them hand-builds its
+  // deps, so none of them can see whether the Settings route mounts the
+  // section at all. "Nothing calls this" is invisible to a test of the thing
+  // not being called.
+  it('mounts a Servers section when the address-editing deps are wired', () => {
+    const host = makeFakeElement('div');
+    const doc = makeFakeDocument();
+    const route = bootstrapSettingsRoute({
+      root: host as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      localStore: createInMemoryWebclientLocalStore(),
+      serverAddressDeps: {
+        listProfiles: async () => [],
+        tokenStore: {
+          wrap: async () => { throw new Error('unused'); },
+          unwrap: async () => 'unused',
+        },
+        retarget: async () => null,
+      },
+    });
+    const section = walkAll(host).find(
+      (el) => el.getAttribute(SETTINGS_ROUTE_SECTION_ATTR) === 'servers',
+    );
+    expect(section).toBeDefined();
+    route.dispose();
+  });
+
+  it('⚠ mounts the Servers section INDEPENDENTLY of the Account section', () => {
+    // The Account section needs five recued.com binding callers. A self-hoster
+    // has none of them and is exactly the user most likely to move a server,
+    // so gating the address editor on Account would hide it from them.
+    const host = makeFakeElement('div');
+    const doc = makeFakeDocument();
+    const route = bootstrapSettingsRoute({
+      root: host as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      localStore: createInMemoryWebclientLocalStore(),
+      serverAddressDeps: {
+        listProfiles: async () => [],
+        tokenStore: {
+          wrap: async () => { throw new Error('unused'); },
+          unwrap: async () => 'unused',
+        },
+        retarget: async () => null,
+      },
+    });
+    const sections = walkAll(host)
+      .map((el) => el.getAttribute(SETTINGS_ROUTE_SECTION_ATTR))
+      .filter((v): v is string => v !== null);
+    expect(sections).toContain('servers');
+    expect(sections).not.toContain('account');
+    route.dispose();
+  });
+
+  it('mounts no Servers section when the deps are absent', () => {
+    const host = makeFakeElement('div');
+    const doc = makeFakeDocument();
+    const route = bootstrapSettingsRoute({
+      root: host as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      localStore: createInMemoryWebclientLocalStore(),
+    });
+    const sections = walkAll(host).map((el) =>
+      el.getAttribute(SETTINGS_ROUTE_SECTION_ATTR),
+    );
+    expect(sections).not.toContain('servers');
+    route.dispose();
+  });
+
+  it('⛔ disposing the route disposes the Servers panel', () => {
+    // Found by mutation + reading the dispose list: every other panel was in it
+    // and this one was not. A save in flight would otherwise finish against a
+    // detached tree and could reload the tab after the user navigated away.
+    const host = makeFakeElement('div');
+    const doc = makeFakeDocument();
+    const route = bootstrapSettingsRoute({
+      root: host as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      localStore: createInMemoryWebclientLocalStore(),
+      serverAddressDeps: {
+        listProfiles: async () => [],
+        tokenStore: {
+          wrap: async () => { throw new Error('unused'); },
+          unwrap: async () => 'unused',
+        },
+        retarget: async () => null,
+      },
+    });
+    const section = walkAll(host).find(
+      (el) => el.getAttribute(SETTINGS_ROUTE_SECTION_ATTR) === 'servers',
+    );
+    expect(section).toBeDefined();
+    const panelRoot = walkAll(section!).find((el) => el.hasAttribute('data-server-address-panel'));
+    expect(panelRoot, 'the panel mounted').toBeDefined();
+
+    route.dispose();
+    // The panel removed its own wrapper from the section it was given.
+    expect(walkAll(section!).some((el) => el.hasAttribute('data-server-address-panel')))
+      .toBe(false);
+  });
+
+  it('⛔ the Servers section is REACHABLE — it gets a nav button, not just a DOM node', () => {
+    // ⚠ THE LAYER DISTINCTION THAT HID AN UNROUTABLE SERVER ROUTE ELSEWHERE IN
+    // THIS REVIEW: a section existing in the DOM is not a section a user can
+    // get to. The rail is what makes it reachable, so the rail is what this
+    // asserts.
+    const host = makeFakeElement('div');
+    const doc = makeFakeDocument();
+    const route = bootstrapSettingsRoute({
+      root: host as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      localStore: createInMemoryWebclientLocalStore(),
+      serverAddressDeps: {
+        listProfiles: async () => [],
+        tokenStore: {
+          wrap: async () => { throw new Error('unused'); },
+          unwrap: async () => 'unused',
+        },
+        retarget: async () => null,
+      },
+    });
+
+    const nav = findByAttr(host, SETTINGS_ROUTE_NAV_ATTR);
+    expect(nav, 'no nav rail at all').not.toBeNull();
+    const items = walkAll(nav!).filter((el) => el.hasAttribute(SETTINGS_ROUTE_NAV_ITEM_ATTR));
+    const labels = items.map((el) => el.textContent);
+    expect(labels, `rail has no Servers entry: ${labels.join(', ')}`).toContain('Servers');
+    route.dispose();
+  });
+
+  it('⚠ and no Servers nav entry appears when the deps are absent', () => {
+    // The control: proves the entry above comes from the section mounting,
+    // not from the rail listing a fixed set.
+    const host = makeFakeElement('div');
+    const doc = makeFakeDocument();
+    const route = bootstrapSettingsRoute({
+      root: host as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      localStore: createInMemoryWebclientLocalStore(),
+    });
+    const nav = findByAttr(host, SETTINGS_ROUTE_NAV_ATTR);
+    const labels = nav === null ? [] : walkAll(nav)
+      .filter((el) => el.hasAttribute(SETTINGS_ROUTE_NAV_ITEM_ATTR))
+      .map((el) => el.textContent);
+    expect(labels).not.toContain('Servers');
+    route.dispose();
+  });
+
+  it('⛔ the route forwards BOTH optional address deps to the panel', () => {
+    // The wiring-drift class: an option accepted at one layer and dropped at
+    // the next fails silently — the panel simply never converges, with nothing
+    // to read as broken. Mutation confirmed both were droppable unnoticed.
+    const source = readFileSync(
+      resolve(import.meta.dirname, '..', 'settings', 'bootstrap-settings-route.ts'),
+      'utf-8',
+    );
+    const mount = source.slice(
+      source.indexOf('mountServerAddressPanel({'),
+      source.indexOf('mountServerAddressPanel({') + 700,
+    );
+    for (const dep of ['activeProfileId', 'onActiveAddressChanged']) {
+      expect(mount, `the route accepts \`${dep}\` and never forwards it`)
+        .toMatch(new RegExp(`\\{ ${dep} \\}`));
+    }
+  });
+
+  it('⛔ deciding to reload and not reloading is a silent no-op', () => {
+    // Mutation: deleting the `reloadForServerSwitch!()` call left the decision
+    // intact and the tab unmoved, while the panel — told 'reloading' — stays
+    // deliberately silent. Nothing on screen would say anything at all.
+    const boot = readFileSync(
+      resolve(import.meta.dirname, '..', 'webclient-bootstrap.ts'),
+      'utf-8',
+    );
+    const wiring = boot.slice(
+      boot.indexOf('onActiveAddressChanged:'),
+      boot.indexOf('onActiveAddressChanged:') + 900,
+    );
+    expect(wiring).toMatch(/decision === 'reloading'[^\n]*reloadForServerSwitch/);
   });
 
   it('builds a left-rail nav with one button per mounted subview', () => {
@@ -356,5 +547,31 @@ describe('D-148 IA — Settings is a top-level route (no Reception back link)', 
     expect(findByAttr(host, SETTINGS_ROUTE_ROOT_ATTR)).not.toBeNull();
     route.dispose();
     expect(findByAttr(host, SETTINGS_ROUTE_ROOT_ATTR)).toBeNull();
+  });
+});
+
+/** ⛔ THE LAST LINK IN THE CHAIN. The panel has a suite, the orchestration has a
+ *  suite, and the Settings route has a composition pin — and all of them would
+ *  stay green if `webclient-bootstrap.ts` never passed `serverAddressDeps`.
+ *  The section is gated on those deps, so the result would be a fully-tested
+ *  surface no user can reach, with nothing to read as broken.
+ *
+ *  A source pin rather than a boot drive: `runWebclientBootstrap` needs a
+ *  socket, a paired profile and a live shell, and the fact under test is one
+ *  literal in one call. */
+describe('D-148 — the boot passes the Servers section its deps', () => {
+  it('threads serverAddressDeps into bootstrapSettingsRoute', () => {
+    const source = readFileSync(
+      resolve(import.meta.dirname, '..', 'webclient-bootstrap.ts'),
+      'utf-8',
+    );
+    const call = source.slice(source.indexOf('bootstrapSettingsRoute({'), source.indexOf('bootstrapSettingsRoute({') + 2000);
+    // ⚠ ANCHORED, NOT `toContain`. A bare substring check passes against
+    // `xserverAddressDepsx` — which is exactly how the first version of this
+    // test survived the mutation that was supposed to red it.
+    expect(call).toMatch(/\bserverAddressDeps:\s*\{/);
+    // And it reaches for the roster + the token store, not a stub.
+    expect(call).toMatch(/\bretargetProfile\(/);
+    expect(call).toMatch(/tokenStore:\s*options\.tokenStore\b/);
   });
 });

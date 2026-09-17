@@ -1,4 +1,4 @@
-/** R19 — Reception ▸ Abuse section mount (`reception-abuse-section.ts`).
+/** R19 — Reception ▸ Abuse section mount (`abuse-section.ts`).
  *
  *  The first-class `#reception/abuse` section: subscribes to the shared
  *  page shell, auto-loads the abuse inbox on mount, renders the reused
@@ -17,15 +17,15 @@ import {
   mountReceptionAbuseSection,
   RECEPTION_ABUSE_HEADING_ATTR,
   RECEPTION_ABUSE_SECTION_ATTR,
-} from '../settings/reception-abuse-section.js';
+} from '../reception/abuse-section.js';
 import {
   buildAbuseInboxSubviewModel,
   type AbuseInboxSubviewModel,
-} from '../settings/reception-abuse-inbox.js';
+} from '../reception/abuse-inbox.js';
 import type {
   ReceptionPageShell,
   ReceptionPageShellState,
-} from '../settings/reception-page-shell.js';
+} from '../reception/page-shell.js';
 
 const NOW = 1_700_000_000_000;
 

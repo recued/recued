@@ -1,46 +1,43 @@
-/** D-148 FU2 — per-domain TLS health rollup for the Reachability
- *  Doctor.
+/** D-148 FU2 — per-domain TLS health: apply the verifier seam to a stored row.
  *
- *  Walks pre-verified per-domain rows + emits one
- *  `ReachabilityPerDomainTlsEntry` per domain plus up to four
- *  recommendations:
+ *  ⛔ THE ROLLUP IS GONE (2026-09-16). This file used to end in
+ *  `buildPerDomainTlsHealth`, which turned these rows into
+ *  `ReachabilityPerDomainTlsEntry[]` plus a `ReachabilityRecommendation[]` feed
+ *  for `buildReachabilityReport`. That report was deleted, and the rollup was
+ *  shaped for it at EVERY level, not just in its return type:
  *
- *    - `tls_renewal_overdue` — expiry <= 7d (existing closed-list
- *      code; reused per spec § A.6.3 line 885: "code keys on domain,
- *      not on a single cert"; message carries the domain).
- *    - `tls_renewal_imminent` — 7d < expiry <= 14d (existing code,
- *      same per-domain reuse).
- *    - `cert_fingerprint_mismatch` — `hash(cert_pem)` ≠ stored
- *      `fingerprint` field (row-tamper detection; reuses the
- *      MITM-detection code with a per-domain message).
- *    - `tls_chain_invalid_for_domain` — new FU2 code; emitted when
- *      the leaf + chain stop terminating at a system trust root
- *      (intermediate CA expired, OS trust store update, etc.).
+ *    — Its severity bands were the report's. It called a cert `error` at 7 days
+ *      to expiry; `recued doctor` calls that `warn`, because an exit code of 1
+ *      means BROKEN INSTALL and a renewal with a week left to run is not one.
+ *    — Its remediation copy pointed at "Settings → Server → TLS Certificates" —
+ *      a web page on the server whose health is in question, offered to someone
+ *      who ran a terminal command.
+ *    — Its recommendations carried no domain field, so a consumer with more than
+ *      one row could only match them back by parsing the message text.
  *
- *  Discipline mirrors the existing reachability doctor: the
- *  substrate is PURE assembly (no IO, no system trust store access).
- *  Callers (eventually bin.ts after the doctor rpc wires) construct
- *  `PerDomainTlsHealthInput[]` from store rows via the
- *  `verifyDomainHealth` helper, which is where verifier seam +
- *  fingerprint helper are called — separating the two preserves the
- *  "doctor is pure assembly" invariant from § A.10.
+ *  ⇒ Wiring it into the doctor would have meant overriding its severities,
+ *  rewriting its copy and calling it once per row to keep the correlation — at
+ *  which point nothing of it was left but the two booleans `verifyDomainHealth`
+ *  already returns. The doctor reads those directly now.
  *
- *  Window constants — same shared values as the single-cert path
- *  (re-exported from `./reachability.ts`). Per-domain emissions
- *  match the spec § A.6.3 line 872 wording: "30 / 14 / 7 day
- *  windows"; today's substrate emits at 14 / 7, matching the
- *  existing path. A future spec amendment can add the 30-day info
- *  band without contract churn (just a new severity tier). */
+ *  🔑 WHAT SURVIVED IS THE PART THAT DOES IO-SHAPED WORK: the verifier seam +
+ *  fingerprint comparison, which is the half that needed a seam in the first
+ *  place. `recued doctor` (`cli-context/doctor.ts`) is its caller.
+ *
+ *  ⚠ `accept_self_signed` mirrors the store's `acceptSelfSigned` constructor
+ *  option (Codex FU2 P2 #1 fold). When the store accepted a self-signed BYO cert
+ *  at upload, re-verifying with `false` surfaces a phantom chain failure on
+ *  every health check. */
 
-import type {
-  ReachabilityPerDomainTlsEntry,
-  ReachabilityRecommendation,
-  TLSDomainCertSource,
-} from '@recued/contracts';
+import type { TLSDomainCertSource } from '@recued/contracts';
 
-/** Pre-verified per-domain row. Caller has already applied the
- *  verifier seam (chain verification) + computed the fingerprint;
- *  this substrate just maps to entries + recommendations. */
+/** A stored row with the verifier seam applied: chain verified, fingerprint
+ *  computed and compared. What `verifyDomainHealth` returns and what
+ *  `recued doctor` reports from.
+ *
+ *  ⚠ `chain_valid` and `fingerprint_matches` ARE THE POINT OF THIS TYPE. They
+ *  cost a trust-store walk and a hash to produce, and for as long as this file
+ *  had a rollup on the end of it the doctor computed both and read neither. */
 export interface PerDomainTlsHealthInput {
   domain: string;
   fingerprint: string;
@@ -52,17 +49,18 @@ export interface PerDomainTlsHealthInput {
   last_renewed_at?: number;
 }
 
-/** Verifier seam — production caller wires
- *  `verifyChain` from `../tls/cert-verifiers.ts` +
- *  `computeCertFingerprint` from `@recued/server-tls`. Tests stub
- *  with deterministic outputs so the substrate test never depends
- *  on the system trust store.
+/** Verifier seam — `recued doctor` wires `verifyChain` from
+ *  `../tls/cert-verifiers.ts` and node's own `X509Certificate.fingerprint256`.
+ *  Tests stub with deterministic outputs so the unit test never depends on the
+ *  system trust store; `doctor-cli.test.ts` drives the REAL verifiers against a
+ *  generated self-signed cert, which is the only way to prove the seam is
+ *  connected to anything.
  *
  *  `accept_self_signed` mirrors the store's `acceptSelfSigned`
  *  constructor option (Codex FU2 P2 #1 fold). When the store
  *  accepted a self-signed BYO cert at upload, re-verifying with
  *  `false` would surface a phantom `tls_chain_invalid_for_domain`
- *  on every reachability report. Caller passes the store's setting
+ *  on every health check. Caller passes the store's setting
  *  so the upload-time gate and the health-check gate stay aligned. */
 export interface VerifyDomainHealthDeps {
   verifyChain: (
@@ -117,131 +115,4 @@ export const verifyDomainHealth = (
   };
   if (row.last_renewed_at !== undefined) out.last_renewed_at = row.last_renewed_at;
   return out;
-};
-
-/** Window before cert expiry where the doctor flags the renewal as
- *  imminent (`tls_renewal_imminent`) — 14 days. Mirrors the
- *  single-cert path's value in `./reachability.ts`. */
-export const PER_DOMAIN_TLS_RENEWAL_IMMINENT_WINDOW_DAYS = 14;
-/** Window before cert expiry where the doctor flags the renewal as
- *  overdue (`tls_renewal_overdue`) — 7 days. Mirrors the
- *  single-cert path's value. */
-export const PER_DOMAIN_TLS_RENEWAL_OVERDUE_WINDOW_DAYS = 7;
-
-const MS_PER_DAY = 86_400_000;
-
-const remediationForSource = (source: TLSDomainCertSource, domain: string): string => {
-  if (source === 'pro_acme') {
-    return `Trigger an ACME renewal for '${domain}' via Settings → Server → TLS Certificates.`;
-  }
-  // D-235 § 5.1 — a fleet-issued CUSTOM domain must not fall into the BYO
-  // branch, which tells the user to upload a cert Recued is supposed to be
-  // renewing for them. And the copy names the delegation rather than promising
-  // a renewal: this cert's renewal depends on a CNAME in a zone the fleet does
-  // not control, so "it stopped renewing" and "you deleted the record" are the
-  // same event, and that is the first thing worth checking.
-  if (source === 'pro_acme_custom') {
-    return `Recued renews '${domain}' for you. A renewal that has not run usually means its `
-      + `_acme-challenge delegation stopped resolving — check Settings → Server → Domains.`;
-  }
-  return `Upload a renewed cert for '${domain}' via Settings → Server → TLS Certificates.`;
-};
-
-/** Codex FU2 P2 #3 fold — imminent (warning-band) remediation
- *  must distinguish auto-managed certs from BYO. The webclient
- *  fallback for plain `tls_renewal_imminent` says "renewal will run
- *  automatically", which is only true for `pro_acme`. BYO rows in
- *  the 8-14d window get explicit upload-renewal copy so Mary acts
- *  before the cert reaches the error window. */
-const imminentRemediationForSource = (
-  source: TLSDomainCertSource,
-  domain: string,
-): string => {
-  if (source === 'pro_acme') {
-    return `Auto-renewal will run for '${domain}' within the next 14 days. No action required.`;
-  }
-  // D-235 — "No action required" would be the wrong promise for a custom
-  // domain: the renewal runs only while a record in the USER'S zone still
-  // points at ours, so the honest version states the condition instead of
-  // asserting the outcome.
-  if (source === 'pro_acme_custom') {
-    return `Recued will renew '${domain}' automatically, as long as its _acme-challenge `
-      + `delegation still resolves. Confirm it in Settings → Server → Domains.`;
-  }
-  return `Upload a renewed cert for '${domain}' via Settings → Server → TLS Certificates before the expiry window enters the error band.`;
-};
-
-/** Pure assembly: walk pre-verified inputs + produce per-domain
- *  entries + the per-domain recommendation feed. The caller (the
- *  reachability doctor) merges these into the report. */
-export const buildPerDomainTlsHealth = (
-  inputs: ReadonlyArray<PerDomainTlsHealthInput>,
-  opts: { now_ms: number },
-): {
-  entries: ReachabilityPerDomainTlsEntry[];
-  recommendations: ReachabilityRecommendation[];
-} => {
-  const entries: ReachabilityPerDomainTlsEntry[] = [];
-  const recommendations: ReachabilityRecommendation[] = [];
-  for (const input of inputs) {
-    const days_until_expiry = Math.floor((input.expires_at - opts.now_ms) / MS_PER_DAY);
-    const entry: ReachabilityPerDomainTlsEntry = {
-      domain: input.domain,
-      fingerprint: input.fingerprint,
-      expires_at: input.expires_at,
-      days_until_expiry,
-      issuer: input.issuer,
-      source: input.source,
-      chain_valid: input.chain_valid,
-      fingerprint_matches: input.fingerprint_matches,
-    };
-    if (input.last_renewed_at !== undefined) entry.last_renewed_at = input.last_renewed_at;
-    entries.push(entry);
-
-    // Expiry windows — codes reuse the single-cert path's
-    // `tls_renewal_overdue` / `tls_renewal_imminent`; message carries
-    // the domain (spec § A.6.3 line 885).
-    if (days_until_expiry <= PER_DOMAIN_TLS_RENEWAL_OVERDUE_WINDOW_DAYS) {
-      recommendations.push({
-        severity: 'error',
-        code: 'tls_renewal_overdue',
-        message: `TLS cert for '${input.domain}' expires in ${days_until_expiry} day(s)`,
-        remediation: remediationForSource(input.source, input.domain),
-      });
-    } else if (days_until_expiry <= PER_DOMAIN_TLS_RENEWAL_IMMINENT_WINDOW_DAYS) {
-      recommendations.push({
-        severity: 'warning',
-        code: 'tls_renewal_imminent',
-        message: `TLS cert for '${input.domain}' expires in ${days_until_expiry} day(s)`,
-        remediation: imminentRemediationForSource(input.source, input.domain),
-      });
-    }
-
-    // Row-tamper detection — stored `fingerprint` field disagrees
-    // with `hash(cert_pem)`. Reuses `cert_fingerprint_mismatch`
-    // (the MITM detection code) with a per-domain message.
-    if (!input.fingerprint_matches) {
-      recommendations.push({
-        severity: 'error',
-        code: 'cert_fingerprint_mismatch',
-        message: `Stored cert for '${input.domain}' does not hash to its expected fingerprint — possible row tampering`,
-        remediation: `Re-upload a known-good cert for '${input.domain}' via Settings → Server → TLS Certificates.`,
-      });
-    }
-
-    // Chain verification at health-check time. Different failure
-    // mode than expiry — intermediate CA expired, OS trust store
-    // update, or the chain bundle was incomplete at upload (which
-    // the upload validator should have caught, but the
-    // health-check is the defence-in-depth).
-    if (!input.chain_valid) {
-      recommendations.push({
-        severity: 'error',
-        code: 'tls_chain_invalid_for_domain',
-        message: `Cert chain for '${input.domain}' does not terminate at a system trust root`,
-        remediation: `Re-upload the cert + the issuer's intermediate chain via Settings → Server → TLS Certificates.`,
-      });
-    }
-  }
-  return { entries, recommendations };
 };

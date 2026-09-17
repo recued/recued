@@ -1,54 +1,25 @@
-/** D-148 P6 — Settings → Reachability render-model. */
+/**
+ * D-148 P6 — the reachability PROBE PLUMBING. The render-model this file was
+ * named for is gone: the standalone Reachability panel folded into Settings →
+ * Server → Connect a device, and `buildReachabilityReport` was deleted with it.
+ * What survives here is the half a panel never owned — request construction,
+ * the diagnostics caller, port answerability, and the from-here address check.
+ */
 
 import { describe, expect, it, vi } from 'vitest';
 import {
+  DIAGNOSTIC_ALLOWED_PORTS,
   HOSTNAME_LISTENER_PORTS,
   type DiagnosticResponse,
-  type ReachabilityReport,
 } from '@recued/contracts';
 import {
   buildReachabilityDiagnosticRequest,
-  buildReachabilityRenderModel,
   createReachabilityDiagnosticProbeCaller,
-  mountReachabilityPanel,
-  REMEDIATION_COPY,
+  diagnosticPortReachability,
+  diagnosticResponseHasReachablePort,
+  createAddressReachableFromHereCheck,
+  isProbeAnswerablePort,
 } from '../settings/reachability.js';
-
-const buildReport = (overrides: Partial<ReachabilityReport> = {}): ReachabilityReport => ({
-  report_id: 'r-1',
-  generated_at: 1_700_000_000_000,
-  server_passport_fingerprint: 'fp',
-  network: {
-    public_ipv4: '203.0.113.5',
-    detected_via: 'cloud_probe',
-    behind_nat: false,
-    upnp_status: 'enabled',
-  },
-  dns: {
-    handle: 'alice',
-    ddns_resolves: true,
-    resolved_to_expected_ip: true,
-    resolution_ms: 50,
-    last_ddns_update: 1_700_000_000_000,
-  },
-  tls: {
-    cert_fingerprint: 'a'.repeat(64),
-    expires_at: 1_800_000_000_000,
-    days_until_expiry: 60,
-    issuer: "Let's Encrypt",
-    san: ['alice.recued.cloud'],
-    valid_for_handle: true,
-    renewal_overdue: false,
-  },
-  per_path: [
-    { role: 'ws', lan_listening: true, public_listening: true, handshake_test: { passed: true, ms: 0 } },
-  ],
-  webhooks: [],
-  bridges: [],
-  webclients: [],
-  recommendations: [],
-  ...overrides,
-});
 
 const buildDiagnosticResponse = (
   overrides: Partial<DiagnosticResponse> = {},
@@ -76,141 +47,6 @@ const buildDiagnosticResponse = (
     },
   ],
   ...overrides,
-});
-
-const makeHost = (): HTMLElement => {
-  const attrs = new Map<string, string>();
-  const listeners = new Map<string, Array<(ev: Event) => void>>();
-  return {
-    innerHTML: '',
-    setAttribute(k: string, v: string) {
-      attrs.set(k, v);
-    },
-    removeAttribute(k: string) {
-      attrs.delete(k);
-    },
-    getAttribute(k: string) {
-      return attrs.get(k) ?? null;
-    },
-    addEventListener(name: string, fn: (ev: Event) => void) {
-      const list = listeners.get(name) ?? [];
-      list.push(fn);
-      listeners.set(name, list);
-    },
-    removeEventListener(name: string, fn: (ev: Event) => void) {
-      const list = listeners.get(name) ?? [];
-      listeners.set(name, list.filter((entry) => entry !== fn));
-    },
-  } as unknown as HTMLElement;
-};
-
-describe('buildReachabilityRenderModel', () => {
-  it('renders healthy badge when no recommendations', () => {
-    const model = buildReachabilityRenderModel(buildReport());
-    expect(model.severity_summary.badge).toBe('healthy');
-    expect(model.severity_summary.error_count).toBe(0);
-  });
-
-  it('renders attention badge on warning-only recommendations', () => {
-    const model = buildReachabilityRenderModel(buildReport({
-      recommendations: [
-        { severity: 'warning', code: 'tls_renewal_imminent', message: 'soon' },
-      ],
-    }));
-    expect(model.severity_summary.badge).toBe('attention');
-    expect(model.severity_summary.warning_count).toBe(1);
-  });
-
-  it('renders critical badge when any error is present', () => {
-    const model = buildReachabilityRenderModel(buildReport({
-      recommendations: [
-        { severity: 'error', code: 'tls_renewal_overdue', message: 'expired soon' },
-        { severity: 'warning', code: 'tls_renewal_imminent', message: 'soon' },
-      ],
-    }));
-    expect(model.severity_summary.badge).toBe('critical');
-  });
-
-  it('sorts recommendations error → warning → info', () => {
-    const model = buildReachabilityRenderModel(buildReport({
-      recommendations: [
-        { severity: 'info', code: 'nat_traversal_required', message: '' },
-        { severity: 'error', code: 'tls_renewal_overdue', message: '' },
-        { severity: 'warning', code: 'tls_renewal_imminent', message: '' },
-      ],
-    }));
-    expect(model.recommendations.map((r) => r.severity)).toEqual(['error', 'warning', 'info']);
-  });
-
-  it('falls back to canonical remediation copy when report omits it', () => {
-    const model = buildReachabilityRenderModel(buildReport({
-      recommendations: [
-        { severity: 'error', code: 'tls_renewal_overdue', message: '' },
-      ],
-    }));
-    expect(model.recommendations[0].remediation).toBe(REMEDIATION_COPY.tls_renewal_overdue);
-  });
-
-  it('uses report-supplied remediation when present', () => {
-    const model = buildReachabilityRenderModel(buildReport({
-      recommendations: [
-        { severity: 'error', code: 'tls_renewal_overdue', message: 'msg', remediation: 'do this specific thing' },
-      ],
-    }));
-    expect(model.recommendations[0].remediation).toBe('do this specific thing');
-  });
-
-  it('shortens the cert fingerprint for display', () => {
-    const model = buildReachabilityRenderModel(buildReport());
-    expect(model.tls_summary.fingerprint_short).toMatch(/^[a-f0-9]+…[a-f0-9]+$/);
-  });
-
-  it('exposes the cloud-probe enable hint', () => {
-    expect(buildReachabilityRenderModel(buildReport()).can_run_cloud_probe).toBe(true);
-    expect(buildReachabilityRenderModel(buildReport(), { can_run_cloud_probe: false }).can_run_cloud_probe).toBe(false);
-  });
-
-  // Codex FU2 P2 #2 fold — per_domain_tls must round-trip through the
-  // render model so the Settings page can render multi-domain TLS
-  // health alongside the single primary cert.
-  it('per_domain_tls defaults to empty array when the report omits the field', () => {
-    const model = buildReachabilityRenderModel(buildReport());
-    expect(model.per_domain_tls).toEqual([]);
-  });
-
-  it('forwards per_domain_tls entries from the report to the render model', () => {
-    const model = buildReachabilityRenderModel(buildReport({
-      per_domain_tls: [
-        {
-          domain: 'alpha.example',
-          fingerprint: 'a'.repeat(64),
-          expires_at: 1_800_000_000_000,
-          days_until_expiry: 30,
-          issuer: "Let's Encrypt",
-          source: 'pro_acme',
-          chain_valid: true,
-          fingerprint_matches: true,
-        },
-        {
-          domain: 'beta.example',
-          fingerprint: 'b'.repeat(64),
-          expires_at: 1_800_000_000_000,
-          days_until_expiry: 5,
-          issuer: 'Internal CA',
-          source: 'byo_upload',
-          chain_valid: false,
-          fingerprint_matches: true,
-        },
-      ],
-    }));
-    expect(model.per_domain_tls).toHaveLength(2);
-    expect(model.per_domain_tls[0].domain).toBe('alpha.example');
-    expect(model.per_domain_tls[1].chain_valid).toBe(false);
-  });
-
-  it('REMEDIATION_COPY carries tls_chain_invalid_for_domain copy', () => {
-    expect(REMEDIATION_COPY.tls_chain_invalid_for_domain).toMatch(/the chain from whoever issued it/);
-  });
 });
 
 describe('Reachability external diagnostics', () => {
@@ -243,6 +79,63 @@ describe('Reachability external diagnostics', () => {
     });
     expect(req.checks).toContain('acme_challenge');
     expect(req.acme_challenge_token).toBe('token-1');
+  });
+
+  it('D-272 — narrows to the ports and checks a caller NAMES', () => {
+    // The measured cost this exists to cut: `runDiagnosticChecks` walks ports
+    // sequentially with an `await` inside, under a 5s timeout each. Four ports
+    // plus a TLS handshake is up to ~25s, and the reader who waits all of it is
+    // the one whose router DROPs — the exact person the check is for.
+    const req = buildReachabilityDiagnosticRequest({
+      account_id: 'acct-1',
+      hostname: 'alice.recued.cloud',
+      ports: [8446],
+      checks: ['port_reachability'],
+    });
+    expect(req.ports).toEqual([8446]);
+    expect(req.checks).toEqual(['port_reachability']);
+  });
+
+  it('D-272 — a named check list does not suppress the ACME check', () => {
+    // ⚠ The two are independent by construction: `acme_challenge` follows the
+    // TOKEN. A caller that narrows its checks and also carries a token is the
+    // shape that would break if the token clause read the list instead.
+    const req = buildReachabilityDiagnosticRequest({
+      account_id: 'acct-1',
+      hostname: 'alice.recued.cloud',
+      checks: ['port_reachability'],
+      acme_challenge_token: 'token-1',
+    });
+    expect(req.checks).toEqual(['port_reachability', 'acme_challenge']);
+  });
+
+  it('D-272 — and does not send the ACME check twice when it is named', () => {
+    const req = buildReachabilityDiagnosticRequest({
+      account_id: 'acct-1',
+      hostname: 'alice.recued.cloud',
+      checks: ['acme_challenge'],
+      acme_challenge_token: 'token-1',
+    });
+    expect(req.checks).toEqual(['acme_challenge']);
+  });
+
+  it('⛔ D-272 — `isProbeAnswerablePort` follows the WORKER allowlist, not the listener set', () => {
+    // ⛔ A NARROWED REQUEST NAMING A DISALLOWED PORT IS REJECTED WHOLE. The
+    // worker's `normalizePorts` THROWS `diagnostic_port_not_allowed` on the
+    // first bad port rather than dropping it — so a caller must ask this before
+    // it narrows, or it converts an honest "nobody asked" into a 400.
+    for (const port of DIAGNOSTIC_ALLOWED_PORTS) {
+      expect(isProbeAnswerablePort(port)).toBe(true);
+    }
+    // 8443 is D-148's PRE-AMENDMENT `ws` port and a plausible `public_port`.
+    // ⚠ 7717 is NOT here either, and calling that "the loopback listener" (as
+    // this comment did) is wrong: `resolveLanAddress` binds `0.0.0.0` in the
+    // ordinary home case, so the LAN port is on every interface. Its absence
+    // from the allowlist is therefore a GAP, not a definition — tracked on
+    // D-272. Until it is closed, `null` (nobody asked) is still the only honest
+    // reading, which is what this pins.
+    expect(isProbeAnswerablePort(8443)).toBe(false);
+    expect(isProbeAnswerablePort(7717)).toBe(false);
   });
 
   it('includes ownership proof observation only when requested', () => {
@@ -285,25 +178,165 @@ describe('Reachability external diagnostics', () => {
     });
   });
 
-  it('renders external probe results after the button caller resolves', async () => {
-    const host = makeHost();
-    const runExternalProbe = vi.fn(async () => buildDiagnosticResponse());
-    const mount = mountReachabilityPanel({
-      host,
-      report: buildReport(),
-      runExternalProbe,
+  it('⛔⛔ D-272 — the narrowing reaches the WIRE, not just the builder', async () => {
+    // ⛔ A STUB PROVES THE CALL, NOT THE MESSAGE. `buildReachabilityDiagnosticRequest`
+    // is tested above in isolation and the route's literal is tested in the route
+    // suite — neither can see whether the override survives the caller in
+    // between. This reads the bytes that would leave the browser.
+    const bodies: unknown[] = [];
+    const caller = createReachabilityDiagnosticProbeCaller({
+      baseUrl: 'https://api.test.recued.cloud',
+      fetcher: async (_input: string, init?: RequestInit) => {
+        bodies.push(JSON.parse(String(init?.body)));
+        return new Response(JSON.stringify({ data: buildDiagnosticResponse() }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      },
+      resolveTarget: async () => ({
+        account_id: 'acct-1',
+        hostname: 'alice.recued.cloud',
+      }),
     });
 
-    expect(host.innerHTML).toContain('Check from the outside');
-    await mount.runExternalProbe();
+    await caller({ ports: [8446], checks: ['port_reachability'] });
+    expect(bodies[0]).toMatchObject({ ports: [8446], checks: ['port_reachability'] });
 
-    expect(runExternalProbe).toHaveBeenCalledTimes(1);
-    expect(mount.getState().status).toBe('success');
-    expect(host.innerHTML).toContain('External probe for alice.recued.cloud');
-    expect(host.innerHTML).toContain('Port 443: blocked');
-    expect(host.innerHTML).toContain('Check listener binding');
+    // ⚠ AND THE UNNARROWED CALLER IS UNCHANGED. The Reachability page asks about
+    // every listener on purpose — an operator wants the whole picture — so this
+    // widening must be additive, not a new default.
+    await caller();
+    expect(bodies[1]).toMatchObject({ ports: [...HOSTNAME_LISTENER_PORTS] });
+    expect((bodies[1] as { checks: string[] }).checks).toContain('tls_handshake');
+  });
+});
 
-    mount.dispose();
-    expect(host.innerHTML).toBe('');
+describe('diagnosticPortReachability — the tri-state read', () => {
+  /** ⛔ THE WHOLE REASON THIS EXISTS beside `diagnosticResponseHasReachablePort`.
+   *  That one answers "may I show this address", where "checked and refused" and
+   *  "nobody checked" both mean no. A checklist cannot collapse them: an unticked
+   *  box tells the reader their router was looked at and found shut. */
+  const portResult = (port: number, outcome: 'reachable' | 'blocked' | 'no_response') => ({
+    kind: 'port_reachability' as const,
+    status: outcome === 'reachable' ? ('pass' as const) : ('fail' as const),
+    payload: { kind: 'port_reachability' as const, port, outcome },
+  });
+
+  it('reads a reachable port as true', () => {
+    expect(diagnosticPortReachability(
+      buildDiagnosticResponse({ results: [portResult(443, 'reachable')] }), 443,
+    )).toBe(true);
+  });
+
+  it.each([['blocked'], ['no_response']] as const)(
+    'reads %s as false — both mean "it did not get in"', (outcome) => {
+      expect(diagnosticPortReachability(
+        buildDiagnosticResponse({ results: [portResult(443, outcome)] }), 443,
+      )).toBe(false);
+    });
+
+  it('⛔ reads a port the probe never carried as NULL, not false', () => {
+    // The trap: a response full of passing checks for OTHER ports would read as
+    // "443 is shut" under any `.some(...) === false` fold.
+    expect(diagnosticPortReachability(
+      buildDiagnosticResponse({ results: [portResult(8446, 'reachable')] }), 443,
+    )).toBeNull();
+    // ⚠ And 7717 NEVER has an answer here — it is not in the probe request and
+    // not in the worker's allowlist, so "is my local port open to the public" is
+    // a question nobody asked, not one answered no.
+    expect(diagnosticPortReachability(buildDiagnosticResponse(), 7717)).toBeNull();
+  });
+
+  it('reads no response at all as null', () => {
+    expect(diagnosticPortReachability(null, 443)).toBeNull();
+    expect(diagnosticPortReachability(undefined, 443)).toBeNull();
+    expect(diagnosticPortReachability(
+      buildDiagnosticResponse({ results: [] }), 443,
+    )).toBeNull();
+  });
+
+  it('⚠ one reachable result wins over a sibling that failed', () => {
+    // The worker can carry more than one check per port. If any of them got in,
+    // the router forwards the port — which is the question this step asks.
+    expect(diagnosticPortReachability(buildDiagnosticResponse({
+      results: [portResult(443, 'no_response'), portResult(443, 'reachable')],
+    }), 443)).toBe(true);
+  });
+
+  it('agrees with the boolean read wherever the boolean read says yes', () => {
+    const reachable = buildDiagnosticResponse({ results: [portResult(443, 'reachable')] });
+    expect(diagnosticResponseHasReachablePort(reachable, 443)).toBe(true);
+    expect(diagnosticPortReachability(reachable, 443)).toBe(true);
+    // ...and diverges exactly where it should: no answer at all.
+    const silent = buildDiagnosticResponse({ results: [] });
+    expect(diagnosticResponseHasReachablePort(silent, 443)).toBe(false);
+    expect(diagnosticPortReachability(silent, 443)).toBeNull();
+  });
+});
+
+describe('D-272 — can this browser reach that address? (NAT hairpin)', () => {
+  // ⚠ NOT `status: 0` — the `Response` constructor rejects it (200-599 only), so
+  // that fixture THREW and the check dutifully returned false. A real opaque
+  // response reports status 0 but cannot be constructed; this code never reads
+  // the response, so any resolved value is a faithful stand-in.
+  const mkResponse = () => new Response(null, { status: 200 });
+
+  it('⛔ RESOLVE means reachable — measured: only a real connection resolves', () => {
+    // Real Chromium, 2026-09-16: a cross-origin `no-cors` fetch resolves only
+    // after DNS + TCP + a TRUSTED TLS handshake + an HTTP response. A
+    // self-signed cert rejects. So resolve is a strong positive.
+    const check = createAddressReachableFromHereCheck({
+      fetcher: async () => mkResponse(),
+    });
+    return expect(check('https://home.example.com/webclient/')).resolves.toBe(true);
+  });
+
+  it('⛔ EVERY failure is `false`, and none of them names a cause', async () => {
+    // Measured: TLS-untrusted, connection-refused and DNS-failure are ALL
+    // `TypeError: Failed to fetch`, indistinguishable. Inventing a router
+    // diagnosis from a network error on this side of the router is the mistake
+    // this decision keeps naming.
+    for (const err of [
+      new TypeError('Failed to fetch'),
+      new DOMException('aborted', 'AbortError'),
+      new Error('something else entirely'),
+    ]) {
+      const check = createAddressReachableFromHereCheck({
+        fetcher: async () => { throw err; },
+      });
+      await expect(check('https://home.example.com/webclient/')).resolves.toBe(false);
+    }
+  });
+
+  it('⛔⛔ ABORTS rather than hanging — a router that DROPs sends nothing back', async () => {
+    // The measurement's one non-settling case: a blackholed address never
+    // answers, so without the abort the promise waits for the browser's own
+    // connect timeout. Hairpin failure is exactly that shape.
+    let sawSignal: AbortSignal | undefined;
+    const check = createAddressReachableFromHereCheck({
+      timeoutMs: 5,
+      fetcher: (_u, init) => new Promise((_res, rej) => {
+        sawSignal = init?.signal ?? undefined;
+        init?.signal?.addEventListener('abort', () => {
+          rej(new DOMException('aborted', 'AbortError'));
+        });
+      }),
+    });
+    await expect(check('https://home.example.com/webclient/')).resolves.toBe(false);
+    expect(sawSignal?.aborted).toBe(true);
+  });
+
+  it('⚠ sends a bare unauthenticated GET — no CORS needed, no bearer possible', async () => {
+    // `no-cors` so an ordinary server with no CORS header still answers;
+    // `omit` so this can never carry a token; `no-store` so a cached hit cannot
+    // report reachability that is minutes old, which would defeat "right now".
+    let init: RequestInit | undefined;
+    const check = createAddressReachableFromHereCheck({
+      fetcher: async (_u, i) => { init = i; return mkResponse(); },
+    });
+    await check('https://home.example.com/webclient/');
+    expect(init).toMatchObject({
+      mode: 'no-cors', method: 'GET', credentials: 'omit', cache: 'no-store',
+    });
   });
 });

@@ -8,6 +8,7 @@ import {
   PERMISSION_DOORS,
   PERMISSIONS_MCP_DOOR_ADVANCED_ATTR,
   PERMISSIONS_MCP_DOOR_ADVANCED_CAP_INPUT_ATTR,
+  PERMISSIONS_MCP_DOOR_ADVANCED_CAP_PERIOD_ATTR,
   PERMISSIONS_MCP_DOOR_ADVANCED_CAP_TOGGLE_ATTR,
   PERMISSIONS_MCP_DOOR_ADVANCED_ERROR_ATTR,
   PERMISSIONS_MCP_DOOR_ADVANCED_EXPIRY_INPUT_ATTR,
@@ -553,6 +554,12 @@ const makeFakeContractStore = (seed: ContractDefinitionView[] = []) => {
       ...(args.max_uses !== undefined
         ? { max_uses: args.max_uses, uses_remaining: args.max_uses }
         : {}),
+      // ⛔ THE DOUBLE HAS TO ECHO WHAT THE REAL MINT PROJECTS. `toContractView`
+      //   carries `use_period` back, and the panel folds the minted row
+      //   optimistically — a double that drops it renders the summary of a
+      //   LIFETIME cap for a door the owner just set to refill, and every
+      //   assertion about that copy would be testing the double.
+      ...(args.use_period !== undefined ? { use_period: args.use_period } : {}),
     });
     defs.unshift({ ...def });
     return def;
@@ -2881,6 +2888,112 @@ describe('D-171 slice 3b — mcp door Advanced (lazy cap/expiry)', () => {
     mount.dispose();
   });
 
+
+  /** ⛔⛔ THE USE LIMIT CAN REFILL — AND THE CONTROL HAS TO SAY SO.
+   *
+   *  The substrate landed `use_period: 'total' | 'day' | 'month'`, but a field an
+   *  owner cannot reach is not a product: the door said "Shut it off after this
+   *  many uses" and offered one budget, so "100 calls a month" — the thing an
+   *  owner actually reaches for — stayed unsayable on the surface where they set
+   *  the limit.
+   *
+   *  ⚠ THE SHORT-CIRCUIT IS THE SUBTLE ONE. `reconcileMcpDoorLimits` skips a save
+   *  whose (cap, expiry) tuple matches the live contract. Without the period in
+   *  that tuple, switching a 100-call door from "ever" to "per month" matches on
+   *  both numbers, short-circuits, and reports success while nothing changed. */
+  describe('D-166 mcp door — the use limit’s period', () => {
+  const periodSelect = (host: FakeEl): FakeEl | undefined =>
+    collectByAttr(host, PERMISSIONS_MCP_DOOR_ADVANCED_CAP_PERIOD_ATTR)[0];
+
+    it('defaults to a lifetime total, and mints no period for it', async () => {
+      const { mount, contracts } = mountAdvanced([tokenRecord({ token_id: 'door_live' })]);
+      await settle(mount);
+
+      mount.setAdvancedField('capEnabled', true);
+      mount.setAdvancedField('maxUses', '50');
+      await mount.submitMcpDoorLimits();
+      await tick();
+
+      // ⛔ `'total'` is the absence of a period, not a period spelled 'total' — a
+      //   door minted through this control must look exactly like every door
+      //   minted before the vocabulary existed.
+      expect(contracts.mint.mock.calls[0]![0]).not.toHaveProperty('use_period');
+      mount.dispose();
+    });
+
+    it('mints use_period when the owner picks a window', async () => {
+      const { host, mount, contracts } = mountAdvanced([tokenRecord({ token_id: 'door_live' })]);
+      await settle(mount);
+
+      mount.setAdvancedField('capEnabled', true);
+      mount.setAdvancedField('maxUses', '100');
+      mount.setAdvancedField('usePeriod', 'month');
+      await mount.submitMcpDoorLimits();
+      await tick();
+
+      const mintArg = contracts.mint.mock.calls[0]![0];
+      expect(mintArg.max_uses).toBe(100);
+      expect(mintArg.use_period).toBe('month');
+      // And the summary stops reading as a lifetime total.
+      expect(summaryEl(host)?.textContent).toContain('usage cap 100/100 left this month');
+      mount.dispose();
+    });
+
+    it('changing ONLY the period still saves', async () => {
+      const { mount, contracts } = mountAdvanced([tokenRecord({ token_id: 'door_live' })]);
+      await settle(mount);
+
+      mount.setAdvancedField('capEnabled', true);
+      mount.setAdvancedField('maxUses', '100');
+      await mount.submitMcpDoorLimits();
+      await tick();
+      expect(contracts.mint).toHaveBeenCalledTimes(1);
+
+      // Same count, same (absent) expiry — only the window moves.
+      mount.setAdvancedField('usePeriod', 'day');
+      await mount.submitMcpDoorLimits();
+      await tick();
+
+      // ⛔ WITHOUT THE PERIOD IN THE UNCHANGED-TUPLE THIS IS 1, and the owner is
+      //   told their monthly limit saved while the door still never refills.
+      expect(contracts.mint).toHaveBeenCalledTimes(2);
+      expect(contracts.mint.mock.calls[1]![0].use_period).toBe('day');
+      mount.dispose();
+    });
+
+    it('a period with the cap turned OFF mints nothing — there is no counter to refill', async () => {
+      const { mount, contracts } = mountAdvanced([tokenRecord({ token_id: 'door_live' })]);
+      await settle(mount);
+
+      // The draft can hold a period with no cap (the select keeps its value when
+      // the toggle goes off); the mint must not carry one. The rpc refuses that
+      // pair outright, so sending it would surface as an error on a save the owner
+      // reads as "turn the limit off".
+      mount.setAdvancedField('usePeriod', 'month');
+      await mount.submitMcpDoorLimits();
+      await tick();
+      expect(contracts.mint).not.toHaveBeenCalled();
+      mount.dispose();
+    });
+
+    it('seeds the control from a door already minted with a period', async () => {
+      const { host, mount } = mountAdvanced(
+        [tokenRecord({ token_id: 'door_live', contract_id: 'ct_seeded' })],
+        [contractView({
+          contract_id: 'ct_seeded',
+          max_uses: 20,
+          uses_remaining: 7,
+          use_period: 'day',
+        })],
+      );
+      await settle(mount);
+      // ⚠ Read the RENDERED control, not internal draft state: what matters is
+      //   that the owner opening a periodic door sees the window it already has.
+      expect(periodSelect(host)?.getAttribute('value') ?? (periodSelect(host) as unknown as { value?: string } | undefined)?.value).toBe('day');
+      expect((capInput(host) as unknown as { value?: string } | undefined)?.value).toBe('20');
+      mount.dispose();
+    });
+  });
 });
 
 describe('D-166 Permissions create form', () => {

@@ -4,7 +4,7 @@
  *
  *  D-149 P11 § A.10 shipped the `intake_form` template substrate
  *  (`intake-form-template.ts`) — six Foundation-pack manifests the
- *  Settings → Reception Templates gallery projects, each convertible to a
+ *  Reception Templates gallery projects, each convertible to a
  *  concrete `IntakeFormConfig` via `intakeFormConfigFromTemplate`. This
  *  file is the parallel substrate for the OTHER create-available reception
  *  kinds: a `scheduling_link` booking front-door, the singleton

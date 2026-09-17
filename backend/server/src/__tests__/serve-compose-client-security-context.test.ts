@@ -103,6 +103,10 @@ beforeEach(() => {
   });
 });
 
+import { createServerIdentity } from '../identity/index.js';
+import { buildIdentityProbePayload } from '@recued/contracts';
+import { createInMemoryServerKeyStore, ed25519Verify } from '../keys/index.js';
+
 describe('composeClientSecurityContext', () => {
   it('builds client-token, cert-stack, and passport-fetch deps', async () => {
     const options = makeOptions();
@@ -141,6 +145,12 @@ describe('composeClientSecurityContext', () => {
       rotationEngine: { tag: 'rotation-engine' },
       proAuthStateMachineRef: { tag: 'pro-auth-machine' },
       passportFetchDeps: { tag: 'passport-fetch-deps' },
+      // D-148 — built from the signing identity; its per-request behaviour has
+      // its own case below.
+      identityProbeDeps: {
+        serverIdentityKey: expect.any(Function),
+        sign: expect.any(Function),
+      },
     });
   });
 
@@ -268,6 +278,85 @@ describe('compose-client-security-context source boundary', () => {
     expect(listenerIndex).toBeGreaterThanOrEqual(0);
     expect(runtimeStartIndex).toBeGreaterThan(listenerIndex);
     expect(certLateIndex).toBeGreaterThanOrEqual(0);
+  });
+
+  // D-148 identity probe — the ROUTE's own suite proves it reads the key per
+  // request, but it hand-builds its deps, so it cannot see what THIS composer
+  // passes. Caching the keypair here would leave every route test green and
+  // make a rotated server keep answering to the pre-rotation fingerprint.
+  it('hands the identity probe a per-request key reader, so a rotation lands', async () => {
+    const identity = await createServerIdentity({ store: createInMemoryServerKeyStore() });
+    const before = identity.serverIdentityKey().public_key_fingerprint;
+
+    const context = await composeClientSecurityContext(
+      makeOptions({ signingIdentity: { identity } as never }),
+    );
+    const probe = context.identityProbeDeps;
+    expect(probe).toBeDefined();
+    expect(probe!.serverIdentityKey().public_key_fingerprint).toBe(before);
+
+    await identity.rotateServerIdentity();
+    const after = identity.serverIdentityKey();
+    expect(after.public_key_fingerprint).not.toBe(before);
+
+    // Read through the SAME composed deps object the listener already holds.
+    expect(probe!.serverIdentityKey().public_key_fingerprint).toBe(after.public_key_fingerprint);
+    expect(probe!.serverIdentityKey().public_key_b64).toBe(after.public_key_b64);
+  });
+
+  it('⛔⛔ the composed `sign` uses the SERVER identity key, and is actually called', async () => {
+    // ⚠ FOUND BY MUTATION. No test invoked the composer's `sign` at all: the
+    // route suites build their own deps, and the cases here only asserted the
+    // field was a Function. Swapping it to `signWithPublisherIdentity` passed
+    // every test — a probe signing with the wrong key produces a signature no
+    // client can verify, so address editing would be dead in production with a
+    // green tree, and the publisher key would be answering unauthenticated
+    // requests.
+    const identity = await createServerIdentity({ store: createInMemoryServerKeyStore() });
+    const context = await composeClientSecurityContext(
+      makeOptions({ signingIdentity: { identity } as never }),
+    );
+    const probe = context.identityProbeDeps;
+    expect(probe).toBeDefined();
+
+    const payload = buildIdentityProbePayload({
+      nonce: 'n'.repeat(43),
+      server_public_key: identity.serverIdentityKey().public_key_b64,
+    });
+    const signature = probe!.sign(payload);
+
+    // Verifies against the SERVER key…
+    expect(ed25519Verify(identity.serverIdentityKey().public_key_b64, payload, signature))
+      .toBe(true);
+    // …and NOT against the publisher key, which is the mutation this exists for.
+    expect(ed25519Verify(identity.publisherIdentityKey().public_key_b64, payload, signature))
+      .toBe(false);
+  });
+
+  it('⚠ signs what it is handed, byte for byte — no re-canonicalisation on the way', async () => {
+    // The route builds the payload and this only signs it. A composer that
+    // wrapped or re-serialised the string would sign bytes the client never
+    // rebuilds, and the failure would look like a bad key rather than a bad
+    // layer.
+    const identity = await createServerIdentity({ store: createInMemoryServerKeyStore() });
+    const context = await composeClientSecurityContext(
+      makeOptions({ signingIdentity: { identity } as never }),
+    );
+    const raw = 'an arbitrary string the route chose';
+    expect(
+      ed25519Verify(
+        identity.serverIdentityKey().public_key_b64,
+        raw,
+        context.identityProbeDeps!.sign(raw),
+      ),
+    ).toBe(true);
+  });
+
+  it('leaves the identity probe unconfigured without a signing identity', async () => {
+    const context = await composeClientSecurityContext(
+      makeOptions({ signingIdentity: undefined }),
+    );
+    expect(context.identityProbeDeps).toBeUndefined();
   });
 
   it('keeps the helper focused on early client security deps', () => {

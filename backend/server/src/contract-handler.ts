@@ -47,7 +47,7 @@
  *  Spec: D-166 §"contract_definition lifecycle"; the use-resolution
  *  overlay this lights up is documented in the contract-definition handover. */
 
-import { RpcError, isActor, isChannel, isCatalogForm, ACTORS, CHANNELS, ContractMergeError, OVERRIDE_SCOPE, overrideRowValue, isEmptyOverridePolicy, OWNER_OPERATION_SCOPE, ownerOperationRowValue, isEmptyOwnerOperationPolicy, ownerOperationIngredientViews, catalogIngredientViews, contractLifecycleState, DELEGATION_RULE_MAX_USES, DELEGATION_RULE_RISK_TIERS, DELEGATION_RULE_TTL_MS, DELEGATION_SUGGEST_LOOKBACK_MS, delegationRuleMintPlanFromSnapshot, delegationRuleSuggestionKeyHash, qualityDelegationMintPlanFromSnapshot, qualityDelegationSuggestionKeyHash, SCOPED_GRANT_MAX_USES_DEFAULT, SESSION_GRANT_RISK_TIERS, approvalFloorForRisk, isApprovalBelowRiskFloor, isOperationApproval, isRiskTier, RISK_TIER_RANK, renderScopedGrantSentence, scopedGrantSuggestionKeyHash, isDoorType, DOOR_TYPES, derivedDoorType, opGrantEntry, isReservedOwnerContractId, isReservedPublicContractId, CONTRACT_GRANT_KINDS, isContractGrantKind, isStandingContractDefinition, type DoorType } from '@recued/contracts';
+import { RpcError, isActor, isChannel, isCatalogForm, ACTORS, CHANNELS, ContractMergeError, OVERRIDE_SCOPE, overrideRowValue, isEmptyOverridePolicy, OWNER_OPERATION_SCOPE, ownerOperationRowValue, isEmptyOwnerOperationPolicy, ownerOperationIngredientViews, catalogIngredientViews, contractLifecycleState, DELEGATION_RULE_MAX_USES, DELEGATION_RULE_RISK_TIERS, DELEGATION_RULE_TTL_MS, DELEGATION_SUGGEST_LOOKBACK_MS, delegationRuleMintPlanFromSnapshot, delegationRuleSuggestionKeyHash, qualityDelegationMintPlanFromSnapshot, qualityDelegationSuggestionKeyHash, SCOPED_GRANT_MAX_USES_DEFAULT, SESSION_GRANT_RISK_TIERS, approvalFloorForRisk, isApprovalBelowRiskFloor, isOperationApproval, isRiskTier, RISK_TIER_RANK, renderScopedGrantSentence, scopedGrantSuggestionKeyHash, isDoorType, DOOR_TYPES, derivedDoorType, opGrantEntry, isReservedOwnerContractId, isReservedPublicContractId, CONTRACT_GRANT_KINDS, isContractGrantKind, isStandingContractDefinition, USAGE_CAP_PERIODS, isUsageCapPeriod, type UsageCapPeriod, type DoorType } from '@recued/contracts';
 import type {
   Actor,
   CatalogIngredientView,
@@ -787,6 +787,39 @@ const ensureOptionalMaxUses = (
   return value;
 };
 
+/** Validate optional `use_period` — a member of the closed
+ *  {@link USAGE_CAP_PERIODS} vocabulary. Absent ⇒ `'total'`.
+ *
+ *  ⛔ REFUSED, NEVER COERCED. An off-vocabulary period silently read as
+ *  `'total'` would mint a door the owner believes refills monthly and which
+ *  never refills — the failure is invisible until the month they notice it
+ *  stopped working. A closed vocabulary needs a door at the WRITE, not a safe
+ *  default at the read.
+ *
+ *  ⚠ A period WITHOUT `max_uses` is refused too: there is no counter for it to
+ *  refill, so the pair is the only coherent request and accepting half of it
+ *  would store a policy that governs nothing. */
+const ensureOptionalUsePeriod = (
+  method: string,
+  value: unknown,
+  max_uses: number | undefined,
+): UsageCapPeriod | undefined => {
+  if (value === undefined || value === null) return undefined;
+  if (!isUsageCapPeriod(value)) {
+    throw new RpcError(
+      'bad_request',
+      `${method}: use_period, when present, must be one of ${USAGE_CAP_PERIODS.join(' | ')}`,
+    );
+  }
+  if (value !== 'total' && max_uses === undefined) {
+    throw new RpcError(
+      'bad_request',
+      `${method}: use_period '${value}' needs a max_uses to refill`,
+    );
+  }
+  return value;
+};
+
 /** Validate the contract scope is a plain object. The deep per-axis `string[]`
  *  shape is enforced by the store's value_shape validator at write time — a
  *  malformed axis surfaces there as `ContractWriteInvalidError` → `bad_request`,
@@ -871,6 +904,7 @@ const handleContractMint = async (
   const door_types = ensureOptionalDoorTypes(method, a.door_types);
   const expiry_at = ensureOptionalEpochMs(method, 'expiry_at', a.expiry_at);
   const max_uses = ensureOptionalMaxUses(method, a.max_uses);
+  const use_period = ensureOptionalUsePeriod(method, a.use_period, max_uses);
   // Provenance: which paired device minted the contract. `display_name` is always
   // populated on a connected client; the `?.` + fallback is defensive for a
   // db-less / synthetic ctx (the family is reserved out of MCP, so the caller is
@@ -902,6 +936,7 @@ const handleContractMint = async (
           : {}),
         ...(expiry_at !== undefined ? { expiry_at } : {}),
         ...(max_uses !== undefined ? { max_uses } : {}),
+        ...(use_period !== undefined ? { use_period } : {}),
       });
       const ts = now();
       for (const opId of def.scope.operation_ids ?? []) {
@@ -1206,6 +1241,10 @@ const toSessionGrantView = (def: ContractDefinition, nowMs: number): SessionGran
       : {}),
     ...(def.uses_remaining !== undefined ? { uses_remaining: def.uses_remaining } : {}),
     ...(def.max_uses !== undefined ? { max_uses: def.max_uses } : {}),
+    // ⚠ Projected explicitly: `toContractView` rebuilds the row field-by-field,
+    // so a field the store holds is invisible to every client unless it is
+    // named here too.
+    ...(def.use_period !== undefined ? { use_period: def.use_period } : {}),
     ...(def.batch_members !== undefined ? { member_count: def.batch_members.length } : {}),
     lifecycle_state: contractLifecycleState(def, nowMs),
   };

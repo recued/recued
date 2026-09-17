@@ -1059,6 +1059,49 @@ describe('handleExecute D-259 running-action duplicate gate', () => {
     expect(new Set(lifecycle.map((event) => event.run_id)).size).toBe(1);
   });
 
+  it('carries `audit_exempt` on the terminal execution event, agreeing with the response', async () => {
+    // ⛔⛔ THE REGRESSION THIS GUARDS, AND WHY A UNIT TEST OF THE CLIENT CANNOT.
+    // A display board re-reads when another run completes. Two clients in
+    // display mode showing DIFFERENT boards used to trigger each other forever —
+    // A's refresh reads to B as a real change, and B's reads the same to A. A
+    // live two-client drive measured ~135 runs/second, symmetric
+    // (1077/1076/1076/1076 completes in eight seconds).
+    //
+    // The fix is that a listener can tell a read from a write, using the value
+    // the anchor decision already made. The client then treats `undefined` as
+    // DO NOT REFRESH — so if this field ever stops being emitted, the loop does
+    // NOT come back and nothing goes red: every display silently stops updating
+    // for good. That failure is invisible from the client's own tests, which is
+    // why presence is asserted HERE, at the emit site.
+    //
+    // ⚠ Equality with the response matters as much as presence: the two are
+    // computed once and reported twice, and a future refactor that recomputes
+    // either would let them disagree about a run that was already recorded.
+    const recipe = buildRecipe('audit-exempt-on-the-wire');
+    const eventBus = createEventBus();
+    const deps = makeDeps(recipe, { eventBus });
+    executeRecipeMock.mockImplementationOnce(async () => completedResult(recipe.recipe_id));
+
+    const response = await handleExecute(deps, {
+      recipe_id: recipe.recipe_id,
+      trigger_source: 'mcp' as const,
+      execution_source: mcpSource,
+      contract_snapshot: mcpSnapshot,
+      config: MATCHING_CONFIG,
+    });
+
+    const terminal = eventBus.replay(0).filter((event) =>
+      event.kind === 'execution' && (event.op === 'complete' || event.op === 'error'));
+    expect(terminal).toHaveLength(1);
+    const emitted = terminal[0] as { audit_exempt?: unknown };
+    // Present and a boolean — never absent, which is what the client reads as
+    // "do not refresh, forever".
+    expect(typeof emitted.audit_exempt).toBe('boolean');
+    // And the same answer the response gives, so the two can never disagree.
+    expect(emitted.audit_exempt).toBe(
+      (response as { audit_exempt?: boolean }).audit_exempt);
+  });
+
   it('attaches an exact concurrent chat twin to one engine execution and run', async () => {
     const recipe = buildRecipe('running-idempotency-concurrent-collapse');
     const log = auditLog();

@@ -1,6 +1,6 @@
 /** D-220 Slice B — pack-shipped intake templates in the Templates browser.
  *
- *  Covers the pack half of `reception-templates.ts` (card + browser model
+ *  Covers the pack half of `templates.ts` (card + browser model
  *  with provenance) and the gallery mount's pack section: the card renders
  *  with its `pack:` ref + pack marker + "From <pack>" line, third-party
  *  copy is escaped on the way into markup, "Use template" on a pack card
@@ -23,9 +23,9 @@ import {
   buildPackIntakeFormTemplateCardModel,
   buildPackIntakeFormTemplatesBrowserModel,
   useIntakeFormTemplate,
-} from '../settings/reception-templates.js';
-import { mountTemplatesBrowser } from '../settings/reception-templates-mount.js';
-import { seedWorkingConfig } from '../settings/reception-authoring-mount.js';
+} from '../reception/templates.js';
+import { mountTemplatesBrowser } from '../reception/templates-mount.js';
+import { seedWorkingConfig } from '../reception/authoring-mount.js';
 
 // ── Fixtures ──────────────────────────────────────────────────────
 

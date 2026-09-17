@@ -492,6 +492,33 @@ describe('wrapWithCommitGateway with evaluateAdmission', () => {
     expect(inner).toHaveBeenCalledTimes(1);
   });
 
+  /** ⛔⛔ A THROW FROM THE USE SEAM MUST PREVENT THE DISPATCH, NOT RIDE ALONGSIDE
+   *  IT. The host's `recordDispatchUse` now refuses a spent contract by throwing
+   *  from this exact position — the same way the seller reservation beside it
+   *  denies ("A denial throws and prevents dispatch"). That is only a refusal if
+   *  nothing downstream runs: no pending row, and above all no `inner`.
+   *
+   *  🔑 WITHOUT THIS, "the host throws" and "the call was refused" are different
+   *  claims and only the first is tested. A budget that threw while the effect
+   *  still crossed the boundary would be worse than the clamp it replaced. */
+  it('a throwing recordDispatchUse refuses the call before any pending row or effect', async () => {
+    const store = commitStore();
+    const inner = vi.fn<GatewayInner>().mockResolvedValue({ ok: true });
+    const recordDispatchUse = vi.fn(() => {
+      throw new Error('this contract\'s use limit is spent');
+    });
+    const executor = wrapWithCommitGateway(inner, gatewayDeps(store, {
+      evaluateAdmission: vi.fn(() => admitDecision),
+      recordDispatchUse,
+    }));
+
+    await expect(executor('read-tool', { q: 'x' })).rejects.toThrow(/use limit is spent/);
+
+    expect(recordDispatchUse).toHaveBeenCalledTimes(1);
+    expect(inner).not.toHaveBeenCalled();
+    expect(store.writePending).not.toHaveBeenCalled();
+  });
+
   it('does not record a dispatch use when an ask verdict has no resume grant', async () => {
     const store = commitStore();
     const recordDispatchUse = vi.fn();

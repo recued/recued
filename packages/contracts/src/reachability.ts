@@ -1,242 +1,46 @@
-/** D-148 § A.10 — Reachability Doctor.
+/** D-148 § A.10 — the reachability CHECKS. Not a report.
  *
- *  Self-service diagnostic that renders the resolved network state
- *  of the user's server: NAT topology, DDNS resolution, cert health,
- *  per-port handshake results, per-vendor webhook health, paired
- *  bridge / webclient state, and a closed-list recommendation feed.
+ *  ⛔ THE REPORT FAMILY IS GONE (2026-09-16). This file used to carry
+ *  `ReachabilityReport` and its ten sub-blocks — a whole-network snapshot the
+ *  server built about itself, wired to nothing for as long as it existed. It was
+ *  deleted along with its builder (`backend/server/src/diagnostics/
+ *  reachability.ts`) when the standalone Reachability panel folded into
+ *  Settings → Server → Connect a device. ⇒ DO NOT RE-ADD A SNAPSHOT TYPE HERE:
+ *  a machine cannot testify to its own reachability, so the answer comes from
+ *  the OUTSIDE — the cloud probe worker — one check at a time.
  *
- *  P1 ships the contract; P5 wires the cloud-probe Worker; P6 wires
- *  the server-side doctor + Settings → Server → Reachability page.
+ *  What lives here is that outside-in surface and nothing else: the
+ *  `CloudProbe*` request / response pair spoken to `probe.recued.com`, the
+ *  `ProbeTarget*` shapes, and the rate-limit constants.
+ *
+ *  ⚠ THE RECOMMENDATION VOCABULARY WENT TOO, one round later — see the block
+ *  below, which is all that is left of it.
  */
 
-import type { PathRole, TLSDomainCertSource } from './network.js';
-import type { BridgeCapabilityProfile } from './bridge.js';
-export type { BridgeCapabilityProfile } from './bridge.js';
+import type { PathRole } from './network.js';
 
-/** D-148 § A.10 + D-149 § A.8 + D-148 FU2 — closed list of
- *  recommendation codes the doctor emits. Each code maps to a
- *  remediation hint surfaced in the UI. Add a code only with a
- *  corresponding remediation entry.
+/** ⛔⛔ THE RECOMMENDATION VOCABULARY WAS DELETED HERE (2026-09-16), AND IT IS
+ *  NOT COMING BACK IN THIS SHAPE. `ReachabilityRecommendationCode` (14 codes),
+ *  `REACHABILITY_RECOMMENDATION_CODES`, `ReachabilityRecommendation` and
+ *  `ReachabilityPerDomainTlsEntry` lived here from D-148 P1, were widened by
+ *  D-149 P1 and again by D-148 FU2 — and had exactly ONE emitter for their whole
+ *  life (`diagnostics/per-domain-tls-health.ts`'s rollup) feeding exactly ONE
+ *  consumer (`buildReachabilityReport`) that nothing in production ever called.
+ *  The report went 2026-09-16; the rollup went with it; these had no producer
+ *  left, only two ratchet tests asserting the list's own contents.
  *
- *  D-149 P1 widens the closed list with three Reception-port codes
- *  per § A.8: `reception_listener_silent` (port listening but no
- *  traffic in N days), `reception_endpoint_unreachable` (synthetic
- *  probe failed for at least one enabled endpoint), and
- *  `reception_cert_san_missing_hostname` (cert SAN doesn't cover the
- *  Reception port's hostname). The doctor's per-emission logic for
- *  these three codes lands in P3 alongside the registry that knows
- *  which endpoints are enabled; P1 ships the closed list so the
- *  contract is the single source of truth.
+ *  🔑 A CLOSED LIST WITH NO PRODUCER IS NOT INERT — IT READS AS A SHIPPED
+ *  CONTRACT. D-149 P1's own comment here said it "ships the closed list so the
+ *  contract is the single source of truth", with the emission logic to follow in
+ *  P3. P3 never came. Three codes sat in a published vocabulary for months
+ *  describing checks nothing performs, and the next reader to plan reception
+ *  diagnostics would have found a surface and assumed a substrate.
  *
- *  D-148 FU2 widens with `tls_chain_invalid_for_domain` — emitted
- *  per-row when a `TLSDomainStore.list()` entry's leaf+chain stops
- *  terminating at a system trust root (intermediate CA expired, OS
- *  trust store update, etc.). The existing `tls_renewal_overdue` /
- *  `tls_renewal_imminent` / `cert_fingerprint_mismatch` codes are
- *  REUSED for per-domain emissions (spec § A.6.3 line 885: the codes
- *  key on domain, not on a single cert); the doctor's message
- *  carries the domain. */
-export type ReachabilityRecommendationCode =
-  | 'tls_renewal_overdue'
-  | 'tls_renewal_imminent'
-  | 'ddns_ip_mismatch'
-  | 'webhook_inbound_silent'
-  | 'webhook_hmac_failure'
-  | 'bridge_offline'
-  | 'cert_fingerprint_mismatch'
-  | 'path_unreachable_from_cloud'
-  | 'nat_traversal_required'
-  | 'exposure_resolution_inconsistent'
-  | 'reception_listener_silent'
-  | 'reception_endpoint_unreachable'
-  | 'reception_cert_san_missing_hostname'
-  | 'tls_chain_invalid_for_domain';
-
-export const REACHABILITY_RECOMMENDATION_CODES: ReadonlyArray<ReachabilityRecommendationCode> = [
-  'tls_renewal_overdue',
-  'tls_renewal_imminent',
-  'ddns_ip_mismatch',
-  'webhook_inbound_silent',
-  'webhook_hmac_failure',
-  'bridge_offline',
-  'cert_fingerprint_mismatch',
-  'path_unreachable_from_cloud',
-  'nat_traversal_required',
-  'exposure_resolution_inconsistent',
-  'reception_listener_silent',
-  'reception_endpoint_unreachable',
-  'reception_cert_san_missing_hostname',
-  'tls_chain_invalid_for_domain',
-] as const;
-
-export interface ReachabilityNetworkBlock {
-  public_ipv4?: string;
-  public_ipv6?: string;
-  /** How the public IP was determined. `cloud_probe` means the cloud
-   *  Worker reported it; `stun` means a STUN bind; `manual` means
-   *  user supplied it. */
-  detected_via: 'stun' | 'cloud_probe' | 'manual';
-  behind_nat: boolean;
-  upnp_status?: 'enabled' | 'disabled' | 'unsupported';
-}
-
-export interface ReachabilityDnsBlock {
-  handle?: string;
-  ddns_resolves: boolean;
-  resolved_to_expected_ip: boolean;
-  resolution_ms: number;
-  last_ddns_update: number;
-}
-
-export interface ReachabilityTlsBlock {
-  cert_fingerprint: string;
-  expires_at: number;
-  days_until_expiry: number;
-  issuer: string;
-  san: string[];
-  valid_for_handle: boolean;
-  renewal_overdue: boolean;
-}
-
-export interface ReachabilityHandshakeTest {
-  passed: boolean;
-  ms: number;
-  error?: string;
-}
-
-/** D-149 § A.8 — Reception-specific reachability fields. Populated
- *  only on the `reception` per-port row; undefined for the WS /
- *  webhook / MCP roles. The `last_endpoint_health_check` summarises
- *  the synthetic per-endpoint probe outcome (P3 wires the actual
- *  probe; P1 ships the contract). */
-export interface ReachabilityReceptionSpecific {
-  /** Count of currently enabled Reception endpoints. */
-  enabled_endpoint_count: number;
-  /** Aggregate of synthetic per-endpoint probe outcomes:
-   *  - `'all_passed'` — every enabled endpoint responded as expected.
-   *  - `'some_failed'` — at least one enabled endpoint's synthetic
-   *    probe failed (raises `reception_endpoint_unreachable`).
-   *  - `'not_run'` — no synthetic probe attempted (LAN-only deploy
-   *    or doctor invoked without external probe). */
-  last_endpoint_health_check: 'all_passed' | 'some_failed' | 'not_run';
-  /** True iff the cert SAN list covers the Reception port's
-   *  hostname. False raises `reception_cert_san_missing_hostname`. */
-  cert_san_includes_reception_hostname: boolean;
-}
-
-/** D-148 § A.10 — per-path reachability entry (Amendment 2026-05-11;
- *  supersedes per-port). One row per `PathRole`. The doctor reports
- *  per-path listening + per-listener (lan/public) reachability +
- *  handshake outcome. */
-export interface ReachabilityPathEntry {
-  role: PathRole;
-  /** True iff the path serves on the LAN listener (port 80 plain
-   *  HTTP) under the current resolution. */
-  lan_listening: boolean;
-  /** True iff the path serves on the public listener (port 443 TLS)
-   *  under the current resolution. */
-  public_listening: boolean;
-  /** Set when external cloud probe attempted against the public
-   *  listener for this path; absent when LAN-only. */
-  cloud_probe_reachable?: boolean;
-  last_inbound_at?: number;
-  handshake_test: ReachabilityHandshakeTest;
-  /** D-149 § A.8 — Reception-specific reachability summary. Populated
-   *  only when `role === 'reception'`; undefined for the other roles. */
-  reception_specific?: ReachabilityReceptionSpecific;
-}
-
-export interface ReachabilityHmacTest {
-  passed: boolean;
-  error?: string;
-}
-
-export interface ReachabilityWebhookEntry {
-  integration: string;
-  configured: boolean;
-  last_inbound_at?: number;
-  last_failed_at?: number;
-  hmac_test: ReachabilityHmacTest;
-}
-
-export interface ReachabilityBridgeEntry {
-  client_label?: string;
-  online: boolean;
-  last_seen_at: number;
-  capabilities: BridgeCapabilityProfile;
-}
-
-export interface ReachabilityWebclientEntry {
-  client_label?: string;
-  online: boolean;
-  last_seen_at: number;
-}
-
-export interface ReachabilityRecommendation {
-  severity: 'info' | 'warning' | 'error';
-  code: ReachabilityRecommendationCode;
-  message: string;
-  remediation?: string;
-}
-
-/** D-148 FU2 — per-domain TLS health entry. One row per
- *  `TLSDomainStore.list()` entry, with the standard cert metadata
- *  plus two health bits the Reachability Doctor verifies at report
- *  time: `chain_valid` (leaf+chain still terminate at a system trust
- *  root) and `fingerprint_matches` (stored `fingerprint` field matches
- *  hash(cert_pem) — row-tamper detection). Emits up to four
- *  per-domain recommendations: `tls_renewal_overdue` /
- *  `tls_renewal_imminent` (expiry windows; codes reused from the
- *  single-cert path); `cert_fingerprint_mismatch` (stored row vs
- *  computed cert mismatch; code reused from the MITM detection path);
- *  `tls_chain_invalid_for_domain` (new FU2 code). */
-export interface ReachabilityPerDomainTlsEntry {
-  domain: string;
-  /** SHA-256 hex of the leaf cert as stored (lowercase, no separators). */
-  fingerprint: string;
-  /** Unix-ms; from the cert's notAfter. */
-  expires_at: number;
-  /** Days remaining until expiry at health-check time. Negative when
-   *  already expired. */
-  days_until_expiry: number;
-  /** Issuer common-name from the leaf cert. */
-  issuer: string;
-  /** Cert source — `pro_acme` (auto-renewed) or `byo_upload` (user-
-   *  managed). Drives the remediation copy. */
-  source: TLSDomainCertSource;
-  /** True iff the leaf + chain still verify against the system trust
-   *  store at health-check time. False raises
-   *  `tls_chain_invalid_for_domain`. */
-  chain_valid: boolean;
-  /** True iff `hash(cert_pem)` matches the stored fingerprint. False
-   *  raises `cert_fingerprint_mismatch` for this domain (row-tamper
-   *  detection — distinct from the MITM detection's
-   *  `cert_fingerprint_mismatch` which compares cloud-probe to local). */
-  fingerprint_matches: boolean;
-  /** Unix-ms of last successful renewal — `pro_acme` rows only. */
-  last_renewed_at?: number;
-}
-
-export interface ReachabilityReport {
-  report_id: string;
-  generated_at: number;
-  server_passport_fingerprint: string;
-  network: ReachabilityNetworkBlock;
-  dns: ReachabilityDnsBlock;
-  tls: ReachabilityTlsBlock;
-  /** D-148 FU2 — per-domain TLS health rollup from
-   *  `TLSDomainStore.list()`. Optional: present only when the server
-   *  has BYO / pro_acme per-domain certs configured. The single-cert
-   *  `tls` block above remains the primary cert (server identity);
-   *  this array carries additional per-domain certs that serve via
-   *  SNI dispatch on the public listener. */
-  per_domain_tls?: ReachabilityPerDomainTlsEntry[];
-  per_path: ReachabilityPathEntry[];
-  webhooks: ReachabilityWebhookEntry[];
-  bridges: ReachabilityBridgeEntry[];
-  webclients: ReachabilityWebclientEntry[];
-  recommendations: ReachabilityRecommendation[];
-}
+ *  ⇒ THE FACTS SURVIVED; THE VOCABULARY DID NOT. The two health bits this
+ *  carried (`chain_valid`, `fingerprint_matches`) are now read by `recued
+ *  doctor`, in `DoctorCheck`'s vocabulary, which has a renderer. A diagnostic
+ *  needs one severity vocabulary, not two, and the one that survives is the one
+ *  someone can see. */
 
 /** D-148 § A.5.5 — cloud-probe request shape. Sent server → cloud
  *  Worker. No auth required (free-tier reachability is open).

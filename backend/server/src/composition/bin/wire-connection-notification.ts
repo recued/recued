@@ -88,8 +88,10 @@ export const composeConnectionNotification = (
         { kind: row.kind, name: row.name },
         keyProvider,
       ),
-    emitInApp: (body) =>
-      emitNotification(eventBus, { subtype: 'in-app', body }),
+    // ⚠ The subtype is the CONNECTION ROW's, not the wire's — `in-app` selects
+    // this dispatcher, and what goes on the bus is `notification.notify`, the
+    // only notification kind a client actually names.
+    emitInApp: (body) => emitNotification(eventBus, { body }),
     mailRpc: {
       send: (args) =>
         handleCollectionMailSend({ registry: collectionRegistry }, args),

@@ -125,7 +125,7 @@ describe('D-121 Phase 6 — broadcast event constants', () => {
       // D-149 P3 § A.3 — reception broadcast kinds. `endpoint_changed`
       // fires on every registry mutation (create / enable / disable /
       // revoke / extend / rotate_token) so paired clients re-render
-      // Settings → Server → Reception AND the listener's in-memory
+      // Reception AND the listener's in-memory
       // registry cache invalidates within 60s per Must Hold I-5.
       // `emergency_disabled` is the fan-out roll-up for the bulk
       // emergency-disable rpc.

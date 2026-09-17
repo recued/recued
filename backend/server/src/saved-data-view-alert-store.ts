@@ -2,9 +2,13 @@
 import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import {
-  RpcError, type SavedDataView, type SavedDataViewAlert, type SavedDataViewAlertSettings,
+  RpcError, savedDataViewSupportsAlerts, type SavedDataView, type SavedDataViewAlert, type SavedDataViewAlertSettings,
+  type SavedDataViewDefinition,
 } from '@recued/contracts';
-import type { SavedTaskViewReader } from './saved-data-view-task-reader.js';
+
+export type SavedDataViewMatchReader = (
+  definition: SavedDataViewDefinition, time_zone: string, now: number,
+) => Array<{ id: string; title?: string }>;
 
 export interface SavedDataViewAlertNotice {
   id: string;
@@ -14,6 +18,8 @@ export interface SavedDataViewAlertNotice {
   /** Bounded notification preview; the complete result stays in Data. */
   titles: string[];
   created_at: number;
+  /** Absent on notices persisted before Records alerts: those are task notices. */
+  kind?: 'task' | 'records';
 }
 export interface SavedDataViewAlertStore {
   clear(view_id: string): void;
@@ -25,9 +31,12 @@ export interface SavedDataViewAlertStore {
 
 export const createSavedDataViewAlertStore = (
   db: Database.Database,
-  readTasks: SavedTaskViewReader | undefined,
+  readers: { task?: SavedDataViewMatchReader; records?: SavedDataViewMatchReader },
   now: () => number = Date.now,
 ): SavedDataViewAlertStore => {
+  const readerFor = (view: SavedDataView): SavedDataViewMatchReader | undefined =>
+    view.definition.tab === 'task' ? readers.task
+      : view.definition.tab === 'records' ? readers.records : undefined;
   db.exec(`CREATE TABLE IF NOT EXISTS saved_data_view_alert_members (
     view_id TEXT PRIMARY KEY NOT NULL, members TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS saved_data_view_alert_notices (
@@ -49,17 +58,20 @@ export const createSavedDataViewAlertStore = (
     /** Runs inside the settings write transaction. Enabling/resuming and
      * changing filters establish their baseline before the RPC returns. */
     configure(view: SavedDataView, settings: SavedDataViewAlertSettings): SavedDataViewAlert {
-      if (view.definition.tab !== 'task') throw new RpcError('bad_request', 'Alerts are available for task views only.', 400);
+      if (!savedDataViewSupportsAlerts(view.definition)) {
+        throw new RpcError('bad_request', 'Alerts require a task view or a Records view with a pack and kind selected.', 400);
+      }
       if (!settings.enabled) {
         clear(view.id);
         return { ...settings, status: 'paused', last_checked_at: view.alert?.last_checked_at ?? null,
           last_notified_at: view.alert?.last_notified_at ?? null };
       }
-      if (!readTasks) throw new RpcError('not_configured', 'Task alerts are unavailable on this server.', 503);
+      const read = readerFor(view);
+      if (!read) throw new RpcError('not_configured', 'Alerts for this view are unavailable on this server.', 503);
       const checked = now();
       let members: string[];
-      try { members = readTasks(view.definition, settings.time_zone, checked).map(task => task.id); }
-      catch { throw new RpcError('bad_request', 'The saved task source is unavailable for alerts. Refresh its source before enabling alerts.', 400); }
+      try { members = read(view.definition, settings.time_zone, checked).map(match => match.id); }
+      catch { throw new RpcError('bad_request', 'This saved view cannot be checked for alerts. Open it and check its source and filters before enabling alerts.', 400); }
       clear(view.id);
       writeMembers(view.id, members);
       return { ...settings, status: 'watching', last_checked_at: checked,
@@ -74,11 +86,12 @@ export const createSavedDataViewAlertStore = (
           if (!row) return;
           const view: SavedDataView = JSON.parse(row.data);
           if (!view.alert?.enabled) return;
-          let matches: ReturnType<SavedTaskViewReader>;
+          let matches: ReturnType<SavedDataViewMatchReader>;
           const checked = now();
           try {
-            if (!readTasks) throw new Error('Task reader unavailable');
-            matches = readTasks(view.definition, view.alert.time_zone, checked);
+            const read = readerFor(view);
+            if (!read || !savedDataViewSupportsAlerts(view.definition)) throw new Error('View reader unavailable');
+            matches = read(view.definition, view.alert.time_zone, checked);
           } catch {
             // Keep the last successful membership through source outages.
             writeView({ ...view, alert: { ...view.alert, status: 'unavailable' } });
@@ -86,14 +99,15 @@ export const createSavedDataViewAlertStore = (
           }
           const prior = db.prepare('SELECT members FROM saved_data_view_alert_members WHERE view_id = ?')
             .get(id) as { members: string } | undefined;
-          const members = matches.map(task => task.id);
+          const members = matches.map(match => match.id);
           const before = new Set<string>(prior ? JSON.parse(prior.members) : members);
-          const entered = matches.filter(task => !before.has(task.id));
+          const entered = matches.filter(match => !before.has(match.id));
           const count = entered.length;
           if (count > 0) {
             const notice: SavedDataViewAlertNotice = { id: `saved-view-alert:${randomUUID()}`,
               view_id: view.id, view_name: view.name, count, created_at: checked,
-              titles: entered.slice(0, 3).map(task => task.title.slice(0, 160)) };
+              kind: view.definition.tab === 'records' ? 'records' : 'task',
+              titles: entered.slice(0, 3).flatMap(match => match.title ? [match.title.slice(0, 160)] : []) };
             db.prepare('INSERT INTO saved_data_view_alert_notices (id, view_id, data) VALUES (?, ?, ?)')
               .run(notice.id, id, JSON.stringify(notice));
           }

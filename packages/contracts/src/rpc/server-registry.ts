@@ -64,6 +64,8 @@ import type {
   WorkEntityGetRpcResponse,
   WorkEntityUpsertRpcRequest,
   WorkEntityUpsertRpcResponse,
+  WorkEntityTaskMarkDoneRpcRequest,
+  WorkEntityTaskMarkDoneRpcResponse,
   WorkEntityDeleteRpcRequest,
   WorkEntityDeleteRpcResponse,
 } from '../work-entity-rpc.js';
@@ -334,6 +336,7 @@ import type {
   TLSDomainUploadIssue,
   TLSDomainUploadResult,
   NetworkLocalUrlsResponse,
+  NetworkPortMappingResponse,
 } from '../network.js';
 import type {
   KeyHealthView,
@@ -1081,6 +1084,25 @@ export interface ServerExecuteResponse {
   run_facts?: RecipeRunFacts;
   /** D-157 — run paused at the approval gate. Distinct from a terminal failure. */
   awaiting_approval?: boolean;
+  /** D-display-mode P4 — did this run write an audit anchor, or was it exempt?
+   *
+   *  ⛔ WHY A CLIENT NEEDS TO KNOW. A screen left showing a board re-runs it on
+   *  every change, which is free ONLY while `runIsAuditExemptRender` holds —
+   *  and its hardest condition is that every dispatching step is provably a
+   *  Records read. A board that grows ONE non-Records step (a vendor read, a
+   *  notification, an `ai-*` call) loses the exemption for the whole run and
+   *  starts writing an anchor every few seconds, with nothing in the recipe
+   *  saying so. Surfacing the server's own answer lets a display REFUSE to
+   *  auto-refresh rather than quietly fill the log.
+   *
+   *  ⛔⛔ A CLIENT MUST NEVER RE-DERIVE THIS. A second copy of the classifier
+   *  drifts from the one the server actually applies, and the failure mode is a
+   *  display that believes it is free while the anchors accumulate. This field
+   *  IS the server's decision, not a hint to reconstruct it from.
+   *
+   *  ⚠ Absent on a server too old to send it. Treat `undefined` as "unknown",
+   *  never as `true`: the fail-safe reading is that the run DID audit. */
+  audit_exempt?: boolean;
   /** Durable operation-scoped receipt for the held gated step. Unlike run_id,
    * this remains the same operation if its ask is re-rendered; a later
    * approval segment in the same foreach step receives a new ref. */
@@ -2502,6 +2524,17 @@ export type ServerRpcRegistry = {
   'network.local_urls': RpcMethodSpec<
     void,
     NetworkLocalUrlsResponse
+  >;
+
+  /** D-273 — automatic port mapping: what the router supports and what we did.
+   *  Local-UI only, like its sibling (`network.` is in
+   *  `MCP_RESERVED_RPC_PREFIXES`) — ⛔ and that reservation matters more here
+   *  than for the URL read: this reports whether a hole is open in the owner's
+   *  firewall, which is not a fact an MCP-channel agent has any business
+   *  enumerating. */
+  'network.port_mapping': RpcMethodSpec<
+    void,
+    NetworkPortMappingResponse
   >;
 
   /** R26.4 Delta 2 (D-148 § A.9 P8) — user-initiated passport export.
@@ -5257,6 +5290,11 @@ export type ServerRpcRegistry = {
     WorkEntityUpsertRpcRequest,
     WorkEntityUpsertRpcResponse
   >;
+  /** Paired owner task completion through the existing mark-done dispatcher. */
+  'work_entity.task.mark_done': RpcMethodSpec<
+    WorkEntityTaskMarkDoneRpcRequest,
+    WorkEntityTaskMarkDoneRpcResponse
+  >;
   /** D-174 #22 — delete one entity by `(kind, id)`; default tombstone.
    *  Emits a `deleted` warehouse event through the dispatcher path. */
   'work_entity.delete': RpcMethodSpec<
@@ -7502,6 +7540,8 @@ export const SERVER_RPC_METHODS = [
   // LAN-URL kickstart — `network.local_urls` (loopback + LAN reachable URLs);
   // local-UI only (`network.` is in `MCP_RESERVED_RPC_PREFIXES`).
   'network.local_urls',
+  // D-273 — automatic port mapping status. Same `network.` reservation.
+  'network.port_mapping',
   // D-148 § A.6.5 + § A.9 — webclient passport-fetch verify path;
   // reserved for local-UI only (`passport.` is in
   // `MCP_RESERVED_RPC_PREFIXES`).
@@ -7851,6 +7891,7 @@ export const SERVER_RPC_METHODS = [
   'work_entity.list',
   'work_entity.get',
   'work_entity.upsert',
+  'work_entity.task.mark_done',
   'work_entity.delete',
   // Accepted visitor intake responses — owner Data browser only.
   'form_response.list',

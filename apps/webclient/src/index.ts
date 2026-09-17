@@ -366,11 +366,6 @@ export type {
   InternalStepListener,
 } from './internal-steps/stream.js';
 export {
-  validateServerUrl,
-  computeCertFingerprintMatch,
-} from './settings/server-url.js';
-export type { ServerUrlValidation } from './settings/server-url.js';
-export {
   buildKeyHealthRows,
   KEY_HEALTH_STATUS_ORDER,
 } from './settings/key-health.js';
@@ -517,10 +512,12 @@ export {
 
 // D-149 follow-on § A.9 — Reception page shell. The stateful container
 // that wires the § A.9 spine + the five satellite projection modules
-// (`settings/reception*.ts`) to the `reception.*` rpc surface + the
+// (`reception/reception*.ts`) to the `reception.*` rpc surface + the
 // reception broadcast subscription. The projection modules themselves
-// stay deep-importable from `settings/`; this barrel surfaces the
+// stay deep-importable from `reception/`; this barrel surfaces the
 // integration layer the host PWA mounts.
+// ⚠ They lived under `settings/` until 2026-09-16 — a deep import of
+// `settings/reception-*.js` will not resolve.
 export {
   createReceptionPageShell,
   RECEPTION_PAGE_SHELL_BROADCAST_KINDS,
@@ -530,7 +527,7 @@ export {
   type ReceptionPageShellState,
   type ReceptionPageShellError,
   type LaunchWizardRunResult,
-} from './settings/reception-page-shell.js';
+} from './reception/page-shell.js';
 
 // D-149 follow-on § A.9 — Reception page renderer + mount. The
 // host-side framework renderer: `renderReceptionPage` projects
@@ -551,11 +548,11 @@ export {
   type ReceptionActiveView,
   type ReceptionPageView,
   type ReceptionPageViewOptions,
-} from './settings/reception-page-render.js';
+} from './reception/page-render.js';
 
 // D-149 follow-on § A.9 + § A.5.x — per-kind authoring-form renderer.
 // `renderAuthoringForm` projects a `<Kind>FormModel` (from
-// `reception-authoring.ts`) into an HTML string, tagging every control
+// `authoring.ts`) into an HTML string, tagging every control
 // with the `data-field-*` / `data-repeater-*` markup a working-config
 // container binds value edits to + a typed `data-action` on every
 // discrete button. Pure projection — the `mountX` + working-config
@@ -566,11 +563,11 @@ export {
   RECEPTION_AUTHORING_STYLES,
   type AuthoringFormAction,
   type AuthoringFormView,
-} from './settings/reception-authoring-render.js';
+} from './reception/authoring-render.js';
 
 // D-149 follow-on § A.20.1 — Launch Wizard renderer. `renderLaunchWizard`
 // projects the cursor-driven stepper + validation gate + plan preview
-// (from `reception-launch-wizard.ts`) into an HTML string. Owns the
+// (from `launch-wizard.ts`) into an HTML string. Owns the
 // wizard *frame*; the per-step content goes into a host-filled
 // `data-wizard-step` slot. Pure projection — same `renderReceptionPage`
 // shape, no `mountX` (see the module docstring).
@@ -580,7 +577,7 @@ export {
   LAUNCH_WIZARD_STYLES,
   type LaunchWizardAction,
   type LaunchWizardRenderView,
-} from './settings/reception-launch-wizard-render.js';
+} from './reception/launch-wizard-render.js';
 
 // D-149 follow-on § A.9 + § A.5.x — per-kind authoring-form mount. The
 // stateful working-config container the authoring renderer was built
@@ -589,12 +586,12 @@ export {
 // `reception.*` rpc (preview → create / page upsert) through the
 // `ReceptionPageShell`. The `mountReceptionPage` shape. The shared
 // working-config machinery (`seedWorkingConfig` / `applyFieldDelegateEvent`
-// / …) stays deep-importable from `settings/reception-authoring-mount.js`.
+// / …) stays deep-importable from `reception/reception-authoring-mount.js`.
 export {
   mountAuthoringForm,
   type AuthoringFormMount,
   type AuthoringFormMountOptions,
-} from './settings/reception-authoring-mount.js';
+} from './reception/authoring-mount.js';
 
 // D-149 follow-on § A.20.1 — Launch Wizard mount. The wizard's
 // step-cursor + per-step working-config container: `mountLaunchWizard`
@@ -607,7 +604,7 @@ export {
   LAUNCH_WIZARD_MOUNT_STYLES,
   type LaunchWizardMount,
   type LaunchWizardMountOptions,
-} from './settings/reception-launch-wizard-mount.js';
+} from './reception/launch-wizard-mount.js';
 
 // D-149 follow-on § A.9 + § A.20.1 — Reception Settings host runtime.
 // The composition target the prior phases were building toward: catches
@@ -627,7 +624,7 @@ export {
   type ReceptionHostPromptAction,
   type ReceptionPageHost,
   type ReceptionPageHostOptions,
-} from './settings/reception-page-host.js';
+} from './reception/page-host.js';
 
 // D-149 follow-on § A.9 — Reception Settings prompts host runtime. The
 // fourth host element in the Reception Settings composition: catches
@@ -648,7 +645,7 @@ export {
   type ReceptionPromptKind,
   type ReceptionPromptsHost,
   type ReceptionPromptsHostOptions,
-} from './settings/reception-prompts-host.js';
+} from './reception/prompts-host.js';
 
 // D-149 follow-on § A.9 — Reception Settings composition (PWA shell).
 // The three Reception Settings hosts — page list + satellite modal +
@@ -663,7 +660,7 @@ export {
   type ReceptionSettingsHost,
   type ReceptionSettingsOptions,
   type ReceptionSettingsShellSlot,
-} from './settings/reception-settings-host.js';
+} from './reception/settings-host.js';
 
 // D-149 follow-on § A.9 — Reception Settings route entrypoint. The PWA-
 // shell layer on top of `mountReceptionSettings`: owns the two rpc
@@ -677,7 +674,7 @@ export {
   type ReceptionRoute,
   type ReceptionRouteConn,
   type ReceptionRouteOptions,
-} from './settings/reception-route.js';
+} from './reception/route.js';
 
 // D-149 follow-on § A.9 — Reception Settings PWA bootstrap. The DOM
 // boundary above `mountReceptionRoute` — the ONE place in the webclient
@@ -690,7 +687,7 @@ export {
   RECEPTION_BOOTSTRAP_STYLES,
   RECEPTION_BOOTSTRAP_STYLES_MARKER,
   type BootstrapReceptionRouteOptions,
-} from './settings/reception-bootstrap.js';
+} from './reception/bootstrap.js';
 
 // D-148 § A.4.2 — webclient typed rpc conn over the fire-and-forget WS
 // client. Generates a fresh request_id, sends `{ type: 'rpc', … }`

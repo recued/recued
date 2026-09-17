@@ -17,6 +17,11 @@ import {
 import type { SellerCustomerUsageStore } from './customer-usage-policy.js';
 import {
   resolveSellerCustomerUsagePolicy,
+  // ⛔ THE SHARED BOUNDARY. This file used to hand-roll its own byte-identical
+  //   copy — private, so an edit to the exported one would never have reached
+  //   it. One implementation is the only count worth having for arithmetic two
+  //   surfaces have to agree on.
+  sellerCustomerUsagePeriodStart,
 } from './customer-usage-policy.js';
 
 export interface SellerCustomerStatusInput {
@@ -58,21 +63,6 @@ export interface SellerCustomerStatusResolverDeps {
   readonly now?: () => number;
 }
 
-const periodStart = (
-  now: number,
-  granularity: SellerUsagePeriodGranularity,
-): number => {
-  const date = new Date(now);
-  if (granularity === 'day') {
-    return Date.UTC(
-      date.getUTCFullYear(),
-      date.getUTCMonth(),
-      date.getUTCDate(),
-    );
-  }
-  return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1);
-};
-
 export const createSellerCustomerStatusResolver = (
   deps: SellerCustomerStatusResolverDeps,
 ): SellerCustomerStatusResolver => {
@@ -86,7 +76,7 @@ export const createSellerCustomerStatusResolver = (
         if (!resolved.ok) {
           throw new Error(`cannot read customer.status: ${resolved.message}`);
         }
-        const start = periodStart(timestamp, resolved.policy.period_granularity);
+        const start = sellerCustomerUsagePeriodStart(timestamp, resolved.policy.period_granularity);
         const rollup = deps.sellerStore.getUsageRollup({
           contract_id: input.customer.contract_id,
           usage_kind: usageKind,

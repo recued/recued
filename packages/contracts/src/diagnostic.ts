@@ -62,8 +62,37 @@ export interface DiagnosticRequest {
   /** MUST be authorized by hostname registry or active pending verification. */
   hostname: string;
   checks: ReadonlyArray<DiagnosticKind>;
-  /** Ports for `port_reachability`. Defaults to D-148 public listener ports. */
+  /** Ports for `port_reachability`. Defaults to D-148 public listener ports.
+   *  Closed-list: every entry must be in `DIAGNOSTIC_ALLOWED_PORTS` or the
+   *  request is rejected WHOLE (`normalizePorts` throws rather than filtering). */
   ports?: ReadonlyArray<number>;
+  /** D-272 — ONE additional port, outside the allowlist, chosen by the caller.
+   *
+   *  🔑 WHY IT HAS TO EXIST. The server's own LAN listener port (`bind_port`,
+   *  default 7717) is user-configurable, so it can never be on a closed list —
+   *  and "is my LAN listener reachable from the internet" is a real question:
+   *  `resolveLanAddress` binds the `0.0.0.0` wildcard for the ordinary host,
+   *  there is no source-address filter, and that listener is PLAINTEXT.
+   *
+   *  ⛔ NAMED FOR WHAT THE WORKER CAN KNOW, WHICH IS "one more port". It is
+   *  NOT called `lan_port` or `listener_port`: the worker cannot verify that
+   *  anything listens there, and a name asserting what the receiver cannot
+   *  check is the exact failure this decision has been chasing.
+   *
+   *  ⚠ THE CAP IS THE POINT, AND IT IS STRUCTURAL. A scalar, not an array —
+   *  so widening the allowlist adds at most ONE probe per request rather than
+   *  turning `ports` into a sweep. Combined with the existing limits (100/hour
+   *  per source IP, 10/minute per target, and a production authorizer that
+   *  accepts only `<handle>.recued.cloud`) the reachable scan rate rises from
+   *  ~500 to ~600 port-probes/hour against a host the caller has proven a
+   *  claim to. That is the whole of the security cost, stated so it can be
+   *  disagreed with.
+   *
+   *  ⚠ RANGE-BOUND TO 1024-65535, which is not arbitrary: binding below 1024
+   *  needs privileges, so a self-hosted listener is essentially always above
+   *  it — and the bound excludes 22 / 25 / 110 / 143 / 445 / 465 / 587 / 993 /
+   *  995 for free. 80 and 443 need no exception; they are already allowlisted. */
+  extra_port?: number;
   /** Optional expected IP for DNS matching. Defaults to the observed public IP. */
   expected_public_ip?: string;
   /** Optional ACME HTTP-01 token to fetch under `/.well-known/acme-challenge/`. */
@@ -131,6 +160,17 @@ export type DiagnosticErrorCode =
 export const isDiagnosticKind = (value: unknown): value is DiagnosticKind =>
   typeof value === 'string'
   && (DIAGNOSTIC_KINDS as readonly string[]).includes(value);
+
+/** D-272 — the bound on `DiagnosticRequest.extra_port`. Unprivileged range
+ *  only; see that field for why the cap and the range are the security story. */
+export const DIAGNOSTIC_EXTRA_PORT_MIN = 1024;
+export const DIAGNOSTIC_EXTRA_PORT_MAX = 65535;
+
+export const isDiagnosticExtraPort = (value: unknown): value is number =>
+  typeof value === 'number'
+  && Number.isInteger(value)
+  && value >= DIAGNOSTIC_EXTRA_PORT_MIN
+  && value <= DIAGNOSTIC_EXTRA_PORT_MAX;
 
 export const isDiagnosticAllowedPort = (value: unknown): value is DiagnosticAllowedPort =>
   typeof value === 'number'

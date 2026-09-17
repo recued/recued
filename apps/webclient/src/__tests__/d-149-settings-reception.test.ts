@@ -1,4 +1,4 @@
-/** D-149 follow-on — Settings → Server → Reception page renderer.
+/** D-149 follow-on — Reception page renderer.
  *
  *  Covers the § A.9 management-spine projection: copy registries,
  *  EndpointSummary → row projection with § A.20.6 safety labels, the
@@ -40,7 +40,7 @@ import {
   distinctSourceIpHashCount,
   reduceReceptionEmergencyDisabled,
   truncateSourceIpHash,
-} from '../settings/reception.js';
+} from '../reception/spine.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const NOW = 1_700_000_000_000;

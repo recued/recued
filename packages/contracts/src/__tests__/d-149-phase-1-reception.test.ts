@@ -26,16 +26,12 @@ import {
   isReceptionHighAssuranceAuditKind,
   RECEPTION_TABLES,
   RECEPTION_TABLE_SET,
-  REACHABILITY_RECOMMENDATION_CODES,
   projectServerPassport,
   SERVER_PASSPORT_VERSION,
   type ReceptionEndpointKind,
   type ReceptionTableName,
   type ServerPassport,
   type ServerPassportSupportRedacted,
-  type ReachabilityPathEntry,
-  type ReachabilityReceptionSpecific,
-  type ReachabilityRecommendationCode,
   KEY_CLASSES,
   totalRecord,
 } from '../index.js';
@@ -307,58 +303,20 @@ describe('D-149 P1 — Server Passport per_path.reception extras (§ A.7; path-r
   });
 });
 
-describe('D-149 P1 — Reachability Doctor reception extensions (§ A.8)', () => {
-  it('REACHABILITY_RECOMMENDATION_CODES contains the three D-149 codes', () => {
-    const codes: ReadonlyArray<ReachabilityRecommendationCode> = REACHABILITY_RECOMMENDATION_CODES;
-    expect(codes).toContain('reception_listener_silent');
-    expect(codes).toContain('reception_endpoint_unreachable');
-    expect(codes).toContain('reception_cert_san_missing_hostname');
-  });
-
-  it('REACHABILITY_RECOMMENDATION_CODES preserves the D-148 ten in its prefix (post W3.5 renames)', () => {
-    const d148 = [
-      'tls_renewal_overdue',
-      'tls_renewal_imminent',
-      'ddns_ip_mismatch',
-      'webhook_inbound_silent',
-      'webhook_hmac_failure',
-      'bridge_offline',
-      'cert_fingerprint_mismatch',
-      'path_unreachable_from_cloud',
-      'nat_traversal_required',
-      'exposure_resolution_inconsistent',
-    ];
-    for (const code of d148) {
-      expect(REACHABILITY_RECOMMENDATION_CODES).toContain(code);
-    }
-  });
-
-  it('ReachabilityPathEntry accepts optional reception_specific on reception role', () => {
-    const reception_specific: ReachabilityReceptionSpecific = {
-      enabled_endpoint_count: 2,
-      last_endpoint_health_check: 'all_passed',
-      cert_san_includes_reception_hostname: true,
-    };
-    const entry: ReachabilityPathEntry = {
-      role: 'reception',
-      lan_listening: true,
-      public_listening: true,
-      handshake_test: { passed: true, ms: 12 },
-      reception_specific,
-    };
-    expect(entry.reception_specific).toBeDefined();
-    expect(entry.reception_specific?.enabled_endpoint_count).toBe(2);
-    expect(entry.reception_specific?.last_endpoint_health_check).toBe('all_passed');
-    expect(entry.reception_specific?.cert_san_includes_reception_hostname).toBe(true);
-  });
-
-  it('ReachabilityPathEntry leaves reception_specific undefined on non-reception roles', () => {
-    const entry: ReachabilityPathEntry = {
-      role: 'ws',
-      lan_listening: true,
-      public_listening: true,
-      handshake_test: { passed: true, ms: 8 },
-    };
-    expect(entry.reception_specific).toBeUndefined();
-  });
-});
+// ⛔⛔ THE RECOMMENDATION-CODE RATCHET WAS HERE, AND IT WENT WITH ITS VOCABULARY
+// (2026-09-16). It asserted `REACHABILITY_RECOMMENDATION_CODES` still carried
+// D-149's three reception codes — `reception_listener_silent`,
+// `reception_endpoint_unreachable`, `reception_cert_san_missing_hostname` —
+// shipped by P1 "so the contract is the single source of truth", with the
+// emission logic to land in P3 alongside the endpoint registry.
+//
+// ⚠ P3 NEVER CAME, AND THE RATCHET COULD NOT SAY SO. It guarded that the names
+// still existed, which stayed true for months while nothing ever emitted one. A
+// list nothing produces reads as a shipped capability, and a green ratchet over
+// it reads as proof. The whole vocabulary was deleted with
+// `buildReachabilityReport`'s last emitter; reception diagnostics start from
+// nothing when someone builds them, which is what was always true.
+//
+// 🔑 Everything ABOVE this line is live reception contract surface — the
+// endpoint kinds, the audit kinds, the table inventory, the passport
+// projections — and is untouched.

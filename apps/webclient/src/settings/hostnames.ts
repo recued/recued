@@ -28,6 +28,7 @@ import type {
   HostnameVerificationMethod,
   LocalServerUrl,
   NetworkLocalUrlsResponse,
+  NetworkPortMappingResponse,
 } from '@recued/contracts';
 import { formatClientDateTime } from '@recued/ui-shared';
 import type { ReachabilityExternalProbeCaller } from './reachability.js';
@@ -434,6 +435,10 @@ export type HostnamesVerifyOwnershipCaller = (
  *  "Reachable on your network" section. Optional: absent → the section is
  *  not rendered. */
 export type NetworkLocalUrlsCaller = () => Promise<NetworkLocalUrlsResponse>;
+
+/** D-273 — `network.port_mapping` caller. Optional: absent → the router step
+ *  keeps the wording it had before anything asked a router. */
+export type NetworkPortMappingCaller = () => Promise<NetworkPortMappingResponse>;
 
 /** R27 delta-B — Pro DDNS pause/resume control seams. */
 export type DdnsStatusCaller = () => Promise<DdnsEnabledStatus>;

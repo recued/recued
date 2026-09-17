@@ -240,7 +240,7 @@ export const composePerPairStores = async (
   // D-149 P6 § A.5.3 — intake_form definition + submission stores +
   // in-memory form-nonce store. D-200 adds the compact endpoint/recipe pair
   // registry between those source and submission stores. The definition store
-  // backs admin-side CRUD (Settings → Reception → Intake forms) + the GET
+  // backs admin-side CRUD (Reception → Intake forms) + the GET
   // handler's schema load; the submission store persists visitor POST rows;
   // the nonce store guards POST against stale / duplicate submissions. All
   // four stay per-pair — no cross-cloud sync (D-097 / D-168). Form-PII key

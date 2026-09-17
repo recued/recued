@@ -1023,7 +1023,13 @@ describe('D-152 P6 hostnames panel route mount', () => {
     expect(panel).not.toBeNull();
     await panel!.whenLoaded();
 
-    expect(networkLocalUrlsCaller).toHaveBeenCalledTimes(1);
+    // ⛔ CALLED, NOT CALLED-ONCE. This asserted `1` from when Hostnames was the
+    // only consumer; D-272's `29a1de4f2` gave Connect a device a `readPorts`
+    // that reads the same rpc, and Connect a device ALWAYS mounts (it is the
+    // first Server tab and needs no caller of its own). The count became a fact
+    // about how many panels the route mounts, which is not what this test is
+    // about — the forwarding is proved by the rows below.
+    expect(networkLocalUrlsCaller).toHaveBeenCalled();
     expect(
       findByAttr(host, HOSTNAMES_LOCAL_URL_ROW_ATTR, 'http://10.0.0.5:8443'),
     ).not.toBeNull();

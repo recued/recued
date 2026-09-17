@@ -34,18 +34,18 @@ import {
   RECEPTION_PAGE_ACTIONS,
   RECEPTION_PAGE_NATIVE_ACTIONS,
   RECEPTION_PAGE_STYLES,
-} from '../settings/reception-page-render.js';
+} from '../reception/page-render.js';
 import {
   buildReceptionPageModel,
   buildReceptionEndpointDetailModel,
   type ReceptionStatusInput,
-} from '../settings/reception.js';
-import { buildAbuseInboxSubviewModel } from '../settings/reception-abuse-inbox.js';
-import type { ViewAsVisitorModel } from '../settings/reception-view-as-visitor.js';
+} from '../reception/spine.js';
+import { buildAbuseInboxSubviewModel } from '../reception/abuse-inbox.js';
+import type { ViewAsVisitorModel } from '../reception/view-as-visitor.js';
 import type {
   ReceptionPageShell,
   ReceptionPageShellState,
-} from '../settings/reception-page-shell.js';
+} from '../reception/page-shell.js';
 
 const NOW = 1_700_000_000_000;
 

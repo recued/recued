@@ -1,4 +1,4 @@
-/** D-149 § A.9 + § A.5.x follow-on — Settings → Server → Reception
+/** D-149 § A.9 + § A.5.x follow-on — Reception
  *  per-kind authoring forms.
  *
  *  Covers the six per-kind authoring modules: the closed-list error +
@@ -63,7 +63,7 @@ import {
   validateReceptionPageFormConfig,
   validateSchedulingLinkFormConfig,
   validateStatusLinkFormConfig,
-} from '../settings/reception-authoring.js';
+} from '../reception/authoring.js';
 
 // ────────────────────────────────────────────────────────────────
 // Valid config fixtures — one minimal-valid blob per kind. Each is

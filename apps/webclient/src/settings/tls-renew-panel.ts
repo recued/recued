@@ -1,5 +1,5 @@
-/** D-148 § A.6.5 — Settings → Server → "Renew TLS cert now" panel
- *  (NEXT-#2 advance, slice 111).
+/** D-148 § A.6.5 — the "Renew TLS cert now" panel, under Settings → Server →
+ *  Certificates (NEXT-#2 advance, slice 111).
  *
  *  The user-facing surface that drives operator-initiated TLS cert
  *  renewal. Calls `tls.renew` rpc through an injected caller seam,
@@ -158,8 +158,9 @@ export interface MountTlsRenewPanelOptions {
    *  (DD#5). Defaults to `Date.now`. */
   now?: () => number;
   /** Invoked after a successful renew lands in the `done` state. Lets
-   *  the host surface telemetry / refresh the Reachability Doctor's
-   *  TLS row without coupling to the panel internals. Best-effort:
+   *  the host surface telemetry / refresh a cert-dependent row without
+   *  coupling to the panel internals. ⚠ That row was the Reachability
+   *  Doctor's until the tab was deleted (2026-09-16). Best-effort:
    *  a throw is swallowed by the panel. */
   onRenewed?: (result: Extract<RotationResult, { ok: true }>) => void;
 }

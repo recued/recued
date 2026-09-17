@@ -19,6 +19,7 @@ import {
 import type { PassportFetchRpcDeps } from '../passport/fetch-handler.js';
 import type { PassportUserRpcDeps } from '../passport/export-handler.js';
 import type { WsServerHandle } from '../ws-server.js';
+import type { ServerConfig } from '../server.js';
 
 export interface ClientSecurityContext {
   readonly clientTokens: ClientTokenStore | undefined;
@@ -33,6 +34,10 @@ export interface ClientSecurityContext {
   /** R26.4 Delta 2 — `passport.export` + `passport.history.list` deps
    *  (the user-initiated half). Undefined when the audit log is absent. */
   readonly passportUserRpcDeps: PassportUserRpcDeps | undefined;
+  /** D-148 — `POST /auth/identity-probe` deps. Undefined without a signing
+   *  identity (db-less harnesses), which makes the route 404 exactly as an
+   *  unknown path does. */
+  readonly identityProbeDeps: ServerConfig['identityProbeDeps'];
 }
 
 export interface ComposeClientSecurityContextOptions {
@@ -110,5 +115,25 @@ export const composeClientSecurityContext = async (
     proAuthStateMachineRef: certStack.proAuthStateMachineRef,
     passportFetchDeps: passportFetchBundle?.passportFetchDeps,
     passportUserRpcDeps: passportFetchBundle?.passportUserRpcDeps,
+    // D-148 identity probe. ⛔ `serverIdentityKey()` is called PER REQUEST
+    // rather than captured here: caching it would leave a rotated server still
+    // answering to the pre-rotation fingerprint, and every route-level test
+    // would stay green because those hand-build their own deps.
+    identityProbeDeps: signingIdentity
+      ? {
+          serverIdentityKey: () => {
+            const key = signingIdentity.identity.serverIdentityKey();
+            return {
+              public_key_b64: key.public_key_b64,
+              public_key_fingerprint: key.public_key_fingerprint,
+            };
+          },
+          // ⛔ The route hands this ONLY `buildIdentityProbePayload(...)`
+          // output. The same key signs DDNS updates and ACME requests, so
+          // signing a caller's string would be a DNS-takeover oracle — see
+          // `packages/contracts/src/identity-probe.ts`.
+          sign: (payload: string) => signingIdentity.identity.signWithServerIdentity(payload),
+        }
+      : undefined,
   };
 };

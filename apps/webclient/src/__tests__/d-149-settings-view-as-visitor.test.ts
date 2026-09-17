@@ -1,4 +1,4 @@
-/** D-149 § A.20.2 follow-on — Settings → Reception → endpoint detail →
+/** D-149 § A.20.2 follow-on — Reception → endpoint detail →
  *  "View as visitor" panel renderer.
  *
  *  Covers the projection layer over `buildViewAsVisitorPanel` + the
@@ -30,7 +30,7 @@ import {
   previewDispatchArgsFromSummary,
   resolvePrivacyInvariantDetail,
   resolveTokenModeCopy,
-} from '../settings/reception-view-as-visitor.js';
+} from '../reception/view-as-visitor.js';
 
 const MINUTE_MS = 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;

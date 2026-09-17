@@ -1,9 +1,9 @@
-/** D-149 § A.20.1 follow-on — Settings → Server → Reception Launch
+/** D-149 § A.20.1 follow-on — Reception Launch
  *  Wizard renderer acceptance.
  *
  *  `renderLaunchWizard` is a PURE projection of the wizard render view
  *  (the cursor-driven stepper + an optional validation summary + an
- *  optional plan preview, all from `reception-launch-wizard.ts`) to an
+ *  optional plan preview, all from `launch-wizard.ts`) to an
  *  HTML string — these tests assert it draws the stepper rail (with the
  *  optional `drop_link` step greyed + un-clickable when excluded), the
  *  current-step frame with its host-filled `data-wizard-step` slot, the
@@ -30,13 +30,13 @@ import {
   buildLaunchWizardStepperModel,
   summarizeLaunchWizardValidation,
   RECEPTION_RECOMMENDED_EXPOSURE_PROFILE,
-} from '../settings/reception-launch-wizard.js';
+} from '../reception/launch-wizard.js';
 import {
   renderLaunchWizard,
   LAUNCH_WIZARD_ACTIONS,
   LAUNCH_WIZARD_STYLES,
   type LaunchWizardRenderView,
-} from '../settings/reception-launch-wizard-render.js';
+} from '../reception/launch-wizard-render.js';
 
 const NOW = 1_700_000_000_000;
 

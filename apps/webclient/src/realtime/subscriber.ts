@@ -15,6 +15,7 @@
  *  surface and lets broadcast events fan out edits.
  */
 
+import { BROADCAST_EVENT_KIND_SET } from '@recued/contracts';
 import type {
   BroadcastEventKind,
   ServerEvent,
@@ -254,7 +255,7 @@ export const WEBCLIENT_DEFAULT_SUBSCRIPTIONS: ReadonlyArray<BroadcastEventKind> 
   // re-fetches its list off it. The server fans only the kinds each client
   // names (D-169 TR-10), so without this entry the inbox never live-refreshed —
   // it only updated on a manual reload. Distinct from the `reception.*`
-  // management-page kinds above (Settings → Server → Reception, pinned by
+  // management-page kinds above (Reception, pinned by
   // `RECEPTION_PAGE_SHELL_BROADCAST_KINDS`). Pinned ⊆ subs by
   // `RECEPTION_INBOX_BROADCAST_KINDS` in that panel's own test.
   'reception_inbox',
@@ -322,10 +323,25 @@ export interface BroadcastSubscriber {
   size(kind?: BroadcastEventKind): number;
 }
 
+/** ⛔⛔ THE MEMBERSHIP CHECK IS THE `ServerEvent` PART OF THE NARROWING, AND IT
+ *  WAS MISSING WHILE `dispatch`'s own doc PROMISED IT ("kind is in
+ *  `BROADCAST_EVENT_KIND_SET`"). `typeof kind === 'string'` alone asserts
+ *  `m is ServerEvent` for any `{ kind: 'anything' }`, so the predicate was
+ *  wider than its return type — a lie the compiler cannot see, because a type
+ *  predicate is an assertion, not a check.
+ *
+ *  🔑 HARMLESS ONLY BY ACCIDENT TODAY: the per-kind `Map` lookup misses an
+ *  unknown kind anyway, and this app registers no `onAny` listener. The bridge's
+ *  copy — which calls itself "a near-verbatim replica of the webclient's
+ *  `createBroadcastSubscriber`" — DOES check membership, and it DOES have an
+ *  `onAny` listener feeding its bus buffer. So the surface with a wildcard
+ *  consumer validates and the surface without one does not, which is backwards
+ *  from how the two files describe themselves. Pinned by a parity test. */
 const isServerEvent = (m: unknown): m is ServerEvent => {
   if (!m || typeof m !== 'object') return false;
   const e = m as { kind?: unknown };
-  return typeof e.kind === 'string';
+  return typeof e.kind === 'string'
+    && BROADCAST_EVENT_KIND_SET.has(e.kind as BroadcastEventKind);
 };
 
 export const createBroadcastSubscriber = (): BroadcastSubscriber => {

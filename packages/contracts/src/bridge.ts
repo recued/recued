@@ -361,9 +361,11 @@ export const BRIDGE_PROHIBITED_CHROME_PERMISSIONS: ReadonlyArray<string> = [
 ] as const;
 
 /** D-148 § A.3.6 — bridge capability profile carried in
- *  ReachabilityBridgeEntry + `context.bridge.capabilities`. Lives in
- *  bridge.ts because it's a bridge-runtime contract; reachability.ts
- *  re-exports the type for the doctor's report shape. */
+ *  `context.bridge.capabilities`, pushed over the wire by D-169's
+ *  `bridge.capability.push` and held per-bridge in the server's registry.
+ *  ⚠ It was ALSO carried in `ReachabilityBridgeEntry`, which was deleted with
+ *  the rest of the report family (2026-09-16) — reachability.ts no longer
+ *  re-exports this type, and `index.ts` exports it from here. */
 export interface BridgeCapabilityProfile {
   /** Bridge-side semver matching the `apps/bridge/` package version. */
   software_version: string;

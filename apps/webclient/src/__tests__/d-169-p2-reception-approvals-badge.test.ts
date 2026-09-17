@@ -35,19 +35,19 @@ import {
   RECEPTION_RECOMMENDED_EXPOSURE_PROFILE,
 } from '@recued/contracts';
 
-import { mountReceptionRoute } from '../settings/reception-route.js';
+import { mountReceptionRoute } from '../reception/route.js';
 import {
   renderReceptionPage,
   RECEPTION_APPROVALS_COUNT_ATTR,
   RECEPTION_PAGE_STYLES,
-} from '../settings/reception-page-render.js';
+} from '../reception/page-render.js';
 import type {
   LaunchWizardRunResult,
   ReceptionPageShell,
   ReceptionPageShellState,
-} from '../settings/reception-page-shell.js';
+} from '../reception/page-shell.js';
 import type { BroadcastSubscriber } from '../realtime/subscriber.js';
-import { buildReceptionPageModel } from '../settings/reception.js';
+import { buildReceptionPageModel } from '../reception/spine.js';
 
 const NOW = 1_700_000_000_000;
 const DAY_MS = 24 * 60 * 60 * 1000;

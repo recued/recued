@@ -182,8 +182,29 @@ describe('D-152 § A.16 — Codex P2 #1 fold: re-hash bytes at serving boundary'
 describe('D-152 § A.16 — happy path GET', () => {
   const handler = createWebclientBundleHandler({ files: baseFiles });
 
-  it('GET /webclient serves index.html', () => {
+  /** ⛔⛔ THIS TEST USED TO ASSERT THE BUG. It read `GET /webclient serves
+   *  index.html` and expected a 200 — which is exactly what shipped, and exactly
+   *  what breaks: the shell references every asset relatively, so a document
+   *  delivered at `/webclient` resolves `./boot-shell.js` to `/boot-shell.js`,
+   *  which 404s, and the page never leaves its splash. A 200 here is not the
+   *  happy path; it is the failure, spelled as a success. */
+  it('GET /webclient redirects to /webclient/ rather than serving there', () => {
     const res = run(handler, { url: '/webclient' });
+    expect(res.statusCode).toBe(301);
+    expect(res.headers.location).toBe('/webclient/');
+    expect(res.headers['cache-control']).toBe('no-store');
+    expect(res.headers['content-length']).toBe('0');
+    expect(res.body).toBe('');
+  });
+
+  it('carries the query string across the redirect, so a deep link keeps it', () => {
+    const res = run(handler, { url: '/webclient?pair=abc123&next=%2Fchat' });
+    expect(res.statusCode).toBe(301);
+    expect(res.headers.location).toBe('/webclient/?pair=abc123&next=%2Fchat');
+  });
+
+  it('GET /webclient/ serves index.html', () => {
+    const res = run(handler, { url: '/webclient/' });
     expect(res.statusCode).toBe(200);
     expect(res.headers['content-type']).toBe('text/html; charset=utf-8');
     expect(res.headers['cache-control']).toBe('no-cache, must-revalidate');
@@ -194,11 +215,22 @@ describe('D-152 § A.16 — happy path GET', () => {
     expect((res.body as Buffer).toString()).toBe('<html><body>webclient</body></html>');
   });
 
-  it('GET /webclient/ also serves index.html', () => {
-    const res = run(handler, { url: '/webclient/' });
-    expect(res.statusCode).toBe(200);
-    expect((res.body as Buffer).toString()).toBe('<html><body>webclient</body></html>');
-  });
+  /** 🔑 THE POINT OF THE REDIRECT, ASSERTED AS THE BROWSER EXPERIENCES IT. The
+   *  shell's own asset refs are relative, so what has to hold is that resolving
+   *  them against the SERVING url lands inside the bundle. Asserting the 301 and
+   *  asserting a 200 at `/webclient/` would both pass with a shell that asked
+   *  for `/boot-shell.js`; this resolves the real hrefs instead. */
+  it.each(['./boot-shell.js', './webclient-main.js', './manifest.webmanifest', './tokens.css'])(
+    'the shell href %s resolves under the prefix from /webclient/, not from the root',
+    (href) => {
+      const resolved = new URL(href, `http://127.0.0.1:7717${WEBCLIENT_PATH_PREFIX}/`);
+      expect(resolved.pathname.startsWith(`${WEBCLIENT_PATH_PREFIX}/`)).toBe(true);
+      // ...and the same href from the bare prefix escapes the bundle, which is
+      // the failure the redirect exists to prevent.
+      const escaped = new URL(href, `http://127.0.0.1:7717${WEBCLIENT_PATH_PREFIX}`);
+      expect(escaped.pathname.startsWith(`${WEBCLIENT_PATH_PREFIX}/`)).toBe(false);
+    },
+  );
 
   it('GET /webclient/index.html serves the same file', () => {
     const res = run(handler, { url: '/webclient/index.html' });
@@ -235,8 +267,14 @@ describe('D-152 § A.16 — happy path GET', () => {
 describe('D-152 § A.16 — HEAD request semantics', () => {
   const handler = createWebclientBundleHandler({ files: baseFiles });
 
-  it('HEAD /webclient returns 200 with same headers but no body', () => {
+  it('HEAD /webclient redirects too — a redirect is side-effect-free', () => {
     const res = run(handler, { method: 'HEAD', url: '/webclient' });
+    expect(res.statusCode).toBe(301);
+    expect(res.headers.location).toBe('/webclient/');
+  });
+
+  it('HEAD /webclient/ returns 200 with same headers but no body', () => {
+    const res = run(handler, { method: 'HEAD', url: '/webclient/' });
     expect(res.statusCode).toBe(200);
     expect(res.headers['content-type']).toBe('text/html; charset=utf-8');
     expect(res.headers['content-length']).toBe(String(INDEX.bytes.byteLength));
@@ -244,7 +282,7 @@ describe('D-152 § A.16 — HEAD request semantics', () => {
   });
 
   it('HEAD method case-insensitively normalises to upper-case', () => {
-    const res = run(handler, { method: 'head', url: '/webclient' });
+    const res = run(handler, { method: 'head', url: '/webclient/' });
     expect(res.statusCode).toBe(200);
     expect(res.body).toBe('');
   });
@@ -333,7 +371,7 @@ describe('D-152 § A.16 — CSP discipline', () => {
   const handler = createWebclientBundleHandler({ files: baseFiles });
 
   it('CSP includes all required directives', () => {
-    const res = run(handler, { url: '/webclient' });
+    const res = run(handler, { url: '/webclient/' });
     const csp = res.headers['content-security-policy'];
     expect(csp).toContain("default-src 'self'");
     expect(csp).toContain("script-src 'self'");
@@ -342,7 +380,7 @@ describe('D-152 § A.16 — CSP discipline', () => {
   });
 
   it('CSP allows ws/wss/http/https connect for user-typed server URL', () => {
-    const res = run(handler, { url: '/webclient' });
+    const res = run(handler, { url: '/webclient/' });
     const csp = res.headers['content-security-policy'];
     expect(csp).toContain('ws:');
     expect(csp).toContain('wss:');

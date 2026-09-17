@@ -63,6 +63,7 @@
  *
  *  Spec: D-148 § A.4 (Thin Webclient). */
 
+import type { WebclientTokenRecord } from '@recued/contracts';
 import type { WebclientHandle } from './webclient-bootstrap.js';
 import { parsePairEntryHandoff } from './boot/secure-access-resume.js';
 import {
@@ -112,7 +113,10 @@ import {
   buildIndexedDbKeyValue,
   runIndexedDbStoreRequest,
 } from './storage/indexed-db-key-value.js';
-import { createIndexedDbWebclientLocalStore } from './storage/local-store.js';
+import {
+  createIndexedDbWebclientLocalStore,
+  type WebclientProfileAwareStore,
+} from './storage/local-store.js';
 import {
   createWebclientTokenStore,
   WebclientTokenCorruptError,
@@ -185,8 +189,12 @@ const resolveTokenKey = async (db: IDBDatabase): Promise<CryptoKey> => {
   return fresh;
 };
 
-const buildTokenStore = (db: IDBDatabase): WebclientTokenStore =>
+const buildTokenStore = (
+  db: IDBDatabase,
+  onLegacyAadRecord?: (record: WebclientTokenRecord) => void,
+): WebclientTokenStore =>
   createWebclientTokenStore({
+    ...(onLegacyAadRecord !== undefined ? { onLegacyAadRecord } : {}),
     resolveKey: () => resolveTokenKey(db),
     async encrypt({ key, iv, plaintext, additional_data }) {
       const buf = await crypto.subtle.encrypt(
@@ -239,6 +247,81 @@ const wrapTokenStoreWithReauthMapping = (
     }
   },
 });
+
+/** D-148 — RE-SEAL A v1 RECORD ONCE IT HAS BEEN OPENED, so the legacy
+ *  population actually drains.
+ *
+ *  ⛔ WITHOUT THIS THE MIGRATION NEVER CONVERGES. `onLegacyAadRecord` is the
+ *  store's signal that a record opened under the retired v1 AAD, and it had NO
+ *  production caller — so the comment claiming "every unwrap re-seals, so the
+ *  population drains on its own" described nothing. v1 support could then never
+ *  be retired, and deleting it on that sentence would have made every
+ *  un-migrated bearer unrecoverable.
+ *
+ *  ⚠ THE STORE DELIBERATELY DOES NOT DO THIS ITSELF. Its own note: "a store
+ *  that silently rewrote rows during a read would make an unwrap a WRITE, in
+ *  the one code path that runs before the app knows whether it is even online."
+ *  Re-sealing belongs to the owner of persistence, which is here.
+ *
+ *  ⚠ BEST-EFFORT BY CONTRACT. A failed re-seal must never turn a successful
+ *  read into a failure: the bearer the caller asked for is already in hand, and
+ *  the record it came from is still perfectly readable.
+ *
+ *  ⛔ IT REPLACES ONLY THE EXACT RECORD IT JUST OPENED. The write targets the
+ *  ACTIVE profile, and an unwrap can be driven for a record that is not the
+ *  active profile's — so the stored ciphertext is compared before overwriting.
+ *  Skipping that check would move one profile's bearer onto another. */
+const resealLegacyRecord = async (
+  store: WebclientTokenStore,
+  localStore: WebclientProfileAwareStore,
+  record: WebclientTokenRecord,
+  bearer: string,
+  aad: { token_id: string; server_public_key: string },
+): Promise<void> => {
+  const current = await localStore.get('webclient_token');
+  if (
+    current === null
+    || current.token_id !== record.token_id
+    || current.ciphertext_b64 !== record.ciphertext_b64
+  ) {
+    // Not the active profile's record — leave it to whoever owns it.
+    return;
+  }
+  const resealed = await store.wrap({
+    token_id: aad.token_id,
+    bearer,
+    // ⛔ NO `server_url`. v2 omits it, which is what lets the address move.
+    aad: { token_id: aad.token_id, server_public_key: aad.server_public_key },
+  });
+  await localStore.set('webclient_token', resealed);
+};
+
+/** Compose the token store with the legacy re-seal wired in. */
+const buildResealingTokenStore = (
+  db: IDBDatabase,
+  localStore: WebclientProfileAwareStore,
+): WebclientTokenStore => {
+  // ⚠ KEYED BY token_id, NOT A BOOLEAN. Two unwraps can be in flight at once
+  // (boot hydration and an upload bearer, say); a flag would attribute one
+  // record's legacy status to the other's plaintext.
+  const legacy = new Set<string>();
+  const base = buildTokenStore(db, (record) => { legacy.add(record.token_id); });
+  return {
+    wrap: base.wrap.bind(base),
+    async unwrap(record, aad) {
+      const bearer = await base.unwrap(record, aad);
+      if (legacy.delete(record.token_id)) {
+        // Not awaited: the caller is usually mid-connect and the re-seal is
+        // housekeeping. Failures are swallowed by contract — see above.
+        void resealLegacyRecord(base, localStore, record, bearer, {
+          token_id: aad.token_id,
+          server_public_key: aad.server_public_key,
+        }).catch(() => { /* best-effort; the record still reads */ });
+      }
+      return bearer;
+    },
+  };
+};
 
 /** Codex P2 fold — exposed wiper for the AES-GCM key store. The future
  *  Settings → Privacy → "Clear this browser" surface composes this
@@ -353,7 +436,9 @@ const main = async (): Promise<void> => {
     WEBCLIENT_LOCAL_STORE_NAME,
   );
   const localStore = createIndexedDbWebclientLocalStore(localKeyValue);
-  const tokenStore = wrapTokenStoreWithReauthMapping(buildTokenStore(db));
+  const tokenStore = wrapTokenStoreWithReauthMapping(
+    buildResealingTokenStore(db, localStore),
+  );
 
   // Consume only after persistent storage opens: a storage/secure-context
   // failure must not erase the last recovery document's continuity. The

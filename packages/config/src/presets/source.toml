@@ -7,6 +7,9 @@
 data_path    = "~/Library/Application Support/Recued"
 bind_host    = "127.0.0.1"
 bind_port    = 7717
+# Neither is a port the server listens on -- see binary.toml for the long
+# version. mcp_port is inert; webhook_port is an on/off switch (0 = off,
+# any non-zero = on) for a surface served on the public port.
 mcp_port     = 7718
 webhook_port = 0
 log_path     = "{data_path}/logs"

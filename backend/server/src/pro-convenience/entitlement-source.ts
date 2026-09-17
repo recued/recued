@@ -16,7 +16,11 @@
  *  for a future entitlement-aware mint — today's mint never returns it.
  */
 
-import type { ProEntitlementClaim } from '@recued/contracts';
+import {
+  parseProHandleAnchor,
+  type ProEntitlementClaim,
+  type ProHandleAnchor,
+} from '@recued/contracts';
 import { ed25519Verify, type StoredAccountBinding } from '../keys/index.js';
 import { makeBoundedOriginHttpFetcher } from '../bounded-origin-http-fetcher.js';
 import { CLOUD_APEX_DEFAULT, resolveCloudApex } from '../account-binding/exchange-url.js';
@@ -35,9 +39,28 @@ import { CLOUD_APEX_DEFAULT, resolveCloudApex } from '../account-binding/exchang
  *  - `unavailable` — a transient failure (network), or a present-but-
  *    expired / signature-invalid claim. The caller fails CLOSED. */
 export type ProEntitlementResolution =
-  | { state: 'entitled'; expires_at?: number }
+  | {
+      state: 'entitled';
+      expires_at?: number;
+      handle_anchor?: ProHandleAnchor;
+      /** The account's current marketplace handle, from INSIDE the verified
+       *  claim — the only fresh, authenticated view the server gets of a rename.
+       *  Absent ⇒ no handle claimed, or a cloud older than the field; either way
+       *  the caller keeps using its binding snapshot. */
+      publisher_handle?: string;
+    }
   | { state: 'not_entitled' }
   | { state: 'unbound' }
+  /** The cloud verified our credential and says this account no longer owns
+   *  this server — unbound, deleted, or rebound elsewhere. TERMINAL, and
+   *  distinct from `unavailable` because the remedies are opposite: this one
+   *  needs the owner to reconnect the server, and no amount of waiting helps.
+   *
+   *  ⚠ NOT DERIVED FROM `credential_invalid`, which means five things — two of
+   *  them 400s raised before a credential is even read, i.e. OUR bug. The cloud
+   *  emits a purpose-built `server_disowned` after the HMAC verifies; anything
+   *  less precise would announce a disconnection for a serialization fault. */
+  | { state: 'disowned' }
   | { state: 'pending'; reason: 'entitlement_endpoint_pending' }
   | { state: 'unavailable'; reason: string };
 
@@ -205,6 +228,11 @@ const validateClaimShape = (claims: ProEntitlementClaim): boolean =>
   claims.account_id.length > 0 &&
   typeof claims.server_fingerprint === 'string' &&
   claims.server_fingerprint.length > 0 &&
+  // Optional, but not unchecked: absent means "no fresher answer than the
+  // binding"; present-and-empty would be indistinguishable from "the handle was
+  // removed", and the provisioner would act on it.
+  (claims.publisher_handle === undefined
+    || (typeof claims.publisher_handle === 'string' && claims.publisher_handle.length > 0)) &&
   typeof claims.iat === 'number' &&
   Number.isFinite(claims.iat) &&
   typeof claims.exp === 'number' &&
@@ -239,7 +267,17 @@ const verifyClaimEnvelope = (
 
 const isMintSuccess = (
   value: Record<string, unknown>,
-): value is { ok: true; entitlement_claim: string; expires_at: number; entitlement_tier: 'pro' } =>
+): value is {
+  ok: true;
+  entitlement_claim: string;
+  expires_at: number;
+  entitlement_tier: 'pro';
+  /** Optional, unvalidated here — `parseProHandleAnchor` owns the shape. Named
+   *  on the narrowed type only so reading it is not a type error; the predicate
+   *  deliberately does NOT require it, because a mint response without one is
+   *  an ordinary success (no handle reserved, or a cloud older than this field). */
+  handle_anchor?: unknown;
+} =>
   value.ok === true &&
   typeof value.entitlement_claim === 'string' &&
   value.entitlement_claim.length > 0 &&
@@ -263,7 +301,13 @@ export const createHttpProEntitlementSource = (
   const mint = async (
     endpoint: string,
     binding: StoredAccountBinding,
-  ): Promise<{ kind: 'response'; body: unknown } | { kind: 'unavailable' }> => {
+  ): Promise<
+    // ⚠ THE STATUS IS CARRIED NOW, AND IT WAS DROPPED BEFORE. Without it a 400
+    // (our own malformed request) and a 401 (the cloud rejecting a credential)
+    // arrive as the same `credential_invalid`, and nothing downstream can tell a
+    // local bug from a disconnection.
+    { kind: 'response'; status: number; body: unknown } | { kind: 'unavailable' }
+  > => {
     let response: Awaited<ReturnType<typeof fetchMintResponse>>;
     try {
       response = await fetchMintResponse(endpoint, {
@@ -278,9 +322,9 @@ export const createHttpProEntitlementSource = (
       return { kind: 'unavailable' };
     }
     try {
-      return { kind: 'response', body: await response.json() };
+      return { kind: 'response', status: response.status, body: await response.json() };
     } catch {
-      return { kind: 'response', body: undefined };
+      return { kind: 'response', status: response.status, body: undefined };
     }
   };
 
@@ -350,6 +394,13 @@ export const createHttpProEntitlementSource = (
       if (obj && obj.ok === false && obj.code === 'not_entitled') {
         return { state: 'not_entitled' };
       }
+      // ⛔ THE CODE **AND** THE STATUS. `server_disowned` is only meaningful on
+      // the 401 the owner-recheck raises; accepting it on any status would let a
+      // proxy error page or a future 4xx reuse of the word stop a healthy
+      // server. Two agreeing signals, because the consequence is terminal.
+      if (obj && obj.ok === false && obj.code === 'server_disowned' && minted.status === 401) {
+        return { state: 'disowned' };
+      }
       if (!obj || !isMintSuccess(obj)) {
         return { state: 'unavailable', reason: 'entitlement_mint_invalid_response' };
       }
@@ -362,7 +413,23 @@ export const createHttpProEntitlementSource = (
       if (!verified) {
         return { state: 'unavailable', reason: 'entitlement_claim_invalid' };
       }
-      return { state: 'entitled', expires_at: verified.expires_at };
+      // The anchor is read off the RAW body, not the verified claim — it rides
+      // outside the signature on purpose (see `ProHandleAnchor`). It is carried
+      // only because the status surface needs it to explain itself; nothing
+      // downstream may gate on it.
+      const handle_anchor = parseProHandleAnchor(obj.handle_anchor);
+      return {
+        state: 'entitled',
+        expires_at: verified.expires_at,
+        ...(handle_anchor !== null ? { handle_anchor } : {}),
+        // ⚠ FROM THE VERIFIED CLAIM, NOT THE RAW BODY — the opposite of the
+        // anchor directly above, and deliberately so. The server MOVES A DNS
+        // RECORD to this name; taking it from unsigned response JSON would let
+        // anything that could shape a mint response re-point somebody's hostname.
+        ...(verified.claims.publisher_handle !== undefined
+          ? { publisher_handle: verified.claims.publisher_handle }
+          : {}),
+      };
     },
   };
 };

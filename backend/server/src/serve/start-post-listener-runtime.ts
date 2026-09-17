@@ -69,6 +69,11 @@ import {
   startPostHousekeepingTail,
   type StartPostHousekeepingTailOptions,
 } from './start-post-housekeeping-tail.js';
+import {
+  createDisconnectAnnouncer,
+  createServerDisownedFlag,
+  createSqliteDisconnectAnnouncementStore,
+} from '../pro-convenience/disconnect-announcer.js';
 import { startProConvenienceProvisioning } from './start-pro-convenience-provisioning.js';
 import {
   startSchedulers,
@@ -520,6 +525,41 @@ export const startPostListenerRuntime = async (
     actualPort: options.actualPort,
   });
 
+  // D-175 — the single disconnect announcer, built HERE because this is the
+  // first point both of its detectors exist: the provisioning loop starts a few
+  // lines below, and the DDNS poller starts inside the housekeeping tail later.
+  //
+  // ⛔ ONE INSTANCE, NOT ONE PER DETECTOR. Two announcers over the same row
+  // would still dedup (the mark is in SQLite), but each would read it at its own
+  // moment and the once-only rule would then depend on write ordering rather
+  // than on there being one decision-maker.
+  // ⛔ ONE FLAG, SAME REASONING AS THE ONE ANNOUNCER: the entitlement detector
+  // is the only thing that can SEE a reconnection, and the DDNS poller is the
+  // only thing that needs to hear about it. Two instances would each be right
+  // about half the truth.
+  const disownedFlag = createServerDisownedFlag();
+  const notificationBlock = options.notificationBlock;
+  const disconnectAuditLog = options.storage.auditLog;
+  const disconnectAnnouncer = options.storage.db && disconnectAuditLog
+    ? createDisconnectAnnouncer({
+        store: createSqliteDisconnectAnnouncementStore(options.storage.db),
+        logActivity: (entry) => disconnectAuditLog.logActivity(entry),
+        // ⛔ NOT `emitNotification(bus, { subtype: 'in-app' })` — that emits the
+        // bare `'notification'` broadcast kind, which NEITHER the webclient nor
+        // the Bridge names, so it is dropped at the fan-out. `notify` emits
+        // `notification.notify`, which the Bridge subscribes to, and persists a
+        // `notification_fired` row so it survives a restart.
+        // ⚠ Captured into a local first: the block is optional on this options
+        // shape, and an inline `options.notificationBlock!` would hide that from
+        // the next reader as well as from tsc.
+        notify: (body) => {
+          void notificationBlock
+            ?.notify({ title: body.title, text: body.text })
+            .catch(() => { /* best-effort, matching notify's own contract */ });
+        },
+      })
+    : undefined;
+
   // D-175 — Pro-convenience handle provisioning. Composed AFTER the late
   // cert stack so the handle state machine + binding-entitlement source
   // are live. Idempotent + self-gating; reserves `<handle>.recued.cloud`
@@ -528,6 +568,13 @@ export const startPostListenerRuntime = async (
     backgroundServices: options.backgroundServices,
     certStack: options.certStack,
     getSigningIdentity: options.getSigningIdentity,
+    disownedFlag,
+    ...(disconnectAnnouncer
+      ? {
+          announceDisconnect: (source) => disconnectAnnouncer.announce(source),
+          rearmDisconnect: () => disconnectAnnouncer.rearm(),
+        }
+      : {}),
   });
 
   // D-196 §6.3 (s2b) — build the seller-access reconciler deps HERE, the first
@@ -778,6 +825,12 @@ export const startPostListenerRuntime = async (
     // `undefined` and silently disable recovery with everything still typed
     // and green.
     applyLifecycle: () => options.certStack.getHandleStateMachineRef(),
+    // D-175 — the disconnect announcer's notification bus. ⛔ WITHOUT THIS THE
+    // ANNOUNCER STILL COMPOSES AND STILL AUDITS, and `emitNotification` returns
+    // early on an undefined bus — so the owner would never see the one message
+    // the whole seam exists to deliver, with every layer typed and green.
+    disownedFlag,
+    ...(disconnectAnnouncer ? { disconnectAnnouncer } : {}),
   });
 
   // D-148 — Pro DDNS certificate enrollment. Nothing else creates a hostname

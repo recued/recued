@@ -159,14 +159,35 @@ export const EXPOSURE_ERROR_COPY: Record<NetworkErrorCode, string> = {
     'The cert chain does not terminate at a public CA root. Include the issuer chain in the upload, or use the BYO + self-signed path.',
   tls_cert_expired_at_upload:
     'The cert has already expired. Renew with the issuer + retry.',
+  // ⛔⛔ THIS NAMED A CONTROL THAT EXISTS ON NO SURFACE. It said "tear down the
+  // DDNS binding first via Settings → Server → DDNS → Unbind". There is no DDNS
+  // tab, no Unbind button, and — checked across all four surfaces 2026-09-16 —
+  // no caller for `pro_acme.unbind` anywhere: not the webclient, not the CLI
+  // (`commands/` has no such command), not the dashboard (whose "unbind" is
+  // `account.binding.unbind`, a different operation on a different object). The
+  // rpc is built, wired into ws-server and emits a signed audit row; D-148 FU5
+  // was to give it a front door and never shipped.
+  //
+  // ⚠ SO THE COPY CANNOT NAME A DESTINATION, AND MUST NOT INVENT A NEARBY ONE.
+  // Pausing the address is the closest control and is NOT this: it stops the
+  // name pointing here and leaves the certificate exactly where it was, so
+  // sending them there would have them do a thing, see the cert still listed,
+  // and conclude the product is broken. ⇒ Say why the removal is refused (so
+  // they stop retrying), say what pausing does and does not do, and say plainly
+  // that giving the address back is not reachable from here.
   tls_pro_acme_unbind_required:
-    'Auto-managed (Pro ACME) certs cannot be removed directly. Tear down the DDNS binding first via Settings → Server → DDNS → Unbind, which retires the cert in one transaction.',
+    'This certificate belongs to your Pro web address, so it cannot be removed on its own — the next renewal would just issue it again. It goes when the address goes. Giving the address back is not something you can do from here yet. Pausing it in Settings → Server → Hostnames stops the address pointing at your server, but keeps the certificate.',
   tls_custom_domain_unenroll_required:
-    'Recued manages this certificate for your own domain, so removing it here would only make Recued issue it again. Remove the hostname in Settings → Server → Domains to un-enrol it — that retires the certificate with it.',
+    'Recued manages this certificate for your own domain, so removing it here would only make Recued issue it again. Remove the hostname in Settings → Server → Hostnames, below your existing hostnames, to un-enrol it — that retires the certificate with it.',
   pro_acme_not_found:
     'No Pro-managed cert exists for this domain. The handle may already be unbound, or it was managed manually (BYO upload) — use Remove on the cert row instead.',
+  // ⛔ THIS SENT READERS TO A PAGE THAT NO LONGER EXISTS. It said "use
+  // Reachability Doctor to see if the cloud is having trouble" — a tab deleted
+  // 2026-09-16 when the question folded into Connect a device. An error message
+  // naming a destination that is not there costs a reader the one thing an error
+  // message is for, and it fails silently: nothing red, they just cannot find it.
   pro_acme_ddns_release_failed:
-    'Giving back your Pro DDNS name did not work in the cloud. Your certificate is still safe. Try again, or use Reachability Doctor to see if the cloud is having trouble.',
+    'Giving back your Pro DDNS name did not work in the cloud. Your certificate is still safe. Try again, or check the connection from Settings → Server → Connect a device to see whether the cloud is reachable at all.',
   // Not a cloud outage — the opposite. The helper answered; it said this
   // server has issued enough certificates for today. Nothing to go fix.
   acme_rate_limited:
@@ -236,9 +257,9 @@ export interface ExposurePageModel {
   /** Public-MCP acknowledgement state — drives the Public MCP card
    *  + the in-page "Enable public MCP" / "Revoke public MCP" button. */
   public_mcp_acknowledgement: PublicMcpAcknowledgement;
-  /** True iff any path resolves public in the live state. Drives the
-   *  doctor cross-link copy ("Your server is reachable from the
-   *  Internet — review the Reachability Doctor"). */
+  /** True iff any path resolves public in the live state. Drives
+   *  `any_public_note` on the Exposure panel, which since the tab went says
+   *  "have a look at the reachability check" rather than naming a page. */
   any_public: boolean;
   /** True iff DDNS is configured (Pro recued.cloud OR user-supplied
    *  DDNS adapter). When false, public presets render disabled +

@@ -14,7 +14,8 @@
  *  - existing listener-set tests continue to pass unchanged */
 
 import { afterEach, describe, expect, it } from 'vitest';
-import { createServer as createNetServer } from 'node:net';
+import { createServer as createNetServer, type AddressInfo } from 'node:net';
+import { createServer } from 'node:http';
 import {
   DEFAULT_PATH_RESOLUTION,
   EXPOSURE_PRESET_PATH_MAP,
@@ -752,6 +753,87 @@ describe('PathListenerSet — applyResolution (exposure-flip robustness)', () =>
     expect(lan.listening).toBe(true);
     // The live dispatcher now serves the newly-enabled path.
     expect(await rawGetStatus(port, '/reception/_health')).toBe(200);
+  });
+
+  it('⛔ MOVES a listener to a new port, in place, and serves there', async () => {
+    // The `public_port` edit a self-hoster makes to put Recued behind an
+    // existing web server. A bound socket cannot change ports, so this one
+    // listener is stopped and rebound — the same shape as a TLS-mode flip.
+    const start = allLan();
+    activeSet = createPathListenerSet({
+      resolution: start,
+      handlers: buildAllHandlers(),
+      cert_chain: createCertChainHolder(null),
+      lan_port: 0,
+      lan_bind_address: '127.0.0.1',
+    });
+    const initial = await activeSet.start();
+    const first = initial.find((s) => s.listener === 'lan')!.port;
+    expect(await rawGetStatus(first, '/health')).toBe(200);
+
+    // Take a free port by binding and releasing one.
+    const probe = createServer();
+    await new Promise<void>((r) => { probe.listen(0, '127.0.0.1', r); });
+    const wanted = (probe.address() as AddressInfo).port;
+    await new Promise<void>((r) => { probe.close(() => { r(); }); });
+
+    const after = await activeSet.applyResolution(start, { lan: wanted });
+    const lan = after.find((s) => s.listener === 'lan')!;
+    expect(lan.listening).toBe(true);
+    expect(lan.port).toBe(wanted);
+    expect(await rawGetStatus(wanted, '/health')).toBe(200);
+  });
+
+  it('⛔⛔ a port that will NOT bind leaves the listener down and SAYS so', async () => {
+    // The failure that decides whether this setting is safe to expose. The old
+    // port is gone (a socket cannot be kept while moving), so the honest
+    // outcome is `listening: false` WITH a failure — never a silent fallback to
+    // the old port, which would make every advertised URL wrong in the other
+    // direction.
+    const start = allLan();
+    activeSet = createPathListenerSet({
+      resolution: start,
+      handlers: buildAllHandlers(),
+      cert_chain: createCertChainHolder(null),
+      lan_port: 0,
+      lan_bind_address: '127.0.0.1',
+    });
+    await activeSet.start();
+
+    // Hold a port so the move cannot take it.
+    const blocker = createServer();
+    await new Promise<void>((r) => { blocker.listen(0, '127.0.0.1', r); });
+    const taken = (blocker.address() as AddressInfo).port;
+    try {
+      const after = await activeSet.applyResolution(start, { lan: taken });
+      const lan = after.find((s) => s.listener === 'lan')!;
+      expect(lan.listening).toBe(false);
+      expect(lan.failure).toBeDefined();
+    } finally {
+      await new Promise<void>((r) => { blocker.close(() => { r(); }); });
+    }
+  });
+
+  it('⚠ an OS-PICKED port (0) is never treated as a move', async () => {
+    // `lan_port: 0` resolves to an ephemeral port that can never equal 0, so a
+    // naive `entry.port !== port` reported a change on EVERY apply — rebuilding
+    // the socket on every exposure flip and destroying the in-place guarantee.
+    const start = allLan();
+    start.reception = { lan: false, public: false };
+    activeSet = createPathListenerSet({
+      resolution: start,
+      handlers: buildAllHandlers(),
+      cert_chain: createCertChainHolder(null),
+      lan_port: 0,
+      lan_bind_address: '127.0.0.1',
+    });
+    const initial = await activeSet.start();
+    const port = initial.find((s) => s.listener === 'lan')!.port;
+    const next = allLan();
+    next.reception = { lan: true, public: false };
+    // Explicitly passing an empty override must behave like passing nothing.
+    const after = await activeSet.applyResolution(next, {});
+    expect(after.find((s) => s.listener === 'lan')!.port).toBe(port);
   });
 
   it('does NOT wedge while a live WS is held; the WS survives the flip', async () => {

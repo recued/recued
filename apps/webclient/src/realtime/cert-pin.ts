@@ -379,7 +379,25 @@ export interface ApplyObservedCertFingerprintArgs {
  *  Empty observed string is treated as a malformed input + rejects
  *  with `observed_fingerprint_unknown` (zero-length fingerprints
  *  cannot match the closed `WebclientCertPinState.current_fingerprint`
- *  sentinel without overloading the DD#2 semantics). */
+ *  sentinel without overloading the DD#2 semantics).
+ *
+ *  ⛔⛔ THIS IS THE ONLY OBSERVED-VS-PINNED COMPARISON. A second one lived in
+ *  `settings/server-url.ts` as `computeCertFingerprintMatch` — four exports, a
+ *  full test file, a precise docstring, and NO CALLER, ever. Deleted 2026-09-16.
+ *  ⇒ If you are here to build a server-URL editor, build it on THIS function;
+ *  that module was a false start that looked finished.
+ *
+ *  🔑 THE TWO DISAGREED, AND THE DEAD ONE WAS WRONG. It answered `mismatch` with
+ *  `pinned: ''` for the no-pin case, deferring to a "trust on first use" the
+ *  pair-blob path was supposed to provide — and D-156 P10 retired that path, so
+ *  it deferred to a mechanism that no longer exists. This function handles the
+ *  case directly (DD#2 seed). It also treated an empty observed fingerprint as
+ *  an ordinary value, and left a `next` match for the caller to act on rather
+ *  than promoting it — two callers reading the same verdict could have written
+ *  different states.
+ *
+ *  ⚠ A COMPARATOR THAT RETURNS A VERDICT IS THE WEAKER SHAPE. A transition that
+ *  returns the next state cannot be half-applied. */
 export const applyObservedCertFingerprintToState = (
   current: WebclientCertPinState | null,
   args: ApplyObservedCertFingerprintArgs,

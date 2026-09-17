@@ -22,12 +22,20 @@ import {
   type ContractGrantKind,
   type ContractDefinitionView,
   type ContractListRequest,
+  contractUsePeriod,
+  isUsageCapPeriod,
+  USAGE_CAP_PERIODS,
   type ContractLifecycleState,
   type DerivedDoorType,
   type DoorType,
   type MintContractRequest,
+  type UsageCapPeriod,
 } from '@recued/contracts';
-import { formatClientDateTime } from '@recued/ui-shared';
+import {
+  formatClientDateTime,
+  USAGE_CAP_PERIOD_OPTION_LABEL,
+  USAGE_CAP_PERIOD_REMAINING_SUFFIX,
+} from '@recued/ui-shared';
 import { PRIMITIVE_STYLES } from '@recued/ui-shared/primitives';
 import { serializeShellRoute } from '../shell/route.js';
 import { createHierarchicalHistory } from '../shell/hierarchical-navigation.js';
@@ -163,6 +171,11 @@ export const CONTRACTS_ROUTE_NEW_DOOR_ATTR = 'data-recued-contracts-new-door';
 export const CONTRACTS_ROUTE_NEW_EXPIRY_ATTR = 'data-recued-contracts-new-expiry';
 /** The optional usage-cap input (`max_uses`). */
 export const CONTRACTS_ROUTE_NEW_CAP_ATTR = 'data-recued-contracts-new-cap';
+/** How often the usage cap refills (`use_period`). Beside the cap, because a
+ *  period with no count refills nothing — the mint rpc refuses that pair. */
+export const CONTRACTS_ROUTE_NEW_CAP_PERIOD_ATTR =
+  'data-recued-contracts-new-cap-period';
+
 /** Legacy absence-test hook for the removed generic template form. */
 export const CONTRACTS_ROUTE_NEW_TEMPLATE_STATUS_ATTR =
   'data-recued-contracts-new-template-status';
@@ -997,6 +1010,8 @@ export interface ContractRowVM {
   readonly expiry_at?: number;
   readonly max_uses?: number;
   readonly uses_remaining?: number;
+  /** How often `max_uses` refills. Absent ⇒ `'total'`. */
+  readonly use_period?: UsageCapPeriod;
   /** Level-1 door types this contract backs. Absent / empty = wildcard
    *  (backs all). Drives the header door toggle (L1). Absent on self (not a
    *  door). */
@@ -1060,6 +1075,9 @@ const toRowVM = (c: ContractDefinitionView): ContractRowVM => ({
   ...(c.expiry_at !== undefined ? { expiry_at: c.expiry_at } : {}),
   ...(c.max_uses !== undefined ? { max_uses: c.max_uses } : {}),
   ...(c.uses_remaining !== undefined ? { uses_remaining: c.uses_remaining } : {}),
+  // ⚠ Named explicitly: this mapper rebuilds the row field-by-field, so a field
+  //   the server sends is invisible to the view unless it appears here too.
+  ...(c.use_period !== undefined ? { use_period: c.use_period } : {}),
   ...(c.door_types !== undefined ? { door_types: c.door_types } : {}),
 });
 
@@ -1168,7 +1186,12 @@ const limitsSummary = (row: ContractRowVM): string => {
   const parts: string[] = doorType !== null ? [DERIVED_DOOR_META[doorType]] : [];
   if (row.max_uses !== undefined) {
     const remaining = row.uses_remaining ?? row.max_uses;
-    parts.push([String(remaining), 'of', String(row.max_uses), 'uses left'].join(' '));
+    // ⛔ THE WINDOW BELONGS IN THE SENTENCE. "3 of 5 uses left" is the same
+    //   string for "forever" and "until midnight"; it read as a lifetime total
+    //   only because that was the one kind there was.
+    parts.push([
+      String(remaining), 'of', String(row.max_uses), 'uses left',
+    ].join(' ') + USAGE_CAP_PERIOD_REMAINING_SUFFIX[contractUsePeriod(row)]);
   } else {
     parts.push('as many times as you like');
   }
@@ -1549,6 +1572,15 @@ export const bootstrapContractsRoute = (
     capInput.setAttribute('placeholder', 'unlimited');
     capInput.setAttribute(CONTRACTS_ROUTE_NEW_CAP_ATTR, '');
     capField.appendChild(capInput);
+    const capPeriod = makeEl(doc, 'select');
+    capPeriod.setAttribute(CONTRACTS_ROUTE_NEW_CAP_PERIOD_ATTR, '');
+    for (const period of USAGE_CAP_PERIODS) {
+      const option = makeEl(doc, 'option', undefined, USAGE_CAP_PERIOD_OPTION_LABEL[period]);
+      option.setAttribute('value', period);
+      capPeriod.appendChild(option);
+    }
+    (capPeriod as unknown as { value: string }).value = 'total';
+    capField.appendChild(capPeriod);
     form.appendChild(capField);
 
     const expiryField = makeEl(doc, 'label', 'contracts-new-field');
@@ -1620,6 +1652,11 @@ export const bootstrapContractsRoute = (
         expiry = parsed;
       }
 
+      const capPeriodValue = (): UsageCapPeriod => {
+        const raw = (capPeriod as unknown as { value?: string }).value;
+        return isUsageCapPeriod(raw) ? raw : 'total';
+      };
+
       setError(null);
       submitting = true;
       submit.textContent = 'Creating…';
@@ -1633,6 +1670,12 @@ export const bootstrapContractsRoute = (
           scope: {},
           ...(doorTypes.length > 0 ? { door_types: doorTypes } : {}),
           ...(cap !== undefined ? { max_uses: cap } : {}),
+          // Only alongside a count, and only when it is not the default: the rpc
+          // refuses a period with nothing to refill, and `'total'` is the absence
+          // of a period rather than a period named 'total'.
+          ...(cap !== undefined && capPeriodValue() !== 'total'
+            ? { use_period: capPeriodValue() }
+            : {}),
           ...(expiry !== undefined ? { expiry_at: expiry } : {}),
         };
         const view = await mintCaller(request);

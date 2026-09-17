@@ -1137,7 +1137,106 @@ export interface LocalServerUrl {
 }
 
 /** Response for the `network.local_urls` rpc — the loopback + LAN URLs the
- *  server is reachable at on the local network. */
+ *  server is reachable at on the local network, plus the two ports themselves.
+ *
+ *  ⛔⛔ BOTH PORTS ARE USER-CONFIGURABLE, AND THIS IS THE ONLY PLACE A CLIENT CAN
+ *  LEARN EITHER. `bind_port` takes `--port` / `$PORT` / `config.toml`;
+ *  `public_port` is a runtime config key (`config/schema.ts`, section Network,
+ *  "Port used by the public TLS listener"). Before these fields existed,
+ *  `public_port` appeared in NO client-facing contract at all — so every client
+ *  surface naming a public port was quoting the 443 default as though it were a
+ *  fact, and a server moved off 443 was handed addresses that do not serve.
+ *
+ *  ⚠ OPTIONAL ON PURPOSE, and not a hedge: this is self-hosted software with no
+ *  deploy order. A client routinely talks to a server older than itself, and
+ *  that server simply will not send these. Declaring them required would make
+ *  the type assert something the wire cannot promise, and the reader would take
+ *  `undefined` for a configured value. Absent means "this server is too old to
+ *  say", which is not the same as any number. */
+/** D-273 — what the router says about port mapping, and what we did about it.
+ *
+ *  ⛔ EVERY FIELD IS TRI-STATE BY OMISSION, and that is the whole shape of this
+ *  response. "We have not looked", "we looked and the answer is no" and "we
+ *  looked and the answer is yes" are three different things to tell an owner,
+ *  and the router step says something different for each. Collapsing the first
+ *  two is the mistake D-272 spent an entire decision on. */
+export interface NetworkPortMappingResponse {
+  /** The `network.auto_port_mapping` toggle. */
+  enabled: boolean;
+  /** ⚠ ABSENT MEANS NOBODY ASKED — an older server, or one that could not reach
+   *  a gateway. It is NOT `'unsupported'`; see `PortMappingSupportKind`. */
+  support?: 'enabled' | 'disabled' | 'unsupported';
+  /** ⛔ TRUE MEANS A MAPPING WILL SUCCEED AND CHANGE NOTHING. The ISP is NATing
+   *  upstream of this router, so the port it forwards is not reachable from the
+   *  internet — the one answer that makes the whole feature pointless, and the
+   *  one an owner would otherwise spend an afternoon discovering. */
+  cgnat?: boolean;
+  /** Which protocol answered, when one did. */
+  protocol?: 'igd' | 'nat-pmp';
+  /** What the last reconcile did. */
+  outcome?:
+    | 'idle' | 'mapped' | 'released' | 'unavailable' | 'failed'
+    /** D-273 P2: already forwarded to this machine by the OWNER, by hand.
+     *  ⚠ A SUCCESS, not a failure — the outcome they want is already true, and
+     *  Recued deliberately did not touch it. */
+    | 'foreign_ok'
+    /** Something the owner set up holds the port and is not what we need. Not
+     *  ours to change. */
+    | 'foreign_conflict'
+    /** Another machine on the network holds the port. */
+    | 'conflict';
+  /** The LAN host the router says currently holds the port, when it says. */
+  held_by?: string;
+  /** The external port actually mapped — ⚠ NOT necessarily the one requested;
+   *  NAT-PMP gateways may assign another. */
+  external_port?: number;
+  /** Unix-ms of the last reconcile. Absent before the first. */
+  checked_at?: number;
+  /** Why we could not act at all, as opposed to the router refusing. */
+  unavailable?: 'no_gateway' | 'no_lan_address';
+  /** One line for the log / an expander. Never parsed. */
+  detail?: string;
+}
+
 export interface NetworkLocalUrlsResponse {
   urls: LocalServerUrl[];
+  /** The LAN listener's ACTUAL bound port, read post-bind — so a configured `0`
+   *  reports what the OS assigned, not `0`. Same source as the ports inside
+   *  `urls`; carried separately so a caller that needs the number does not have
+   *  to parse a URL to get it. */
+  lan_port?: number;
+  /** The public TLS listener's configured port. ⚠ CONFIGURED, not verified
+   *  bound — the public listener does not bind at all until a path is made
+   *  public, so this says which port that listener WOULD use. */
+  public_port?: number;
+  /** D-272 — where the LAN listener's bind actually puts it.
+   *
+   *  ⛔ "LAN-ONLY" IS A BIND ADDRESS, NOT AN ENFORCED BOUNDARY. There is no
+   *  source-address filter in the path router, and `resolveLanAddress` binds
+   *  the `0.0.0.0` wildcard whenever it finds one RFC1918 address — the
+   *  ordinary home case — so the LAN listener is on every interface. On a host
+   *  that also has a publicly-routable address (the cloud-VM shape: a private
+   *  NIC and a public one) that puts a PLAINTEXT listener carrying `/ws` and
+   *  `/mcp` on the public address.
+   *
+   *  ⚠ ROUTABLE, NOT REACHED. This is what the server can know with certainty
+   *  about itself; whether a firewall, security group or router actually lets a
+   *  connection through is the cloud probe's half of the question.
+   *
+   *  ⚠ ABSENT means the server did not say (older server, or it could not read
+   *  its interfaces) — which is NOT the same as "not exposed". A client must
+   *  render the two differently. */
+  lan_exposure?: {
+    publicly_routable: boolean;
+    /** Whether the bind is a wildcard, i.e. every interface.
+     *
+     *  ⚠ TRUE IS THE DEFAULT, NOT A FINDING — `resolveLanAddress` returns
+     *  `0.0.0.0` for the ordinary one-RFC1918-address host. It is carried so
+     *  the warning can say WHY ("bound on every interface, and this machine has
+     *  a public address"), never so a client can warn on it alone. */
+    wildcard: boolean;
+    /** The publicly-routable addresses this listener answers on. Empty iff
+     *  `publicly_routable` is false. */
+    public_addresses: ReadonlyArray<string>;
+  };
 }

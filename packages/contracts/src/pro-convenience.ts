@@ -51,6 +51,12 @@
  *    operational states; a bound server collapses out of `pending` into
  *    one of them once that cloud primitive lands. NEVER a fabricated
  *    success — a `pending` item is honestly "not yet provisionable".
+ *  - `inactive-elsewhere` — settled, and settled somewhere else: the handle
+ *    these conveniences are named after is anchored to a DIFFERENT server of
+ *    the owner's. ⛔ THIS IS NOT `pending`, AND THE DIFFERENCE IS THE WHOLE
+ *    POINT — `pending` promises the thing is coming, and here it is not, so a
+ *    "Pending" label is a lie that the detail line underneath then has to
+ *    argue with. Nothing is wrong (not `error`) and nothing is owed.
  */
 export const PRO_CONVENIENCE_ITEM_STATES = [
   'active',
@@ -59,6 +65,7 @@ export const PRO_CONVENIENCE_ITEM_STATES = [
   'awaiting-reachability',
   'inactive-free',
   'pending',
+  'inactive-elsewhere',
 ] as const;
 
 export type ProConvenienceItemState = (typeof PRO_CONVENIENCE_ITEM_STATES)[number];
@@ -107,6 +114,25 @@ export const PRO_CONVENIENCE_DETAIL_CODES = [
    *  provisioned yet (provisioning actuation pending — see the P8 server
    *  module header). */
   'not_provisioned',
+  /** `pending` — the account's handle is anchored to a DIFFERENT server of the
+   *  owner's, so this one cannot provision it and never will while that holds.
+   *
+   *  ⛔ NOT AN ERROR, AND THAT IS THE POINT. One handle resolves to one address,
+   *  and on a shared LAN only one server can own the forwarded port — so four
+   *  machines out of five sitting in this state is the NORMAL arrangement, not a
+   *  fault. It reported `not_provisioned` ("Not set up yet"), which reads as
+   *  something the owner forgot to finish rather than something already decided
+   *  elsewhere. */
+  'handle_on_another_server',
+  /** `error` — the cloud verified this server's credential and says the account
+   *  no longer owns it: unbound, deleted, or rebound elsewhere.
+   *
+   *  ⛔ DISTINCT FROM `entitlement_unavailable`, WHICH IS WHAT IT USED TO SAY.
+   *  That reads "Recued could not check what you pay for" — a transient, wait-it-
+   *  out message — for a state that is terminal and needs the owner to reconnect
+   *  the server. The two conflated a network blip with a disconnection, which are
+   *  the two ends of the same card saying opposite things about what to do. */
+  'server_disconnected',
 ] as const;
 
 export type ProConvenienceDetailCode =
@@ -186,8 +212,76 @@ export interface ProEntitlementClaim {
   entitlement_tier: ProEntitlementTier;
   /** `sha256:<hex>` server identity fingerprint the claim is bound to. */
   server_fingerprint: string;
+  /** The account's CURRENT marketplace handle at mint time, when it has one.
+   *
+   *  ⛔⛔ INSIDE THE SIGNATURE, DELIBERATELY — AND NOT A CONTRADICTION OF THE
+   *  `handle_anchor` RULE NEXT DOOR. That field rides OUTSIDE the claim because
+   *  it only picks display copy, and widening a signed security payload to carry
+   *  UI text is how a cosmetic field quietly becomes load-bearing. This one is
+   *  load-bearing BY DESIGN: the server acts on it, moving a DNS record and a
+   *  certificate to the name it gives. Data that drives actuation is exactly
+   *  what a signature is for. The test is which way the dependency runs, not
+   *  whether the payload grows.
+   *
+   *  🔑 IT EXISTS BECAUSE A RENAME HAD NO WAY TO REACH THE SERVER. The server's
+   *  stored binding handle is written once, at the exchange, so renaming in the
+   *  dashboard left every server still targeting the old name — the handle
+   *  provisioner compared the old name to the old name and did nothing. The mint
+   *  already runs on every provisioning tick and already proves the fingerprint,
+   *  so it is the path the new name can travel with authority.
+   *
+   *  ⚠ OPTIONAL: an account with no handle claimed sends nothing, and a Worker
+   *  older than this field sends nothing. Both mean "no fresher answer than the
+   *  binding", never "the handle was removed". */
+  publisher_handle?: string;
   /** Unix-ms issued-at. */
   iat: number;
   /** Unix-ms expiry. Verification fails closed after this time. */
   exp: number;
 }
+
+/** Where the account's reserved handle is anchored, as the mint endpoint sees
+ *  it. Rides BESIDE the signed claim, deliberately outside it.
+ *
+ *  ⛔⛔ UNSIGNED ⇒ DISPLAY ONLY. It answers "why does this server show nothing
+ *  set up", which is a question about copy, so it is not worth widening the
+ *  signed claim — but that means it MUST NOT gate anything. The authority for
+ *  who may actuate a handle stays where it already is: the cloud rejects a
+ *  publish from the wrong fingerprint (`ddns_handle_mismatch`). Anchoring a
+ *  decision to this field would move an authority check onto an unsigned hint. */
+export const PRO_HANDLE_ANCHOR_STATES = [
+  /** This server holds the handle — the ordinary provisioning path. */
+  'held_by_me',
+  /** A different server of the same owner's holds it. */
+  'held_by_other',
+  /** The reservation exists with no holder (its server was unbound), so any
+   *  of the owner's servers may claim it. */
+  'unanchored',
+] as const;
+
+export type ProHandleAnchorState = (typeof PRO_HANDLE_ANCHOR_STATES)[number];
+
+export interface ProHandleAnchor {
+  state: ProHandleAnchorState;
+  /** The canonical reserved handle the state is about. */
+  handle: string;
+}
+
+/** Parse an anchor off a mint response. Returns null for anything unexpected —
+ *  including a state string this build has never heard of.
+ *
+ *  ⚠ A NEWER CLOUD IS THE EXPECTED CASE, not the exotic one: the Worker deploys
+ *  on its own schedule and every self-hosted server updates on the owner's, so
+ *  an unknown state will reach an old server eventually. Null then means "no
+ *  hint", and the caller keeps whatever it would have shown without one. */
+export const parseProHandleAnchor = (value: unknown): ProHandleAnchor | null => {
+  if (!value || typeof value !== 'object') return null;
+  const obj = value as Record<string, unknown>;
+  const state = obj.state;
+  const handle = obj.handle;
+  if (typeof state !== 'string' || typeof handle !== 'string' || handle.length === 0) {
+    return null;
+  }
+  if (!(PRO_HANDLE_ANCHOR_STATES as readonly string[]).includes(state)) return null;
+  return { state: state as ProHandleAnchorState, handle };
+};

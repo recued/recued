@@ -19,10 +19,34 @@ export interface BootstrapConfig {
   data_path: string;
   bind_host: string;
   bind_port: number;
-  /** 0 disables the MCP surface. */
+  /** ⛔ NOT A PORT, AND NOT A SWITCH EITHER — nothing reads this value.
+   *  D-272: production binds sockets in exactly ONE place
+   *  (`packages/server-tls/src/path-listener-set.ts`) and it binds `lan_port`
+   *  + `public_port`. `mcp` is a PATH on those, gated by the exposure grid
+   *  (`mcp: { lan: true, public: false }`, ack-gated per D-148 § A.7.2) and
+   *  toggled in Settings → Server → Exposure.
+   *
+   *  ⚠ THIS COMMENT SAID "0 disables the MCP surface" AND THAT WAS FALSE, not
+   *  merely misnamed — verified by call path in both directions: zero
+   *  non-config readers in `backend/` or `packages/`, zero in `apps/`. Setting
+   *  it to 0 disables nothing. Kept on the type because it is a shipped config
+   *  key and a self-hosted install has no deploy order; retiring it is three
+   *  decisions (type, validation, stored row), not a rename. */
   mcp_port: number;
-  /** 0 disables the inbound-webhook surface. Non-zero requires a public
-   *  host (self-host only — not relayed via the cloud per D-096). */
+  /** ⛔ AN ON/OFF SWITCH WEARING A PORT'S NAME. `0` composes no inbound
+   *  listeners and the path-router 404s every webhook / hook request; ANY
+   *  non-zero value composes all three, and they all behave identically.
+   *
+   *  ⚠ IT DOES NOT BIND, OPEN OR FORWARD THE NUMBER. The webhook paths are
+   *  served on `public_port` like everything else, so that is the port an
+   *  operator has to make reachable — reading this key as "the port to forward
+   *  in my router" is the mistake the name invites, and it is router work that
+   *  is not theirs to do. Non-zero also needs a public host +
+   *  `RECUED_PUBLIC_REACHABLE` (self-host only — never relayed via the cloud,
+   *  per D-096).
+   *
+   *  ⇒ The honest shape is `webhooks_enabled: boolean`; see `mcp_port` for why
+   *  that is a migration rather than a rename. */
   webhook_port: number;
   /** Supports the `{data_path}` template token so the default "logs
    *  next to data" convention survives a user moving data_path. */

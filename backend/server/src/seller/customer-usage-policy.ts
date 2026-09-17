@@ -5,6 +5,7 @@
  *  a customer-visible unit can run.
  */
 
+import { usageCapWindowStart } from '@recued/contracts';
 import type {
   SellerCustomer,
   SellerCustomerUsageRollup,
@@ -218,19 +219,33 @@ export const resolveSellerCustomerUsagePolicy = (
   };
 };
 
+/** ⛔⛔ ONE BOUNDARY, ONE IMPLEMENTATION. This was hand-rolled here, hand-rolled
+ *  AGAIN privately in `customer-status.ts`, and a third time in
+ *  `contract-definition.ts` for the contract use cap — three answers to "when
+ *  does the UTC month start", two of them in this directory and one of them
+ *  private, so an edit to this exported one would not have reached it.
+ *
+ *  🔑 THE DRIFT THAT MATTERS IS SILENT. They agreed byte-for-byte, so nothing
+ *  was wrong; but a dispatch counted against one boundary and billed against
+ *  another is a discrepancy no test would show, because each copy is
+ *  self-consistent. Delegating leaves one place for the arithmetic to be wrong
+ *  in, which is the only number of places worth having.
+ *
+ *  ⚠ THE VOCABULARY IS DELIBERATELY NOT MERGED. `UsageCapPeriod` carries a
+ *  `'total'` member this granularity has no use for, and whether every cap
+ *  period is a valid BILLING period is a policy question, not a typing one — so
+ *  the two lists stay separate and a ratchet pins the containment instead. */
 export const sellerCustomerUsagePeriodStart = (
   now: number,
   granularity: SellerUsagePeriodGranularity,
 ): number => {
-  const date = new Date(now);
-  if (granularity === 'day') {
-    return Date.UTC(
-      date.getUTCFullYear(),
-      date.getUTCMonth(),
-      date.getUTCDate(),
-    );
+  // Non-null by construction: `usageCapWindowStart` returns null only for
+  // `'total'`, which is not a member of this granularity.
+  const start = usageCapWindowStart(granularity, now);
+  if (start === null) {
+    throw new Error(`seller usage period: no window for granularity '${String(granularity)}'`);
   }
-  return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1);
+  return start;
 };
 
 const cleanUnits = (units: number | undefined): number => {

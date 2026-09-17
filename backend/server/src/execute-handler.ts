@@ -4309,16 +4309,59 @@ const handleExecuteInner = async (
           if (deps.preapprovalRuntime?.recordDispatchUse(executionSource, slug, overlayForUse)) return;
           // Meter the contract's use iff the overlay reports this dispatch meterable.
           // No op id is threaded: the metering op axis RETIRED (home #2 —
-          // `contract_grant` owns op admission), so `shouldMeterUse` gates on
+          // `contract_grant` owns op admission), so the scope match gates on
           // channel×actor×ingredient, not op; the former slice-2a op-id mirror is
           // moot. An op-PRESENT out-of-scope op never reaches here (the op gate
           // denies it before the proceed point). An op-ABSENT dispatch by an
           // op-scoped contract DOES meter — a fail-safe over-count, spec `:253`
           // "every dispatch decrements". (The gateway still passes an `operationId`
           // arg per the seam type; it is ignored.)
-          if (overlayForUse.shouldMeterUse(executionSource, slug)) {
-            overlayForUse.recordUse(executionSource);
+          //
+          // ⚠ THE LEGACY ARM IS NOT DEAD CODE — every hand-built overlay double
+          //   lands here, and a bare optional call would have made all of them
+          //   silently meter NOTHING.
+          if (overlayForUse.takeDispatchUse === undefined) {
+            if (overlayForUse.shouldMeterUse(executionSource, slug)) {
+              overlayForUse.recordUse(executionSource);
+            }
+            return;
           }
+          // ⛔⛔ THE POSITION DOES NOT MOVE — ONLY THE CLAMP BECOMES A REFUSAL.
+          //
+          // This lane was already reservation-before-yield: `commit-gateway.ts`
+          // calls this "before crossing the boundary, synchronously ahead of the
+          // `inner` dispatch … so it never widens the bounded-contract use race".
+          // What it could not do was REFUSE: `recordUse` clamps at 0, and
+          // `shouldMeterUse` above it matches SCOPE only and never reads
+          // `uses_remaining`. So a spent contract kept dispatching and kept
+          // reporting 0, and only the raw-op lane's wider window made it visible.
+          //
+          // 🔑 BECAUSE THE DECREMENT STAYS PUT, EXHAUSTION TIMING IS UNCHANGED, and
+          // D-261 F18 is not newly reachable here: taking the last unit already
+          // made the contract `exhausted` at exactly this instant under
+          // `recordUse`. That is why this needs no `withContractDispatchReservation`
+          // wrap, unlike the raw-op lane where the take moved earlier.
+          const take = overlayForUse.takeDispatchUse(executionSource, slug);
+          if (take.kind === 'refused') {
+            // Denying by THROW is this call site's established contract: the
+            // seller reservation immediately above it does the same thing
+            // ("A denial throws and prevents dispatch"), from the same position,
+            // before any pending row or effect.
+            throw new RpcError(
+              'contract_use_exhausted',
+              'This contract\'s use limit is spent: it was revoked, has expired, or has no '
+                + 'remaining uses.',
+              429,
+            );
+          }
+          // ⛔ THE CHARGE STANDS, EXACTLY AS `recordUse` LEFT IT. This lane has
+          //   never refunded at the proceed point — a `writePending` failure below
+          //   over-counts by one and says so in its own comment — so settling as
+          //   "crossed" preserves the documented accounting rather than quietly
+          //   changing a second thing while fixing the first. Giving that unit
+          //   back is a separate, deliberate change: the gateway would have to
+          //   report the failure back to this seam, which it does not today.
+          overlayForUse.settleDispatchUse?.(take, true);
         }
       : undefined;
 
@@ -7775,6 +7818,9 @@ const handleExecuteInner = async (
         recipe_id: recipe.recipe_id,
         run_id: lifecycle_run_id,
         op: terminalSuccess ? 'complete' : 'error',
+        // The SAME value the anchor decision used, so a listener can never
+        // disagree with what was actually recorded.
+        audit_exempt: auditExemptRender,
       });
       // D-179 P4 — run-outcome trigger source. Backfill runs are
       // suppressed (D-120 precedent — cursor loops must not fan out
@@ -7889,6 +7935,10 @@ const handleExecuteInner = async (
       // a durable pause is faithful (the run didn't complete) and
       // the response leaves it at that.
       success: result.success && pauseFailureError === undefined,
+      // D-display-mode P4 — the server's own answer, so a display never has to
+      // re-derive it. Computed above and used to skip the anchor; reporting the
+      // SAME value keeps the two from ever disagreeing.
+      audit_exempt: auditExemptRender,
       output: outputForExecutionSource(
         result.output,
         request.execution_source,

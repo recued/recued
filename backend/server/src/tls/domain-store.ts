@@ -237,11 +237,13 @@ export interface CreateTlsDomainStoreOptions {
  *  only needs the public bytes to walk leaf → chain → system trust
  *  store.
  *
- *  Internal-only — NOT exposed via rpc. Mary's webclient consumes
- *  the rolled-up `ReachabilityPerDomainTlsEntry` from
- *  `ReachabilityReport.per_domain_tls`, which excludes the raw PEM
- *  bytes (verifier output is the boolean `chain_valid` /
- *  `fingerprint_matches`). */
+ *  Internal-only — NOT exposed via rpc, and there is no rolled-up view
+ *  any more. These rows have exactly one reader: `recued doctor`
+ *  (`cli-context/doctor.ts`), which runs them through
+ *  `verifyDomainHealth` and reports the two booleans that come back —
+ *  `chain_valid` and `fingerprint_matches`. ⚠ The raw PEM bytes never
+ *  leave that call; the verifier's output is what anyone downstream
+ *  sees. */
 export interface SqliteTlsDomainHealthCheckRow extends TLSDomainCertListEntry {
   cert_pem: string;
   chain_pem?: string;

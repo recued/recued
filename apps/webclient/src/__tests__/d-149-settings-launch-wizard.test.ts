@@ -1,4 +1,4 @@
-/** D-149 § A.20.1 follow-on — Settings → Server → Reception Launch
+/** D-149 § A.20.1 follow-on — Reception Launch
  *  Wizard chrome renderer.
  *
  *  Covers the projection layer over the P12 wizard substrate
@@ -24,7 +24,7 @@ import {
   type ReceptionPageConfig,
   type SchedulingLinkConfig,
 } from '@recued/contracts';
-import { buildEndpointCreateDispatch as authoringBuildEndpointCreateDispatch } from '../settings/reception-authoring.js';
+import { buildEndpointCreateDispatch as authoringBuildEndpointCreateDispatch } from '../reception/authoring.js';
 import {
   LAUNCH_WIZARD_OPTIONAL_STEP_SET,
   LAUNCH_WIZARD_PLAN_STEP_SET,
@@ -39,7 +39,7 @@ import {
   buildLaunchWizardStepperModel,
   summarizeLaunchWizardValidation,
   validateLaunchWizardInput,
-} from '../settings/reception-launch-wizard.js';
+} from '../reception/launch-wizard.js';
 
 // ════════════════════════════════════════════════════════════════
 // Fixtures — mirror the contract P12 test's `goodWizardInput` shapes

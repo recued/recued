@@ -275,4 +275,84 @@ describe('D-148 P4 — webclient local-store closed-list', () => {
     expect(out.cert_pin_state).toBeNull();
     expect(out.server_public_key).toBeNull();
   });
+
+  // ── retargetProfile (D-148) ─────────────────────────────────────────────
+  // ⛔ THE JOIN NOBODY TESTED. The roster algebra has its own suite and the
+  // orchestration has its own suite; this METHOD is what translates between
+  // them, and mutation testing found two survivors here — reporting success
+  // for a refused write, and dropping the re-sealed token on the way through.
+  // Two suites either side of one boundary, the join never run. Again.
+
+  const seedTwo = async () => {
+    const store = createInMemoryWebclientLocalStore();
+    const a = await store.ensureProfile('wss://a.example/ws');
+    await store.set('webclient_token', {
+      token_id: 'tok-a', ciphertext_b64: 'A', iv_b64: 'ia', issued_at: 1,
+    });
+    const b = await store.ensureProfile('wss://b.example/ws');
+    return { store, a, b };
+  };
+
+  it('moves the address and returns the saved URL', async () => {
+    const { store, a } = await seedTwo();
+    await store.switchProfile(a);
+    const saved = await store.retargetProfile(a, 'wss://a.example:4433/ws', {
+      token_id: 'tok-a', ciphertext_b64: 'RESEALED', iv_b64: 'iz', issued_at: 2,
+    });
+    expect(saved).toBe('wss://a.example:4433/ws');
+    expect(await store.get('server_url')).toBe('wss://a.example:4433/ws');
+  });
+
+  it('⛔ carries the RE-SEALED token through — dropping it destroys the bearer', async () => {
+    const { store, a } = await seedTwo();
+    await store.switchProfile(a);
+    await store.retargetProfile(a, 'wss://a.example:4433/ws', {
+      token_id: 'tok-a', ciphertext_b64: 'RESEALED', iv_b64: 'iz', issued_at: 2,
+    });
+    // The whole point of re-sealing: the record that survives the move is the
+    // v2 one. A method that passed `null` here would leave the user re-pairing.
+    expect(await store.get('webclient_token')).toEqual({
+      token_id: 'tok-a', ciphertext_b64: 'RESEALED', iv_b64: 'iz', issued_at: 2,
+    });
+  });
+
+  it('⛔ returns null when the roster REFUSES, rather than claiming success', async () => {
+    const { store, a, b } = await seedTwo();
+    // `b` already holds that address.
+    const saved = await store.retargetProfile(a, 'wss://b.example/ws', null);
+    expect(saved).toBeNull();
+    // ...and nothing moved.
+    const profiles = await store.listProfiles();
+    expect(profiles.find((p) => p.id === a)!.server_url).toBe('wss://a.example/ws');
+    expect(profiles.filter((p) => p.server_url === 'wss://b.example/ws')).toHaveLength(1);
+    void b;
+  });
+
+  it('returns null for a stale profile id', async () => {
+    const { store } = await seedTwo();
+    expect(await store.retargetProfile('no-such-id', 'wss://c.example/ws', null)).toBeNull();
+  });
+
+  it('returns null for a blank address, and keeps the old one', async () => {
+    const { store, a } = await seedTwo();
+    expect(await store.retargetProfile(a, '   ', null)).toBeNull();
+    const profiles = await store.listProfiles();
+    expect(profiles.find((p) => p.id === a)!.server_url).toBe('wss://a.example/ws');
+  });
+
+  it('⚠ reports the TRIMMED address it actually stored', async () => {
+    // The caller compares what it asked for against what came back; returning
+    // an untrimmed string it never stored would make a successful write look
+    // like a refusal.
+    const { store, a } = await seedTwo();
+    expect(await store.retargetProfile(a, '  wss://a.example:4433/ws  ', null))
+      .toBe('wss://a.example:4433/ws');
+  });
+
+  it('leaves OTHER profiles untouched', async () => {
+    const { store, a, b } = await seedTwo();
+    await store.retargetProfile(a, 'wss://a.example:4433/ws', null);
+    const profiles = await store.listProfiles();
+    expect(profiles.find((p) => p.id === b)!.server_url).toBe('wss://b.example/ws');
+  });
 });

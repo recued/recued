@@ -40,13 +40,13 @@ import {
   RECEPTION_PROMPT_KINDS,
   RECEPTION_PROMPT_ACTIONS,
   RECEPTION_EMERGENCY_DISABLE_CONFIRM_PHRASE,
-} from '../settings/reception-prompts-host.js';
-import { RECEPTION_HOST_PROMPT_ACTIONS } from '../settings/reception-page-host.js';
+} from '../reception/prompts-host.js';
+import { RECEPTION_HOST_PROMPT_ACTIONS } from '../reception/page-host.js';
 import type {
   ReceptionPageShell,
   ReceptionPageShellState,
-} from '../settings/reception-page-shell.js';
-import { buildReceptionPageModel } from '../settings/reception.js';
+} from '../reception/page-shell.js';
+import { buildReceptionPageModel } from '../reception/spine.js';
 
 const NOW = 1_700_000_000_000;
 const DAY_MS = 24 * 60 * 60 * 1000;

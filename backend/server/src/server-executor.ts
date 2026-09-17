@@ -206,8 +206,10 @@ export interface ServerExecutorConfig {
   /** D-125 P4.3 — `connection.notification` per-kind handler deps. Boot
    *  site closes over `decodeAuthFromStorage` (slack / telegram bearer
    *  token decode) + an `emitInApp` callback wrapping the realtime
-   *  `EventBus.emit({ kind: 'notification', ... })` for in-app subtype
-   *  delivery. P4.3 ships slack / telegram / in-app; email throws
+   *  `EventBus.emit({ kind: 'notification.notify', ... })` for in-app
+   *  delivery. ⚠ It named the bare `'notification'` kind until 2026-09-17, which
+   *  NO client subscribes to — the send was counted as delivered and dropped at
+   *  the fan-out. P4.3 ships slack / telegram / in-app; email throws
    *  `NOTIFICATION_TRANSPORT_NOT_IMPLEMENTED` until SMTP lands in a
    *  follow-on. Absent → notification kind stays at the P3.1
    *  placeholder (`INGREDIENT_ADAPTER_ALL_FAILED` with

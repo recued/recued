@@ -5236,6 +5236,15 @@ const buildProfileStore = (
   const store: WebclientProfileStore = {
     async listProfiles() { return state.profiles; },
     async activeProfileId() { return state.activeId; },
+    async retargetProfile(id, next_url) {
+      calls.push(`retarget:${id}:${next_url}`);
+      const hit = state.profiles.find((p) => p.id === id);
+      if (!hit) return null;
+      state.profiles = state.profiles.map((p) =>
+        p.id === id ? { ...p, server_url: next_url } : p,
+      );
+      return next_url;
+    },
     async ensureProfile(url) {
       calls.push(`ensure:${url}`);
       return state.activeId ?? '';

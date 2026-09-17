@@ -95,6 +95,10 @@ import {
  *  WITH it; two stylesheets drift exactly the way two renderers do, just less
  *  visibly. */
 export const RECIPE_RESULT_HOST_ATTR = 'data-recued-result-host';
+/** D-display-mode P5 — stamped when this panel is a screen rather than a pane.
+ *  An ATTRIBUTE and not a class so the type scale below can key off it without
+ *  competing with the class list the detail section already carries. */
+export const RESULT_DISPLAY_MODE_ATTR = 'data-recued-display-mode';
 
 /** Every rule the panel's own markup needs, scoped to
  *  {@link RECIPE_RESULT_HOST_ATTR}. Both route bundles include it.
@@ -231,6 +235,97 @@ ${REFERENCE_PROVENANCE_STYLES}
 [${RECIPE_RESULT_HOST_ATTR}] .recipes-result-table th {
   color: var(--fg-muted);
   font-weight: 650;
+}
+/* A grouped table stays ONE table — the group row is a heading inside the body,
+   not a second table and not a column. It has to read as a break in the list
+   even when the theme's borders are subtle, so it carries its own ground and a
+   top rule, and it sticks under the header on a long board. */
+[${RECIPE_RESULT_HOST_ATTR}] .recipes-result-group-row > th {
+  background: var(--bg-subtle, var(--bg-elevated));
+  border-top: 2px solid var(--border-subtle);
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--fg-default);
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  padding: 8px 6px;
+  position: sticky;
+  top: 0;
+  text-align: left;
+}
+[${RECIPE_RESULT_HOST_ATTR}] .recipes-result-table tbody tr:first-child > th {
+  border-top: 0;
+}
+/* The count is secondary to the bucket name — same line, quieter, and tabular
+   so a column of counts does not jitter as it re-renders. */
+[${RECIPE_RESULT_HOST_ATTR}] .recipes-result-group-count {
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  margin-inline-start: 6px;
+}
+/* ⛔ A fullscreened element gets the UA's own backdrop — black in every engine
+   that ships one — so the panel must paint its own ground or a light theme
+   inverts the moment it opens. It also stops being a child of the scrolling
+   page, so it owns its scrolling and its padding from here. */
+/* ⛔⛔ P5 — A SCREEN IS READ AT THREE TO FIVE METRES, A PANE AT FIFTY
+   CENTIMETRES. Everything below is one decision applied consistently: roughly
+   double the desk scale. Sizes are explicit rather than an em cascade because
+   this panel's existing rules are in px, so a base-size change alone would
+   scale the text and leave every padding, gap and rule where it was — type
+   growing inside furniture that did not.
+
+   ⛔ WHAT THIS DELIBERATELY DOES NOT DO: DROP COLUMNS. "How many columns survive
+   at fifteen feet" is a real question and it is NOT the renderer's to answer —
+   it cannot know which two of nine a glance needs, and guessing wrong hides the
+   column somebody mounted the screen for. An author who wants fewer columns
+   names fewer in to_table, or points the board at a recipe that does. The
+   grouping heading is the one thing this can safely enlarge more than the rest,
+   because on a grouped board it IS the primary content. */
+[${RESULT_DISPLAY_MODE_ATTR}] .recipes-result-table {
+  font-size: 26px;
+}
+[${RESULT_DISPLAY_MODE_ATTR}] .recipes-result-table th,
+[${RESULT_DISPLAY_MODE_ATTR}] .recipes-result-table td {
+  padding: 14px 12px;
+}
+[${RESULT_DISPLAY_MODE_ATTR}] .recipes-result-group-row > th {
+  font-size: 32px;
+  padding: 18px 12px;
+}
+[${RESULT_DISPLAY_MODE_ATTR}] .recipes-result-group-count {
+  font-size: 26px;
+}
+/* The status line and provenance are desk furniture: still present for whoever
+   walks up to the screen, never competing with the board for attention. */
+[${RESULT_DISPLAY_MODE_ATTR}] .recipes-result-status,
+[${RESULT_DISPLAY_MODE_ATTR}] .recipes-result-provenance {
+  font-size: 15px;
+  opacity: 0.75;
+}
+/* A board read from across a room scrolls on its own or not at all — a
+   horizontal scrollbar nobody can reach is worse than a clipped column, so the
+   wrap keeps its scroll but stops advertising it. */
+[${RESULT_DISPLAY_MODE_ATTR}] .recipes-result-table-wrap {
+  scrollbar-width: none;
+}
+[${RECIPE_RESULT_HOST_ATTR}]:fullscreen {
+  background: var(--bg-default);
+  color: var(--fg-default);
+  overflow: auto;
+  padding: 24px;
+}
+/* The toggle has to stay reachable once the page chrome is gone — it is the
+   way back for anyone who did not reach for Escape. */
+[${RECIPE_RESULT_HOST_ATTR}]:fullscreen .recipes-result-fullscreen-toggle {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+/* More room means the board can breathe; the group headings stay sticky, so
+   the bucket a row belongs to is readable however far down it sits. */
+[${RECIPE_RESULT_HOST_ATTR}]:fullscreen .recipes-result-table th,
+[${RECIPE_RESULT_HOST_ATTR}]:fullscreen .recipes-result-table td {
+  padding: 10px 8px;
 }
 [${RECIPE_RESULT_HOST_ATTR}] .recipes-result-table th.is-numeric,
 [${RECIPE_RESULT_HOST_ATTR}] .recipes-result-table td.is-numeric,
@@ -802,6 +897,11 @@ export interface RecipeResultPanelPresentation {
   readonly show_run_metrics?: boolean;
   /** Use concise app navigation copy instead of "Return to X result". */
   readonly return_label?: 'result' | 'back';
+  /** D-display-mode P1 — this device keeps the board current on its own.
+   *  `undefined` means the HOST DID NOT WIRE THE PREFS RPC, so no control is
+   *  offered at all; `false` means wired and off. The three states are
+   *  deliberate — a dead toggle is worse than an absent one. */
+  readonly display_mode?: boolean;
 }
 
 export type RenderedOutputSection = {
@@ -1705,6 +1805,21 @@ const renderTableResultSection = (
   recipeId = '',
   gridStates: ReadonlyMap<string, OutputTableEditState> = new Map(),
   recordRefPickers = false,
+  /** D-display-mode P3 (cheap form) — drop the action column on a screen.
+   *
+   *  ⛔ A UX GUARD, NOT A SECURITY BOUNDARY. It stops a passer-by's thumb and
+   *  nothing more: the session is still the owner's and every op stays reachable
+   *  from any other client. A screen in a lobby is safe because the device is
+   *  PAIRED and physically controlled. Calling this protection would be
+   *  assurance-shaped non-assurance.
+   *
+   *  ⚠ The PROPER form threads `RenderContext` — which already carries
+   *  `interactive`, documented for exactly this — into this builder, so every
+   *  block honours ONE flag instead of tables honouring a bespoke one. That is a
+   *  7-call-site change and turns this SEVENTH positional parameter into the
+   *  options object it has wanted since the sixth. Deferred deliberately; noted
+   *  here so the next reader knows this is the cheap half, not the design. */
+  suppressActions = false,
 ): string => {
   const data = asRecord(section.data);
   // The editable grid — cells become inputs and the rows submit as ONE
@@ -1792,9 +1907,15 @@ const renderTableResultSection = (
           references: undefined,
         }),
       );
-  const columns = derivedColumns === undefined
+  const allColumns = derivedColumns === undefined
     ? authoredColumns.length > 0 ? authoredColumns : descriptorColumns
     : [...derivedColumns, ...authoredColumns.filter((column) => column.type === 'action')];
+  // ⛔ DROPPED FROM THE COLUMN SET, never merely hidden: a cell that is rendered
+  // and then covered is still in the DOM, still focusable by keyboard, and still
+  // a button somebody can reach.
+  const columns = suppressActions
+    ? allColumns.filter((column) => column.type !== 'action')
+    : allColumns;
   const rawRows = Array.isArray(data?.rows) ? data.rows
     : Array.isArray(section.data) ? section.data
       : Array.isArray(data?.records) ? data.records : [];
@@ -1809,6 +1930,53 @@ const renderTableResultSection = (
   const displayRows = editDescriptor?.rows === 'add_remove' && editState !== null
     ? editState.rows : rows;
   const canCompose = editDescriptor?.rows === 'add_remove' && editState !== null;
+
+  // ⛔ GROUPING REORDERS FOR DISPLAY ONLY, SO EVERY ROW KEEPS THE INDEX IT HAD.
+  // `rowIndex` is the grid's cell address and the remove-button target;
+  // renumbering by display position would aim both at the wrong row. The
+  // validator already refuses `group_by` beside `table.edit`, and requiring a
+  // null edit descriptor HERE as well means a path that somehow skips the
+  // validator still cannot desynchronise them.
+  //
+  // ⚠ Bucket order is FIRST APPEARANCE, matching `packages/renderer`. Neither
+  // surface can know that `missing` precedes `received`, so the only order that
+  // is never wrong is the one the producing step chose; an author who wants a
+  // sequence sorts in the recipe.
+  const groupField = editDescriptor === null
+    && typeof section.group_by === 'string' && section.group_by.trim() !== ''
+    ? section.group_by.trim()
+    : null;
+  type ResultBodyEntry = {
+    row: unknown; rowIndex: number; groupLabel?: string; groupCount?: number;
+  };
+  const bodyEntries: ResultBodyEntry[] = (() => {
+    const flat: ResultBodyEntry[] = displayRows.map((row, rowIndex) => ({ row, rowIndex }));
+    if (groupField === null) return flat;
+    const UNGROUPED = '\u0000ungrouped';
+    const buckets = new Map<string, ResultBodyEntry[]>();
+    for (const entry of flat) {
+      const raw = getPathValue(entry.row, groupField);
+      const empty = raw === undefined || raw === null || String(raw).trim() === '';
+      const key = empty ? UNGROUPED : String(raw);
+      let bucket = buckets.get(key);
+      if (bucket === undefined) { bucket = []; buckets.set(key, bucket); }
+      bucket.push(entry);
+    }
+    // The no-value bucket trails; a row is never dropped for lacking the field.
+    const order = [...buckets.keys()].filter((key) => key !== UNGROUPED);
+    if (buckets.has(UNGROUPED)) order.push(UNGROUPED);
+    const out: ResultBodyEntry[] = [];
+    for (const key of order) {
+      const rows = buckets.get(key) ?? [];
+      out.push({
+        row: null, rowIndex: -1,
+        groupLabel: key === UNGROUPED ? '\u2014' : key,
+        groupCount: rows.length,
+      });
+      out.push(...rows);
+    }
+    return out;
+  })();
   if (columns.length === 0 || (displayRows.length === 0 && !canCompose)) {
     return '<p class="recipes-detail-note">No rows returned.</p>';
   }
@@ -1847,7 +2015,11 @@ const renderTableResultSection = (
     ? `<tr><td class="recipes-result-grid-empty" colspan="${String(columns.length + 1)}">
         No rows yet. Add a row to get started.
       </td></tr>`
-    : displayRows.map((row, rowIndex) => `
+    : bodyEntries.map(({ row, rowIndex, groupLabel, groupCount }) => groupLabel !== undefined
+      ? `<tr class="recipes-result-group-row"><th scope="rowgroup" colspan="${
+        String(columns.length + (canCompose ? 1 : 0))}">${e(groupLabel)} <span
+        class="recipes-result-group-count">${String(groupCount ?? 0)}</span></th></tr>`
+      : `
             <tr ${RECIPES_ROUTE_RESULT_GRID_ROW_ATTR}="${String(rowIndex)}">
               ${columns.map((column) => {
                 const cell = getPathValue(row, column.field);
@@ -2124,6 +2296,8 @@ export const renderRecipeResultSection = (
   gridStates: ReadonlyMap<string, OutputTableEditState> = new Map(),
   gridsDirty = false,
   recordRefPickers = false,
+  /** D-display-mode P3 — see `renderTableResultSection`'s note. */
+  suppressActions = false,
 ): string => {
   const body =
     section.type === 'summary'
@@ -2136,6 +2310,7 @@ export const renderRecipeResultSection = (
             recipeId,
             gridStates,
             recordRefPickers,
+            suppressActions,
           )
         : section.type === 'checklist'
           ? renderChecklistResultSection(section, registry)
@@ -2263,6 +2438,22 @@ export const renderRecipeResultPanel = (
           ? `Back to ${e(previousName)}`
           : `Return to ${e(previousName)} result`}
       </button>`;
+  // Offered only when there is output to enlarge. A fullscreen button above an
+  // empty panel enlarges nothing, and the host module answers `unsupported`
+  // anyway where the platform or an iframe refuses.
+  // D-display-mode P1 — offered only where the host wired the prefs rpc, so a
+  // surface without it shows no control rather than a dead one.
+  const displayModeControl = presentation.display_mode === undefined
+    ? ''
+    : `<button type="button" class="recipes-button recipes-result-display-toggle"
+        ${RECIPES_ROUTE_ACTION_ATTR}="toggle-result-display-mode"
+        aria-pressed="${presentation.display_mode ? 'true' : 'false'}">${
+    presentation.display_mode ? 'Stop updating' : 'Keep updating'}</button>`;
+  const fullscreenControl = result === null || sections.length === 0
+    ? ''
+    : `<button type="button" class="recipes-button recipes-result-fullscreen-toggle"
+        ${RECIPES_ROUTE_ACTION_ATTR}="toggle-result-fullscreen"
+        aria-pressed="false">Fullscreen</button>`;
   const body = result === null
     ? empty
     : resultTerminated(result)
@@ -2279,6 +2470,7 @@ export const renderRecipeResultPanel = (
               gridStates,
               gridsDirty,
               recordRefPickers,
+              presentation.display_mode === true,
             )).join('')
           : '<p class="recipes-detail-note">The run completed without renderable output.</p>';
   // ⛔⛔ Per-item failures inside a `foreach`. A foreach is continue-on-error, so
@@ -2325,7 +2517,8 @@ export const renderRecipeResultPanel = (
     ? ''
     : ` · ${e(String(result.duration_ms))} ms · ${e(plural(result.steps.length, 'step'))}`;
   return `
-    <section class="recipes-detail-section recipes-result-panel" ${RECIPE_RESULT_HOST_ATTR}
+    <section class="recipes-detail-section recipes-result-panel" ${RECIPE_RESULT_HOST_ATTR}${
+    presentation.display_mode === true ? ` ${RESULT_DISPLAY_MODE_ATTR}` : ''}
       ${RECIPES_ROUTE_RESULT_PANEL_ATTR}="${panel === null ? '' : e(panel.render_recipe_id)}">
       ${heading}
       ${result !== null
@@ -2339,6 +2532,8 @@ export const renderRecipeResultPanel = (
       ${refusedNote}
       ${provenance}
       ${returnControl}
+      ${fullscreenControl}
+      ${displayModeControl}
       ${body}
     </section>
   `;

@@ -17,6 +17,7 @@ export * from './action-dispatcher.js';
 export * from './field-dispatcher.js';
 export * from './recovery-grid-field-handler.js';
 export * from './recovery-words.js';
+export * from './usage-cap-copy.js';
 export * from './variable-widgets.js';
 export * from './output-filter.js';
 export * from './file-ref-array.js';

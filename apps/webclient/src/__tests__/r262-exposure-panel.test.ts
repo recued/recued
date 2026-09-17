@@ -790,3 +790,102 @@ describe('Connection example — the MCP snippet lives where the endpoint is dec
     }
   });
 });
+
+describe('D-272 — the LAN bind posture, moved here from Connect a device', () => {
+  const mountWith = async (over: Record<string, unknown>) => {
+    const host = makeFakeElement('div');
+    const doc = makeFakeDocument();
+    const panel = mountExposurePanel({
+      host: host as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      runGet: async () => ({ state: buildState(), apex_mode: 'redirect' as const }),
+      runApplyPreset: async () => ({ state: buildState() }),
+      runSetPathResolution: async () => ({ state: buildState() }),
+      runSetPublicMcpAck: async () => ({ state: buildState() }),
+      ...over,
+    } as unknown as Parameters<typeof mountExposurePanel>[0]);
+    for (let i = 0; i < 8; i++) await Promise.resolve();
+    return { host, panel, text: () => collectText(host) };
+  };
+
+  const exposed = {
+    lanPort: 7717,
+    publiclyRoutable: true,
+    publicAddresses: ['203.0.113.7'],
+  };
+
+  it('⛔ says the local-only case OUT LOUD rather than leaving it blank', async () => {
+    // "Nothing here" and "we did not look" render identically as silence, and
+    // this page's whole job is to say what is open — including when the answer
+    // is "only your own network".
+    const m = await mountWith({
+      readLanPosture: async () => ({
+        lanPort: 7717, publiclyRoutable: false, publicAddresses: [],
+      }),
+    });
+    expect(m.text()).toContain('only reachable from your own network');
+  });
+
+  it('⛔⛔ names the public address the LAN port is also open on', async () => {
+    const m = await mountWith({ readLanPosture: async () => exposed });
+    expect(m.text()).toContain('203.0.113.7');
+    expect(m.text()).toContain('not encrypted');
+  });
+
+  it('⛔ escalates when a check from outside actually GOT IN', async () => {
+    const m = await mountWith({
+      readLanPosture: async () => exposed,
+      readLanReachedFromOutside: () => true,
+    });
+    expect(m.text()).toContain('was reached from the internet');
+  });
+
+  it('⚠ softens but does NOT reassure when the check could not get in', async () => {
+    // "Did not get in" is not "safe": the listener is still on a public address
+    // and a firewall rule is the only thing in front of it.
+    const m = await mountWith({
+      readLanPosture: async () => exposed,
+      readLanReachedFromOutside: () => false,
+    });
+    expect(m.text()).toContain('something is blocking it');
+    expect(m.text()).toContain('a public address');
+  });
+
+  it('⛔⛔ renders NOTHING when the server did not report the bind', async () => {
+    // Absent is "nobody looked", never "the listener is local". A section
+    // claiming the latter on the strength of not having asked is the mistake
+    // D-272 spent a decision on.
+    const m = await mountWith({});
+    expect(m.text()).not.toContain('reachable from your own network');
+  });
+
+  it('⚠ offers a check ONLY where it could say something new', async () => {
+    // With the listener on no public address there is nothing outside could
+    // reach, so a check would spend five seconds confirming what the bind
+    // already proved.
+    const local = await mountWith({
+      readLanPosture: async () => ({
+        lanPort: 7717, publiclyRoutable: false, publicAddresses: [],
+      }),
+      checkLanFromOutside: async () => {},
+    });
+    expect(findByAttr(local.host, 'data-recued-exposure-lan-check')).toBeNull();
+
+    const open = await mountWith({
+      readLanPosture: async () => exposed,
+      checkLanFromOutside: async () => {},
+    });
+    expect(findByAttr(open.host, 'data-recued-exposure-lan-check')).not.toBeNull();
+  });
+
+  it('⚠ the check reports the port it was asked about', async () => {
+    const asked: number[] = [];
+    const m = await mountWith({
+      readLanPosture: async () => ({ ...exposed, lanPort: 9100 }),
+      checkLanFromOutside: async (port: number) => { asked.push(port); },
+    });
+    findByAttr(m.host, 'data-recued-exposure-lan-check')!.click();
+    for (let i = 0; i < 6; i++) await Promise.resolve();
+    expect(asked).toEqual([9100]);
+  });
+});

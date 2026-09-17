@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { createSavedDataViewStore } from '../saved-data-view-store.js';
 import { createSavedTaskViewReader } from '../saved-data-view-task-reader.js';
+import { createSavedRecordsViewReader } from '../saved-data-view-records-reader.js';
 import { createSavedDataViewAlertRuntime } from '../saved-data-view-alert-runtime.js';
 import { createFormDefinitionReader } from '../form-contract-gate.js';
 import { join, dirname } from 'node:path';
@@ -95,6 +96,19 @@ import {
 } from '../network/path-listener-coordinator.js';
 import { resolveLanAddress } from '../network/resolve-lan-address.js';
 import { readDefaultRouteGateway } from '../network/read-default-route-gateway.js';
+import { createPortMappingStore } from '../network/port-mapping-store.js';
+import {
+  composePortMappingDesire,
+  createPortMappingSupervisor,
+  type PortMappingSupervisor,
+} from '../network/port-mapping-supervisor.js';
+import { detectPortMappingSupport } from '../network/port-mapping-support.js';
+import {
+  createIgdDescriptionFetch,
+  createIgdHttpPost,
+  createSsdpTransport,
+  resolvePortMappingActuator,
+} from '../network/port-mapping-actuator.js';
 import {
   createServerHandlerSet,
   type ServerConfig,
@@ -484,6 +498,7 @@ export interface ComposeListenersOptions {
     | NonNullable<ServerConfig['tlsRenewDeps']>['engine']
     | undefined;
   passportFetchDeps: ServerConfig['passportFetchDeps'];
+  identityProbeDeps: ServerConfig['identityProbeDeps'];
   passportUserRpcDeps: ServerConfig['passportUserRpcDeps'];
   keyRotateDeps: ServerConfig['keyRotateDeps'];
   proAuthMachine:
@@ -581,6 +596,7 @@ export const composeListeners = async (
     tokenRotationEmitter,
     rotationEngine,
     passportFetchDeps,
+    identityProbeDeps,
     passportUserRpcDeps,
     keyRotateDeps,
     proAuthMachine,
@@ -1020,6 +1036,22 @@ export const composeListeners = async (
   // takes deps as input + returns the handle, so we hold a ref + thunk
   // through it; the post-construct line below assigns the live handle.
   let wsHandleForStatusRef: WsServerHandle | undefined;
+  /** D-272 — the address the LAN listener BOUND, filled further down where the
+   *  resolution happens. Same lazy-ref discipline as `wsHandleForStatusRef`
+   *  above: `network.local_urls` is composed before `resolveLanAddress` runs,
+   *  and a getter wants the call-time value anyway.
+   *
+   *  ⚠ `undefined` until then, and the handler OMITS the field rather than
+   *  guessing — a probe that has not run must not report "not exposed". */
+  let lanBindAddressRef: string | undefined;
+  /** D-273 — the port-mapping supervisor, built once the LAN address and the
+   *  runtime config are both known. Held as a ref for the same reason as
+   *  `lanBindAddressRef`: `network.port_mapping` is composed before this exists,
+   *  and the rpc must read the LIVE status rather than a snapshot taken at
+   *  compose time — which would report the state before the first reconcile
+   *  forever. */
+  let portMappingSupervisorRef: PortMappingSupervisor | null = null;
+  let portMappingProtocolRef: 'igd' | 'nat-pmp' | undefined;
   const serverStartedAtSeconds = Math.floor(Date.now() / 1000);
   // ⛔⛔ READ THE IDENTIFIER, NEVER `globalThis.__RECUED_SERVER_VERSION__`.
   // `__RECUED_SERVER_VERSION__` is an esbuild DEFINE, and a define substitutes
@@ -2536,8 +2568,10 @@ export const composeListeners = async (
   const savedDataViewStore = createSavedDataViewStore(storage.db, {
     ...(storage.workEntityStoreRef && execution.notificationBlock && storage.auditLog
       ? { readTasks: createSavedTaskViewReader(storage.workEntityStoreRef) } : {}),
+    ...(execution.notificationBlock && storage.auditLog
+      ? { readRecords: createSavedRecordsViewReader(storage.recordsStore) } : {}),
   });
-  const savedDataViewAlerts = execution.notificationBlock && storage.auditLog && storage.workEntityStoreRef
+  const savedDataViewAlerts = execution.notificationBlock && storage.auditLog
     ? createSavedDataViewAlertRuntime({ store: savedDataViewStore.alerts, auditLog: storage.auditLog,
       notifier: execution.notificationBlock,
       publicBaseUrl: resolvePublicBaseUrl(process.env.RECUED_PUBLIC_BASE_URL) ?? undefined,
@@ -3142,7 +3176,29 @@ export const composeListeners = async (
     // `getPort` reads the LIVE listener port at call time via the `server`
     // facade's post-bind getter (defined below), so a configured bind_port of 0
     // (OS-assigned) resolves to the ACTUAL bound port, not `:0`.
-    networkDeps: { getPort: () => server.port },
+    networkDeps: {
+      getPort: () => server.port,
+      // ⛔⛔ THE PORT BEING SERVED, NOT THE ONE CONFIGURED. This read the config
+      // key at call time, on the stated grounds that "`public_port` is a runtime
+      // key the owner can change without a restart" — which was never true of
+      // the listener. Editing it made `network.local_urls` start handing out an
+      // address on a port nothing was bound to, so every client surface agreed
+      // on a URL that refuses. `boundPublicPort` is what this process serves.
+      // ⚠ Still a getter, for the reason the one beside it is: the value is
+      // declared further down and a lazy read keeps the two in one place.
+      getPublicPort: () => boundPublicPort,
+      // ⛔ THE BOUND ADDRESS, NOT THE ADVERTISED ONE — see `getLanBindAddress`.
+      // Read through the ref for the same reason as `getPublicPort` beside it:
+      // the resolution happens later in this function.
+      getLanBindAddress: () => lanBindAddressRef,
+    },
+    // D-273 — automatic port mapping. ⚠ Every accessor reads through a ref at
+    // CALL time; the supervisor does not exist yet at this point in the compose.
+    portMappingDeps: {
+      getStatus: () => portMappingSupervisorRef?.status() ?? null,
+      isEnabled: () => runtimeConfig?.get('network.auto_port_mapping') === true,
+      getProtocol: () => portMappingProtocolRef,
+    },
     ...(rpc.engagementHealthDeps
       ? { engagementHealthDeps: rpc.engagementHealthDeps }
       : {}),
@@ -3463,6 +3519,7 @@ export const composeListeners = async (
       : {}),
     ...(rotationEngine ? { tlsRenewDeps: { engine: rotationEngine } } : {}),
     ...(passportFetchDeps ? { passportFetchDeps } : {}),
+    ...(identityProbeDeps ? { identityProbeDeps } : {}),
     ...(passportUserRpcDeps ? { passportUserRpcDeps } : {}),
     ...(keyRotateDeps ? { keyRotateDeps } : {}),
     ...(proAuthMachine ? { proAuthDeps: { machine: proAuthMachine } } : {}),
@@ -3777,6 +3834,207 @@ export const composeListeners = async (
   //   - what we ADVERTISE — the LAN IP, for pairing address hints + docs.
   const lanBindAddress = lanResolution.bind_address;
   const lanAdvertisedAddress = lanResolution.address;
+
+  /** This machine's advertised LAN address, RE-RESOLVED on demand.
+   *
+   *  ⛔⛔ THE PORT MAPPING CLOSED OVER THE BOOT-TIME VALUE. After a DHCP renewal
+   *  or a network switch the mapping kept naming the machine's OLD internal
+   *  client, and `planIgdBoot`'s DHCP-move branch — which exists precisely to
+   *  recover from that — could never fire, because production never supplied a
+   *  changed address. Half the network snapshot was live (the gateway WAS
+   *  re-read every reconcile) and half was frozen at boot.
+   *
+   *  ⚠ NOT FOR THE BIND. The listener's address is settled at startup by
+   *  construction and must not move under a running socket. This is for the
+   *  callers whose question is "where am I on this network RIGHT NOW" — the
+   *  mapping's destination, and the interface SSDP leaves by.
+   *
+   *  ⚠ FALLS BACK TO THE BOOT VALUE if a later resolve comes back empty: a
+   *  transient failure to read the routing table is not evidence that we moved. */
+  const readLanAddressNow = (): string => {
+    try {
+      const now = resolveLanAddress({
+        override: runtimeConfig
+          ? (runtimeConfig.get('network.lan_bind_address') as string)
+          : undefined,
+        defaultRouteGateway: readDefaultRouteGateway(),
+      }).address;
+      return now.length > 0 ? now : lanAdvertisedAddress;
+    } catch {
+      return lanAdvertisedAddress;
+    }
+  };
+
+  /** The public port the LISTENER IS ACTUALLY BOUND ON, right now.
+   *
+   *  ⛔⛔ ONE VALUE FOR THE LISTENER, THE MAPPING AND THE ADVERTISED URLS,
+   *  BECAUSE THEY WERE THREE. The listener captured `public_port` at compose
+   *  time; the mapping supervisor re-read the config key every reconcile; the
+   *  URL builders read it lazily. Editing 443 to 8446 released a working router
+   *  forward, created one to a port nothing served, and started advertising an
+   *  address that did not answer.
+   *
+   *  ⚠ THE FIRST FIX FROZE THE WRONG END. It made the mapping follow the
+   *  listener and declared `public_port` restart-required — on the belief that
+   *  the path coordinator could not rebind live. It can: `applyResolution`
+   *  already stops and rebinds a SINGLE listener for a TLS-mode flip, and a port
+   *  change is the same shape (a bound socket cannot move ports any more than it
+   *  can move addresses). The restart requirement was a property of the SEAM —
+   *  `public_port` was closure-captured, so nothing could ask the listener to
+   *  move — not of the system.
+   *
+   *  ⇒ Now: a write to `public_port` rebinds the public listener in place, and
+   *  everything downstream follows because they all read THIS, which is updated
+   *  only once a bind actually succeeded. ⛔ It is still the BOUND port, never
+   *  the configured one — a failed rebind must not make three surfaces start
+   *  advertising a port nothing is listening on. That was the original bug and
+   *  it is the one thing that must not come back. */
+  let boundPublicPort = runtimeConfig
+    ? (runtimeConfig.get('public_port') as number)
+    : DEFAULT_PUBLIC_PORT;
+  // D-272 — publish the BOUND address to `network.local_urls`, which folds it
+  // into `lan_exposure`. Assigned here because this is where it becomes known.
+  lanBindAddressRef = lanBindAddress;
+
+  /** ⚠ Rebuilt on every operation rather than cached. Which protocol answers —
+   *  and whether either does — changes when the machine moves networks, and a
+   *  client pinned at boot would keep talking to the last network's router. */
+  const resolvePortMappingActuatorForHost = () => resolvePortMappingActuator({
+    gateway: readDefaultRouteGateway(),
+    // ⚠ The SSDP bind interface AND the IGD internal client both come from here,
+    // so a stale value sends discovery out the wrong interface and names the
+    // wrong destination — see `readLanAddressNow`.
+    lanAddress: readLanAddressNow(),
+    ssdp: createSsdpTransport(),
+    httpPost: createIgdHttpPost(),
+    fetchDescription: createIgdDescriptionFetch(),
+  });
+
+  // ── D-273 — automatic port mapping ──────────────────────────────────────
+  //
+  // ⛔ OFF UNLESS THE OWNER TURNED IT ON. `network.auto_port_mapping` defaults
+  // to false, and the supervisor's first reconcile with it off is a no-op that
+  // still runs DETECTION — which is the whole of P0: the router step can say
+  // "your router supports this" before anyone opens anything.
+  //
+  // ⚠ Started only where a database exists. A dbless boot has nowhere to record
+  // what we mapped, and without that record we would be the blind-deleting
+  // client D-273 exists to avoid.
+  // ⛔ THE WHOLE BLOCK IS NON-FATAL. This is an optional convenience that talks
+  // to hardware we do not control, over protocols half the fleet implements
+  // loosely. `resolvePortMappingActuator` already degrades internally; this is
+  // the same rule one level up, where a throw would stop the SERVER starting
+  // rather than stopping a port from being mapped. The composition root is
+  // exactly where that distinction is decided.
+  try {
+  if (storage.db) {
+    const portMappingStore = createPortMappingStore(storage.db);
+    portMappingSupervisorRef = createPortMappingSupervisor({
+      store: portMappingStore,
+      readDesire: () => composePortMappingDesire({
+        enabled: runtimeConfig?.get('network.auto_port_mapping') === true,
+        gateway: readDefaultRouteGateway(),
+        // ⚠ SSDP IS WIRED HERE, so a host with no readable default route can
+        // still find a router. Without this the desire short-circuits to
+        // `no_gateway` and win32 — where the read ALWAYS returns undefined —
+        // never reaches the IGD path at all.
+        discoveryAvailable: true,
+        // ⛔ THE ADVERTISED ADDRESS, NOT THE BIND ADDRESS. The bind is `0.0.0.0`
+        // so loopback stays served; a mapping must name a real host.
+        // ⛔⛔ AND RE-RESOLVED PER RECONCILE — see `readLanAddressNow`. This
+        // closed over the boot-time value, so a DHCP move left the mapping
+        // naming a host we no longer are, and the planner's DHCP-move branch
+        // could never fire because production never supplied a changed address.
+        lanAddress: readLanAddressNow(),
+        // ⛔⛔ THE PORT THE LISTENER IS ACTUALLY ON, NOT THE CONFIGURED ONE.
+        // This read `runtimeConfig.get('public_port')` fresh while the LISTENER
+        // held its startup port, so editing 443 to 8446 released the working
+        // forward and created one to a port nothing served.
+        //
+        // 🔑 A MAPPING IS A PROMISE ABOUT A LISTENER, so it is derived from the
+        // listener, never from the wish. `boundPublicPort` now MOVES — but only
+        // after a rebind succeeds — so the mapping follows a live port change on
+        // its next reconcile with no restart and no special handling here. The
+        // supervisor was never boot-bound; freezing this value was what made it
+        // look that way.
+        publicPort: boundPublicPort,
+      }),
+      // ⛔⛔ `getMapping` IS FORWARDED NOW, AND DROPPING IT WAS THE WHOLE DEFECT.
+      // This object used to expose `map`/`unmap` only, so the supervisor could
+      // never tell an IGD router from a NAT-PMP one and always ran the blind
+      // plan — which overwrites whatever is on the port and deletes without
+      // looking. `resolvePortMappingActuator` has returned `getMapping` for IGD
+      // since P2; the composition root threw it away.
+      //
+      // ⚠ IT IS ALWAYS PRESENT AND MAY ANSWER `undefined`, which is the honest
+      // shape: the protocol that answers can change between calls when the
+      // machine moves networks, so capability is a per-call fact, not a
+      // per-composition one. The supervisor treats a thrown/absent answer as
+      // "cannot enumerate" and falls back.
+      makeActuator: () => ({
+        // ⚠ Resolved per call and cached only for the duration of one operation:
+        // which protocol answers can change when the machine moves networks.
+        map: async (a) => {
+          const resolved = await resolvePortMappingActuatorForHost();
+          if (resolved === null) throw new Error('port mapping: no gateway answered');
+          return resolved.actuator.map(a);
+        },
+        unmap: async (a) => {
+          const resolved = await resolvePortMappingActuatorForHost();
+          // ⛔ THROWS RATHER THAN RETURNING QUIETLY. This used to `return`, so a
+          // gateway that had gone away read to the caller as a completed
+          // deletion — the record was cleared and the owner was told the port
+          // was closed while the lease stayed open on the router.
+          if (resolved === null) throw new Error('port mapping: no gateway answered');
+          await resolved.actuator.unmap(a);
+        },
+        getMapping: async (a) => {
+          const resolved = await resolvePortMappingActuatorForHost();
+          if (resolved === null || resolved.getMapping === null) {
+            throw new Error('port mapping: this gateway cannot be asked');
+          }
+          return resolved.getMapping(a);
+        },
+      }),
+      // ⚠ Resolved against whichever gateway answers NOW, not recorded at boot.
+      canEnumerate: async () => {
+        const resolved = await resolvePortMappingActuatorForHost();
+        return resolved !== null && resolved.getMapping !== null;
+      },
+      detect: async () => {
+        const resolved = await resolvePortMappingActuatorForHost();
+        if (resolved === null) return { kind: 'unknown', detail: 'no gateway answered' };
+        portMappingProtocolRef = resolved.protocol;
+        // ⚠ Detection needs ONE method, and the probe type says so — the stub
+        // `map`/`unmap` this used to carry were a smell: a detector that could
+        // be handed something able to open a port is a detector one edit away
+        // from doing it.
+        return detectPortMappingSupport({
+          externalAddress: () => resolved.externalAddress(),
+        });
+      },
+      // ⚠ GUARDED ON THE METHOD, NOT THE OBJECT. `RuntimeConfigStore` declares
+      // `onChange`, but this composer is reached with partial stores, and
+      // without the check a missing method turns an OPTIONAL feature into a
+      // failed boot. Absent → no live remap on a `public_port` edit, which is a
+      // degraded feature rather than a dead server.
+      ...(typeof runtimeConfig?.onChange === 'function'
+        ? { onConfigChange: (listener) => runtimeConfig.onChange(() => { listener(); }) }
+        : {}),
+      log: (level, message) => {
+        if (level === 'warn') console.warn(message);
+        else console.log(message);
+      },
+    });
+    portMappingSupervisorRef.start();
+  }
+  } catch (err) {
+    portMappingSupervisorRef = null;
+    console.warn(
+      '[port-mapping] disabled: '
+      + (err instanceof Error ? err.message : String(err)),
+    );
+  }
   // Spell out what the bind actually reaches. `0.0.0.0` serves loopback AND
   // the LAN IP; a single address serves only itself — and an operator who
   // pinned one needs to see that loopback went with it, because that is the
@@ -3807,9 +4065,8 @@ export const composeListeners = async (
   // Public listener binds plaintext when the holder is empty (upstream
   // proxy mode) or never binds if no path's `public` bit is true.
   const certChain = createCertChainHolder(null);
-  const publicPort = runtimeConfig
-    ? (runtimeConfig.get('public_port') as number)
-    : DEFAULT_PUBLIC_PORT;
+  // ⚠ The same value the port mapping is derived from — see `boundPublicPort`.
+  const publicPort = boundPublicPort;
   const tlsDomainStore = tlsDomainDeps?.getStore();
   const hostnameBindingLookup = tlsDomainStore
     ? createHostnameSniBindingLookup(storage.hostnameRegistryStore)
@@ -3862,6 +4119,58 @@ export const composeListeners = async (
     },
   });
 
+  // ── a live `public_port` edit moves the listener ────────────────────────
+  //
+  // ⛔⛔ THE PORT IS THE ONE SETTING WHOSE WHOLE POINT IS TO MOVE. A self-hoster
+  // putting Recued behind an existing web server needs 443 free; telling them to
+  // restart for it — as this did until today — makes the setting useless on a
+  // machine they cannot casually bounce.
+  //
+  // ⚠ ONLY `boundPublicPort` MOVES ON SUCCESS. The rebind can fail (the new port
+  // is taken, privileged, or the machine refuses it), and `startListener`
+  // records that rather than throwing. If the advertised port followed the
+  // CONFIG instead of the BIND, a failed move would leave three surfaces
+  // publishing an address nothing serves — which is the original defect, from
+  // the other direction.
+  //
+  // ⚠ NON-FATAL, like every other optional block here: a throw while rebinding
+  // must not take down a server that is currently serving.
+  if (runtimeConfig !== undefined && typeof runtimeConfig.onChange === 'function') {
+    runtimeConfig.onChange(() => {
+      const wanted = runtimeConfig.get('public_port') as number;
+      if (typeof wanted !== 'number' || wanted === boundPublicPort) return;
+      void (async () => {
+        try {
+          // ⚠ THE LIVE RESOLUTION, not a remembered one. `applyResolution`
+          // rewrites the shared table, so passing a stale copy would silently
+          // revert whatever exposure change happened since.
+          const machine = exposureDeps?.getMachine();
+          if (machine === undefined) return;
+          const { resolution } = await machine.current();
+          const statuses = await listenerCoordinator.apply({
+            resolution,
+            bind_addresses: { lan: lanBindAddress, public: lanBindAddress },
+            ports: { public: wanted },
+          });
+          if (statuses.public.listening) {
+            boundPublicPort = wanted;
+            console.log(`[listener] public port moved to ${String(wanted)}`);
+          } else {
+            // ⛔ NOT ADOPTED. Everything downstream keeps advertising — and the
+            // router mapping keeps pointing at — the port still being served.
+            console.warn(
+              `[listener] public port ${String(wanted)} did not bind`
+              + ` (${statuses.public.failure ?? 'unknown'}); still on `
+              + `${String(boundPublicPort)}`,
+            );
+          }
+        } catch (err) {
+          console.warn('[listener] public port change failed', err);
+        }
+      })();
+    });
+  }
+
   // Start only after every handler and listener dependency has composed. If a
   // later constructor above throws, no polling timer survives failed startup.
   await messengerIngressSupervisor?.start();
@@ -3887,6 +4196,19 @@ export const composeListeners = async (
       begin(() => inboundEmailAnswer.dispose()),
       begin(() => serverHandlerSet.close()),
       begin(() => listenerCoordinator.stop()),
+      // ⛔⛔ THE PORT-MAPPING SUPERVISOR WAS STARTED AND NEVER STOPPED. Its
+      // renewal timer and its runtime-config subscription outlived listener
+      // teardown, so a reconcile could still be in flight — talking to a router,
+      // then writing its record — while the database it writes to was being
+      // closed underneath it. And a process that stays alive after `closeServer`
+      // kept renewing a mapping for a server that no longer serves.
+      //
+      // ⚠ `stop()` DELIBERATELY DOES NOT RELEASE THE MAPPING. D-273 lets the
+      // lease expire instead, because the process is not reliably alive at this
+      // point anyway. This drains OUR side: admission, timers, subscription.
+      ...(portMappingSupervisorRef !== null
+        ? [begin(() => { portMappingSupervisorRef?.stop(); })]
+        : []),
     ];
     closePromise = Promise.allSettled(drains).then((results) => {
       const errors = results

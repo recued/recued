@@ -43,7 +43,7 @@
  *  inject a counted fake; production wires the real function via the
  *  bootstrap option.
  *
- *  DD#3 — Style injection mirrors `reception-bootstrap.ts`. One
+ *  DD#3 — Style injection mirrors `bootstrap.ts`. One
  *  marker-guarded `<style>` tag at `<head>` carries this route's CSS
  *  + the panel's CSS bundled together (the panel exports its styles
  *  for exactly this composition). A re-bootstrap on the same document
@@ -71,13 +71,21 @@
  *  browser" + closed-list state). */
 
 import { PRIMITIVE_STYLES } from '@recued/ui-shared/primitives';
-import type { ReachabilityReport, RotationResult } from '@recued/contracts';
+import type {
+  DiagnosticResponse,
+  RotationResult,
+  WebclientServerProfile,
+} from '@recued/contracts';
 
 import {
   CLEAR_THIS_BROWSER_PANEL_STYLES,
   mountClearThisBrowserPanel,
   type ClearThisBrowserPanelMount,
 } from './clear-this-browser-panel.js';
+import {
+  mountServerAddressPanel,
+  type ServerAddressPanelMount,
+} from './server-address-panel.js';
 import {
   TLS_RENEW_PANEL_STYLES,
   mountTlsRenewPanel,
@@ -280,6 +288,7 @@ import {
   type HostnamesUpdateCaller,
   type HostnamesVerifyOwnershipCaller,
   type NetworkLocalUrlsCaller,
+  type NetworkPortMappingCaller,
 } from './hostnames.js';
 import {
   mountCustomDomainsPanel,
@@ -288,10 +297,14 @@ import {
   type CustomDomainsPanelMount,
 } from './custom-domains.js';
 import {
-  REACHABILITY_PANEL_STYLES,
-  mountReachabilityPanel,
+  diagnosticPortReachability,
+  formatDiagnosticKind,
+  formatDiagnosticPayload,
+  isProbeAnswerablePort,
+  createAddressReachableFromHereCheck,
+  isProbeAskableExtraPort,
+  statusLabel,
   type ReachabilityExternalProbeCaller,
-  type ReachabilityPanelMount,
 } from './reachability.js';
 import {
   ACCOUNT_BINDING_PANEL_STYLES,
@@ -362,6 +375,12 @@ export const SETTINGS_ROUTE_CONTRACTS_LINK_ATTR =
 export const SETTINGS_ROUTE_CONNECTIONS_LINK_ATTR =
   'data-recued-settings-connections-link';
 export const SETTINGS_ROUTE_DATA_LINK_ATTR = 'data-recued-settings-data-link';
+/** D-272 follow-on — Devices → Connect a device. */
+export const SETTINGS_ROUTE_DEVICES_ADD_LINK_ATTR =
+  'data-recued-settings-devices-add-link';
+/** ⚠ Names the ACT, not the destination. "Connect a device" is where it
+ *  goes; what the reader wants is to add one. */
+export const DEVICES_ADD_LINK_LABEL = 'Add a device';
 /** R29 — the Privacy directory list (curated links to each control's real
  *  home) + the folded-in Transparency block. Markers so the host / tests
  *  can assert the directory shape + that Transparency lives inside Privacy
@@ -389,6 +408,28 @@ export interface BootstrapSettingsRouteOptions {
   document?: Document;
   /** Closed-list 5-field local store — forwarded to the Privacy panel. */
   localStore: WebclientLocalStore;
+  /** D-148 — Settings → Servers: change the address of a paired server.
+   *
+   *  ⚠ ITS OWN SECTION, NOT PART OF `account`. The Account section mounts only
+   *  when the five recued.com binding callers are wired, and a self-hoster with
+   *  no account has none of them — so putting the address editor there would
+   *  hide it from exactly the users most likely to move their server.
+   *
+   *  Absent → no section (a boot with no profile-aware store or token store). */
+  serverAddressDeps?: {
+    listProfiles: () => Promise<ReadonlyArray<WebclientServerProfile>>;
+    tokenStore: import('../storage/token-store.js').WebclientTokenStore;
+    retarget: (
+      id: string,
+      next_url: string,
+      next_token: WebclientServerProfile['webclient_token'],
+    ) => Promise<string | null>;
+    /** Which profile this tab is connected through. */
+    activeProfileId?: () => Promise<string | null>;
+    /** Converge the live tab onto a just-saved address — see the panel's
+     *  option doc. The host owns the dirty-work policy. */
+    onActiveAddressChanged?: () => 'reloading' | 'deferred';
+  };
   /** Optional `#settings/<id>` deep-link target. When it matches a rendered
    *  `data-recued-settings-section`, the route scrolls that section into view
    *  once after mount. Unknown / absent ids are a safe no-op. */
@@ -501,8 +542,9 @@ export interface BootstrapSettingsRouteOptions {
    *  TLS renew panel for deterministic flip-time formatting. */
   now?: () => number;
   /** Slice 111 — invoked after a successful `tls.renew` lands in
-   *  `done`. Lets the host refresh the Reachability Doctor's TLS row
-   *  + emit telemetry without coupling to the panel internals. */
+   *  `done`. Lets the host refresh a cert-dependent row + emit telemetry
+   *  without coupling to the panel internals. ⚠ Named the Reachability Doctor's
+   *  TLS row until that tab was deleted (2026-09-16). */
   onTlsRenewed?: (result: Extract<RotationResult, { ok: true }>) => void;
   /** R26.4 Delta 3 — `key.health` rpc caller forwarded to the Server
    *  section's `mountKeyHealthPanel`. Production wires
@@ -834,7 +876,9 @@ export interface BootstrapSettingsRouteOptions {
   /** D-152 P6 — `collection.hostname.verifyOwnership` rpc caller. Required
    *  alongside the rest of the Hostnames panel caller group. */
   hostnamesVerifyOwnershipCaller?: HostnamesVerifyOwnershipCaller;
-  /** D-235 P5 — Settings → Server → Domains. Independent of the hostname-CRUD
+  /** D-235 P5 — the Domains flow, a SECTION under Settings → Server → Hostnames
+   *  (mounted below the registry list), never a tab of its own — shipped copy
+   *  called it one until 2026-09-16. Independent of the hostname-CRUD
    *  bundle: checking DNS needs no write capability, so the diagnostics stay
    *  available even on a surface where the CRUD callers are gated off. */
   customDomainPreflightCaller?: CustomDomainPreflightCaller;
@@ -851,12 +895,39 @@ export interface BootstrapSettingsRouteOptions {
    *  Pro DDNS section. */
   ddnsStatusCaller?: DdnsStatusCaller;
   ddnsSetEnabledCaller?: DdnsSetEnabledCaller;
-  /** M-REACH-4 — Settings → Server Reachability Doctor. The panel mounts
-   *  when either an initial report or an external-probe caller is supplied.
-   *  `reachabilityExternalProbeCaller` is the front-door button seam; production
-   *  wires it to the free `/v1/diagnostics/probe` cloud worker. */
-  reachabilityReport?: ReachabilityReport;
+  /** M-REACH-4 — the cloud probe. ⚠ NO PANEL OF ITS OWN ANY MORE: this used to
+   *  mount Settings → Server → Reachability "when either an initial report or an
+   *  external-probe caller is supplied", and both the report and the tab are
+   *  gone. The caller now feeds Connect a device's check, and its presence is
+   *  what still decides whether the Server section is worth rendering at all.
+   *  Production wires it to the free `/v1/diagnostics/probe` cloud worker. */
   reachabilityExternalProbeCaller?: ReachabilityExternalProbeCaller;
+  /** The most recent check-from-outside answer, or `null` when nothing has
+   *  checked yet. Held by the composition root (it outlives this route's mount,
+   *  so a check run before the reader opened Settings still counts), and read
+   *  rather than copied — see `readPublicPortReachable` on the panel. */
+  reachabilityLastProbe?: () => DiagnosticResponse | null;
+  /** D-272 — test seam for the from-this-browser reachability check. Production
+   *  leaves it unset and gets the real `fetch`-backed one. */
+  addressFromHereChecker?: (url: string) => Promise<boolean>;
+  /** D-273 — `network.port_mapping`. Absent → the router step keeps the wording
+   *  it had before anything asked a router. */
+  networkPortMappingCaller?: NetworkPortMappingCaller;
+  /** D-273 — writes `network.auto_port_mapping` through `server.setConfigField`.
+   *
+   *  ⛔ THE SAME GENERIC RPC THE AI / MODELS PAGE USES, NOT A SECOND DOOR. That
+   *  method already validates every write against `RUNTIME_SCHEMA`, refuses
+   *  unknown and `internal: true` keys, persists BEFORE it mutates memory, and
+   *  fires the `onChange` the port-mapping supervisor is already subscribed to.
+   *  A dedicated `network.set_port_mapping` would have re-stated all of that for
+   *  one boolean and given the same key two doors with two gates to keep in
+   *  step.
+   *
+   *  ⚠ IT IS TYPED NARROWER THAN THE RPC ON PURPOSE. The route hands the panel
+   *  a `(enabled: boolean) => Promise<void>`, not the key/value pair — a panel
+   *  holding a generic config writer could write ANY key, and this one has no
+   *  business naming a second. */
+  networkAutoPortMappingSetCaller?: (enabled: boolean) => Promise<void>;
   /** D-174/D-175 — Settings -> Account binding touchpoint. These callers
    *  mount the recued.com account section when the full pair-RPC group plus
    *  the auth-Worker binding-token mint seam are supplied. A pre-D-175 server
@@ -992,9 +1063,6 @@ export interface SettingsRoute {
   /** D-152 P6 — expose the Server section's Hostnames panel mount. Returns
    *  `null` when the bootstrap omitted any of the hostname CRUD/proof callers. */
   hostnamesPanel(): HostnamesPanelMount | null;
-  /** M-REACH-4 — expose the Server section's Reachability Doctor mount. Returns
-   *  `null` when neither a report nor an external probe caller was supplied. */
-  reachabilityPanel(): ReachabilityPanelMount | null;
   /** D-174/D-175 — expose the Settings -> Account binding panel. Returns
    *  `null` when the bootstrap omitted the binding caller group. */
   accountBindingPanel(): AccountBindingPanelMount | null;
@@ -1238,6 +1306,32 @@ interface SettingsSubview {
  *  and return the route handle. Idempotent style injection means a
  *  re-bootstrap on the same document (route flip → flip back) does
  *  not stack `<style>` tags. */
+/** The Server section's sub-tabs, by id, as a reader sees them.
+ *
+ *  ⛔⛔ ONE SOURCE OF TRUTH BECAUSE SHIPPED COPY POINTS AT THESE BY NAME. Error
+ *  messages across the settings surfaces send readers to "Settings → Server → X",
+ *  and for three of them X was not a tab: two named sections INSIDE Hostnames
+ *  ("Domains", "Pro DDNS") and one named a control that exists on no surface at
+ *  all ("DDNS → Unbind"). None of it failed loudly — the reader simply does not
+ *  find the page, which is the failure an error message cannot afford.
+ *
+ *  ⇒ `settings-breadcrumbs.test.ts` reads this map and every `Settings → Server
+ *  → X` in shipped copy, and refuses any X that is not here. That ratchet is
+ *  only writable because those three were resolved first: shipping it with
+ *  exemptions would have made the exemption list the bug report.
+ *
+ *  ⚠ ADDING A TAB MEANS ADDING IT HERE, not at the row literal — a label written
+ *  inline is a label the ratchet cannot see. */
+export const SERVER_SUBTAB_LABELS = {
+  'connect-device': 'Connect a device',
+  exposure: 'Exposure',
+  hostnames: 'Hostnames',
+  certificates: 'Certificates',
+  timezone: 'Timezone',
+  'key-health': 'Key Health',
+  maintenance: 'Maintenance',
+} as const;
+
 export const bootstrapSettingsRoute = (
   opts: BootstrapSettingsRouteOptions,
 ): SettingsRoute => {
@@ -1256,7 +1350,7 @@ export const bootstrapSettingsRoute = (
   // with native styling until the user manually navigated to
   // Reception first. The bundle now ships the primitives alongside
   // the route's own CSS + the panel CSS so a cold load is fully
-  // styled. Order mirrors `reception-bootstrap.ts`: primitives first,
+  // styled. Order mirrors `bootstrap.ts`: primitives first,
   // route override styles next, panel styles last.
   if (
     doc.head.querySelector(`style[${SETTINGS_ROUTE_STYLES_MARKER}]`) === null
@@ -1353,7 +1447,6 @@ export const bootstrapSettingsRoute = (
       // inert when the bootstrap omits the hostname callers + the panel never
       // mounts.
       HOSTNAMES_PANEL_STYLES,
-      REACHABILITY_PANEL_STYLES,
       // D-132/D-133 — `HOUSEKEEPING_PANEL_STYLES` joins the bundle so a
       // cold `#settings` load renders the Housekeeping trust panel
       // styled. Selectors scope to `.housekeeping-*` so the rules are
@@ -1552,6 +1645,42 @@ export const bootstrapSettingsRoute = (
     });
 
     registerSubview('account', 'Account', accountSection);
+  }
+
+  // ── Servers section (D-148) ───────────────────────────────────────
+  // "This browser is paired to these servers, and here is where they live."
+  // Follows Account in document order so the two read together as the
+  // account-and-servers pair, but mounts independently — see the option's doc.
+  let serverAddressPanel: ServerAddressPanelMount | null = null;
+  if (opts.serverAddressDeps !== undefined) {
+    const serversSection = doc.createElement('section');
+    serversSection.setAttribute(SETTINGS_ROUTE_SECTION_ATTR, 'servers');
+
+    const serversHeading = doc.createElement('h2');
+    serversHeading.textContent = 'Servers';
+    serversSection.appendChild(serversHeading);
+
+    const serversHint = doc.createElement('p');
+    serversHint.textContent =
+      'If a server moved to a new address, change it here. The new address has to answer and prove it is the same server before anything is saved.';
+    serversSection.appendChild(serversHint);
+
+    const serversHost = doc.createElement('div');
+    serversSection.appendChild(serversHost);
+
+    const {
+      listProfiles, tokenStore, retarget, activeProfileId, onActiveAddressChanged,
+    } = opts.serverAddressDeps;
+    serverAddressPanel = mountServerAddressPanel({
+      host: serversHost,
+      document: doc,
+      listProfiles,
+      deps: { tokenStore, retarget },
+      ...(activeProfileId !== undefined ? { activeProfileId } : {}),
+      ...(onActiveAddressChanged !== undefined ? { onActiveAddressChanged } : {}),
+    });
+
+    registerSubview('servers', 'Servers', serversSection);
   }
 
   // ── Backup & Recovery section (R26.4 — the 8th section) ───────────
@@ -2190,6 +2319,21 @@ export const bootstrapSettingsRoute = (
       ...(opts.subscribe !== undefined ? { subscribe: opts.subscribe } : {}),
     });
 
+    // ⛔ THE OTHER HALF OF THIS PAGE'S QUESTION, WHICH IT CANNOT ANSWER. Devices
+    // says what IS paired; "how do I add another" is the same question's other
+    // half, and it lives with its prerequisites — a certificate, a forwarded
+    // port, an address that resolves — because the act depends on all of them.
+    // Duplicating the flow here would mean a reader could follow it and fail on
+    // a prerequisite this page never mentions.
+    const addLink = doc.createElement('p');
+    addLink.className = 'settings-devices-add-hint';
+    addLink.setAttribute(SETTINGS_ROUTE_DEVICES_ADD_LINK_ATTR, 'true');
+    const anchor = doc.createElement('a');
+    anchor.setAttribute('href', '#settings/server/connect-device');
+    anchor.textContent = DEVICES_ADD_LINK_LABEL;
+    addLink.appendChild(anchor);
+    devicesSection.appendChild(addLink);
+
     registerSubview('devices', 'Devices', devicesSection);
   }
 
@@ -2214,6 +2358,29 @@ export const bootstrapSettingsRoute = (
   // into the same section host under the same gate.
   let notifications: NotificationsPanelMount | null = null;
   let connectDevice: ConnectDevicePanelMount | null = null;
+
+  // ⛔ ONE WRAPPED CALLER, HANDED TO BOTH PANELS. The check from outside is the
+  // only answer to the router step, and it can be started from either page — so
+  // a verdict earned on Reachability has to reach Connect a device, and the other
+  // way round. Wrapping the caller ONCE here is what makes that true; giving each
+  // panel the raw caller would leave whichever one the reader was not looking at
+  // showing the state before the check.
+  //
+  // ⚠ The verdict itself is NOT cached here. `opts.reachabilityLastProbe` reads
+  // the composition root's copy, which outlives this route's mount — a second
+  // copy is how two surfaces come to disagree about the same fact.
+  const observedExternalProbeCaller: ReachabilityExternalProbeCaller | undefined =
+    opts.reachabilityExternalProbeCaller === undefined
+      ? undefined
+      : async (override) => {
+          try {
+            return await opts.reachabilityExternalProbeCaller!(override);
+          } finally {
+            // Both outcomes redraw: a failed check can still have moved the
+            // reader's state (a rate limit, a name that stopped resolving).
+            connectDevice?.refresh();
+          }
+        };
   let serverTimeZone: ServerTimeZonePanelMount | null = null;
   let quietHours: QuietHoursPanelMount | null = null;
   let kindPolicy: KindPolicyPanelMount | null = null;
@@ -2324,15 +2491,15 @@ export const bootstrapSettingsRoute = (
   // unpaired-server boot that omits BOTH inputs skips the section
   // rather than rendering an empty placeholder (which would suggest
   // a broken UI rather than an intentionally-disabled surface).
-  // Future Server surfaces (Reachability Doctor, ACME status) can
-  // append into the same section host under the same gate.
+  // Future Server surfaces (ACME status, and whatever replaces the deleted
+  // Reachability tab) can append into the same section host under the same
+  // gate.
   let tlsRenew: TlsRenewPanelMount | null = null;
   let tlsCertificates: TlsCertificatesPanelMount | null = null;
   let certPinStale: CertPinStalePanelMount | null = null;
   let keyHealth: KeyHealthPanelMount | null = null;
   let hostnames: HostnamesPanelMount | null = null;
   let customDomains: CustomDomainsPanelMount | null = null;
-  let reachability: ReachabilityPanelMount | null = null;
   let exposure: ExposurePanelMount | null = null;
   let maintenance: MaintenancePanelMount | null = null;
   // R26.2 Delta 1 — the Exposure grid needs the read + all three mutators.
@@ -2350,9 +2517,14 @@ export const bootstrapSettingsRoute = (
     && opts.hostnamesUpdateCaller !== undefined
     && opts.hostnamesRemoveCaller !== undefined
     && opts.hostnamesVerifyOwnershipCaller !== undefined;
+  /** ⚠ THE TAB IS GONE; THIS IS NOT. It still decides whether the Server SECTION
+   *  is worth rendering for a server that has nothing else in it — a probe
+   *  caller means there is something to check, and Connect a device is where
+   *  that now happens.
+   *  ⚠ It used to also accept a pre-built `ReachabilityReport`. That type is
+   *  deleted: nothing ever supplied one, because nothing built one. */
   const canMountReachability =
-    opts.reachabilityReport !== undefined
-    || opts.reachabilityExternalProbeCaller !== undefined;
+    opts.reachabilityExternalProbeCaller !== undefined;
   // R26.4 Delta 3 — the Key Health page needs BOTH the read + the rotate
   // caller; a read-only mount would render actions that can't dispatch.
   const canMountKeyHealth =
@@ -2405,25 +2577,30 @@ export const bootstrapSettingsRoute = (
         // OPERATOR; this is the first question a beginner has, and until now it
         // had no surface at all — "it says port 7717, now what?". It also needs
         // no caller, so it is the one Server tab that always mounts.
-        { id: 'connect-device', label: 'Connect a device' },
-        ...(canMountExposure ? [{ id: 'exposure', label: 'Exposure' }] : []),
-        ...(canMountReachability
-          ? [{ id: 'reachability', label: 'Reachability' }]
+        { id: 'connect-device', label: SERVER_SUBTAB_LABELS['connect-device'] },
+        ...(canMountExposure
+          ? [{ id: 'exposure', label: SERVER_SUBTAB_LABELS.exposure }]
           : []),
+        // ⛔ NO REACHABILITY TAB. It was a DESTINATION for a diagnostic — the
+        // shape D-272 already argued against — it only ever mounted for
+        // probe-havers, and half its content had no producer. Its one live
+        // artefact, the per-check table, is folded into Connect a device as
+        // detail under an answer the reader already has.
+
         ...(canMountHostnames
-          ? [{ id: 'hostnames', label: 'Hostnames' }]
+          ? [{ id: 'hostnames', label: SERVER_SUBTAB_LABELS['hostnames'] }]
           : []),
         ...(hasCertificates
-          ? [{ id: 'certificates', label: 'Certificates' }]
+          ? [{ id: 'certificates', label: SERVER_SUBTAB_LABELS['certificates'] }]
           : []),
         ...(canMountServerTimeZone
-          ? [{ id: 'timezone', label: 'Timezone' }]
+          ? [{ id: 'timezone', label: SERVER_SUBTAB_LABELS['timezone'] }]
           : []),
         ...(canMountKeyHealth
-          ? [{ id: 'key-health', label: 'Key Health' }]
+          ? [{ id: 'key-health', label: SERVER_SUBTAB_LABELS['key-health'] }]
           : []),
         ...(canMountMaintenance
-          ? [{ id: 'maintenance', label: 'Maintenance' }]
+          ? [{ id: 'maintenance', label: SERVER_SUBTAB_LABELS['maintenance'] }]
           : []),
       ],
       'Server sections',
@@ -2442,6 +2619,15 @@ export const bootstrapSettingsRoute = (
       // when this page was NOT served by the server, i.e. a remotely-paired
       // webclient, where the loopback table is the least load-bearing anyway.
       const DEFAULT_BIND_PORT = 7717;
+      // ⛔⛔ THERE IS NO HARDCODED PUBLIC PORT ANY MORE, and the reason is not
+      // tidiness. `public_port` is a runtime config key the owner can change
+      // (`config/schema.ts`, section Network), and this panel builds the ADDRESS
+      // IT HANDS OVER out of it — so quoting the 443 default as a fact offers a
+      // server moved off 443 an address that does not serve. The real value
+      // arrives from `network.local_urls`; `DEFAULT_PUBLIC_PORT_FALLBACK` is
+      // what the cards say only until it does, or against a server too old to
+      // report it.
+      const DEFAULT_PUBLIC_PORT_FALLBACK = 443;
       const loopbackHosts = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
       const lanPort = (() => {
         try {
@@ -2457,6 +2643,160 @@ export const bootstrapSettingsRoute = (
         host: serverHosts['connect-device']!,
         document: doc,
         lanPort,
+        publicPort: DEFAULT_PUBLIC_PORT_FALLBACK,
+        // The one call that knows either port for real. Both fields are
+        // optional on the wire, so an older server simply leaves the fallbacks.
+        ...(opts.networkLocalUrlsCaller !== undefined
+          ? {
+              readPorts: async () => {
+                const res = await (opts.networkLocalUrlsCaller as NetworkLocalUrlsCaller)();
+                return {
+                  ...(typeof res?.lan_port === 'number' ? { lan_port: res.lan_port } : {}),
+                  ...(typeof res?.public_port === 'number'
+                    ? { public_port: res.public_port }
+                    : {}),
+                  // D-272 — forwarded, never synthesised. A server too old to
+                  // send it leaves the key absent, which the card renders as
+                  // "nobody said" rather than as "not exposed".
+                  ...(res?.lan_exposure !== undefined
+                    ? { lan_exposure: res.lan_exposure }
+                    : {}),
+                };
+              },
+            }
+          : {}),
+        // 🔑 THE ROUTER STEP, ANSWERED. Read at each render rather than passed as
+        // a value, so a check run on the Reachability page settles the step here
+        // too. `null` (nobody checked) survives as `null` — see the fold.
+        // ⚠ The PORT is passed in by the panel, which owns the resolved value;
+        // this closure must not re-derive it or the two could disagree.
+        // D-272 — the raw rows the Reachability tab used to be. Read from the
+        // same standing response as every verdict above it.
+        ...(opts.reachabilityLastProbe !== undefined
+          ? {
+              readProbeDetail: () => {
+                const res = opts.reachabilityLastProbe!();
+                return (res?.results ?? []).map((result) => ({
+                  kind: formatDiagnosticKind(result.kind),
+                  status: statusLabel(result.status),
+                  detail: formatDiagnosticPayload(result),
+                }));
+              },
+              readPublicPortReachable: (publicPort: number): boolean | null =>
+                diagnosticPortReachability(opts.reachabilityLastProbe!(), publicPort),
+              // D-272 — the same standing response, read for the OTHER port.
+              // One probe can answer both when both were asked; each fold is
+              // tri-state and an unasked port stays `null`.
+              readLanPortReachable: (lanPort: number): boolean | null =>
+                diagnosticPortReachability(opts.reachabilityLastProbe!(), lanPort),
+            }
+          : {}),
+        ...(observedExternalProbeCaller !== undefined
+          ? {
+              // ⛔ THE PROBE IS ALLOWED TO BE ASKED ABOUT SOME PORTS ONLY, and a
+              // narrowed request naming a disallowed one is rejected WHOLE
+              // (`normalizePorts` throws rather than dropping). So the card must
+              // know before it offers: a `public_port` the owner moved outside
+              // the allowlist keeps the honest `null`, and the reader is pointed
+              // at their router instead of at a button that spends five seconds
+              // and returns "try again in a minute" — forever.
+              canCheckPort: isProbeAnswerablePort,
+              // ⛔ A DIFFERENT PREDICATE FROM THE ONE ABOVE. `canCheckPort` is
+              // the closed allowlist; this is the single bounded door past it.
+              // A LAN port like 7717 fails the first and passes the second,
+              // which is exactly why the door exists.
+              canCheckExtraPort: isProbeAskableExtraPort,
+              // ⛔ ONE PROBE CARRYING BOTH PORTS. The page now has ONE check
+              // action, so the two questions it answers travel together — the
+              // worker walks ports sequentially under a 5s timeout each, and two
+              // ports in one request costs one round trip instead of two.
+              //
+              // ⚠ EACH PORT IS ADMITTED BY ITS OWN RULE. `public_port` must be on
+              // the closed allowlist (`ports`); `lan_port` goes through the one
+              // bounded door past it (`extra_port`) and only when the server
+              // reported it on a publicly-routable address. A port that fails
+              // its rule is simply not asked about, and its verdict stays `null`
+              // — never `false`, because nobody asked.
+              runOutsideChecks: async (args: {
+                publicPort: number;
+                lanPort: number;
+                lanExposed: boolean;
+              }): Promise<void> => {
+                const ports = isProbeAnswerablePort(args.publicPort)
+                  ? [args.publicPort]
+                  : [];
+                // ⚠ STILL CARRIED, THOUGH THE FINDING MOVED. Exposure owns
+                // DISPLAYING it; the verdict is pulled from the same standing
+                // probe, so answering both questions in one request here means
+                // a reader who checks their connection has also, for free,
+                // settled the row on the other page. Two surfaces, one probe,
+                // no second copy to disagree.
+                const askLan = args.lanExposed
+                  && isProbeAskableExtraPort(args.lanPort);
+                // ⛔ Nothing to ask ⇒ no request. A probe with no ports spends
+                // the rate limit and the reader's wait to learn nothing.
+                if (ports.length === 0 && !askLan) return;
+                await observedExternalProbeCaller!({
+                  ports,
+                  checks: ['port_reachability'],
+                  ...(askLan ? { extra_port: args.lanPort } : {}),
+                });
+              },
+            }
+          : {}),
+        // ⛔ NOT GATED ON THE PROBE CALLER, DELIBERATELY. Every other check here
+        // needs the cloud and an account; this one is a fetch from the reader's
+        // own browser to their own server. Folding it in beside them would
+        // withhold the only NAT-hairpin instrument from exactly the free
+        // self-hoster who has no probe — and hairpin does not care about tiers.
+        checkAddressFromHere: opts.addressFromHereChecker
+          ?? createAddressReachableFromHereCheck(),
+        // D-273 — forwarded, never synthesised. A server that does not know this
+        // rpc leaves the router step with the wording it had.
+        ...(opts.networkPortMappingCaller !== undefined
+          ? {
+              readPortMapping: async () => {
+                const res = await (
+                  opts.networkPortMappingCaller as NetworkPortMappingCaller
+                )();
+                return res === undefined || res === null
+                  ? undefined
+                  : {
+                      enabled: res.enabled === true,
+                      ...(res.support !== undefined ? { support: res.support } : {}),
+                      ...(res.cgnat !== undefined ? { cgnat: res.cgnat } : {}),
+                      ...(res.outcome !== undefined ? { outcome: res.outcome } : {}),
+                      // ⛔ FORWARDED NOW. Dropping it here made every `mapped`
+                      // read as success for `public_port`, including the one
+                      // case where the router put the mapping elsewhere.
+                      ...(res.external_port !== undefined
+                        ? { external_port: res.external_port }
+                        : {}),
+                    };
+              },
+            }
+          : {}),
+        // D-273 audit P2-5 — is `/webclient/` served publicly? Derived from the
+        // exposure read the Server section already holds, so no new rpc.
+        // ⛔ A REACHABLE PORT IS NOT A REACHABLE APP: the bootstrap-derived
+        // exposure leaves `webclient.public` FALSE, so a stock install answers
+        // 404 from the internet while every other signal says the address works.
+        ...(opts.exposureGetCaller !== undefined
+          ? {
+              readWebclientPublicExposed: async (): Promise<boolean | undefined> => {
+                const res = await (opts.exposureGetCaller as ExposureGetCaller)();
+                return res?.state?.resolution?.webclient?.public;
+              },
+            }
+          : {}),
+        // D-273 — the write half. Forwarded independently of the read: a server
+        // can answer `network.port_mapping` and still refuse a config write
+        // (read-only `config.toml` under the shipped docker-compose), and the
+        // reader is better served by a control that reports the refusal than by
+        // no control at all.
+        ...(opts.networkAutoPortMappingSetCaller !== undefined
+          ? { setPortMappingEnabled: opts.networkAutoPortMappingSetCaller }
+          : {}),
         ...(opts.tlsDomainListCaller !== undefined
           ? { readCertifiedHostnames: async (): Promise<readonly string[]> => {
               const res = await (opts.tlsDomainListCaller as TlsDomainListCaller)();
@@ -2504,6 +2844,47 @@ export const bootstrapSettingsRoute = (
       })();
       exposure = mountExposurePanel({
         host: serverHosts['exposure']!,
+        // D-272 — the LAN bind posture moved here from Connect a device. It is a
+        // finding about what is open, not a step toward connecting anything.
+        ...(opts.networkLocalUrlsCaller !== undefined
+          ? {
+              readLanPosture: async () => {
+                const res = await (
+                  opts.networkLocalUrlsCaller as NetworkLocalUrlsCaller
+                )();
+                // ⚠ OMITTED, never synthesised: a server too old to report the
+                // bind leaves the section unrendered rather than claiming the
+                // listener is local on the strength of having not asked.
+                if (res?.lan_exposure === undefined) return undefined;
+                return {
+                  lanPort: typeof res.lan_port === 'number' ? res.lan_port : 7717,
+                  publiclyRoutable: res.lan_exposure.publicly_routable,
+                  publicAddresses: res.lan_exposure.public_addresses,
+                };
+              },
+            }
+          : {}),
+        ...(opts.reachabilityLastProbe !== undefined
+          ? {
+              readLanReachedFromOutside: (lanPort: number): boolean | null =>
+                diagnosticPortReachability(opts.reachabilityLastProbe!(), lanPort),
+            }
+          : {}),
+        ...(observedExternalProbeCaller !== undefined
+          ? {
+              checkLanFromOutside: async (lanPort: number): Promise<void> => {
+                // ⛔ `ports: []` + the one bounded door. The LAN port can never be
+                // on the closed allowlist, so naming it in `ports` would fail the
+                // whole request.
+                if (!isProbeAskableExtraPort(lanPort)) return;
+                await observedExternalProbeCaller!({
+                  ports: [],
+                  checks: ['port_reachability'],
+                  extra_port: lanPort,
+                });
+              },
+            }
+          : {}),
         document: doc,
         getServerUrl: () => exposureServerUrl,
         // All four narrowed above by `canMountExposure`.
@@ -2522,18 +2903,6 @@ export const bootstrapSettingsRoute = (
         // Live-refresh on `exposure_changed` when the shared subscriber is
         // wired (a preset/grid change on another paired client reflects here).
         ...(opts.subscribe !== undefined ? { subscribe: opts.subscribe } : {}),
-      });
-    }
-
-    if (canMountReachability) {
-      reachability = mountReachabilityPanel({
-        host: serverHosts['reachability']!,
-        ...(opts.reachabilityReport !== undefined
-          ? { report: opts.reachabilityReport }
-          : {}),
-        ...(opts.reachabilityExternalProbeCaller !== undefined
-          ? { runExternalProbe: opts.reachabilityExternalProbeCaller }
-          : {}),
       });
     }
 
@@ -2883,7 +3252,6 @@ export const bootstrapSettingsRoute = (
       if (tlsCertificates !== null) tlsCertificates.dispose();
       if (hostnames !== null) hostnames.dispose();
       if (customDomains !== null) customDomains.destroy();
-      if (reachability !== null) reachability.dispose();
       // R26.2 Delta 1 — the Exposure grid was constructed first in the
       // Server section; its dispose drops the `exposure_changed` broadcast
       // subscription before the section node is removed.
@@ -2912,6 +3280,11 @@ export const bootstrapSettingsRoute = (
       if (sellerPage !== null) sellerPage.dispose();
       if (aiModels !== null) aiModels.dispose();
       if (accountBinding !== null) accountBinding.dispose();
+      // ⛔ WAS MISSING. Assigned at mount and never disposed, so navigating away
+      // from Settings left the panel live: a save still in flight would finish
+      // against a detached tree and could call `onActiveAddressChanged`,
+      // RELOADING THE TAB after the user had gone somewhere else.
+      if (serverAddressPanel !== null) serverAddressPanel.dispose();
       if (archiveBackup !== null) archiveBackup.dispose();
       routeRoot.remove();
     },
@@ -2933,7 +3306,6 @@ export const bootstrapSettingsRoute = (
     learningPanel: () => learningPanel,
     llmResultCacheCard: () => aiModels?.cacheCard() ?? null,
     hostnamesPanel: () => hostnames,
-    reachabilityPanel: () => reachability,
     accountBindingPanel: () => accountBinding,
     archiveBackupPanel: () => archiveBackup,
   };

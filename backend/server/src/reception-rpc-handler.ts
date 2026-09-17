@@ -3400,7 +3400,7 @@ export const handleReceptionPageUpsert = async (
   });
   // Reception page singleton emits a `reception.endpoint_changed`
   // broadcast with the well-known singleton id so paired clients
-  // refresh their Settings → Reception page view + invalidate any
+  // refresh their Reception page view + invalidate any
   // cached visitor-side render.
   deps.broadcast({
     kind: 'reception.endpoint_changed',
@@ -3692,7 +3692,7 @@ const loadFoundationConfigTemplates = (dir: string): ReceptionConfigTemplate[] =
 };
 
 /** `reception.template.list` — return the Foundation-pack reception
- *  template manifests for the Settings → Reception → Templates browser:
+ *  template manifests for the Reception → Templates browser:
  *  the `intake_form` templates (D-149 P11) plus the `scheduling_link` +
  *  `reception_page` config templates (D-151). Read-only: no store
  *  mutation, no audit row, no broadcast (mirrors `reception.page.get`'s

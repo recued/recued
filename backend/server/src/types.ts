@@ -361,6 +361,15 @@ export interface ExecuteResponse {
    *  action is awaiting approval instead of mistaking the bare `success:
    *  false` for a silent failure and retrying. */
   awaiting_approval?: boolean;
+  /** D-display-mode P4 — whether this run was audit-exempt (no anchor written).
+   *
+   *  ⚠ PAIRED WITH `ServerExecuteResponse.audit_exempt` in contracts, which is
+   *  the WIRE shape this one mirrors. The two are twins by construction (see
+   *  this interface's own header) and nothing enforces the pairing, so a field
+   *  added to one and not the other is invisible until a client reads
+   *  `undefined` forever. The full reasoning — why a client needs it, and why it
+   *  must never re-derive it — lives on the contracts side. */
+  audit_exempt?: boolean;
   /** Durable operation-scoped receipt for the checkpointed gated step. */
   action_ref?: string;
   /** D-234 § 234.4 — the run is durably PAUSED waiting on a PEER'S answer. Same

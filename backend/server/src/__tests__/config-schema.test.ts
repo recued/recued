@@ -1053,3 +1053,62 @@ describe('makeConfigHandlers — the transcription probe is metered and capped',
     expect(calls).toHaveLength(3);
   });
 });
+
+// ──────────────────────────────────────────────────────────────────
+// D-273 — the key the Connect-a-device router step writes.
+//
+// ⛔ THE WEBCLIENT REACHES THIS KEY THROUGH `server.setConfigField` RATHER THAN A
+// DEDICATED RPC, so the only thing standing between "the reader pressed the
+// button" and "the port opens" is this generic path accepting the key. That is
+// an assumption about a file in `packages/config`, held by code in
+// `apps/webclient`, with a whole rpc in between — nobody's own tests cover it.
+// ⚠ And `network.apex_mode` two entries below it in the SAME schema section IS
+// `internal: true` and IS refused. The two are one edit apart.
+// ──────────────────────────────────────────────────────────────────
+describe('D-273 — `network.auto_port_mapping` through the generic setter', () => {
+  it('⛔ is WRITABLE, unlike its `internal` neighbour', () => {
+    const llmManager = createLLMConfigManager(db);
+    const runtimeConfig = createRuntimeConfigStore({});
+    expect(runtimeConfig.get('network.auto_port_mapping')).toBe(false);
+    applyField('network.auto_port_mapping', true, { llmManager, runtimeConfig });
+    expect(runtimeConfig.get('network.auto_port_mapping')).toBe(true);
+    // ...and back down again, which is the half the copy promises.
+    applyField('network.auto_port_mapping', false, { llmManager, runtimeConfig });
+    expect(runtimeConfig.get('network.auto_port_mapping')).toBe(false);
+  });
+
+  it('⛔⛔ and the write FIRES `onChange` — the supervisor has no other trigger', () => {
+    // `compose-listeners.ts` subscribes the port-mapping supervisor to
+    // `runtimeConfig.onChange`, and `readDesire()` re-reads the key on every
+    // reconcile. If a write landed without firing listeners the flag would be
+    // true, the rpc would report `enabled: true`, and NO RECONCILE WOULD RUN —
+    // the port stays shut while every surface says it was opened.
+    const llmManager = createLLMConfigManager(db);
+    const runtimeConfig = createRuntimeConfigStore({});
+    const fired: Array<[string, unknown]> = [];
+    runtimeConfig.onChange((key, value) => { fired.push([key, value]); });
+    applyField('network.auto_port_mapping', true, { llmManager, runtimeConfig });
+    expect(fired).toEqual([['network.auto_port_mapping', true]]);
+  });
+
+  it('⚠ rejects a non-boolean, so a malformed caller cannot half-set it', () => {
+    const llmManager = createLLMConfigManager(db);
+    const runtimeConfig = createRuntimeConfigStore({});
+    expect(() =>
+      applyField('network.auto_port_mapping', 'yes', { llmManager, runtimeConfig }),
+    ).toThrow();
+    expect(runtimeConfig.get('network.auto_port_mapping')).toBe(false);
+  });
+
+  it('⚠ and the field is VISIBLE in the schema read', () => {
+    // Not load-bearing for the router step (which reads `network.port_mapping`),
+    // but it is what makes the key discoverable at all — and `buildSchema` skips
+    // internal entries, which is the same list this could fall off.
+    const llmManager = createLLMConfigManager(db);
+    const runtimeConfig = createRuntimeConfigStore({});
+    const field = buildSchema({ llmManager, runtimeConfig })
+      .find((f) => f.key === 'network.auto_port_mapping');
+    expect(field?.type).toBe('boolean');
+    expect(field?.section).toBe('Network');
+  });
+});

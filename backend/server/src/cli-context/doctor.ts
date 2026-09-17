@@ -2,22 +2,32 @@
  *  will not pair, or has quietly stopped doing something.
  *
  *  ⛔⛔ WHY THIS IS NOT THE REACHABILITY DOCTOR, AND MUST NOT BECOME IT.
- *  `diagnostics/reachability.ts` already builds a full `ReachabilityReport` —
- *  362 lines, tested, and (as of this file) called by nothing in production; its
- *  own comment names the caller nobody wrote, "eventually bin.ts after the
- *  doctor rpc wires". It answers a DIFFERENT question — *why can't the world
- *  reach me* — and it needs a running, networked server to answer it: every
- *  block is required-field, with no unknown state. `ReachabilityDnsBlock` demands
- *  `ddns_resolves` / `resolution_ms` / `last_ddns_update`; `ReachabilityTlsBlock`
- *  demands `cert_fingerprint` / `issuer` / `san`. Feeding it zeroes offline would
- *  publish "DDNS does not resolve" when the truth is "nobody checked", and the
- *  two would render identically.
+ *  There used to be a `diagnostics/reachability.ts` here — 362 lines building a
+ *  full `ReachabilityReport`, tested, and called by nothing in production for as
+ *  long as it existed; its own comment named the caller nobody wrote, "eventually
+ *  bin.ts after the doctor rpc wires". It was DELETED 2026-09-16 along with its
+ *  eleven report-family contracts, and this paragraph is what is left of it.
+ *
+ *  ⛔ DO NOT REBUILD IT BEHIND A `--network` FLAG. That is what this comment used
+ *  to propose, and it was wrong on this file's own terms. The report answers a
+ *  DIFFERENT question — *why can't the world reach me* — and needs a running,
+ *  networked server to answer it: every block was required-field, with no unknown
+ *  state. Its DNS block demanded `ddns_resolves` / `resolution_ms` /
+ *  `last_ddns_update`; its TLS block demanded `cert_fingerprint` / `issuer` /
+ *  `san`. Feeding it zeroes offline would publish "DDNS does not resolve" when
+ *  the truth is "nobody checked", and the two would render identically — which is
+ *  exactly the rule below, violated by the very shape of the report.
+ *
+ *  🔑 THE QUESTION STILL HAS AN OWNER, AND IT IS NOT A CLI. *Why can't the world
+ *  reach me* is answered from the OUTSIDE, by the cloud probe worker, and
+ *  rendered in Settings — Server — Connect a device (`connect-device-panel.ts`,
+ *  which folds in the from-here address check and the port-mapping state). A
+ *  machine cannot testify to its own reachability; that is why the surviving
+ *  plumbing is a probe CALLER and not a report BUILDER.
  *
  *  ⇒ THIS command answers *why won't my server start* — and is therefore useful
- *  exactly when an rpc-based doctor is unavailable, because the server is down.
+ *  exactly when that whole surface is unavailable, because the server is down.
  *  It opens files and a database. It makes no network call and needs no listener.
- *  When the reachability rpc is eventually wired, it belongs behind a
- *  `--network` flag here, NOT folded into these checks.
  *
  *  🔑 THE RULE THE WHOLE FILE IS BUILT ON: `unknown` IS NOT `ok`. Every check
  *  that cannot run reports `unknown` WITH THE REASON it could not. A diagnostic
@@ -191,7 +201,36 @@ const checkAutoDisabled = async (realmPath: string): Promise<DoctorCheck[]> => {
   }
 };
 
-/** Certificate expiry, read from the domain store's public bytes. Never touches
+/** Why a renewal has not run, by who owns it.
+ *
+ *  🔑 THE SOURCE CHANGES WHOSE PROBLEM IT IS, which is the only thing a hint
+ *  here is for. A generic "renewal did not run" sends all three owners to look
+ *  in the same place, and only one of them would find anything.
+ *
+ *  ⛔ AND `pro_acme_custom` IS NOT `pro_acme` (D-235 § 5.1). A fleet-issued
+ *  CUSTOM domain renews only while a CNAME in the OWNER'S zone still points at
+ *  ours — so "it stopped renewing" and "you deleted the delegation" are the same
+ *  event, and the delegation is the first thing worth checking. Folding it into
+ *  the auto-managed branch would say "we handle it" about the one case where the
+ *  owner holds the half that broke.
+ *
+ *  ⚠ IN THE DOCTOR'S REGISTER, NOT THE WEB UI'S. The rolled-up copy this
+ *  replaces pointed at "Settings → Server → TLS Certificates" — a page on the
+ *  server whose health is in question, reached by a reader who ran a terminal
+ *  command. These name the CAUSE, which is actionable wherever they are. */
+const renewalHint = (source: string, domain: string): string => {
+  if (source === 'pro_acme') {
+    return 'Recued renews this one. If it does not clear on its own, ACME is stuck.';
+  }
+  if (source === 'pro_acme_custom') {
+    return `Recued renews ${domain}, but only while its _acme-challenge delegation still `
+      + 'resolves. Check that record first — removing it stops renewal silently.';
+  }
+  return 'This certificate is yours to renew. Clients will refuse the connection '
+    + 'once it lapses.';
+};
+
+/** Certificate health, read from the domain store's public bytes. Never touches
  *  private key material — `listForHealthCheck()` does not carry it. */
 const checkTls = async (db: unknown, now: number): Promise<DoctorCheck[]> => {
   try {
@@ -204,6 +243,14 @@ const checkTls = async (db: unknown, now: number): Promise<DoctorCheck[]> => {
       ]);
     // `getKey` is deliberately omitted: unwired, the store falls back to
     // base64-only encoding, which is all a public-cert read needs.
+    //
+    // ⚠ `acceptSelfSigned` IS OMITTED ON BOTH SIDES, AND THAT IS THE COUPLING.
+    // The store defaults it false at upload and `verifyDomainHealth` below
+    // defaults it false at health-check, so the two gates agree. They agree by
+    // SHARED DEFAULT, not by threading — so if a production caller ever passes
+    // `acceptSelfSigned: true` to this store, the chain check below starts
+    // failing every self-signed row the server deliberately accepted. Verified
+    // 2026-09-16: nothing outside tests sets it.
     const store = createSqliteTlsDomainStore({
       db: db as never,
       verifiers: verifiers as never,
@@ -224,17 +271,55 @@ const checkTls = async (db: unknown, now: number): Promise<DoctorCheck[]> => {
           section: 'tls',
           status: 'fail',
           detail: `${health.domain} expired ${-days} day(s) ago`,
-          hint: 'renewal did not run. Clients will refuse the connection until it does.',
+          hint: renewalHint(health.source, health.domain),
         });
       } else if (days <= 14) {
         checks.push({
           section: 'tls',
           status: 'warn',
           detail: `${health.domain} expires in ${days} day(s)`,
-          hint: 'inside the renewal window. If this does not clear on its own, ACME is stuck.',
+          hint: renewalHint(health.source, health.domain),
         });
       } else {
         checks.push({ section: 'tls', status: 'ok', detail: `${health.domain} valid for ${days} day(s)` });
+      }
+
+      // ⛔⛔ THESE TWO WERE COMPUTED AND THROWN AWAY (until 2026-09-16). This
+      // loop called `verifyDomainHealth` — which walks leaf → chain → the system
+      // trust store, and hashes the cert to compare against the stored
+      // fingerprint — and then read `expires_at` and nothing else. So a cert
+      // whose chain had stopped terminating at a trust root, or whose row had
+      // been tampered with, reported `✓ valid for 340 day(s)`.
+      //
+      // 🔑 WORSE THAN THIS FILE'S OWN NAMED FAILURE MODE. The header rule is
+      // that a "couldn't look" must not render like a "looked, fine". This DID
+      // look, it FOUND the fault, and it rendered fine — the cost of the check
+      // paid and the answer discarded. ⚠ The facts were one property access
+      // away the whole time, which is what makes it worth a comment this long:
+      // nothing was missing, nothing failed, and no test could tell, because a
+      // discarded value has no observable behaviour to assert against.
+      if (!health.fingerprint_matches) {
+        checks.push({
+          section: 'tls',
+          status: 'fail',
+          detail: `${health.domain} does not hash to its stored fingerprint`,
+          hint: 'the stored row and the certificate disagree — treat the row as tampered '
+            + 'with and re-upload a known-good certificate.',
+        });
+      }
+      if (!health.chain_valid) {
+        checks.push({
+          section: 'tls',
+          status: 'fail',
+          // ⚠ Said as the CLIENT experiences it. "Chain does not verify" names
+          // our finding; "browsers will refuse it" names the consequence, and
+          // this one is invisible from the server — it serves the handshake
+          // perfectly well and every connection fails at the far end.
+          detail: `${health.domain}'s certificate chain does not reach a trusted root`,
+          hint: 'clients will refuse this certificate even though the server serves it. '
+            + "Usually an intermediate expired, or the issuer's chain was never uploaded "
+            + 'alongside the certificate.',
+        });
       }
     }
     return checks;

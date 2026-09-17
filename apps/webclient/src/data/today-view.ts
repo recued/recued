@@ -17,6 +17,7 @@ export interface TodaySource {
   label: string;
   kind: TodayKind;
   freshness: Freshness;
+  writeCapable?: boolean;
 }
 export interface TodayItem {
   key: string;
@@ -30,6 +31,22 @@ export interface TodayItem {
   ongoing?: boolean;
   direction?: string;
   unreachable?: boolean;
+  taskId?: string;
+}
+export interface TodayTaskEdit {
+  key: string;
+  id: string;
+  title: string;
+  action: 'complete' | 'reschedule';
+  value: string;
+  busy: boolean;
+  error: string | null;
+}
+export interface TodayTaskActions {
+  canComplete: boolean;
+  canReschedule: boolean;
+  edit: TodayTaskEdit | null;
+  notice: string | null;
 }
 export interface TodaySnapshot {
   now: number;
@@ -119,9 +136,18 @@ const workItem = (entity: WorkEntity, window: ReturnType<typeof todayWindow>): T
     when, group: when < window.now ? 'overdue' : when < window.tomorrow ? 'today' : 'next',
     kind: entity._kind, sourceKey: `work:${entity.source_id}`,
     href: serializeShellRoute('data', entity._kind, entity.id),
+    ...(entity._kind === 'task' ? { taskId: entity.id } : {}),
     ...(entity._kind === 'commitment' ? { direction: { outbound: 'You promised', inbound: 'Promised to you', internal: 'Personal commitment' }[entity.direction] } : {}),
     ...(entity.sync_state === 'stale_unreachable' ? { unreachable: true } : {}),
   };
+};
+
+/** Apply only a confirmed server response while the rest of Today refreshes. */
+export const replaceTodayTask = (snapshot: TodaySnapshot, entity: Extract<WorkEntity, { _kind: 'task' }>): TodaySnapshot => {
+  const item = workItem(entity, snapshot);
+  const items = snapshot.items.filter(row => row.taskId !== entity.id);
+  if (item) items.push(item);
+  return { ...snapshot, items: items.sort((a, b) => a.when - b.when || a.key.localeCompare(b.key)) };
 };
 
 /** Read independently so a failed source cannot erase the other sources' results.
@@ -161,6 +187,8 @@ export const loadToday = async (
     for (const [id, info] of workSources) {
       const registration = registrations.find((source) => source.id === id);
       sources.push({ key: `work:${id}`, kind: info.kind, label: registration?.source_label ?? id,
+        writeCapable: registration?.top_tier_kind === info.kind && registration.write_capable === true
+          && registration.sync_posture !== 'read_through',
         freshness: workFreshness(info.fresh, registration, now) });
     }
     return { ...span, complete,
@@ -311,6 +339,20 @@ export const TODAY_VIEW_STYLES = `
 .today-empty-lead { margin:0; font-size:15px; color:var(--fg); }
 .today-empty-sub { margin:0; font-size:13px; }
 .today-empty-create { min-height:38px; padding:7px 14px; font:inherit; font-size:13px; font-weight:650; color:var(--on-accent); background:var(--accent); border:1px solid var(--accent); border-radius:8px; cursor:pointer; }
+.today-task-actions, .today-task-editor { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-top:10px; min-width:0; }
+.today-task-editor { border:1px solid var(--border); border-radius:8px; padding:12px; background:var(--surface-subtle, var(--surface)); border-inline-start:3px solid var(--accent); }
+.today-task-editor p { flex-basis:100%; margin:0; overflow-wrap:anywhere; }
+.today-task-editor .today-task-editor-title { color:var(--fg); font-weight:650; }
+.today-task-editor .today-task-hint { font-size:12px; }
+.today-task-editor label { display:grid; gap:5px; min-width:0; max-width:100%; }
+.today-task-actions button, .today-task-editor button, .today-task-editor input { box-sizing:border-box; min-height:44px; max-width:100%; min-width:0; padding:7px 10px; border:1px solid var(--border); border-radius:6px; background:var(--surface); color:var(--fg); font:inherit; font-size:13px; }
+.today-task-actions button, .today-task-editor button { cursor:pointer; }
+.today-task-editor .today-task-primary { background:var(--accent); color:var(--on-accent); border-color:var(--accent); font-weight:600; }
+.today-task-actions button[aria-disabled=true], .today-task-editor button[aria-disabled=true] { opacity:.6; cursor:default; }
+.today-task-actions button:not([aria-disabled=true]):hover { border-color:var(--accent); }
+.today-view :focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
+.today-view [data-today-task-notice] { border-inline-start:3px solid var(--accent); padding:10px 12px; background:var(--surface-subtle, var(--surface)); color:var(--fg); overflow-wrap:anywhere; }
+.today-task-editor [role=alert] { color:var(--danger, var(--fg)); }
 @media (max-width:540px) { .today-row { grid-template-columns:minmax(0,1fr); gap:6px; } }
 `;
 
@@ -327,7 +369,26 @@ export const TODAY_VIEW_STYLES = `
 export const TODAY_CREATE_ACTION = 'today-create';
 
 const renderFreshness = (freshness: Freshness): string => `<span class="today-freshness"${freshness.warning ? ' data-warning' : ''} title="${e(freshness.detail)}">${e(freshness.label)}</span>`;
-export const renderToday = (snapshot: TodaySnapshot | null, loading: boolean, actionAttr: string, sourcesOpen?: boolean, canCreate?: boolean): string => {
+export const writableTodayTask = (snapshot: TodaySnapshot | null, key: string): TodayItem | undefined =>
+  snapshot?.items.find(item => item.key === key && item.kind === 'task' && item.taskId !== undefined
+    && !item.unreachable && snapshot.sources.some(source => source.key === item.sourceKey && source.writeCapable === true));
+
+const renderTaskEditor = (actions: TodayTaskActions | undefined, actionAttr: string): string => {
+  const edit = actions?.edit;
+  if (!edit) return '';
+  const locked = edit.busy ? ' aria-disabled="true"' : '';
+  return `<div class="today-task-editor" data-today-task-editor id="today-task-editor" role="group" aria-labelledby="today-task-editor-title" aria-busy="${edit.busy}">
+    <p class="today-task-editor-title" id="today-task-editor-title" role="status">${edit.action === 'reschedule' ? 'Reschedule' : edit.busy ? 'Completing' : 'Complete'} “${e(edit.title)}”${edit.busy ? '…' : ''}</p>
+    ${edit.action === 'reschedule' ? `<label>New due date and time
+      <input type="datetime-local" ${actionAttr}="today-task-due" aria-describedby="today-task-time-help" value="${e(edit.value)}"${edit.busy ? ' disabled' : ''}>
+    </label><p class="today-task-hint" id="today-task-time-help">Changes this task’s due date. Times use your device’s time zone.</p>` : ''}
+    ${edit.error ? `<p role="alert" tabindex="-1" data-today-task-error>${e(edit.error)}</p>` : ''}
+    ${edit.action === 'reschedule' || edit.error ? `<button type="button" class="today-task-primary" ${actionAttr}="today-task-save"${locked}>${edit.busy ? 'Saving…' : edit.action === 'reschedule' ? 'Save due date' : 'Try again'}</button>` : ''}
+    <button type="button" ${actionAttr}="today-task-cancel"${locked}>${edit.action === 'reschedule' ? 'Cancel' : 'Close'}</button>
+  </div>`;
+};
+
+export const renderToday = (snapshot: TodaySnapshot | null, loading: boolean, actionAttr: string, sourcesOpen?: boolean, canCreate?: boolean, actions?: TodayTaskActions): string => {
   const warning = snapshot !== null && (snapshot.issues.length > 0 || snapshot.sources.some((source) => source.freshness.warning)
     || snapshot.items.some((item) => item.unreachable));
   const sources = new Map(snapshot?.sources.map((source) => [source.key, source]));
@@ -342,6 +403,8 @@ export const renderToday = (snapshot: TodaySnapshot | null, loading: boolean, ac
       <p>Tasks, commitments, and calendar events in one place.</p>
       ${snapshot === null ? '' : `<p>Seven-day window: ${e(dateLabel(snapshot.now))}–${e(dateLabel(snapshot.before - 1))} · Your local time</p>`}
     </div><button type="button" class="today-refresh" ${actionAttr}="refresh-today" aria-disabled="${loading}">Refresh</button></header>
+    ${actions?.notice ? `<p role="status" tabindex="-1" data-today-task-notice>${e(actions.notice)}</p>` : ''}
+    ${actions?.edit && !snapshot?.items.some(item => item.key === actions.edit?.key) ? renderTaskEditor(actions, actionAttr) : ''}
     ${snapshot === null ? '<p role="status">Loading Today…</p>' : `
       <p class="today-updated" role="status">${snapshot.complete === false
         ? 'Still reading your sources. Here is what has come in so far.'
@@ -368,7 +431,10 @@ export const renderToday = (snapshot: TodaySnapshot | null, loading: boolean, ac
             return `<li class="today-row" data-today-item="${e(item.key)}"><time datetime="${e(new Date(item.when).toISOString())}">${e(when)}${item.ongoing ? ' · In progress' : ''}</time><div>
               <a href="${e(item.href)}">${e(item.title)}</a><div class="today-meta"><span>${e(kindLabel[item.kind])}</span><span>${e(source?.label ?? item.sourceKey)}</span>
               ${item.direction === undefined ? '' : `<span>${e(item.direction)}</span>`}${renderFreshness(item.unreachable ? { label: 'Recued cannot reach this source', detail: 'This may be out of date.', warning: true } : source?.freshness ?? unknownFreshness())}
-              </div></div></li>`;
+              </div>${actions && item.taskId !== undefined && !item.unreachable && source?.writeCapable ? `<div class="today-task-actions">
+                ${actions.canComplete ? `<button type="button" ${actionAttr}="today-task-complete" data-today-task="${e(item.key)}" aria-label="Complete ${e(item.title)}"${actions.edit ? ' aria-disabled="true"' : ''}>${actions.edit?.key === item.key && actions.edit.busy && actions.edit.action === 'complete' ? 'Completing…' : 'Complete'}</button>` : ''}
+                ${actions.canReschedule ? `<button type="button" ${actionAttr}="today-task-reschedule" data-today-task="${e(item.key)}" aria-label="Reschedule ${e(item.title)}" aria-expanded="${actions.edit?.key === item.key && actions.edit.action === 'reschedule'}"${actions.edit ? ' aria-disabled="true"' : ''}>Reschedule</button>` : ''}
+              </div>` : ''}${actions?.edit?.key === item.key ? renderTaskEditor(actions, actionAttr) : ''}</div></li>`;
           }).join('')}</ul>`}</section>`;
       }).join('')}`}
   </section>`;

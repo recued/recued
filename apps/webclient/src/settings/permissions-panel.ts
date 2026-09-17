@@ -144,6 +144,10 @@ import {
   isMcpInboundTokenActive,
   getMessengerVendorDeclaration,
   listMessengerVendors,
+  contractUsePeriod,
+  isUsageCapPeriod,
+  USAGE_CAP_PERIODS,
+  type UsageCapPeriod,
 } from '@recued/contracts';
 import {
   buildChatInboundTokenDetailModel,
@@ -154,6 +158,11 @@ import {
   type ChatInboundTokenKindGroup,
 } from '../contracts/chat-inbound-tokens.js';
 import type { BroadcastSubscriber } from '../realtime/subscriber.js';
+import {
+  usageCapPeriodDescription,
+  USAGE_CAP_PERIOD_OPTION_LABEL,
+  USAGE_CAP_PERIOD_REMAINING_SUFFIX,
+} from '@recued/ui-shared';
 import { humanizeRpcError } from '../shell/rpc-error-copy.js';
 
 // ════════════════════════════════════════════════════════════════
@@ -679,6 +688,11 @@ export const PERMISSIONS_MCP_DOOR_ADVANCED_SUMMARY_ATTR =
 export const PERMISSIONS_MCP_DOOR_ADVANCED_CAP_TOGGLE_ATTR =
   'data-recued-permissions-mcp-advanced-cap-toggle';
 /** The usage-cap value input (`max_uses`, shown when the cap is enabled). */
+/** The use-limit's period selector (`total` / `day` / `month`). Sits on the cap
+ *  row because it is the cap's own axis — a period with no count refills
+ *  nothing, which the mint rpc refuses outright. */
+export const PERMISSIONS_MCP_DOOR_ADVANCED_CAP_PERIOD_ATTR =
+  'data-perm-mcp-door-advanced-cap-period';
 export const PERMISSIONS_MCP_DOOR_ADVANCED_CAP_INPUT_ATTR =
   'data-recued-permissions-mcp-advanced-cap-input';
 /** The expiry enable toggle. `data-enabled` is the stable state hook. */
@@ -833,6 +847,9 @@ const EMPTY_DRAFT: CreateDraft = {
 export interface AdvancedDraft {
   capEnabled: boolean;
   maxUses: string;
+  /** How often the cap refills. `'total'` is the default and means what every
+   *  door minted before this control meant: one budget, never refilled. */
+  usePeriod: UsageCapPeriod;
   expiryEnabled: boolean;
   expiry: string;
 }
@@ -840,6 +857,7 @@ export interface AdvancedDraft {
 const EMPTY_ADVANCED_DRAFT: AdvancedDraft = {
   capEnabled: false,
   maxUses: '',
+  usePeriod: 'total',
   expiryEnabled: false,
   expiry: '',
 };
@@ -940,7 +958,11 @@ const boundContractSummary = (view: ContractDefinitionView): string => {
   const parts: string[] = [];
   if (view.max_uses !== undefined && view.max_uses !== null) {
     const remaining = view.uses_remaining ?? view.max_uses;
-    parts.push(`usage cap ${remaining}/${view.max_uses} left`);
+    // ⛔ THE WINDOW HAS TO BE IN THE SENTENCE. "3/5 left" read as a lifetime
+    //   total for as long as that was the only kind; now it is one of three, and
+    //   a number with no window is the same string for "3 left, forever" and
+    //   "3 left, until midnight".
+    parts.push(`usage cap ${remaining}/${view.max_uses} left${USAGE_CAP_PERIOD_REMAINING_SUFFIX[contractUsePeriod(view)]}`);
   }
   if (view.expiry_at !== undefined && view.expiry_at !== null) {
     parts.push(`expires ${new Date(view.expiry_at).toLocaleDateString()}`);
@@ -1556,6 +1578,9 @@ export const mountPermissionsPanel = (
     return {
       capEnabled: hasCap,
       maxUses: hasCap ? String(view.max_uses) : '',
+      // ⚠ Absent reads as `'total'`, the same way the substrate reads it — a door
+      //   minted before the period existed must seed the control it always had.
+      usePeriod: contractUsePeriod(view),
       expiryEnabled: hasExpiry,
       expiry: hasExpiry ? toDateInputValue(view.expiry_at as number) : '',
     };
@@ -1937,14 +1962,19 @@ export const mountPermissionsPanel = (
    *  only when it is ACTIVE. A dead (revoked / expired / exhausted) bound
    *  contract reports `null` limits so re-saving the same values still re-mints
    *  (restores a live limit) rather than short-circuiting as "no change". */
-  const liveLimitTuple = (): { maxUses: number | null; expiryAt: number | null } => {
+  const liveLimitTuple = (): {
+    maxUses: number | null;
+    expiryAt: number | null;
+    usePeriod: UsageCapPeriod;
+  } => {
     const view = boundContract();
     if (view === null || view.lifecycle_state !== 'active') {
-      return { maxUses: null, expiryAt: null };
+      return { maxUses: null, expiryAt: null, usePeriod: 'total' };
     }
     return {
       maxUses: view.max_uses ?? null,
       expiryAt: view.expiry_at ?? null,
+      usePeriod: contractUsePeriod(view),
     };
   };
 
@@ -1978,6 +2008,7 @@ export const mountPermissionsPanel = (
   const reconcileMcpDoorLimits = async (
     nextMaxUses: number | null,
     nextExpiryAt: number | null,
+    nextUsePeriod: UsageCapPeriod = 'total',
   ): Promise<void> => {
     const mint = opts.runMintContract;
     const rebind = opts.runUpdateInboundContract;
@@ -2009,8 +2040,14 @@ export const mountPermissionsPanel = (
     // dead bound contract reports null live limits, so clearing / re-saving
     // over it still proceeds).
     const live = liveLimitTuple();
+    // ⛔ THE PERIOD IS PART OF THE TUPLE. Leaving it out would make switching a
+    //   100-call door from "ever" to "per month" a silent no-op — the counts
+    //   match, so the save would short-circuit and the owner would be told it
+    //   saved while nothing changed.
     const capsUnchanged =
-      nextMaxUses === live.maxUses && nextExpiryAt === live.expiryAt;
+      nextMaxUses === live.maxUses
+      && nextExpiryAt === live.expiryAt
+      && nextUsePeriod === live.usePeriod;
     if (!wantLimit && priorId === null) return;
     if (priorId !== null && capsUnchanged) {
       return;
@@ -2038,6 +2075,10 @@ export const mountPermissionsPanel = (
           display_name: MCP_DOOR_CONTRACT_NAME,
           scope: MCP_DOOR_CONTRACT_SCOPE,
           ...(wantLimit && nextMaxUses !== null ? { max_uses: nextMaxUses } : {}),
+          // Only with a count: the rpc refuses a period that refills nothing.
+          ...(wantLimit && nextMaxUses !== null && nextUsePeriod !== 'total'
+            ? { use_period: nextUsePeriod }
+            : {}),
           ...(wantLimit && nextExpiryAt !== null ? { expiry_at: nextExpiryAt } : {}),
         });
         if (disposed) return;
@@ -2143,7 +2184,7 @@ export const mountPermissionsPanel = (
       }
       nextExpiryAt = ms;
     }
-    await reconcileMcpDoorLimits(nextMaxUses, nextExpiryAt);
+    await reconcileMcpDoorLimits(nextMaxUses, nextExpiryAt, d.usePeriod);
   };
 
   /** Best-effort clipboard copy of the one-time token. No-op when the
@@ -2556,7 +2597,7 @@ export const mountPermissionsPanel = (
     section.appendChild(
       renderAdvancedLimitRow({
         label: 'Use limit',
-        description: 'Shut it off after this many uses.',
+        description: usageCapPeriodDescription(state.advancedDraft.usePeriod),
         enabled: state.advancedDraft.capEnabled,
         toggleAttr: PERMISSIONS_MCP_DOOR_ADVANCED_CAP_TOGGLE_ATTR,
         onToggle: () =>
@@ -2566,6 +2607,32 @@ export const mountPermissionsPanel = (
         inputPlaceholder: 'e.g. 100',
         inputValue: state.advancedDraft.maxUses,
         onInput: (v) => updateAdvancedDraft('maxUses', v),
+        extra: () => {
+          const select = doc.createElement('select');
+          select.setAttribute(PERMISSIONS_MCP_DOOR_ADVANCED_CAP_PERIOD_ATTR, '');
+          select.className = 'perm-door-advanced-period';
+          for (const period of USAGE_CAP_PERIODS) {
+            const option = doc.createElement('option');
+            option.setAttribute('value', period);
+            option.textContent = USAGE_CAP_PERIOD_OPTION_LABEL[period];
+            if (period === state.advancedDraft.usePeriod) {
+              option.setAttribute('selected', '');
+            }
+            select.appendChild(option);
+          }
+          (select as unknown as { value: string }).value = state.advancedDraft.usePeriod;
+          if (busy) {
+            select.setAttribute('disabled', '');
+          } else {
+            select.addEventListener('change', () => {
+              const next = (select as unknown as { value: string }).value;
+              // Off-vocabulary can only come from a tampered DOM; the mint rpc
+              // refuses it anyway, so the control simply does not move.
+              if (isUsageCapPeriod(next)) updateAdvancedDraft('usePeriod', next);
+            });
+          }
+          return select;
+        },
         busy,
       }),
     );
@@ -2647,6 +2714,10 @@ export const mountPermissionsPanel = (
     inputPlaceholder: string;
     inputValue: string;
     onInput: (value: string) => void;
+    /** An extra control rendered beside the value, only when the limit is on.
+     *  The use-limit's period lives here: it is the cap's own axis, and a period
+     *  with no count refills nothing (the mint rpc refuses that pair outright). */
+    extra?: () => HTMLElement;
     busy: boolean;
   }): HTMLElement => {
     const rowEl = doc.createElement('div');
@@ -2709,6 +2780,7 @@ export const mountPermissionsPanel = (
         });
       }
       rowEl.appendChild(input);
+      if (args.extra !== undefined) rowEl.appendChild(args.extra());
     }
 
     return rowEl;

@@ -130,6 +130,30 @@ describe('D-148 P4 — broadcast subscriber', () => {
     expect(n).toBe(0);
   });
 
+  /** ⛔⛔ THE WILDCARD IS WHERE AN UNKNOWN KIND WOULD ESCAPE, AND THE OLD GUARD
+   *  LET IT. `isServerEvent` asserted `m is ServerEvent` off `typeof kind ===
+   *  'string'` alone, so `{ kind: 'not_a_kind' }` reached every `onAny`
+   *  listener typed as `(event: ServerEvent) => void`. It was invisible because
+   *  the per-kind `Map` misses an unknown kind anyway and this app registers no
+   *  wildcard listener in production — the test above proves the guard on
+   *  SHAPE, and nothing proved it on VOCABULARY.
+   *
+   *  🔑 `dispatch`'s own doc already promised this ("kind is in
+   *  `BROADCAST_EVENT_KIND_SET`"), and the bridge's self-described
+   *  "near-verbatim replica" already enforced it. The comment was the spec; the
+   *  code was one conjunct short. */
+  it('an inbound kind outside the contract vocabulary never reaches a listener', () => {
+    const sub = createBroadcastSubscriber();
+    let wildcard = 0;
+    sub.onAny(() => (wildcard += 1));
+    sub.dispatch({ kind: 'not_a_broadcast_kind', cursor: 1 });
+    sub.dispatch({ kind: 'execution.complete', cursor: 2 }); // a spec pseudo-name
+    expect(wildcard, 'an unknown kind must not be narrowed to ServerEvent').toBe(0);
+    // And a real kind still lands, so the guard is not simply refusing everything.
+    sub.dispatch({ kind: 'execution', recipe_id: 'r1', run_id: 'u1', op: 'progress', cursor: 3 });
+    expect(wildcard).toBe(1);
+  });
+
   it('listener throw is isolated; subsequent listeners still fire', () => {
     const sub = createBroadcastSubscriber();
     sub.on('execution', () => {

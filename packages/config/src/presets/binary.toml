@@ -11,8 +11,19 @@
 data_path    = "~/Library/Application Support/Recued"
 bind_host    = "127.0.0.1"
 bind_port    = 7717
-mcp_port     = 7718      # 0 to disable the MCP stdio / port surface
-webhook_port = 0          # 0 to disable the inbound-webhook surface
+# NEITHER OF THE NEXT TWO KEYS IS A PORT THE SERVER LISTENS ON. Despite
+# their names, the server binds exactly two sockets — bind_port above, and
+# the public port set in Settings. MCP and webhooks are PATHS on those.
+#
+# mcp_port is read by nothing at all: setting it to 0 does NOT turn MCP
+# off. MCP is on over LAN and off publicly until you switch it on in
+# Settings -> Server -> Exposure.
+mcp_port     = 7718
+# webhook_port is an ON/OFF SWITCH wearing a port's name. 0 turns the
+# inbound-webhook surface off; ANY non-zero value turns it on, and they all
+# behave identically. It does not open, bind, or forward 9000 -- deliveries
+# arrive on your public port like everything else.
+webhook_port = 0
 log_path     = "{data_path}/logs"
 
 [runtime]

@@ -96,7 +96,8 @@ export const workEntityUpsertDemoReply = (
   raw: unknown,
 ): { result?: unknown } | null => {
   if (method !== 'work_entity.upsert') return null;
-  if (new URLSearchParams(location.search).get('data') === 'work-entities-paged') return null;
+  const demo = new URLSearchParams(location.search).get('data');
+  if (demo === 'work-entities-paged' || demo === 'today') return null;
   const args = (raw ?? {}) as Record<string, unknown>;
   const entity = built(args, args.kind as WorkEntityKind);
   return entity === null ? null : { result: { entity } };

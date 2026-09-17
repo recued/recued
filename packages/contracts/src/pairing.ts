@@ -139,7 +139,7 @@ export const DEFAULT_SUBSCRIPTIONS: BroadcastEventKind[] = [
   'pair.list_changed',
   'reactive_fire',
   // D-149 P3 § A.3 — reception broadcast kinds; paired clients
-  // re-render Settings → Server → Reception and the listener's
+  // re-render Reception and the listener's
   // in-memory registry cache invalidates per Must Hold I-5.
   'reception.emergency_disabled',
   'reception.endpoint_changed',
