@@ -1,3 +1,4 @@
+import { csvCell as sharedCsvCell } from '@recued/contracts';
 import {
   createHash,
   randomBytes,
@@ -54,6 +55,7 @@ import {
   type RecordsOutboxOverview,
   type RecordsOutboxStatus,
   type RecordsOwnerRecordDiagnostics,
+  type RecordsImportConflictMode,
   type RecordsPackRef,
   type RecordsQuotaSnapshot,
   type RecordsRetentionPolicy,
@@ -496,6 +498,10 @@ export interface CreateRecordsStoreOptions {
   onImport?: (event: RecordsImportAudit) => void;
 }
 
+/** What one imported row did. `'skipped'` and `'updated'` are reachable only
+ *  under the matching `on_conflict` mode; a failure is a throw, never a value. */
+type RowOutcome = 'written' | 'replayed' | 'updated' | 'skipped';
+
 const fail = (
   code: ConstructorParameters<typeof RecordsContractError>[0],
   message: string,
@@ -822,7 +828,11 @@ const csvCell = (value: unknown): string => {
       : typeof value === 'object'
         ? canonicalJson(value)
         : String(value);
-  return `"${rendered.replace(/"/g, '""')}"`;
+  // ⚠ NEUTRALISATION ADDED 2026-09-18 via the shared `csvCell`; `alwaysQuote`
+  //   preserves this file's uniformly-quoted rows. Rendering stays local —
+  //   objects canonicalise here for a stable hash, which is this surface's
+  //   concern and not the escaper's.
+  return sharedCsvCell(rendered, { alwaysQuote: true });
 };
 
 const stateFromRow = (row: NamespaceRow): RecordsNamespaceState => {
@@ -1569,14 +1579,36 @@ export const createRecordsStore = (
     // no allow-list because it needs none, so there is no pair to look up:
     //
     //   - the installed op must BE an import, and
-    //   - the inner write must be a `create` on the import's OWN entity, and
+    //   - the inner write must be a `create` or an `update` on the import's OWN
+    //     entity, and
     //   - ⛔ EVERYTHING ELSE byte-identical to the installed binding.
     //
     // The entity is pinned rather than chosen, so unlike the batch this cannot
     // be ridden to reach a sibling entity even in principle.
+    //
+    // ⚠⚠ `update` JOINED THIS LIST FOR `on_conflict: 'overwrite'`, AND IT IS A
+    // REAL WIDENING — state it rather than bury it. Before, an import binding
+    // could only ever ADD rows; it can now MODIFY one that exists. What bounds
+    // it:
+    //   - NO INSTALLED OP HAS THIS BINDING. A recipe names an op id and the
+    //     catalog gateway derives the binding from what the pack installed, so
+    //     there is no `update` op to name — this shape is constructible only
+    //     inside `importCsv`'s own write loop, which builds it solely under
+    //     `on_conflict: 'overwrite'`.
+    //   - the entity is the import's own, and every other field is compared
+    //     whole, so it reaches no sibling entity and cannot alter owner, hashes
+    //     or pack version.
+    //   - the owner asked for it: an import that overwrites is the mode's
+    //     entire content, and the audit row carries `conflict_mode` beside
+    //     `updated` so the rewrite is legible afterwards.
+    // The alternative considered was making the pack DECLARE overwrite (an
+    // allow-list, as batch does) so the capability lives with the grant rather
+    // than the call. That is the stricter design and remains open; it was not
+    // taken here because the binding is unreachable from outside the store,
+    // which is the property the allow-list would be buying.
     const admittedInImport = exact !== undefined
       && exact.action === 'import'
-      && binding.action === 'create'
+      && (binding.action === 'create' || binding.action === 'update')
       && binding.entity === exact.entity
       && canonicalJson({ ...binding, action: exact.action }) === canonicalJson(exact);
     if (!exact
@@ -1987,6 +2019,13 @@ export const createRecordsStore = (
         fail('records_conflict', `record '${id}' already exists with different/currently edited values`, {
           version: safeNumber(existing.version, 'version'),
           revision: safeNumber(existing.revision, 'revision'),
+          // ⛔ THE ID IS CARRIED because on a natural_key entity the CALLER CANNOT
+          // DERIVE IT. The store computes it from the key's own fields, and a CSV
+          // import that wants to overwrite this row needs to address it — an
+          // `update` takes an id. Without this the overwrite mode could only be
+          // built by re-implementing `naturalId` in the importer, which is a
+          // second identity derivation one edit away from disagreeing with this one.
+          id,
         });
       }
       reserveMutation(currentNs, 1, payload, emits);
@@ -3024,6 +3063,24 @@ export const createRecordsStore = (
     if (call.args.dry_run !== undefined && typeof call.args.dry_run !== 'boolean') {
       fail('records_invalid', 'dry_run must be a boolean');
     }
+    /** ⛔⛔ A SURVIVING `csv_ref` MEANS THE DEREFERENCE NEVER RAN — fail closed,
+     *  loudly, rather than falling through to "import requires csv text".
+     *
+     *  The rewrite lives in the server wiring (`records/import-csv-ref.ts`, on the
+     *  `recordsOperationExecutor` closure), so the store only ever sees `csv`. A
+     *  host that wired the store WITHOUT that closure — a test harness, a future
+     *  second caller — would otherwise get the generic text refusal, which points
+     *  at the recipe author's args instead of at the missing composition. That is
+     *  the failure mode where a correct-looking absence reads as a bad call.
+     *
+     *  ⚠ Checked BEFORE the `csv` type check on purpose: with both present the
+     *  wiring already refused, so reaching here with both can only mean the same
+     *  missing-composition fault, and naming `csv_ref` is the useful half. */
+    if (call.args.csv_ref !== undefined && call.args.csv_ref !== null) {
+      fail('records_invalid',
+        'import received csv_ref at the store — the ref was never dereferenced '
+        + '(this host did not compose resolveRecordsImportCsvRef onto its records executor)');
+    }
     const csv = call.args.csv;
     if (typeof csv !== 'string') fail('records_invalid', 'import requires csv text');
     const writable = entityFor(schema, call.binding.entity).fields
@@ -3064,15 +3121,100 @@ export const createRecordsStore = (
     const writeBinding = {
       ...call.binding, action: 'create' as RecordsExecutionBinding['action'],
     };
-    const writeRow = (row: { id?: string; values: Readonly<Record<string, unknown>> }): boolean => {
-      const result = execute({
-        ...call, binding: writeBinding,
-        // ⛔ The id is OMITTED on a natural-key entity, not computed and discarded: the
-        // store's own derivation is then the single source of identity, shared with
-        // every manual `create` on the same entity.
-        args: { ...(row.id === undefined ? {} : { id: row.id }), values: row.values },
-      }) as { replayed: boolean };
-      return result.replayed;
+    /** Absent means `'fail'` — what this action did before the mode existed, so
+     *  no already-installed pack changes behaviour by upgrading. An unadmitted
+     *  value never reaches here: `validateCsvImportSpec` refused the spec above. */
+    const mode: RecordsImportConflictMode = spec.on_conflict ?? 'fail';
+    /** The fields a MAPPED COLUMN feeds, which is what `overwrite` is allowed to
+     *  rewrite. Computed once from the spec rather than per row: it is the same
+     *  set for every line, and deriving it from a row's own keys would silently
+     *  include the defaults merged into it. */
+    const fileFields = new Set(spec.columns.map((column) => column.field));
+    // ⛔⛔ AND NEVER THE NATURAL KEY. The store holds key fields IMMUTABLE and
+    // refuses an update that names one — even when the new value is identical,
+    // which here it always is: the key is why the row collided in the first
+    // place. A roster whose `key` column is mapped (every roster) would
+    // otherwise fail every single overwrite with "natural_key field is
+    // immutable", and the mode would be dead on arrival for exactly the entities
+    // that need it most.
+    for (const key of naturalKey ?? []) fileFields.delete(key);
+    const fileSet = (values: Readonly<Record<string, unknown>>): Record<string, unknown> =>
+      Object.fromEntries(Object.entries(values).filter(([key]) => fileFields.has(key)));
+    /** ⛔⛔ THE CONFLICT MODE IS APPLIED HERE, INSIDE THE ROW WRITE — not in the
+     *  per-row catch below. The fast path writes a whole slice in one
+     *  transaction and a single throw rolls the slice back; if 'skip' were
+     *  handled only in the catch, an owner with one differing row would pay a
+     *  full row-by-row replay of every slice containing one. Handling it where
+     *  the row is written means a skipped row never throws at all. */
+    const updateBinding = {
+      ...call.binding, action: 'update' as RecordsExecutionBinding['action'],
+    };
+    const writeRow = (row: { id?: string; values: Readonly<Record<string, unknown>> }): RowOutcome => {
+      try {
+        const result = execute({
+          ...call, binding: writeBinding,
+          // ⛔ The id is OMITTED on a natural-key entity, not computed and discarded: the
+          // store's own derivation is then the single source of identity, shared with
+          // every manual `create` on the same entity.
+          args: { ...(row.id === undefined ? {} : { id: row.id }), values: row.values },
+        }) as { replayed: boolean };
+        return result.replayed ? 'replayed' : 'written';
+      } catch (error) {
+        // Only an identity collision is this question. Every other refusal —
+        // quota, coherence, a field that will not validate — is a failure in
+        // every mode, and swallowing it here would report a clean import over
+        // rows that never landed.
+        if (mode === 'fail'
+          || !(error instanceof RecordsContractError)
+          || error.code !== 'records_conflict') throw error;
+        if (mode === 'skip') return 'skipped';
+
+        // ⛔ `upsert` CANNOT SERVE HERE: the store refuses it outright on a
+        // natural_key entity (its update half rewrites the immutable key
+        // components), and natural-key entities are precisely the ones whose ids
+        // the caller cannot supply. So overwrite is create-then-update, using the
+        // id and revision the conflict itself reported — the row we collided
+        // with, not one looked up again afterwards, which could be a different
+        // row by then.
+        const detail = error.details as
+          { id?: unknown; revision?: unknown; version?: unknown } | undefined;
+        const id = typeof detail?.id === 'string' ? detail.id : row.id;
+        if (id === undefined) throw error;
+        try {
+          execute({
+            ...call, binding: updateBinding,
+            args: {
+              id,
+              // ⛔⛔ ONLY THE FIELDS THE FILE CARRIES — `defaults` are deliberately
+              // NOT written here, and a planned row holds both merged together.
+              //
+              // `defaults` exist for ONE reason, stated at their declaration: a
+              // records `create` refuses a missing declared field, so a column
+              // nobody mapped needs a value or every row is rejected. They are a
+              // create-time necessity, NOT a claim about the row. Writing them on
+              // an overwrite would silently reset fields the file never mentioned
+              // — a roster's `enrolled_at: <now>` default would turn "when this
+              // person joined" into "when I last re-imported the list", on every
+              // run, and nothing in the result would say so.
+              //
+              // So overwrite means what it says: the FILE wins, over exactly what
+              // the file talks about.
+              set: fileSet(row.values),
+              ...(typeof detail?.version === 'number' ? { expected_version: detail.version } : {}),
+              ...(typeof detail?.revision === 'number' ? { expected_revision: detail.revision } : {}),
+            },
+          });
+          return 'updated';
+        } catch (inner) {
+          // ⛔ THE COLLISION THE FILE CANNOT RESOLVE. The row differs, but only in
+          // fields this file does not carry, so there is nothing for an overwrite
+          // to write. That is not a failure and it is not `replayed` (the row is
+          // NOT byte-identical) — the store's value survived the import, which is
+          // exactly what `skipped` means.
+          if (inner instanceof RecordsContractError && inner.code === 'records_noop') return 'skipped';
+          throw inner;
+        }
+      }
     };
 
     /** A refusal that is a fact about the NAMESPACE rather than about one row.
@@ -3089,6 +3231,8 @@ export const createRecordsStore = (
 
     let written = 0;
     let replayed = 0;
+    let updated = 0;
+    let skipped = 0;
     let failed = 0;
     let halted: string | undefined;
     const failures: RecordsImportFailure[] = [];
@@ -3108,9 +3252,11 @@ export const createRecordsStore = (
         // Fast path: one transaction per slice. Bounds the write lock and the
         // WAL, and a crash costs at most this slice — which stable ids make a
         // re-run able to finish.
-        const replays = db.transaction(() => slice.map(writeRow))();
-        written += replays.filter((was) => !was).length;
-        replayed += replays.filter(Boolean).length;
+        const outcomes = db.transaction(() => slice.map(writeRow))();
+        written += outcomes.filter((o) => o === 'written').length;
+        replayed += outcomes.filter((o) => o === 'replayed').length;
+        updated += outcomes.filter((o) => o === 'updated').length;
+        skipped += outcomes.filter((o) => o === 'skipped').length;
       } catch {
         // ⛔⛔ ONE BAD ROW MUST NOT COST ITS 99 NEIGHBOURS. A slice is atomic, so
         // the throw above rolled back rows that were perfectly fine — an
@@ -3125,7 +3271,11 @@ export const createRecordsStore = (
         for (const [offset, row] of slice.entries()) {
           if (halted !== undefined) break;
           try {
-            if (writeRow(row)) replayed += 1; else written += 1;
+            const outcome = writeRow(row);
+            if (outcome === 'replayed') replayed += 1;
+            else if (outcome === 'updated') updated += 1;
+            else if (outcome === 'skipped') skipped += 1;
+            else written += 1;
           } catch (error) {
             record(start + offset, row.id ?? '', error);
           }
@@ -3165,8 +3315,13 @@ export const createRecordsStore = (
       rows_read: plan.rows_read,
       written,
       replayed,
+      updated,
+      skipped,
       failed,
-      not_attempted: plan.rows_read - written - replayed - failed,
+      // ⚠ EVERY OUTCOME SUBTRACTED, or `not_attempted` absorbs the new ones and
+      // the stated invariant becomes an identity that cannot fail — a row that
+      // was overwritten would also be reported as never attempted.
+      not_attempted: plan.rows_read - written - replayed - updated - skipped - failed,
       unparsed: plan.unparsed.length,
       failures_sample: failures,
       // ⚠ Sliced, not re-built field by field: an enumerating copier here would
@@ -3207,6 +3362,7 @@ export const createRecordsStore = (
           principal: call.principal,
           duration_ms: now() - startedAt,
           result,
+          conflict_mode: mode,
         });
       } catch {
         /* audit-sink failures never break an import */

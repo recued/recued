@@ -89,7 +89,7 @@
       "datadog-v2-product-analytics-intake": 1
     },
     "composition_bytes": {
-      "datadog": 16851,
+      "datadog": 17239,
       "datadog-v1-observability": 99218,
       "datadog-v1-platform-integrations": 86816,
       "datadog-v2-observability": 63705,

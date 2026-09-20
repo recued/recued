@@ -40,6 +40,7 @@ import {
   anyPathLan,
   anyPathPublic,
   isAcknowledgementWellFormed,
+  isAcknowledgementEffectivelyOn,
   isValidPublicMcpAcknowledgementPhrase,
   isValidWsLockoutPhrase,
   requiredWsLockoutPhrase,
@@ -516,10 +517,13 @@ export const createExposureStateMachine = (
             current_resolution: current,
           })
         ) {
-          if (!isAcknowledgementWellFormed(state.public_mcp_acknowledgement)) {
-            return { ok: false, error: 'public_mcp_not_acknowledged' };
-          }
-          if (!state.public_mcp_acknowledgement.acknowledged) {
+          // ⚠ ONE rule, not two. These were two sequential guards returning
+          // the SAME error code — well-formed, then acknowledged — which is
+          // exactly `isAcknowledgementEffectivelyOn`. Split like that, a
+          // reader copying "the ack check" takes whichever half they see
+          // first, and that is how the webclient's pre-flight ended up
+          // checking only `acknowledged`.
+          if (!isAcknowledgementEffectivelyOn(state.public_mcp_acknowledgement)) {
             return { ok: false, error: 'public_mcp_not_acknowledged' };
           }
         }

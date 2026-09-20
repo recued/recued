@@ -2715,4 +2715,167 @@ describe('composeListeners — the port-mapping supervisor is wired to teardown'
     // must not move under a running socket.
     expect(SRC).toMatch(/const lanBindAddress = lanResolution\.bind_address;/);
   });
+
+  /** D-273 — the LIVE `public_port` move, driven through the seam production
+   *  actually uses.
+   *
+   *  ⛔⛔ THIS HANDLER WAS THE COMPOSITION ROOT NOBODY DROVE. The coordinator's
+   *  own move is covered (`d-273-coordinator-port-move.test.ts` calls
+   *  `apply({ports})` directly), and compose is covered for THREADING the
+   *  configured port at boot — but nothing fired `runtimeConfig.onChange`, so
+   *  neither branch of the handler that decides WHETHER to move, and what to do
+   *  when the move fails, had ever run.
+   *
+   *  ⚠ THE READBACK IS THE HANDLER'S OWN GUARD. `boundPublicPort` is a closure
+   *  local with no accessor from out here, but `if (wanted === boundPublicPort)
+   *  return` makes it observable: re-firing with the SAME port re-applies iff
+   *  the port was NOT adopted. That distinguishes the two branches without
+   *  reaching inside, and it is the exact invariant the code's own comment says
+   *  must never come back. */
+  describe('D-273 — a live public_port edit moves the listener', () => {
+    const composeWithConfigWatcher = async (opts: {
+      initialPort: number;
+      applyResult: (ports: unknown) => { public: { listening: boolean; failure?: string } };
+    }) => {
+      let port = opts.initialPort;
+      const listeners: Array<() => void> = [];
+      const runtimeConfig = {
+        get: vi.fn((key: string) => {
+          if (key === 'public_port') return port;
+          if (key === 'network.lan_bind_address') return '';
+          return undefined;
+        }),
+        onChange: vi.fn((fn: () => void) => {
+          listeners.push(fn);
+          return () => undefined;
+        }),
+      };
+      listenerMocks.coordinator.apply.mockImplementation(
+        async (args: { ports?: unknown }) => opts.applyResult(args.ports),
+      );
+      await composeListeners(makeOptions({
+        runtimeConfig,
+        exposureDeps: {
+          getMachine: () => ({
+            current: async () => ({ resolution: { ws: { lan: true, public: true } } }),
+          }),
+        },
+      }));
+      return {
+        /** Set the config key and fire every subscriber, as a real write does. */
+        setPort: async (next: number) => {
+          port = next;
+          for (const fn of listeners) fn();
+          // the handler's work is a detached async IIFE — let it settle
+          await new Promise((r) => setTimeout(r, 0));
+        },
+        applyCalls: () => listenerMocks.coordinator.apply.mock.calls.filter(
+          (c: unknown[]) => (c[0] as { ports?: unknown })?.ports !== undefined,
+        ),
+        /** What `network.local_urls` would hand a client, via networkDeps. */
+        advertisedPort: () => {
+          const cfg = (
+            listenerMocks.createServerHandlerSet.mock.calls as unknown as Array<[
+              Record<string, unknown>,
+            ]>
+          )[0]![0];
+          return (cfg.networkDeps as { getPublicPort: () => number }).getPublicPort();
+        },
+      };
+    };
+
+    afterEach(() => {
+      listenerMocks.coordinator.apply.mockReset();
+    });
+
+    it('⛔ a successful rebind ADOPTS the new port, and downstream follows', async () => {
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+      try {
+        const h = await composeWithConfigWatcher({
+          initialPort: 443,
+          applyResult: () => ({ public: { listening: true } }),
+        });
+        expect(h.advertisedPort()).toBe(443);
+
+        await h.setPort(8443);
+        expect(h.applyCalls()).toHaveLength(1);
+        expect(h.applyCalls()[0]![0]).toMatchObject({ ports: { public: 8443 } });
+        expect(
+          h.advertisedPort(),
+          'the move succeeded but clients are still told the old port',
+        ).toBe(8443);
+
+        // Re-firing with the SAME port must be a no-op — proof it was adopted.
+        await h.setPort(8443);
+        expect(
+          h.applyCalls(),
+          'an unchanged port re-bound the listener, dropping live connections for nothing',
+        ).toHaveLength(1);
+      } finally {
+        logSpy.mockRestore();
+      }
+    });
+
+    it('⛔⛔ a FAILED rebind keeps serving the old port and never advertises the new one', async () => {
+      // ⛔ THE ONE THING THAT MUST NOT COME BACK, per the code's own comment:
+      // "a failed rebind must not make three surfaces start advertising a port
+      // nothing is listening on. That was the original bug."
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+      try {
+        const h = await composeWithConfigWatcher({
+          initialPort: 443,
+          applyResult: () => ({ public: { listening: false, failure: 'EADDRINUSE' } }),
+        });
+
+        await h.setPort(8443);
+        expect(h.applyCalls()).toHaveLength(1);
+        expect(
+          h.advertisedPort(),
+          'a failed rebind advertised a port nothing is listening on',
+        ).toBe(443);
+
+        // Re-firing with the same port MUST retry — the port was not adopted,
+        // so the guard must not mistake the wish for the bind.
+        await h.setPort(8443);
+        expect(
+          h.applyCalls(),
+          'a failed move was remembered as done; the owner has no way to retry',
+        ).toHaveLength(2);
+
+        // ⚠ THE ONLY REPORT THE OWNER GETS IS THIS LINE, ON THE SERVER'S STDOUT.
+        // `server.setConfigField` already resolved OK and the settings field now
+        // reads 8443, so the config and the bind diverge with nothing on any
+        // client surface saying so. Pinned because it is currently the whole of
+        // "and says so" that the schema copy promises.
+        expect(warnSpy).toHaveBeenCalledWith(
+          expect.stringContaining('did not bind'),
+        );
+        expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('443'));
+      } finally {
+        warnSpy.mockRestore();
+        logSpy.mockRestore();
+      }
+    });
+
+    it('⚠ a config change that does not touch the port rebinds nothing', async () => {
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+      try {
+        const h = await composeWithConfigWatcher({
+          initialPort: 443,
+          applyResult: () => ({ public: { listening: true } }),
+        });
+        // Every subscriber is called on ANY key's write — the supervisor shares
+        // this seam — so the port handler must decide for itself.
+        await h.setPort(443);
+        expect(
+          h.applyCalls(),
+          'an unrelated config write rebound the public listener',
+        ).toHaveLength(0);
+      } finally {
+        logSpy.mockRestore();
+      }
+    });
+  });
 });
+

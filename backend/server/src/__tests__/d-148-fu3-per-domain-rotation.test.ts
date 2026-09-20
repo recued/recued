@@ -251,6 +251,50 @@ describe('D-148 FU3 — per-domain rotation revert verifier', () => {
     if (!verify.ok) expect(verify.reason).toBe('signature_invalid');
   });
 
+  it('⛔⛔ tampered reverted_to_fingerprint fails signature verification', () => {
+    // ⚠ FOUND BY MUTATION (2026-09-18). Dropping `reverted_to_fingerprint` from
+    // `signedBytesForCertDomainRotationReverted` reddened NOTHING, because the
+    // sender and the verifier share that canonicaliser: remove a field from
+    // both ends and every round-trip still agrees. A missing field is invisible
+    // to round-tripping BY CONSTRUCTION — only tampering can see it.
+    //
+    // ⛔ AND THIS IS THE FIELD THE EVENT EXISTS TO CARRY. A revert collapses the
+    // two-pin overlap onto exactly this fingerprint; a signature that does not
+    // commit to it lets anyone who can replay a valid revert choose WHICH cert
+    // the client pins afterwards, while the signature still verifies.
+    //
+    // ⚠ The sibling NOTICE has tamper tests for `domain` AND `next_fingerprint`;
+    // this event had one only for `domain`. One rule at two ends again, and the
+    // untested end is the one carrying the pin.
+    const identity = generateEd25519Keypair('server_identity_key');
+    const event = buildSignedDomainRevert(
+      identity,
+      'alice.recued.cloud',
+      'sha256:aaaa',
+      NOW + ONE_DAY,
+    );
+    event.reverted_to_fingerprint = 'sha256:attacker';
+    const verify = verifyCertDomainRotationRevertedEvent(event, identity.public_key_b64);
+    expect(verify.ok, 'the revert target is not covered by the signature').toBe(false);
+    if (!verify.ok) expect(verify.reason).toBe('signature_invalid');
+  });
+
+  it('⛔ tampered reverted_at fails signature verification', () => {
+    // The other field the signature commits to, and the one that decides when
+    // the collapsed pin becomes valid.
+    const identity = generateEd25519Keypair('server_identity_key');
+    const event = buildSignedDomainRevert(
+      identity,
+      'alice.recued.cloud',
+      'sha256:aaaa',
+      NOW + ONE_DAY,
+    );
+    event.reverted_at = NOW + ONE_DAY * 400;
+    const verify = verifyCertDomainRotationRevertedEvent(event, identity.public_key_b64);
+    expect(verify.ok).toBe(false);
+    if (!verify.ok) expect(verify.reason).toBe('signature_invalid');
+  });
+
   it('omitted reason canonicalises to null in signed bytes', () => {
     const identity = generateEd25519Keypair('server_identity_key');
     const event = buildSignedDomainRevert(
@@ -1172,3 +1216,27 @@ describe('D-148 FU3 — closed-list ratchets', () => {
     expect(notice.includes('cert_rotation_notice') && !notice.includes('domain')).toBe(false);
   });
 });
+
+/* ─── Mutation sweep of `cert-domain-rotation-verifier.ts`, 2026-09-18 ──────
+ *  24 mutations; 23 caught. The module is strongly covered — the field SWAP in
+ *  the notice's signed bytes, every apply-gate, and both revert targets all red
+ *  when touched.
+ *
+ *  🔑 THE ONE REAL GAP WAS INVISIBLE TO ROUND-TRIPPING, BY CONSTRUCTION.
+ *  Dropping `reverted_to_fingerprint` from the revert event's signed bytes
+ *  changed nothing any test could see, because the sender and the verifier
+ *  share `signedBytesForCertDomainRotationReverted` — remove a field from both
+ *  ends and every sign-then-verify still agrees. A field MISSING from a
+ *  signature can only be detected by TAMPERING with it after signing, never by
+ *  a round trip. ⇒ Every field a signature commits to needs its own tamper
+ *  case; the sibling NOTICE had them for `domain` and `next_fingerprint`, and
+ *  this event had one only for `domain` — the untested end being the one
+ *  carrying the pin.
+ *
+ *  EQUIVALENT — `args.pinned.next_fingerprint !== undefined &&` in the revert's
+ *  `matchesNext`. `reverted_to_fingerprint` is a required string, so
+ *  `string === undefined` is already false and the guard cannot change an
+ *  answer. Kept: it states the intent, and it is the check that would matter if
+ *  the field ever became optional.
+ * ────────────────────────────────────────────────────────────────────────── */
+

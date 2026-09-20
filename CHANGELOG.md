@@ -7,6 +7,54 @@ checkpoint was cut. One entry per published export; the machine-readable
 provenance for each — source commit, tree, payload digest, and what was omitted
 — lives in `.recued-public-export.json`.
 
+## 26.9.20 — 2026-09-20
+
+This release is mostly about files and about being called correctly. A recipe
+result can now draw a picture instead of describing one; a file made only in
+order to be emailed no longer has to be kept forever to be sent once; an import
+can be told what to do with a row that changed; and an assistant asking to run
+one of your operations can finally see what arguments it takes.
+
+### Added
+
+- **A recipe result can show a file, not just name one.** A step that produces an
+  image or a document can render it inline in the result, and a run-scoped file
+  can be read back for display without copying it into storage first. A preview
+  of a photograph you keep on disk no longer means a second copy of it.
+- **Mail attachments can be run-scoped.** Attaching a file used to mean storing it
+  permanently, because only a stored record could be attached. A temporary file
+  made during a run — a resized copy, a rendered document — can now be attached
+  directly and is reclaimed when the run ends. Nothing durable is created, so
+  there is nothing to clean up afterwards and nothing to accumulate.
+  Permanently-stored files attach exactly as before and are never touched.
+- **The send's record says what left.** Every attachment on an outgoing message
+  is recorded by name, size and content hash, whichever kind it was. Bytes
+  crossing the machine boundary should leave a trace of what they were.
+- **An import can be told what a changed row means.** Re-importing a list where
+  two rows have been corrected used to report two failures and stop, because
+  refusing was the only option. It can now refuse, skip, or overwrite, and the
+  result counts each separately.
+- **Imports can take a file produced earlier in the same run**, rather than only
+  text pasted into the request.
+- **Local tools report progress without being asked to.** Long-running local
+  programs are watched by sampling the work they are doing, so one that has
+  genuinely stopped can be told apart from one that is simply slow. Almost no
+  tool announces its own progress, so waiting for them to was never going to
+  work. It reports; it never kills anything.
+
+### Fixed
+
+- **Operations now tell an assistant what arguments they take.** Thousands of
+  operations described their arguments in their own definitions and advertised
+  none of them, so a model asked to call one had to guess names that were sitting
+  right there. They are published now.
+- **A pattern that can hang the process is refused when a pack is installed**,
+  rather than when it is first run against unlucky input.
+- **A port change that was accepted but never actually applied is surfaced**
+  instead of being left to look as though it worked.
+- **A retry delay was returned in the wrong unit**, making a short wait a very
+  long one.
+
 ## 26.9.17 — 2026-09-17
 
 Almost all of this release answers one complaint: a person who installs Recued

@@ -45,10 +45,10 @@
       "asana-admin-platform": 47
     },
     "composition_bytes": {
-      "asana": 67748,
-      "asana-work-management": 141377,
-      "asana-planning-capacity": 133617,
-      "asana-admin-platform": 71976
+      "asana": 67471,
+      "asana-work-management": 140040,
+      "asana-planning-capacity": 132520,
+      "asana-admin-platform": 71640
     },
     "official_pagination_operation_count": 64,
     "official_pagination_operation_ids": [

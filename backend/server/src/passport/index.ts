@@ -259,7 +259,22 @@ export type PassportVerifyResult =
  *  The signature commits to the projection — verifying a
  *  `support_redacted` payload as `migration_full` (without re-signing)
  *  fails because the canonical bytes carry the embedded `profile`
- *  field which is part of the signed payload. */
+ *  field which is part of the signed payload.
+ *
+ *  ⛔⛔ `ok: true` MEANS SELF-CONSISTENT, NOT AUTHENTIC. The key this verifies
+ *  against is the one the passport CARRIES, so anyone can mint a passport with
+ *  their own keypair and it will verify. This answers "was this bundle signed
+ *  by the holder of the key it names", never "is that key who you think".
+ *
+ *  ⇒ EVERY CALLER MUST BIND THE CARRIED KEY TO SOMETHING IT ALREADY TRUSTS.
+ *  `previewImportPassport` does it by recomputing the fingerprint of
+ *  `server_public_key` and requiring it to equal the claimed
+ *  `server_identity_fingerprint`; a caller with a pinned key should compare
+ *  against that instead. This was already gotten wrong once — Codex R26.4 Δ5
+ *  #1 found an import path that recorded a victim's claimed fingerprint as
+ *  proven provenance while the bundle was signed by the attacker's own key —
+ *  and the note explaining it lives at that call site, where somebody had
+ *  already worked it out. It belongs here, where the next caller looks. */
 export const verifyServerPassport = (
   passport: ServerPassportProjection,
 ): PassportVerifyResult => {

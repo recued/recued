@@ -6,9 +6,14 @@
  *  CC headers) + `data.calendar` (organizer + attendees) + the manual
  *  `contact.upsert` rpc.
  *
- *  `email` is the canonical key — every adapter-side write canonicalizes
- *  through `canonicalizeEmail` so `Bob Smith <bob@x.com>`,
- *  `<BOB@X.COM>`, and `bob@x.com (Bob)` all collapse onto one row.
+ *  `email` is the canonical key. Adapter-side writes PARSE the address out of
+ *  the header first (`parseAddress` / `splitAddressList`) and canonicalize the
+ *  result, so `Bob Smith <bob@x.com>`, `<BOB@X.COM>` and `bob@x.com (Bob)` all
+ *  collapse onto one row.
+ *
+ *  ⚠ That collapsing is the PIPELINE's, not `canonicalizeEmail`'s. This sentence
+ *  used to credit the function alone, and two of those three examples do not
+ *  survive it unparsed — see its own doc below.
  *  `first_seen` / `name` follow first-seen-wins discipline; manual
  *  `contact.upsert` is the one writer that may override `name` after
  *  the row exists.
@@ -522,7 +527,14 @@ export interface ParsedAddress {
 /** Split a mail header value into one entry per address. Naive on
  *  purpose — splits on commas outside double-quoted display names so
  *  `"Last, First" <a@b.com>, c@d.com` parses as two entries.
- *  Whitespace-only entries are filtered out. */
+ *  Whitespace-only entries are filtered out.
+ *
+ *  ⚠ SEMICOLON IS A SEPARATOR TOO. RFC 5322 uses it to terminate a group
+ *  (`team: a@b.com, c@d.com;`), and every CRM that stores an address list in a
+ *  flat text column — Salesforce `ToAddress` / `CcAddress`, HubSpot
+ *  `hs_email_to_email` — delimits with it. Splitting there is correct for both,
+ *  and a `;` inside a quoted display name or inside `<…>` is still protected
+ *  by the same state the comma uses. */
 export const splitAddressList = (header: string): string[] => {
   if (!header) return [];
   const parts: string[] = [];
@@ -537,7 +549,7 @@ export const splitAddressList = (header: string): string[] => {
     }
     if (ch === '<' && !inQuotes) inAngle = true;
     else if (ch === '>' && !inQuotes) inAngle = false;
-    if (ch === ',' && !inQuotes && !inAngle) {
+    if ((ch === ',' || ch === ';') && !inQuotes && !inAngle) {
       const trimmed = current.trim();
       if (trimmed) parts.push(trimmed);
       current = '';
@@ -589,6 +601,40 @@ export const parseAddress = (raw: string): ParsedAddress | null => {
   return out;
 };
 
+/** Every canonical email in a stored address LIST, in order.
+ *
+ *  ⛔⛔ THE FORM THAT BREAKS A HAND-ROLLED SPLITTER IS THE ORDINARY ONE.
+ *  `trim().toLowerCase()` over a `[;,\n]` split turns `Bob Smith <bob@x.com>`
+ *  into the string `"bob smith <bob@x.com>"` — which is then written as a
+ *  `data.contact` key and matches NO contact, because contacts are keyed by
+ *  `canonicalizeEmail`. The person is counted once under their real address and
+ *  again under the mangled one. Splitting on a bare `,` compounds it: the comma
+ *  in `"Smith, Bob" <bob@x.com>` is INSIDE the display name, so the address is
+ *  torn in half.
+ *
+ *  So: newlines first (a vendor column delimiter, never an RFC separator — a
+ *  FOLDED header continues on the next line and must not be split), then
+ *  `splitAddressList` for the quote- and angle-aware `,` / `;` pass, then
+ *  `parseAddress` per entry, which strips `<…>` and `(…)` wrappers and rejects
+ *  anything without a single `@`.
+ *
+ *  ⚠ DUPLICATES ARE KEPT. Callers dedupe into a `Set` where they need to, and
+ *  a de-duping list function would quietly change how many recipients a caller
+ *  counting entries believes there were. */
+export const parseAddressListEmails = (
+  raw: string | null | undefined,
+): string[] => {
+  if (raw === null || raw === undefined || raw === '') return [];
+  const out: string[] = [];
+  for (const line of raw.split('\n')) {
+    for (const entry of splitAddressList(line)) {
+      const parsed = parseAddress(entry);
+      if (parsed !== null) out.push(parsed.email);
+    }
+  }
+  return out;
+};
+
 /** Lowercase + trim + strip surrounding whitespace / angle brackets.
  *  Returns the canonical key used for the `email` column. Empty
  *  string when the input is unparseable so callers can early-out
@@ -598,6 +644,27 @@ export const parseAddress = (raw: string): ParsedAddress | null => {
  *  `bob@x.com` since the user generally treats the alias as a separate
  *  identity. Quoted local-parts are passed through unchanged (rare in
  *  practice; if they arrive, we trust the source to have escaped). */
+/** Canonical contact key for one ADDRESS.
+ *
+ *  ⛔⛔ RETURNS THE EMPTY STRING ON FAILURE — NEVER `null`. Five call sites in the
+ *  contact-IMPORT family guarded it with `=== null` / `!== null`, which against a
+ *  `string` return is vacuous: `not-an-email` and `a@b@c.com` sailed through and
+ *  were written as `email: ''`. Guard with a FALSY check (`if (!email)`), which is
+ *  what every site outside that family already does.
+ *
+ *  ⚠ IT IS NOT AN ADDRESS PARSER, and the header of this module used to imply it
+ *  was: of the three examples it gave, only `<BOB@X.COM>` collapses. Driven —
+ *  `Bob Smith <bob@x.com>` → `bob smith <bob@x.com>` and `bob@x.com (Bob)` →
+ *  `bob@x.com (bob)`, because the display name simply becomes part of the
+ *  local-part. Extract the address FIRST (`parseAddress` / `splitAddressList`,
+ *  which is what the mail derivation does) and canonicalize the result.
+ *
+ *  ⚠ NO UNICODE NORMALIZATION, deliberately unresolved rather than silently
+ *  assumed: `josé@x.com` written NFC and NFD are different keys, as are
+ *  `bob@münchen.de` and its punycode `bob@xn--mnchen-3ya.de`. Both are SPLIT
+ *  identities for one person. Left alone here because normalising is a storage
+ *  migration (existing rows are keyed on whatever form first arrived), not a
+ *  one-line change to this function. */
 export const canonicalizeEmail = (raw: string): string => {
   if (!raw || typeof raw !== 'string') return '';
   let s = raw.trim();

@@ -68,8 +68,21 @@ export type ConnectDeviceState = 'ready' | 'one_step';
 export interface ConnectDeviceFacts {
   /** `bootstrap.bind_port` — always bound. */
   lan_port: number;
-  /** `public_port` — serves the visitor page and the app together. */
+  /** `public_port` — serves the visitor page and the app together.
+   *  ⚠ THE PORT BEING SERVED, not the one configured. See
+   *  `public_port_requested`. */
   public_port: number;
+  /** D-273 — the port the owner asked for, when the server is not serving it.
+   *
+   *  ⛔ ITS PRESENCE IS THE WHOLE SIGNAL. The server sends it only when a live
+   *  `public_port` change was accepted and then failed to bind, so absent is the
+   *  normal case and means "nothing to say" — it is NOT a second port to render
+   *  beside the first. Never compare it yourself; the server already did.
+   *
+   *  ⚠ This is the only way the failure reaches a reader. The write succeeded,
+   *  the settings field shows the new number, and the server kept serving the
+   *  old one after warning to a log nobody has open. */
+  public_port_requested?: number;
   /** Hostnames that resolve to this server AND hold a live certificate.
    *
    *  ⚠ `null` MEANS NOBODY ASKED, and is not `[]`. Telling someone they have no
@@ -616,9 +629,25 @@ export const buildConnectDevicePlaces = (
             : {}),
         }
       : {}),
-    portNote:
-      `Uses port ${facts.public_port}. The same port shows your visitor page, `
-      + 'so there is only one to set up.',
+    portNote: facts.public_port_requested !== undefined
+      // ⛔ THE PORT LINE IS WHERE IT BELONGS, because this is the one place a
+      // reader is already looking at a port number and can see it is not the one
+      // they typed. It leads with the SERVED port — the address above is built
+      // from that, and it works — then names the wish, so the sentence reads as
+      // "this is fine, but your change did not take" rather than as an error
+      // about the address they are being handed.
+      //
+      // ⚠ IT NAMES THE LIKELY CAUSE AND THE WAY OUT. "Did not apply" alone sends
+      // the reader back to the settings field to retype a number that is already
+      // there — the one action guaranteed not to help, since the config already
+      // holds it.
+      ? `Still using port ${facts.public_port}. You asked for `
+        + `${facts.public_port_requested}, and the server could not open it — `
+        + 'something else on the machine is probably using it, or it needs '
+        + 'permission this server does not have. It kept the working port. '
+        + 'Pick a different one, or free that port and restart.'
+      : `Uses port ${facts.public_port}. The same port shows your visitor page, `
+        + 'so there is only one to set up.',
   };
 
   return [thisComputer, otherDevices];

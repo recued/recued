@@ -26,6 +26,9 @@ interface Harness {
 const newHarness = (opts: {
   supervisorMode?: import('@recued/contracts').SupervisorMode;
   onCrashHaltChange?: (active: boolean) => void;
+  /** Extra runtime-store entries, so a case can drive a key the way an
+   *  operator's `config.toml` would rather than via an explicit option. */
+  runtime?: Record<string, unknown>;
   crashLoopConfig?: { threshold?: number; window_s?: number };
   auditLog?: AuditLogStore;
   drainSteps?: CreateLifecycleOptions['drainSteps'];
@@ -37,6 +40,7 @@ const newHarness = (opts: {
     'supervisor.mode': 'dev',
     'lifecycle.drain_timeout_s': 5,
     'lifecycle.watch_config': false,
+    ...(opts.runtime ?? {}),
   });
   const exits: number[] = [];
   const lifecycle = createLifecycle({
@@ -295,5 +299,75 @@ describe('createLifecycle — lock', () => {
   it('exposes the instance lock rooted at data_path', () => {
     expect(h.lifecycle.lock.path).toContain(h.dataPath);
     expect(h.lifecycle.lock.path).toContain('recued-server.lock');
+  });
+});
+
+describe('\u26d4 crash-loop config comes from the runtime store, not only from an option', () => {
+  // \u26d4\u26d4 THE THREE `lifecycle.crash_loop_*` KEYS WERE INERT. Declared in
+  // `packages/config/src/schema.ts` with labels and defaults, settable in
+  // `config.toml`, listed in Settings \u2014 and nothing ever supplied
+  // `crashLoopConfig`, so `DEFAULT_CRASH_LOOP_CONFIG` always won.
+  //
+  // \ud83d\udd11 EVERY EXISTING CASE IN THIS FILE PASSES THE OPTION EXPLICITLY, which is
+  // exactly why the suite stayed green: the option's plumbing was exercised while
+  // `serve/compose-lifecycle.ts`, the only production caller, never used it. These
+  // cases drive the STORE instead, the way an operator actually sets it.
+  //
+  // \u26a0 And the option must still win, because the tests above depend on it.
+  it('reads window_s / threshold / auto_reset_after_s from the store', async () => {
+    const h = newHarness({
+      runtime: {
+        'lifecycle.crash_loop_window_s': 120,
+        'lifecycle.crash_loop_threshold': 3,
+        'lifecycle.crash_loop_auto_reset_after_s': 900,
+      },
+    });
+    try {
+      expect(h.lifecycle.crashLoop.config).toMatchObject({
+        window_s: 120, threshold: 3, auto_reset_after_s: 900,
+      });
+    } finally { h.close(); }
+  });
+
+  it('falls back to the defaults when the store carries none of them', async () => {
+    // The mirror: an unset key must not become 0 or undefined. The defaults
+    // (60 / 5 / 3600) are the schema defaults, which is what made the inert
+    // version invisible \u2014 nothing looked wrong until a value was changed.
+    const h = newHarness();
+    try {
+      expect(h.lifecycle.crashLoop.config).toMatchObject({
+        window_s: 60, threshold: 5, auto_reset_after_s: 3600,
+      });
+    } finally { h.close(); }
+  });
+
+  it('an explicit option still overrides the store', async () => {
+    const h = newHarness({
+      runtime: { 'lifecycle.crash_loop_threshold': 3 },
+      crashLoopConfig: { threshold: 9 },
+    });
+    try {
+      expect(h.lifecycle.crashLoop.config.threshold).toBe(9);
+    } finally { h.close(); }
+  });
+});
+
+describe('\u26d4 lifecycle.lock_file comes from the runtime store too', () => {
+  it('honours an override from the store', async () => {
+    const custom = join(tmpdir(), `recued-lock-${Date.now()}.lock`);
+    const h = newHarness({ runtime: { 'lifecycle.lock_file': custom } });
+    try {
+      expect(h.lifecycle.lock.path).toBe(custom);
+    } finally { h.close(); }
+  });
+
+  it('\u26a0 an EMPTY string means "use the data path", not a lock at ""', async () => {
+    // The schema's default IS the empty string and its description says empty
+    // uses `{data_path}/recued-server.lock`. A naive `?? store.get()` would
+    // bind a lock file named '' \u2014 the one value that must fall through.
+    const h = newHarness({ runtime: { 'lifecycle.lock_file': '' } });
+    try {
+      expect(h.lifecycle.lock.path).toMatch(/recued-server\.lock$/);
+    } finally { h.close(); }
   });
 });

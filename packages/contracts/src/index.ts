@@ -17,10 +17,13 @@ export { escapeSoqlStringLiteral, soqlQuotedLiteral, soqlLikeOperand } from './s
 export {
   isClosedRequestSchema,
   closedRequestSchemaDefinitionIssues,
+  closedRequestSchemaBacktrackingIssues,
+  probePatternForBacktracking,
   closedRequestSchemaViolation,
   isFileRefArgumentValue,
   FILE_REF_JSON_SCHEMA,
   projectClosedRequestSchemaForJsonSchema,
+  projectDescriptiveRequestSchemaForJsonSchema,
 } from './closed-request-schema.js';
 
 // Types — conditions
@@ -2198,10 +2201,16 @@ export type {
   RemergePromptRecord,
 } from './contact.js';
 export {
+  byteLengthUtf8,
+  truncateUtf8,
+  truncateUtf8WithMarker,
+} from './utf8-budget.js';
+export {
   CONTACT_MATERIALIZE_BATCH_SIZE,
   canonicalizeEmail,
   parseAddress,
   splitAddressList,
+  parseAddressListEmails,
   fallbackDisplayName,
   // D-205 #5 — the ContactSources an IMPORT stamps (observe refuses them; the C-2
   // cutover backfill skips them; only these may be stamped on a created row).
@@ -3494,6 +3503,7 @@ export {
   TELEGRAM_SUPPORTED_PORTS,
   isTelegramSupportedPort,
   isAcknowledgementWellFormed,
+  isAcknowledgementEffectivelyOn,
   PUBLIC_MCP_ACKNOWLEDGEMENT_PHRASE,
   isValidPublicMcpAcknowledgementPhrase,
   NETWORK_ERROR_CODES,
@@ -3501,6 +3511,7 @@ export {
   PATH_ROLES,
   PATH_FOR_ROLE,
   matchesPathRole,
+  isPathResolution,
   EXPOSURE_PRESETS,
   EXPOSURE_PRESET_PATH_MAP,
   WS_LOCKOUT_DISCONNECT_PHRASE,
@@ -3535,6 +3546,7 @@ export {
   enabledDdnsZones,
   zoneByLabel,
   resolveProDdnsHost,
+  resolveProDdnsHostIn,
   hostnameForHandle,
 } from './network.js';
 
@@ -6637,3 +6649,5 @@ export * from './chat-turn-queue.js';
 export * from './file-lifecycle.js';
 export * from './chat-delivery.js';
 export * from './chat-history-filters.js';
+
+export { csvCell, type CsvCellOptions } from './csv.js';

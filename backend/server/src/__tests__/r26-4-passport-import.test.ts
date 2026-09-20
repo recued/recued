@@ -475,3 +475,163 @@ describe('handlePassportImport', () => {
     expect(r.ok).toBe(true);
   });
 });
+
+/** R26.4 Δ5 — the identity-block gate, and the two documented Codex folds that
+ *  had no test.
+ *
+ *  ⚠ FOUND BY MUTATION (2026-09-18). `previewImportPassport`'s
+ *  `identity_block_incomplete` check is four separate conditions and NONE was
+ *  pinned — every fixture ships a complete block, so the whole gate could be
+ *  deleted green. Two of the survivors are fixes whose own comments describe
+ *  the bug they closed, which is the pattern: a thorough fix comment marks the
+ *  spot a test was never written.
+ *
+ *  ⚠ EACH CASE BREAKS ONE FIELD ON AN OTHERWISE-VALID PASSPORT and re-signs, so
+ *  the signature check cannot be what refuses it. Without the re-sign every one
+ *  of these would pass for the wrong reason. */
+describe('R26.4 Δ5 — the imported identity block is validated field by field', () => {
+  const brokenField = async (
+    mutate: (id: Record<string, unknown>) => void,
+  ): Promise<ReturnType<typeof previewImportPassport>> => {
+    const ik = generateEd25519Keypair('server_identity_key');
+    const pk = generateEd25519Keypair('publisher_identity_key');
+    const passport = await mkPassport(ik, pk);
+    const id = { ...(passport.identity as unknown as Record<string, unknown>) };
+    mutate(id);
+    return previewImportPassport(
+      resign({ ...passport, identity: id } as unknown as ServerPassportProjection, ik),
+    );
+  };
+
+  it('⛔ a missing or empty publisher_id is refused', async () => {
+    for (const value of [undefined, '', 42]) {
+      const out = await brokenField((id) => {
+        if (value === undefined) delete id.publisher_id;
+        else id.publisher_id = value;
+      });
+      expect(out.ok, `publisher_id=${JSON.stringify(value)} was imported`).toBe(false);
+      if (!out.ok) expect(out.reason).toBe('identity_block_incomplete');
+    }
+  });
+
+  it('⛔ a missing or empty publisher_identity_fingerprint is refused', async () => {
+    // ⚠ EMPTY IS THE INTERESTING ONE. This is the independently-rotated
+    // marketplace key (I-7) whose public key the passport does NOT carry, so it
+    // can never be bound cryptographically — the only thing standing between a
+    // blank claim and the provenance row is this length check.
+    for (const value of [undefined, '']) {
+      const out = await brokenField((id) => {
+        if (value === undefined) delete id.publisher_identity_fingerprint;
+        else id.publisher_identity_fingerprint = value;
+      });
+      expect(out.ok, `fingerprint=${JSON.stringify(value)} was imported`).toBe(false);
+      if (!out.ok) expect(out.reason).toBe('identity_block_incomplete');
+    }
+  });
+
+  it('⛔ a handle_history that is not an array is refused', async () => {
+    // It is copied and walked downstream; a non-array reaches `.map` and throws
+    // inside the commit path rather than refusing cleanly at the door.
+    for (const value of [undefined, 'not-an-array', {}, null]) {
+      const out = await brokenField((id) => {
+        if (value === undefined) delete id.handle_history;
+        else id.handle_history = value;
+      });
+      expect(out.ok, `handle_history=${JSON.stringify(value)} was imported`).toBe(false);
+      if (!out.ok) expect(out.reason).toBe('identity_block_incomplete');
+    }
+  });
+
+  it('⛔ a non-string current_handle is refused', async () => {
+    const out = await brokenField((id) => { id.current_handle = 7; });
+    expect(out.ok).toBe(false);
+    if (!out.ok) expect(out.reason).toBe('identity_block_incomplete');
+  });
+
+  it('⛔ the returned handle_history does not ALIAS the caller’s objects', async () => {
+    // The preview result is handed to the commit path, which records it as
+    // provenance. Sharing the entries means a later edit to the uploaded
+    // passport object rewrites what was recorded as proven history.
+    const ik = generateEd25519Keypair('server_identity_key');
+    const pk = generateEd25519Keypair('publisher_identity_key');
+    const passport = await mkPassport(ik, pk);
+    const out = previewImportPassport(passport);
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+    const source = (passport.identity as unknown as {
+      handle_history: Array<Record<string, unknown>>;
+    }).handle_history;
+    if (source.length === 0) return; // nothing to alias
+    const before = JSON.stringify(out.handle_history[0]);
+    source[0]!.handle = 'rewritten-after-preview';
+    expect(
+      JSON.stringify(out.handle_history[0]),
+      'the preview shared its handle-history entries with the uploaded passport',
+    ).toBe(before);
+  });
+
+  it('⛔ an UNHASHABLE public key is refused — by the SIGNATURE, before the binding', async () => {
+    // ⛔ THE CLAIM IS NULL TOO, AND THAT IS THE WHOLE POINT. The binding reads
+    // `signerFingerprint === null || signerFingerprint !== claimed`. With an
+    // unhashable key the left side is null — and against a STRING claim the
+    // right side already refuses, so a fixture claiming `'sha256:whatever'`
+    // passes whether or not the null arm exists. Two rules agreeing again.
+    //
+    // ⚠ A NULL CLAIM IS REACHABLE: the `identity_block_incomplete` gate checks
+    // publisher_id, current_handle, handle_history and
+    // publisher_identity_fingerprint — NOT `server_identity_fingerprint` — so
+    // an uploaded JSON carrying `null` there reaches the binding untouched.
+    // Without the null arm, `null !== null` is false and the passport IMPORTS:
+    // an unverifiable key bound to an empty claim, recorded as proven
+    // provenance.
+    const ik = generateEd25519Keypair('server_identity_key');
+    const pk = generateEd25519Keypair('publisher_identity_key');
+    const passport = await mkPassport(ik, pk);
+    const id = { ...(passport.identity as unknown as Record<string, unknown>) };
+    id.server_public_key = 'not-a-key';
+    id.server_identity_fingerprint = null;
+    const out = previewImportPassport(
+      resign({ ...passport, identity: id } as unknown as ServerPassportProjection, ik),
+    );
+    expect(out.ok, 'an unhashable public key was bound to a null claim').toBe(false);
+    // ⚠ AND THE REASON IS `signature_invalid`, NOT the binding's. Writing this
+    // test is what showed why: `verifyServerPassport` runs FIRST and verifies
+    // against `identity.server_public_key` itself, so a key the hasher cannot
+    // process is also a key that cannot verify anything. ⇒ The binding's
+    // `signerFingerprint === null` arm is UNREACHABLE — not redundant with a
+    // neighbouring condition, but shadowed by an earlier gate. It stays as
+    // defence for a future caller that binds without verifying first; no test
+    // can distinguish it, and this one records why rather than pretending to.
+    if (!out.ok) expect(out.reason).toBe('signature_invalid');
+  });
+
+  it('⚠ and a real key whose claimed fingerprint is simply WRONG is refused', async () => {
+    // The complement, so the case above cannot pass under "nothing ever binds".
+    const ik = generateEd25519Keypair('server_identity_key');
+    const pk = generateEd25519Keypair('publisher_identity_key');
+    const passport = await mkPassport(ik, pk);
+    const id = { ...(passport.identity as unknown as Record<string, unknown>) };
+    id.server_identity_fingerprint = 'sha256:' + 'f'.repeat(64);
+    const out = previewImportPassport(
+      resign({ ...passport, identity: id } as unknown as ServerPassportProjection, ik),
+    );
+    expect(out.ok).toBe(false);
+    if (!out.ok) expect(out.reason).toBe('identity_fingerprint_mismatch');
+  });
+
+  it('⛔ a MALFORMED signature reports a reason rather than throwing', async () => {
+    // ⚠ Codex R26.4 Δ5 #2, with no test. A throw here surfaces through the rpc
+    // layer as an opaque `internal` 500, which tells the operator nothing and
+    // looks like a server fault rather than a bad upload.
+    const ik = generateEd25519Keypair('server_identity_key');
+    const pk = generateEd25519Keypair('publisher_identity_key');
+    const passport = await mkPassport(ik, pk);
+    const out = previewImportPassport({
+      ...passport,
+      signature: '!!!not-base64!!!',
+    } as ServerPassportProjection);
+    expect(out.ok).toBe(false);
+    if (!out.ok) expect(['signature_malformed', 'signature_invalid']).toContain(out.reason);
+  });
+});
+

@@ -19,6 +19,7 @@ import {
   isExternallyExposableIngredient,
   isClosedRequestSchema,
   projectClosedRequestSchemaForJsonSchema,
+  projectDescriptiveRequestSchemaForJsonSchema,
   type DependencyReadAdmission,
   type IngredientManifest,
   type RiskTier,
@@ -47,13 +48,38 @@ export const RAW_OP_TOOL_INPUT_SCHEMA = {
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value);
 
-/** A closed operation request schema is both runtime-enforced and the best
- * available AI contract for a raw op. Merge the framework-owned connection
- * selector into that schema instead of advertising only `connection` and
- * hiding every real operation argument behind `additionalProperties: true`.
+/** An operation's request schema is the best available AI contract for a raw op.
+ * Merge the framework-owned connection selector into it instead of advertising
+ * only `connection` and hiding every real argument behind
+ * `additionalProperties: true`.
+ *
+ * ⛔⛔ A DESCRIPTIVE SCHEMA COUNTS TOO, AND USED NOT TO. This function once
+ * required `isClosedRequestSchema` and fell back to the permissive descriptor
+ * otherwise — so 3,539 operations whose parameters are fully documented in their
+ * pack advertised `{ connection, additionalProperties: true }` and nothing else.
+ * The model was told none of their arguments and had to guess names that were
+ * sitting right there in the manifest.
+ *
+ * 🔑 THE OPT-IN IT WAS KEYED ON ANSWERS A DIFFERENT QUESTION. `additionalProperties:
+ * false` means "the gateway will REFUSE an undeclared argument", and earning it
+ * requires every VALUE bounded — `maxLength` on each string, `maxItems` plus an
+ * `items` schema on each array, closure on each nested object. Vendor OpenAPI
+ * specs mostly do not state those bounds, and 1,746 operations accept a genuinely
+ * free-form object because the vendor means "arbitrary keys". None of that has
+ * anything to do with whether the argument NAMES are worth telling a model.
+ * Two separable purposes — say what the arguments are, and refuse the ones you
+ * did not say — were collapsed into one flag, and the documentation was the half
+ * that got dropped.
+ *
+ * ⚠ THE DESCRIPTIVE PATH ADVERTISES NO GUARANTEE. Its projection forces
+ * `additionalProperties: true`, which is not a concession but the literally
+ * accurate statement of what the dispatcher does: it admits anything. The door
+ * now describes the arguments it knows and admits the ones it does not — exactly
+ * the runtime's behaviour, which is the only thing a door may claim. A closed
+ * schema still projects as before and still carries its enforcement.
  *
  * The raw-op dispatcher reserves and strips `connection` before the catalog
- * gateway validates the operation args. A curated schema that itself declares
+ * gateway validates the operation args. A schema that itself declares
  * `connection` cannot coexist with that reservation, so retain the legacy
  * permissive descriptor for that malformed/unrepresentable edge rather than
  * silently overwriting the operation's declaration. */
@@ -61,12 +87,12 @@ const rawOpInputSchema = (
   manifest: IngredientManifest,
   requestSchema: unknown,
 ): unknown => {
-  if (!isClosedRequestSchema(requestSchema)
-    || !isRecord(requestSchema)
+  if (!isRecord(requestSchema)
     || !isRecord(requestSchema.properties)
     || Object.prototype.hasOwnProperty.call(requestSchema.properties, 'connection')) {
     return RAW_OP_TOOL_INPUT_SCHEMA;
   }
+  const closed = isClosedRequestSchema(requestSchema);
   const declaredRequired = Array.isArray(requestSchema.required)
     ? requestSchema.required.filter((value): value is string => typeof value === 'string')
     : [];
@@ -79,7 +105,9 @@ const rawOpInputSchema = (
   // verbatim — an unprojected one reaches a model as a type no validator knows.
   // Cli ops are fenced off this door, but `tool_function` packs carry file_ref
   // args too, so this is load-bearing rather than defensive.
-  const projected = projectClosedRequestSchemaForJsonSchema(requestSchema) as Record<string, unknown>;
+  const projected = (closed
+    ? projectClosedRequestSchemaForJsonSchema(requestSchema)
+    : projectDescriptiveRequestSchemaForJsonSchema(requestSchema)) as Record<string, unknown>;
   return {
     ...projected,
     properties: {

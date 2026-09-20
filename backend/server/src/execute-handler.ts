@@ -164,12 +164,13 @@ import { resolveOwnerSurfaceUrl } from './ask-landing-answer-link.js';
 import { raisePeerAdmissionAsk } from './peer-admission-ask.js';
 import type { PeerAdmissionStore } from './storage/peer-admission-store.js';
 import type { RecordsStore } from './records/index.js';
+import { composeRecordsOperationExecutor } from './records/import-csv-ref.js';
 import { readRootProjections } from './records/root-projection.js';
 import { emitRunOutcome, originTriggerIdFromContext } from './run-outcome-events.js';
 import type { DishStore } from './dish-store.js';
 import type { DishContextStore } from './dish-context-store.js';
 import type { InFlightRegistry } from './execution/in-flight-registry.js';
-import { cleanupRunScratch } from './execution/run-scratch.js';
+import { reclaimRunScratchUnlessResumable } from './execution/run-scratch.js';
 import { mergeManifestStepInput } from '@recued/ingredients';
 import {
   applyKernelOpRunnability,
@@ -3976,13 +3977,25 @@ const handleExecuteInner = async (
               //
               // Review F2 finding A — the attachment-presence test MUST mirror
               // EXACTLY what the kernel `mail-send` case treats as attachment-
-              // bearing: `coerceStringArray` (packages/ingredients/src/kernel.ts)
-              // accepts a SINGLE STRING (`attachments: 'file:abc'` → `['file:abc']`)
-              // as well as a non-empty array, and forwards it to
-              // `MailCollection.send` → `handleFileRead`. A test keyed on
-              // `Array.isArray(...)` alone would let a STRING attachment skip this
-              // probe and read file bytes ungated. So: a non-empty STRING or a
-              // non-empty ARRAY both count as attachment-bearing here.
+              // bearing. That is `normalizeMailSend`
+              // (packages/contracts/src/mail-compose/normalize.ts), which wraps a
+              // SINGLE value into an array (`attachments: 'file:abc'` →
+              // `['file:abc']`) and forwards it to `MailCollection.send` →
+              // `handleFileRead`. A test keyed on `Array.isArray(...)` alone would
+              // let a STRING attachment skip this probe and read file bytes
+              // ungated. So: a non-empty STRING or a non-empty ARRAY both count as
+              // attachment-bearing here.
+              //
+              // ⚠ THIS COMMENT NAMED `coerceStringArray` UNTIL 2026-09-20, AND THAT
+              // FUNCTION HAS NEVER TOUCHED ATTACHMENTS — it coerces `mail-move`'s
+              // label arrays and nothing else. The conclusion was right and the
+              // cited mechanism was wrong, which is the shape that survives review:
+              // an auditor checking the claim opens a function that does not do it.
+              //
+              // ⛔ AND THE ELEMENT TYPE STILL MUST NOT BE CHECKED HERE. Since
+              // D-172's attachment union an element may be a run-scoped
+              // `TempFileRef` rather than a record id; over-matching to "non-empty"
+              // keeps such a send inside this probe, which is the fail-closed side.
               if (
                 isOutboundSendSlug(slug)
                 && slug === 'mail-send'
@@ -5489,7 +5502,19 @@ const handleExecuteInner = async (
                 declaredGroups[groupId]?.operations.includes(operationId) === true
                 && grantedGroups.has(groupId));
             },
-            recordsOperationExecutor: (call) => deps.recordsStore!.execute(call),
+            // D-221 — the `csv_ref` dereference, composed HERE and nowhere else.
+            // This closure runs AFTER the catalog gateway has admitted the op
+            // (grant, approval, reachability, principal) and BEFORE the store,
+            // which is the only position where a ref can be read without either
+            // re-gating an already-approved intent or handing the records store
+            // a file reader. Every non-`import` call passes through untouched.
+            // `source_sha256` is folded onto the result because the audit row
+            // cannot carry it on this path — the gateway hashed the ref's
+            // run-scoped `path`, which names nothing once the run ends.
+            recordsOperationExecutor: composeRecordsOperationExecutor(
+              (call) => deps.recordsStore!.execute(call),
+              run_id,
+            ),
             ...(recordsExecutionLease || internal.records_event
               ? { recordsMutationContext: {
                   ...(recordsExecutionLease
@@ -8069,7 +8094,7 @@ const handleExecuteInner = async (
       // on a resumable pause: that run continues under the same `run_id` in a later
       // invocation, which performs the terminal sweep. Best-effort + idempotent +
       // a no-op when the run produced no temp output (the root never existed).
-      if (!resumablePause) cleanupRunScratch(run_id);
+      reclaimRunScratchUnlessResumable(run_id, resumablePause);
     };
     if (drainingExecution !== undefined) {
       // The caller-facing killed result intentionally stopped awaiting an

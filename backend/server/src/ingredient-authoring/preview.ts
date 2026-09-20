@@ -56,6 +56,7 @@ import {
   type OperationRiskTier,
   type PackOperationRow,
   type RestExecutionBinding,
+  truncateUtf8WithMarker,
 } from '@recued/contracts';
 import type { ResolvedCall } from '@recued/ingredients';
 import type { DraftStore } from './draft-store.js';
@@ -243,7 +244,9 @@ const boundAndRedact = (value: unknown): { value: unknown; truncated: boolean } 
   }
   if (Buffer.byteLength(serialized, 'utf8') > INGREDIENT_PREVIEW_MAX_OUTPUT_BYTES) {
     return {
-      value: `${serialized.slice(0, INGREDIENT_PREVIEW_MAX_OUTPUT_BYTES)}…`,
+      // ⛔ `slice` on a BYTE cap, plus a 3-byte `…` added on top of a budget
+      //   that was already spent — over by 3 on ASCII, by 3x on CJK.
+      value: truncateUtf8WithMarker(serialized, INGREDIENT_PREVIEW_MAX_OUTPUT_BYTES),
       truncated: true,
     };
   }

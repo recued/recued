@@ -2655,6 +2655,14 @@ export const bootstrapSettingsRoute = (
                   ...(typeof res?.public_port === 'number'
                     ? { public_port: res.public_port }
                     : {}),
+                  // D-273 — forwarded, never synthesised, same rule as the rest.
+                  // The server sends it only when a live port change failed to
+                  // bind; deriving it here by comparing against anything this
+                  // page knows would invent a divergence the server did not
+                  // report.
+                  ...(typeof res?.public_port_requested === 'number'
+                    ? { public_port_requested: res.public_port_requested }
+                    : {}),
                   // D-272 — forwarded, never synthesised. A server too old to
                   // send it leaves the key absent, which the card renders as
                   // "nobody said" rather than as "not exposed".

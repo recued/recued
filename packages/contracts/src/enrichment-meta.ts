@@ -12,6 +12,8 @@
  *  anything Recued already needs for compute, the user can also browse
  *  offline. Hard 8 KB cap per row. */
 
+import { byteLengthUtf8 } from './utf8-budget.js';
+
 // ────────────────────────────────────────────────────────────────
 // Constants
 // ────────────────────────────────────────────────────────────────
@@ -22,6 +24,7 @@
  *  round-trip the vendor for normal compute. Stays well within
  *  SQLite's healthy row-width range. Larger snapshots reject at upsert
  *  with `META_SNAPSHOT_TOO_LARGE`. */
+
 export const PLATFORM_REFERENCE_META_MAX_BYTES = 8192;
 
 /** D-128 — default reconciliation cadence for platform-reference
@@ -159,12 +162,4 @@ export const deserializeEnrichmentMeta = (raw: string | null): EnrichmentMeta | 
 // Helpers
 // ────────────────────────────────────────────────────────────────
 
-/** UTF-8 byte length of a string. Mirrors `Buffer.byteLength(s, 'utf8')`
- *  without pulling Node `Buffer` into the contracts package (which is
- *  dep-free and runs in browsers). The encoder approach is the
- *  shortest portable path. */
-const byteLengthUtf8 = (s: string): number => {
-  // Browsers + Node both expose TextEncoder globally; contracts ships
-  // ES2022 + DOM lib so this is always available.
-  return new TextEncoder().encode(s).length;
-};
+

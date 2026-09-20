@@ -78,6 +78,7 @@ import {
   type ScopeSearchSourceId,
   type ScopeSearchCandidate,
   recipeGrantEntry,
+  truncateUtf8,
 } from '@recued/contracts';
 import {
   confidenceShape,
@@ -2157,7 +2158,10 @@ const createMemorySearchHandler =
         const full = resolved.body;
         const overCap =
           full !== undefined && Buffer.byteLength(full, 'utf8') > MEMORY_FETCH_ONE_CAP_BYTES;
-        const body = overCap ? full!.slice(0, MEMORY_FETCH_ONE_CAP_BYTES) : full;
+        // ⛔ `slice` COUNTS UTF-16 UNITS, THE CAP COUNTS BYTES. A CJK body came
+        //   back at 3x `limit_bytes` — and `used_bytes` below measured the real
+        //   size, so the result openly reported itself over its own budget.
+        const body = overCap ? truncateUtf8(full!, MEMORY_FETCH_ONE_CAP_BYTES) : full;
         const entry = projectMemoryEntry(resolved.row, body, overCap);
         return {
           ok: true,

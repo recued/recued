@@ -9,7 +9,7 @@
  *  failure that must not be read as a verdict, and a value that is PULLED at
  *  render rather than held. Each of those is a place where "the fact is right"
  *  and "the page says the right thing" come apart. */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   CHECK_CONNECTION_LABEL,
@@ -204,6 +204,30 @@ describe('D-272/D-273 — ONE check action, several answers', () => {
     // worse than silence.
     expect(byAttr(m.host, CONNECT_DEVICE_CHECK_ERROR_ATTR)).toHaveLength(0);
   });
+
+  // ── Two mutants that survive here, deliberately left untested ───────────
+  //
+  // ⚠ RECORDED RATHER THAN COVERED, because three attempts at each produced
+  // tests that passed either way — which is the vacuity this file's other cases
+  // exist to avoid, and shipping one would be worse than shipping neither.
+  //
+  // 1. `if (!disposed` in the address-verdict block. REDUNDANT, not risky:
+  //    `render()` already no-ops after dispose, and the block's only other
+  //    effect is `clearTimeout` followed by `setTimeout` — a net-zero change to
+  //    the timer count, so even counting timers cannot see it. Its sibling
+  //    guard on the same condition (`askedAbout === addressToCheck()`) IS
+  //    tested, which is how this one looked covered.
+  //
+  // 2. `attemptedStatuses.length > 0`. UNREACHABLE: the list is empty only when
+  //    `runOutsideChecks` is unset and the address is null, and the button that
+  //    starts the check is offered only when one of those holds. Getting there
+  //    needs the address to become null between the click and the synchronous
+  //    re-read inside the handler. The guard is correct defence against
+  //    `[].every()` being vacuously true; there is just no state that reaches
+  //    it.
+  //
+  // ⇒ Both are defence behind a guarantee something else already makes. Saying
+  // so is more useful than a green test that asserts nothing.
 
   it('⚠ an error line ONLY when everything failed', async () => {
     const m = mount({

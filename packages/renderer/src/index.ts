@@ -83,6 +83,7 @@ import { renderLinkButtonBlock } from './link-button.js';
 import { renderJsonBlock } from './json.js';
 import { renderFilterBlock } from './filter.js';
 import { renderRecordFieldsBlock } from './record-fields.js';
+import { renderFilePreviewBlock } from './file-preview.js';
 import { renderBlockError } from './block-error.js';
 import type { SectionKind } from './types.js';
 
@@ -122,6 +123,7 @@ export const renderSection = (
     case 'copyable':    return renderCopyableBlock(block.data, block.label, context);
     case 'button':      return renderButtonBlock(block.data, context);
     case 'file_artifact': return renderFileArtifactBlock(block.data, context, block.label);
+    case 'file_preview': return renderFilePreviewBlock(block.data, block.label);
     case 'link_button': return renderLinkButtonBlock(block.data);
     case 'json':        return renderJsonBlock(block.data, block.label);
     case 'filter':      return renderFilterBlock(block.filter, context, block.label);

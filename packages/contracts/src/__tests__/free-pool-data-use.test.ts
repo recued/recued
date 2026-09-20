@@ -122,4 +122,42 @@ describe('T3-AUD-1 — freePoolDataUseNotice', () => {
     expect(text).toContain('effective 2026-03-23');
     expect(text).toContain('verified 2026-08-19');
   });
+
+  it('⛔⛔ a HOSTNAME whose first labels look private is NOT local — and it SPEAKS', () => {
+    // `isLocalHost` matched `h.startsWith('10.')` / `startsWith('192.168.')` /
+    // `/^172\.(\d{1,2})\./`, so these ordinary DNS names — which resolve
+    // wherever their owner points them — all classified `local`. Driven live.
+    for (const base_url of [
+      'https://10.evil.com/v1',
+      'https://192.168.example.com/v1',
+      'https://172.16.attacker.net/v1',
+      'https://10.0.0.5.nip.io/v1',   // five labels, every one numeric
+    ]) {
+      const use = resolveFreePoolDataUse({ provider: 'openai-compatible', base_url });
+      expect(use.kind, base_url).toBe('unreviewed');
+      // 🔑 THE ASSERTION THAT MATTERS IS THE OWNER-VISIBLE ONE. `local` is the
+      // one kind whose notice is `undefined`, and this suite's own words for
+      // that silence are "nothing leaves, so nothing to warn about". Checking
+      // only `.kind` would pass for any non-local kind; checking the notice
+      // pins that the owner is actually TOLD something.
+      expect(freePoolDataUseNotice(use), base_url).toContain('not reviewed');
+    }
+  });
+
+  it('⛔ and the fix did not over-tighten — real private literals stay local', () => {
+    // The failure mode of the repair is the mirror image: a parser strict
+    // enough to reject `10.evil.com` must still accept `10.0.0.4`, or every
+    // genuinely local endpoint starts nagging its owner and the notice gets
+    // trained away. Boundary values included deliberately.
+    for (const base_url of [
+      'http://10.0.0.4:8080/v1',
+      'http://10.255.255.255:8080/v1',
+      'http://192.168.1.50:11434/v1',
+      'http://172.16.0.9:8080/v1',
+      'http://172.31.255.254:8080/v1',
+    ]) {
+      expect(resolveFreePoolDataUse({ provider: 'openai-compatible', base_url }).kind, base_url)
+        .toBe('local');
+    }
+  });
 });

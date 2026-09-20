@@ -76,10 +76,19 @@ export const verifyBearerSecret = (input: {
   readonly stored_hmac: Buffer;
   readonly pepper: Buffer;
 }): boolean => {
-  // Defense in depth — surface a clear error rather than treat
-  // malformed input as a verify miss (an attacker could otherwise
-  // probe behavior by passing nonsense; we fail-loud at the boundary
-  // so the call site sees a substrate bug, not a silent reject).
+  // ⚠ THESE REJECT SILENTLY, AND THAT IS THE RIGHT CHOICE — the comment here
+  // used to claim the opposite ("surface a clear error … we fail-loud at the
+  // boundary … not a silent reject") while both branches return false. On an
+  // UNAUTHENTICATED endpoint a throw is the worse answer: it is a distinguishable
+  // response, so it hands an attacker exactly the behavioural probe the old
+  // sentence said it was preventing, and an uncaught one is a 500 on a public
+  // path. Everything else on this surface renders one identical failure page for
+  // every reason; this matches it.
+  //
+  // 🔑 The second check is also load-bearing, not hygiene: `timingSafeEqual`
+  // THROWS on unequal lengths, so a short/corrupt stored hash would become an
+  // exception rather than a miss. It is what makes the 32-byte precondition
+  // below true at the call, not just at row write.
   if (typeof input.submitted_secret !== 'string' || input.submitted_secret.length === 0) {
     return false;
   }

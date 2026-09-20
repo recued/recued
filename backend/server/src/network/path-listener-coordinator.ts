@@ -126,10 +126,21 @@ export const createProductionPathListenerCoordinator = (
   // silently keep the old addresses. Track them to detect the change and
   // fall back to a full rebuild instead.
   let activeBind: { lan: string; public: string } | null = null;
-  /** The ports the active set is bound on. ⚠ Tracked separately from
-   *  `activeBind` because a port change does NOT need the full rebuild an
-   *  address change does — the set rebinds the one listener in place. */
-  let activePorts: { lan: number | undefined; public: number | undefined } | null = null;
+  // ⛔ THERE IS NO `activePorts`, AND ITS ABSENCE IS DELIBERATE. One lived here,
+  // documented as "tracked separately from `activeBind` because a port change
+  // does NOT need the full rebuild an address change does" — and it was
+  // WRITE-ONLY: assigned on start, cleared on stop, recomputed on every apply,
+  // and read by nothing. Mutation exposed it: corrupting the value it carried
+  // forward changed no behaviour any test or caller could see.
+  //
+  // ⚠ The decision it looked like it informed is made by `active ?
+  // applyResolution : buildAndStart` — which keys on whether a set EXISTS, not
+  // on which ports it holds. `activeBind` is the real twin: it IS read, to
+  // detect an address change that needs a full rebuild.
+  //
+  // ⇒ State that looks like it tracks something, and does not, is worse than no
+  // state: the next reader budgets for a port-change decision that was never
+  // being made here.
   // Serialize rebinds — a concurrent `apply()` while a previous one is
   // still draining listeners would race the active reference + bind two
   // sets on the same port. The state machine's own concurrency guard
@@ -161,7 +172,6 @@ export const createProductionPathListenerCoordinator = (
     const statuses = await set.start();
     active = set;
     activeBind = { lan: bind_addresses.lan, public: bind_addresses.public };
-    activePorts = { lan: lan_port, public: public_port };
     lastStatuses = statuses;
     return statuses;
   };
@@ -170,7 +180,6 @@ export const createProductionPathListenerCoordinator = (
     const set = active;
     active = null;
     activeBind = null;
-    activePorts = null;
     if (set) {
       try {
         await set.stop();
@@ -237,12 +246,6 @@ export const createProductionPathListenerCoordinator = (
         const statuses = active
           ? await active.applyResolution(resolution, effectivePorts)
           : await buildAndStart(resolution, bind_addresses);
-        if (active && activePorts !== null) {
-          activePorts = {
-            lan: ports?.lan ?? activePorts.lan,
-            public: ports?.public ?? activePorts.public,
-          };
-        }
         lastStatuses = statuses;
         const lan = statuses.find((s) => s.listener === 'lan');
         const pub = statuses.find((s) => s.listener === 'public');

@@ -19,7 +19,9 @@
  *  ingest this way: one sync-level row, exact counts in `detail`, no per-record
  *  churn. The one deliberate divergence is reserve-class — see `RESERVE_ACTIONS`.
  */
-import type { RecordsImportResult, RecordsPackRef } from '@recued/contracts';
+import type {
+  RecordsImportConflictMode, RecordsImportResult, RecordsPackRef,
+} from '@recued/contracts';
 
 export const RECORDS_IMPORT_ACTION = 'records_import';
 
@@ -34,15 +36,21 @@ export interface RecordsImportAudit {
   readonly principal: string;
   readonly duration_ms: number;
   readonly result: RecordsImportResult;
+  /** ⛔ CARRIED EXPLICITLY, never inferred from the counts. `updated: 0,
+   *  skipped: 0` is the normal outcome of EVERY mode on a file that collided
+   *  with nothing, so the counts cannot say which policy was in force. Months
+   *  later "were rows of mine replaced by this file?" is answerable only if the
+   *  row says what the import was permitted to do. */
+  readonly conflict_mode: RecordsImportConflictMode;
 }
 
 /** ⛔ THE COUNTS ARE CARRIED WHOLE, not summarised to a status. A single
  *  `status: 'partial'` would be smaller and would answer none of the questions an
  *  owner actually asks months later — how many landed, how many were already
  *  held, how many were refused and why, how many cells could not be read. The
- *  arithmetic invariant (`rows_read === written + replayed + failed +
- *  not_attempted`) travels with them, so a reader can prove the row accounts for
- *  every line of the file. */
+ *  arithmetic invariant (`rows_read === written + replayed + updated + skipped +
+ *  failed + not_attempted`) travels with them, so a reader can prove the row
+ *  accounts for every line of the file. */
 export interface RecordsImportAuditDetail {
   source: 'records.import';
   publisher: string;
@@ -53,8 +61,16 @@ export interface RecordsImportAuditDetail {
   rows_read: number;
   written: number;
   replayed: number;
+  /** Rows that existed with different values and were OVERWRITTEN from the file.
+   *  The destructive outcome, and the reason `conflict_mode` is stored beside it. */
+  updated: number;
+  /** Rows that existed with different values and were LEFT ALONE. The file
+   *  disagreed with the store and the store won. */
+  skipped: number;
   failed: number;
   not_attempted: number;
+  /** What this import was permitted to do about a collision. */
+  conflict_mode: RecordsImportConflictMode;
   /** Cells that arrived non-empty and would not parse. ⚠ NOT a row count — those
    *  rows landed, with the field null rather than a fabricated zero. */
   unparsed: number;
@@ -65,7 +81,15 @@ export interface RecordsImportAuditDetail {
   /** ⛔ THE ONE DERIVED FIELD, and it is derived rather than trusted: an import
    *  that refused or skipped anything is NOT a clean import, whatever the
    *  dispatch row says. Stored so a query can find partial imports without
-   *  re-deriving the rule, and so the rule lives in one place. */
+   *  re-deriving the rule, and so the rule lives in one place.
+   *
+   *  ⚠ `skipped` COUNTS TOWARD IT; `replayed` and `updated` do not. The three
+   *  are easy to conflate and the distinction is the owner's question: a
+   *  `replayed` row means the store already agreed with the file, and an
+   *  `updated` row means the file won — in both, the file's content is what is
+   *  held now. A `skipped` row is the only outcome where the store still
+   *  DISAGREES with the file it was given, which is exactly what someone
+   *  reconciling a roster against its source months later is looking for. */
   partial: boolean;
 }
 
@@ -83,11 +107,15 @@ export const recordsImportAuditDetail = (
     rows_read: r.rows_read,
     written: r.written,
     replayed: r.replayed,
+    updated: r.updated,
+    skipped: r.skipped,
     failed: r.failed,
     not_attempted: r.not_attempted,
+    conflict_mode: event.conflict_mode,
     unparsed: r.unparsed,
     ...(r.halted_reason === undefined ? {} : { halted_reason: r.halted_reason }),
-    partial: r.failed > 0 || r.not_attempted > 0 || r.halted_reason !== undefined,
+    partial: r.failed > 0 || r.not_attempted > 0 || r.skipped > 0
+      || r.halted_reason !== undefined,
   };
 };
 

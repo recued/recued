@@ -140,6 +140,10 @@ const alwaysKernelKeys = [
   'csvStats',
   'filePersist',
   'filePutRef',
+  // D-274 — the READ sibling of filePersist, always wired for the same
+  // reason: it reads a temp ref the caller's own run already produced, so
+  // there is no capability to gate the wiring on.
+  'fileReadTemp',
   'fileSetScanStatus',
   // D-239 — the mail write-back four. Always-present ON PURPOSE: the
   // capability question ("may this mailbox be written?") belongs to the

@@ -38,7 +38,7 @@
 # ─────────────────────────────────────────────────────────────────
 
 # ── Stage 1: deps ────────────────────────────────────────────────
-FROM node:22-slim AS deps
+FROM node:24-slim AS deps
 RUN apt-get update && apt-get install -y --no-install-recommends \
       python3 make g++ \
     && rm -rf /var/lib/apt/lists/*
@@ -64,7 +64,7 @@ WORKDIR /opt/recued/backend/server
 RUN node scripts/build.mjs
 
 # ── Stage 3: runtime (thin launcher + seed) ──────────────────────
-FROM node:22-slim AS runtime
+FROM node:24-slim AS runtime
 RUN groupadd --system --gid 1001 recued \
     && useradd --system --uid 1001 --gid recued \
                --home /var/lib/recued recued \
@@ -121,7 +121,17 @@ RUN sh /tmp/stage-managed-seed.sh /tmp/release "$TARGETARCH" /opt/recued-seed \
 
 USER recued
 
+# ⛔ `RECUED_DISTRIBUTION_CHANNEL` IS A SECOND VARIABLE, NOT A RESTATEMENT OF
+# `RECUED_SUPERVISOR_MODE` — they happen to share the value `docker-thin`, and
+# this image set only the supervisor mode, so it READ as though the channel were
+# declared. It was not: `resolveDistributionChannel` fell to `'binary'`, and
+# `resolveUpdateBinaryPath` then returned `process.execPath` (the Node runtime)
+# instead of `join(RECUED_BIN_DIR, 'recued')` — with `RECUED_BIN_DIR` set right
+# here and never consulted for it. The baked image hit the same gap and
+# crashlooped on an EACCES writing the update lease beside root-owned
+# `/usr/local/bin/node`; see `backend/server/Dockerfile`.
 ENV RECUED_SUPERVISOR_MODE=docker-thin \
+    RECUED_DISTRIBUTION_CHANNEL=docker-thin \
     RECUED_BIN_DIR=/data/bin \
     RECUED_SEED_BIN=/opt/recued-seed/recued \
     NODE_ENV=production
@@ -129,7 +139,7 @@ ENV RECUED_SUPERVISOR_MODE=docker-thin \
 EXPOSE 7717 7718 7719
 VOLUME ["/data"]
 
-# ⛔ NOT `wget` — it is NOT preinstalled on node:22-slim, so this check always
+# ⛔ NOT `wget` — it is NOT preinstalled on node:24-slim, so this check always
 # failed and the container reported `unhealthy` while serving 200s. See the
 # longer note in the baked `Dockerfile`; both images had the same bug and the
 # same wrong comment. `node` is guaranteed present: the launcher runs under it,

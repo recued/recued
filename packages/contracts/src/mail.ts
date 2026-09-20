@@ -334,6 +334,26 @@ export interface MailSendAuditDetail {
    *  failed after SMTP succeeded — `MAIL_SEND_APPEND_FAILED`). Absent
    *  when the send had no warnings. */
   warnings?: Array<{ code: string; message: string }>;
+  /** ⛔ WHAT ACTUALLY LEFT, per attachment. Present whenever the send carried
+   *  any, for BOTH carriers.
+   *
+   *  D-172's I-4 made `handleFileRead` the one audited byte-egress path, so a
+   *  record-id attachment left a `file_content_read` row naming it. A RUN-SCOPED
+   *  temp attachment never touches that path — its bytes are the caller's own
+   *  run output, not warehouse content — and so left NO audit trace of the
+   *  attachment at all until this field. Bytes crossing the machine boundary owe
+   *  a record regardless of which side of the warehouse they came from.
+   *
+   *  `sha256` is the content hash (the same value a persisted copy carries as
+   *  `blob_hash`), so an attachment can be identified later without the bytes. */
+  attachments?: Array<{
+    filename: string;
+    size_bytes: number;
+    sha256: string;
+    /** `record` — a durable `data.file` the owner keeps; `run_scoped` — bytes
+     *  the caller produced in this run purely to send. */
+    carrier: 'record' | 'run_scoped';
+  }>;
   /** D-127 follow-on — originating recipe id when the call came from
    *  an engine-driven `mail-send` step. Absent when the call reached
    *  `MailCollection.send` directly (Settings → Connections probe,

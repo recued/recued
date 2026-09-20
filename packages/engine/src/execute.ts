@@ -1292,7 +1292,7 @@ const replayCachedEntry = async (
   setNamespaceValue(ctx.stores.step as Record<string, unknown>, stepId, cached.value);
   // Cache-hit replays bypass runStep, so the per-ctx size counter
   // wouldn't see the write otherwise — leaving a recipe that's 100%
-  // cache hits uncharged against the 10MB cap. Track it here too.
+  // cache hits uncharged against the context cap. Track it here too.
   trackContextSize(ctx, cached.value);
   const nextExpires = seed.cacheable ? nowMs + ttlSec * 1000 : undefined;
   if (store.touch) {

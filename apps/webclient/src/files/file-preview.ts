@@ -21,6 +21,88 @@ export const previewText = (bytes: Uint8Array): { text: string; truncated: boole
   return { text: visible, truncated: visible.length < text.length };
 };
 
+/** D-274 — the DECODE-AND-DRAW half of the viewer, split out so a surface that
+ *  is not a modal can draw the same thing. `openFilePreview` is now the dialog
+ *  shell around this; the recipes result panel mounts it inline.
+ *
+ *  ⛔ SPLIT RATHER THAN COPIED, deliberately. The size cap, the
+ *  `bytes.length !== size_bytes` integrity check, the object-URL lifetime and
+ *  the text/image/pdf branching are the parts that are easy to get subtly wrong
+ *  and hard to notice — a second implementation would drift from this one and
+ *  the drift would show up as "the inline preview shows something different
+ *  from the popup", which nobody reports as a bug.
+ *
+ *  The caller owns everything stateful: the container, the object-URL set (via
+ *  `urlFor`), the status line, and the generation guard. This function owns
+ *  only the fetch, the checks and the drawing, and hands back the metadata the
+ *  caller needs for its own chrome plus the bytes it may want to cache. */
+export interface FilePreviewBodyHost {
+  doc: Document;
+  /** Where the drawn element goes. Cleared by the CALLER before each attempt. */
+  body: HTMLElement;
+  /** Object-URL factory owned by the caller, so revocation stays with the
+   *  lifetime that created it. */
+  urlFor: (bytes: Uint8Array, mime: string) => string;
+  /** Status line updates. A no-op is fine for a surface without one. */
+  status: (text: string) => void;
+  signal: AbortSignal;
+  /** False once the caller has moved on — a late async draw must not land. */
+  isCurrent: () => boolean;
+  /** Async failures raised AFTER this resolves (the pdf renderer does this). */
+  onFailure: (failure: unknown) => void;
+}
+
+export interface FilePreviewBodyResult {
+  filename: string;
+  mime_type: string;
+  size_bytes?: number;
+  can_download: boolean;
+  /** Present only when bytes were decoded — absent when the server returned no
+   *  previewable content. */
+  bytes?: Uint8Array;
+}
+
+export const renderFilePreviewBody = async (
+  host: FilePreviewBodyHost,
+  target: FilePreviewTarget,
+  callers: FilePreviewCallers,
+): Promise<FilePreviewBodyResult> => {
+  const { doc, body } = host;
+  const file = await callers.preview({ record_id: target.record_id,
+    ...(target.selection_revision ? { selection_revision: target.selection_revision } : {}) });
+  if (file?.record_id !== target.record_id || typeof file.filename !== 'string' || typeof file.mime_type !== 'string') {
+    throw new Error('File previews are unavailable on this server.');
+  }
+  const meta: FilePreviewBodyResult = {
+    filename: file.filename, mime_type: file.mime_type,
+    ...(typeof file.size_bytes === 'number' ? { size_bytes: file.size_bytes } : {}),
+    can_download: file.can_download === true,
+  };
+  if (!host.isCurrent()) return meta;
+  if (!file.content) {
+    host.status(file.unavailable_reason ?? 'No preview is available. You can download this file.');
+    return meta;
+  }
+  if (file.content.bytes_b64.length > Math.ceil(FILE_PREVIEW_MAX_BYTES / 3) * 4) throw new Error('This file is too large to preview.');
+  const binary = doc.defaultView!.atob(file.content.bytes_b64);
+  const bytes = Uint8Array.from(binary, char => char.charCodeAt(0));
+  if (bytes.length > FILE_PREVIEW_MAX_BYTES || bytes.length !== file.size_bytes) throw new Error('The preview download was incomplete. Try again.');
+  meta.bytes = bytes;
+  if (file.content.kind === 'text') {
+    const text = previewText(bytes); const pre = doc.createElement('pre'); pre.textContent = text.text; pre.setAttribute('aria-label', 'File text');
+    body.append(pre);
+    host.status(text.truncated ? 'Showing the first 100,000 characters. Download the file to read the rest.' : '');
+  } else if (file.content.kind === 'image') {
+    const img = doc.createElement('img'); img.alt = file.filename; img.src = host.urlFor(bytes, file.mime_type); body.append(img);
+    try { await img.decode(); } catch { throw new Error('This image could not be displayed. You can download it.'); }
+    if (host.isCurrent()) host.status('');
+  } else if (file.content.kind === 'pdf') {
+    await renderPdfPreview(doc, body, bytes, host.signal, failure => { if (host.isCurrent()) host.onFailure(failure); });
+    if (host.isCurrent()) host.status('');
+  } else throw new Error('This file format has no preview yet. You can download it.');
+  return meta;
+};
+
 /** One shared, temporary viewer. It never attaches, imports, or sends a file.
  * The caller's lifetime retires late reads; closing frees URLs and PDF workers. */
 export const openFilePreview = (
@@ -92,31 +174,20 @@ export const openFilePreview = (
     const own = ++generation; release(); rendering = new AbortController();
     body.replaceChildren(); error.hidden = true; retry.hidden = true; download.disabled = true; status.textContent = 'Loading preview…';
     try {
-      const file = await callers.preview({ record_id: target.record_id,
-        ...(target.selection_revision ? { selection_revision: target.selection_revision } : {}) });
+      // D-274 — the dialog is now CHROME around the shared body renderer. Every
+      // check that used to live here (size cap, integrity, kind branching) is in
+      // `renderFilePreviewBody`, so the inline surface cannot drift from this one.
+      const meta = await renderFilePreviewBody({
+        doc, body, urlFor, signal: rendering.signal,
+        status: text => { if (alive && own === generation) status.textContent = text; },
+        isCurrent: () => alive && own === generation,
+        onFailure: failed,
+      }, target, callers);
       if (!alive || own !== generation) return;
-      if (file?.record_id !== target.record_id || typeof file.filename !== 'string' || typeof file.mime_type !== 'string') {
-        throw new Error('File previews are unavailable on this server.');
-      }
-      title.textContent = file.filename;
-      details.textContent = `${file.mime_type}${typeof file.size_bytes === 'number' ? ` · ${file.size_bytes.toLocaleString()} bytes` : ''}`;
-      download.disabled = !file.can_download;
-      if (!file.content) { status.textContent = file.unavailable_reason ?? 'No preview is available. You can download this file.'; return; }
-      if (file.content.bytes_b64.length > Math.ceil(FILE_PREVIEW_MAX_BYTES / 3) * 4) throw new Error('This file is too large to preview.');
-      const bytes = decode(file.content.bytes_b64);
-      if (bytes.length > FILE_PREVIEW_MAX_BYTES || bytes.length !== file.size_bytes) throw new Error('The preview download was incomplete. Try again.');
-      cached = { bytes, mime: file.mime_type, filename: file.filename };
-      if (file.content.kind === 'text') {
-        const text = previewText(bytes); const pre = doc.createElement('pre'); pre.textContent = text.text; pre.setAttribute('aria-label', 'File text');
-        body.append(pre); status.textContent = text.truncated ? 'Showing the first 100,000 characters. Download the file to read the rest.' : '';
-      } else if (file.content.kind === 'image') {
-        const img = doc.createElement('img'); img.alt = file.filename; img.src = urlFor(bytes, file.mime_type); body.append(img);
-        try { await img.decode(); } catch { throw new Error('This image could not be displayed. You can download it.'); }
-        if (alive && own === generation) status.textContent = '';
-      } else if (file.content.kind === 'pdf') {
-        await renderPdfPreview(doc, body, bytes, rendering.signal, failure => { if (alive && own === generation) failed(failure); });
-        if (alive && own === generation) status.textContent = '';
-      } else throw new Error('This file format has no preview yet. You can download it.');
+      title.textContent = meta.filename;
+      details.textContent = `${meta.mime_type}${typeof meta.size_bytes === 'number' ? ` · ${meta.size_bytes.toLocaleString()} bytes` : ''}`;
+      download.disabled = !meta.can_download;
+      if (meta.bytes) cached = { bytes: meta.bytes, mime: meta.mime_type, filename: meta.filename };
     } catch (failure) { if (alive && own === generation) failed(failure); }
   };
   download.addEventListener('click', () => {

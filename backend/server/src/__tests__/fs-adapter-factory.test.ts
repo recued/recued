@@ -5,7 +5,9 @@
  *  file-collection.test.ts — these tests only exercise the Phase 7
  *  wrapping layer. */
 
-import { mkdtempSync, existsSync, writeFileSync, rmSync, chmodSync } from 'node:fs';
+import {
+  mkdtempSync, existsSync, writeFileSync, rmSync, chmodSync, symlinkSync, readFileSync,
+} from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -151,6 +153,57 @@ describe('fs adapter factory.create (Phase 7 / D-110)', () => {
       ).rejects.toThrow(/absolute path not permitted/);
     } finally {
       await adapter.stop();
+    }
+  });
+
+  it('\u26d4\u26d4 HAZARD \u2014 a SYMLINK inside the root is followed, in AND out', async () => {
+    // \u26d4\u26d4 THIS PINS WHAT THE CODE DOES, NOT WHAT IT SHOULD DO. It is an OPEN
+    // QUESTION for the owner, recorded executably rather than left in whoever
+    // remembers it \u2014 see the `date-comparison-hazard` precedent.
+    //
+    // `ensureInsideRoot` checks the REQUESTED PATH STRING: it rejects an
+    // absolute path and rejects `..`, both pinned in the two tests around
+    // this one. It never resolves the path on disk, so a symlink that lives
+    // INSIDE the root and points OUTSIDE it satisfies every string check and
+    // the operation then runs on the target.
+    //
+    // \ud83d\udd11 THE ARGUMENT FOR LEAVING IT: a user who symlinks a folder into
+    // their file root did so on purpose, and `~/Documents/work -> /Volumes/Work`
+    // is an ordinary setup. Resolving links would silently drop those files.
+    //
+    // \ud83d\udd11 THE ARGUMENT AGAINST: the guard is NAMED `ensureInsideRoot` and its
+    // refusal says "path escapes root", which is containment language for a
+    // property it does not hold. And the sibling containment check in this
+    // same codebase \u2014 `execution/run-scratch.ts` \u2014 calls `realpathSync`
+    // BEFORE comparing, then refuses with "path escapes the run-scratch root".
+    // Two postures, neither stating why it differs from the other.
+    //
+    // \u26a0 What does NOT extend the reach: the caller cannot CREATE the link.
+    // `writeRecord` uses `writeFile`, which writes a regular file, so the
+    // symlink must already exist \u2014 placed by the user or another local
+    // process, not by a recipe or an MCP caller choosing a path.
+    const outside = mkdtempSync(join(tmpdir(), 'recued-fs-outside-'));
+    try {
+      writeFileSync(join(outside, 'secret.txt'), 'outside-the-root');
+      symlinkSync(outside, join(root, 'link'));
+      const adapter = fsAdapterFactory.create({
+        slug: 't3b',
+        config: { path: root },
+        onEvent: () => {},
+      }) as FileMutationCapable;
+      await adapter.start();
+      try {
+        // READ through the link succeeds \u2026
+        expect(String(await adapter.readRecord('link/secret.txt')))
+          .toBe('outside-the-root');
+        // \u2026 and so does WRITE, which lands on disk outside the root.
+        await adapter.writeRecord('link/planted.txt', new TextEncoder().encode('planted'));
+        expect(readFileSync(join(outside, 'planted.txt'), 'utf8')).toBe('planted');
+      } finally {
+        await adapter.stop();
+      }
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
     }
   });
 

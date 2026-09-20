@@ -144,6 +144,8 @@ import type {
 // owned: the panel snapshot, the filter/file state, and every async handler.
 // The panel's attribute vocabulary is re-exported below; tests import it from
 // here and there is no reason to churn them.
+import { renderFilePreviewBody, type FilePreviewCallers } from '../files/file-preview.js';
+
 import {
   RECIPES_ROUTE_ACTION_ATTR,
   RECIPES_ROUTE_RESULT_ACTION_ATTR,
@@ -165,6 +167,8 @@ import {
   triggerResultFileOpen,
   findResultTableEdit,
   renderRecipeResultPanel,
+  RECIPES_FILE_PREVIEW_MOUNT_ATTR,
+  RECIPES_FILE_PREVIEW_NAME_ATTR,
   resolvedFilterDescriptor,
   resultOutputSections,
   resultTableEdits,
@@ -553,6 +557,9 @@ export interface BootstrapRecipesRouteOptions {
   /** D-200 — paired-client authenticated preview/download for exact file
    * artifact result cards. Absent keeps metadata visible and controls disabled. */
   fileReadCaller?: RecipeFileReadCaller;
+  /** D-274 — needed to DRAW a `file_preview` block inline. Absent means the
+   *  block renders its fallback text instead of the picture; nothing breaks. */
+  filePreviewCallers?: FilePreviewCallers;
   toolCatalogCaller?: RecipesToolCatalogCaller;
   connectionsListCaller?: RecipesConnectionsListCaller;
   runnabilityCaller?: RecipesRunnabilityCaller;
@@ -2897,6 +2904,7 @@ export const bootstrapRecipesRoute = (
         // at all, rather than a dead one.
         opts.displayPrefsSetCaller === undefined ? undefined : displayMode,
       );
+      mountFilePreviews();
       resultActions = resultActionRegistry.actions;
       resultFiles = resultActionRegistry.files;
       if (resultRecordSearch !== undefined && shownPanel !== null) {
@@ -4250,6 +4258,72 @@ export const bootstrapRecipesRoute = (
   // `openResultPreviewWindow` moved to `recipe-result-panel.ts` so the packs
   // Use tab opens a file on exactly these terms. `doc` + the object-url map
   // are passed in rather than captured.
+  /** D-274 — pass two of a `file_preview` block. The string render left an
+   *  empty `<figure>` per file; this fills each one by calling the SHARED body
+   *  renderer, the same code path the modal viewer uses.
+   *
+   *  ⛔ Guarded by generation, because a repaint replaces the mounts underneath
+   *  an in-flight decode. A late draw that landed in a detached element would be
+   *  invisible; one that landed in a REUSED element would show the previous
+   *  run's photo next to this run's sentence, which is the failure that matters
+   *  in a review screen.
+   *
+   *  A mount that fails keeps its fallback text rather than emptying: an empty
+   *  box says nothing, and "could not load" beside a filename is actionable. */
+  let filePreviewGeneration = 0;
+  const filePreviewUrls = new Set<string>();
+  const releaseFilePreviews = (): void => {
+    for (const url of filePreviewUrls) URL.revokeObjectURL(url);
+    filePreviewUrls.clear();
+  };
+  const mountFilePreviews = (): void => {
+    const callers = opts.filePreviewCallers;
+    const mounts = typeof routeRoot.querySelectorAll === 'function'
+      ? Array.from(routeRoot.querySelectorAll(`[${RECIPES_FILE_PREVIEW_MOUNT_ATTR}]`))
+      : [];
+    if (mounts.length === 0) return;
+    filePreviewGeneration += 1;
+    releaseFilePreviews();
+    const own = filePreviewGeneration;
+    if (callers === undefined) return;   // fallback text stays; nothing breaks
+    const controller = new AbortController();
+    for (const mount of mounts) {
+      const element = mount as HTMLElement;
+      const recordId = element.getAttribute(RECIPES_FILE_PREVIEW_MOUNT_ATTR);
+      if (recordId === null || recordId === '') continue;
+      const filename = element.getAttribute(RECIPES_FILE_PREVIEW_NAME_ATTR) ?? undefined;
+      void (async () => {
+        const body = doc.createElement('div');
+        try {
+          await renderFilePreviewBody({
+            doc,
+            body,
+            urlFor: (bytes, mime) => {
+              const url = URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type: mime }));
+              filePreviewUrls.add(url);
+              return url;
+            },
+            status: () => {},
+            signal: controller.signal,
+            isCurrent: () => own === filePreviewGeneration,
+            onFailure: () => {},
+          }, { record_id: recordId, ...(filename !== undefined ? { filename } : {}) }, callers);
+          if (own !== filePreviewGeneration || !element.isConnected) return;
+          element.replaceChildren(body);
+        } catch (failure) {
+          if (own !== filePreviewGeneration || !element.isConnected) return;
+          const note = doc.createElement('p');
+          note.className = 'recipes-result-file-error';
+          note.setAttribute('role', 'alert');
+          note.textContent = failure instanceof Error
+            ? failure.message
+            : `Could not show ${filename ?? 'this file'}.`;
+          element.replaceChildren(note);
+        }
+      })();
+    }
+  };
+
   const openResultFile = async (
     fileId: string | null,
     rawMode: string | null,

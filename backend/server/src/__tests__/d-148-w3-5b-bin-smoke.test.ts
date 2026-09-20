@@ -14,6 +14,11 @@
  *  exercises the routing + listener lifecycle without those extras. */
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import {
+  EXPOSURE_PRESET_PATH_MAP,
+  PATH_ROLES,
+  type PathRole,
+} from '@recued/contracts';
 import { createCertChainHolder } from '@recued/server-tls';
 import { createServerHandlerSet } from '../server.js';
 import {
@@ -184,6 +189,102 @@ describe('D-148 W3.5b Codex P1 fold — bootstrap-derived initial exposure state
     expect(state.resolution.reception).toEqual({ lan: false, public: false });
   });
 
+  it('⛔⛔ pins the FULL nine-role table for every input combination', () => {
+    // ⚠ FOUND BY MUTATION. The tests above assert six of nine roles, and the
+    // module's own JSDoc table listed the same six — the test was written from
+    // the table, so `llm_gateway`, `ask` and `webclient` were unasserted in
+    // both. `llm_gateway` is not inert: it FLIPS PUBLIC with public_reachable,
+    // and nothing redded when that was changed in either direction.
+    //
+    // ⛔ THIS IS THE FIRST-BOOT EXPOSURE OF EVERY SELF-HOSTED SERVER. Pinned
+    // exhaustively rather than per-interesting-role: a tenth path role, or a
+    // changed default on any existing one, must be a deliberate edit here.
+    const T = true;
+    const F = false;
+    const expected: Record<string, Record<string, [boolean, boolean]>> = {
+      // key: `${webhook_port}/${public_reachable}` → role → [lan, public]
+      '0/false': {
+        health: [T, F], ws: [T, F], mcp: [T, F], llm_gateway: [T, F],
+        webhooks: [F, F], reception: [F, F], oauth: [F, F], ask: [F, F],
+        webclient: [T, F],
+      },
+      '0/true': {
+        health: [T, T], ws: [T, T], mcp: [T, F], llm_gateway: [T, T],
+        // ⛔ NO WEBHOOK PORT ⇒ NOT PUBLIC, even on a reachable server. The
+        // `webhooksLan &&` conjunct is the only thing enforcing it, and the
+        // port=0 test above passes `public_reachable: false`, so that conjunct
+        // never decided — dropping it left the suite green while publishing a
+        // listener for a service that is not running.
+        webhooks: [F, F],
+        reception: [F, F], oauth: [F, F], ask: [F, F], webclient: [T, F],
+      },
+      '443/false': {
+        health: [T, F], ws: [T, F], mcp: [T, F], llm_gateway: [T, F],
+        webhooks: [T, F], reception: [F, F], oauth: [F, F], ask: [F, F],
+        webclient: [T, F],
+      },
+      '443/true': {
+        health: [T, T], ws: [T, T], mcp: [T, F], llm_gateway: [T, T],
+        webhooks: [T, T], reception: [F, F], oauth: [F, F], ask: [F, F],
+        webclient: [T, F],
+      },
+    };
+    for (const webhook_port of [0, 443]) {
+      for (const public_reachable of [false, true]) {
+        const state = deriveBootstrapDerivedExposureState({ webhook_port, public_reachable });
+        const key = `${webhook_port}/${public_reachable}`;
+        const table = expected[key]!;
+        expect(
+          Object.keys(state.resolution).sort(),
+          'a path role was added or removed without deciding its first-boot posture',
+        ).toEqual(Object.keys(table).sort());
+        for (const [role, [lan, pub]] of Object.entries(table)) {
+          expect(
+            state.resolution[role as PathRole],
+            `${key} → ${role}`,
+          ).toEqual({ lan, public: pub });
+        }
+      }
+    }
+  });
+
+  it('⛔⛔ never exposes publicly anything the `public` preset keeps private', () => {
+    // ⛔ THE INVARIANT BEHIND THE TABLE. The bootstrap-derived state mirrors a
+    // legacy single-listener deployment; it must never be MORE exposed than
+    // the most permissive preset a user can pick, or first boot lands on a
+    // shape no preset can explain and the Settings grid shows Custom with no
+    // way back. `webclient` is the live example: deliberately public:false
+    // even under the `public` preset, so a bootstrap that widened it would be
+    // unreachable by any subsequent gesture.
+    const mostPermissive = EXPOSURE_PRESET_PATH_MAP.public;
+    for (const webhook_port of [0, 443]) {
+      for (const public_reachable of [false, true]) {
+        const state = deriveBootstrapDerivedExposureState({ webhook_port, public_reachable });
+        for (const role of PATH_ROLES) {
+          if (!state.resolution[role].public) continue;
+          expect(
+            mostPermissive[role].public,
+            `bootstrap (${webhook_port}/${public_reachable}) exposes ${role} publicly, `
+            + 'but the `public` preset keeps it private — no preset can reach this state',
+          ).toBe(true);
+        }
+      }
+    }
+  });
+
+  it('attributes the bootstrap-derived state to the boot path, not a runtime actor', () => {
+    // ⚠ FOUND BY MUTATION: nothing asserted the actor. `'system'` is what the
+    // state machine's own reapply() uses, so collapsing the two makes a
+    // first-boot row indistinguishable from a runtime re-apply in the audit
+    // trail — the one row that says "nobody chose this, it was derived".
+    const state = deriveBootstrapDerivedExposureState({
+      webhook_port: 443,
+      public_reachable: true,
+    });
+    expect(state.changed_by_client_id).toBe('system:bootstrap_derive');
+    expect(state.reason).toBe('webhook_port=443, public_reachable=true');
+  });
+
   it('labels mixed-shape states as `custom` (not one of the 3 presets)', () => {
     const state = deriveBootstrapDerivedExposureState({
       webhook_port: 443,
@@ -258,6 +359,37 @@ describe('D-148 W3.5b Codex P2 fold — LAN listener boot guard', () => {
       maintenanceResolution,
     );
     expect(verdict.fail).toBe(false);
+  });
+
+  it('⛔ passes for a PUBLIC-ONLY resolution — a fully-public server still boots', () => {
+    // ⚠ FOUND BY MUTATION: the maintenance fixture above is fully OFF, so
+    // `.some(r => r.lan)` and `.some(r => r.lan || r.public)` give the same
+    // answer for it — widening the gate to either bit was invisible. This is
+    // the input that separates them, and it is not hypothetical: an operator
+    // who turns every path public-only would find the server refusing to boot
+    // over a LAN listener its own resolution never asked for.
+    const publicOnly = {
+      health: { lan: false, public: true },
+      ws: { lan: false, public: true },
+      mcp: { lan: false, public: false },
+      llm_gateway: { lan: false, public: true },
+      webhooks: { lan: false, public: true },
+      reception: { lan: false, public: true },
+      oauth: { lan: false, public: true },
+      ask: { lan: false, public: true },
+      webclient: { lan: false, public: false },
+    };
+    const verdict = evaluateLanBindGate(
+      [
+        { listener: 'lan', listening: false, bind_address: null, failure: 'not requested' },
+        { listener: 'public', listening: true, bind_address: '0.0.0.0' },
+      ],
+      publicOnly,
+    );
+    expect(
+      verdict.fail,
+      'a resolution asking for no LAN path failed boot on the LAN listener',
+    ).toBe(false);
   });
 
   it('does NOT fail when only the public listener fails (LAN still up)', () => {

@@ -107,11 +107,37 @@ export const NO_OP_OP_DURATION_CLASSIFIER: OpDurationClassifier = {
  *  - `file-growth`    — output-file mtime+size polling (docling/ffmpeg)
  *  - `provider-event` — http/streaming chunk arrival
  *  - `silent`         — no signal; bounded only by a generous hard cap (progress
- *    detection does not apply). */
-export type ProgressContract = 'heartbeat' | 'file-growth' | 'provider-event' | 'silent';
+ *    detection does not apply).
+ *  - `resource`       — D-274: forward progress inferred from OS accounting of
+ *    the process tree (CPU time + RSS). Needs NO cooperation from the tool, so
+ *    it is the implicit default for a cli binding that declares nothing.
+ *    ⛔ HOST-ASSIGNED, NEVER AUTHORED — see `AuthorableProgressContract`. */
+export type ProgressContract = 'heartbeat' | 'file-growth' | 'provider-event' | 'silent' | 'resource';
 
-/** Closed set of every valid `ProgressContract`, in canonical order. */
+/** Closed set of every progress contract the RUNTIME can evaluate, in canonical
+ *  order. ⚠ This is NOT the set a manifest may declare — see
+ *  `AUTHORABLE_PROGRESS_CONTRACTS`. Deriving an accept-set from this list is
+ *  what makes `resource` authorable by accident (D-274 § 6a). */
 export const PROGRESS_CONTRACTS: readonly ProgressContract[] = [
+  'heartbeat',
+  'file-growth',
+  'provider-event',
+  'silent',
+  'resource',
+] as const;
+
+/** D-274 § 6a — what a MANIFEST may declare. Deliberately excludes `resource`:
+ *  that contract is assigned by the host when a binding declares nothing, it
+ *  carries no `stall_ms`, and the separately-deployed cloud publish gate
+ *  (`publish-pack.ts`) has no knowledge of it. A server accepting it locally
+ *  while the door refuses the publish is the failure this split prevents —
+ *  self-hosted means there is no deploy order to rely on.
+ *
+ *  ⇒ Admitting `resource` here is a CLOUD change, not a contracts change. */
+export type AuthorableProgressContract = Exclude<ProgressContract, 'resource'>;
+
+/** Closed set of every AUTHORABLE progress contract, in canonical order. */
+export const AUTHORABLE_PROGRESS_CONTRACTS: readonly AuthorableProgressContract[] = [
   'heartbeat',
   'file-growth',
   'provider-event',

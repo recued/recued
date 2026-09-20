@@ -24,7 +24,7 @@ import {
   classifyHttpError,
   downloadToFile,
   postJson,
-  retryAfterSeconds,
+  retryAfterMs,
   type HttpPostOutcome,
 } from './http.js';
 import type {
@@ -124,7 +124,7 @@ const handleTelegramOutcome = (
         ? classifyHttpError(outcome.status)
         : outcome.kind;
     const retryAfter = outcome.kind === 'http_error' ? Math.max(outcome.retry_after_ms ?? 0,
-      retryAfterSeconds((outcome.json as TelegramEnvelope | undefined)?.parameters?.retry_after) ?? 0) : 0;
+      retryAfterMs((outcome.json as TelegramEnvelope | undefined)?.parameters?.retry_after) ?? 0) : 0;
     return { ok: false, error: { kind, detail: `Telegram: ${outcome.detail}`,
       ...(retryAfter > 0 ? { retry_after_ms: retryAfter } : {}),
     } };
@@ -139,7 +139,7 @@ const handleTelegramOutcome = (
       error: {
         kind: env.error_code === 429 ? 'rate_limited' : 'vendor_error',
         detail: `Telegram: ${env.description ?? 'unknown_error'}`,
-        ...(retryAfterSeconds(env.parameters?.retry_after) !== undefined ? { retry_after_ms: retryAfterSeconds(env.parameters?.retry_after)! } : {}),
+        ...(retryAfterMs(env.parameters?.retry_after) !== undefined ? { retry_after_ms: retryAfterMs(env.parameters?.retry_after)! } : {}),
       },
     };
   }

@@ -55,9 +55,9 @@
       "dropbox-sign-platform-admin": 28
     },
     "composition_bytes": {
-      "dropbox-sign": 22980,
-      "dropbox-sign-signing-workflows": 78317,
-      "dropbox-sign-platform-admin": 32878
+      "dropbox-sign": 22991,
+      "dropbox-sign-signing-workflows": 78331,
+      "dropbox-sign-platform-admin": 32902
     },
     "risk_counts": {
       "read": 31,

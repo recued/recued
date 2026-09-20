@@ -34,7 +34,7 @@ import {
   applyPathResolution,
   applyPreset,
   deriveLabel,
-  isAcknowledgementWellFormed,
+  isAcknowledgementEffectivelyOn,
   requiredWsLockoutPhrase,
   type DerivedPresetLabel,
   type ExposurePreset,
@@ -45,14 +45,6 @@ import {
   type PublicMcpAcknowledgement,
   type WsLockoutPhrase,
 } from '@recued/contracts';
-
-/** Codex W3.8 P2 #1 fold — a record with `acknowledged: true` but no
- *  canonical phrase is malformed; the contracts predicate treats it as
- *  unacknowledged. The renderer must mirror that so the ack-gate flag
- *  + the projection helper don't trip the server with a stale boolean.
- *  Reduces to `acknowledged && well-formed`. */
-const isAcknowledgementEffectivelyOn = (ack: PublicMcpAcknowledgement): boolean =>
-  ack.acknowledged && isAcknowledgementWellFormed(ack);
 
 /** Per-preset user-facing copy. The renderer is the localization seam —
  *  the substrate never assembles user-facing strings. */
@@ -442,6 +434,10 @@ export const projectPresetWsLockout = (args: {
   active_ws_connections: number;
 }): WsLockoutPhrase | null => {
   const projected = applyPreset(args.preset, args.acknowledgement);
+  // ⚠ REDUNDANT WITH `requiredWsLockoutPhrase` BELOW, which opens with the same
+  // test (network.ts) — mutation confirms deleting this line is invisible. Kept
+  // as a readable early-out; recorded so a surviving mutant here is not read as
+  // a coverage gap.
   if (projected.ws.lan || projected.ws.public) return null;
   if (!args.current_resolution.ws.lan && !args.current_resolution.ws.public) {
     return null;

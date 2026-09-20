@@ -175,6 +175,14 @@ export interface ActiveExecutionEntry {
   started_at: number;
   slot_acquired_at?: number;
   progress: { contract: ProgressContract; last_signal_at?: number; stalled: boolean };
+  /** D-274 §8 — the heavy call running under this run right now, so a live
+   *  readout can show TWO clocks: the recipe's elapsed and this op's. `started_at`
+   *  is the RUN's, which for a multi-step recipe says nothing about how long the
+   *  op a human is staring at has been going. Absent when no subprocess is
+   *  attached (an external-io / AI-only run, or between steps). Bounded,
+   *  host-derived, safe to project into an agent turn — the op KEY only, never
+   *  argv, cwd, config or output. */
+  current_op?: { op: string; started_at: number; pid: number };
   kill: KillDescriptor;
 }
 

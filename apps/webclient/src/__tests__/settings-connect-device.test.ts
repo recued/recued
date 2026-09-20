@@ -571,3 +571,57 @@ describe('D-273 audit P2-9 — a mapping on another port is not a success', () =
       .toContain('Recued opened this port on your router');
   });
 });
+
+/** D-273 — the port the owner asked for, when the server could not move to it.
+ *
+ *  ⛔ THIS IS THE WHOLE OWNER-FACING REPORT OF A FAILED LIVE PORT CHANGE.
+ *  `server.setConfigField` resolves as soon as the key is persisted; the rebind
+ *  runs after the reply, and on failure the server keeps the working port and
+ *  writes one `console.warn`. The settings field then reads the NEW number while
+ *  this page reads the OLD one — two surfaces disagreeing, with nothing to say
+ *  why, until the server started sending `public_port_requested`. */
+describe('a port change that did not take', () => {
+  it('⛔⛔ says the change did not apply, and leads with the port that WORKS', () => {
+    const [, others] = buildConnectDevicePlaces(
+      certified({ public_port: 443, public_port_requested: 8446 }),
+    );
+    const note = others!.portNote;
+    // The served port first: the address above is built from it and it works.
+    expect(note).toContain('443');
+    expect(note).toContain('8446');
+    expect(note.indexOf('443')).toBeLessThan(note.indexOf('8446'));
+    // ⛔ IT MUST NOT READ AS AN ERROR ABOUT THE ADDRESS BEING HANDED OVER. That
+    // address is fine; what failed is the setting.
+    expect(others!.state).toBe('ready');
+    expect(others!.url).toContain('home.example.com');
+    expect(others!.url).not.toContain('8446');
+  });
+
+  it('⛔ names a way out that is not "retype the number you already typed"', () => {
+    // ⚠ The config ALREADY holds the requested port, so "your change did not
+    // apply" on its own sends the reader back to a field that looks correct and
+    // to an action guaranteed not to help.
+    const [, others] = buildConnectDevicePlaces(
+      certified({ public_port: 443, public_port_requested: 8446 }),
+    );
+    expect(others!.portNote).toMatch(/different|free that port/i);
+  });
+
+  it('says nothing at all when the ports agree', () => {
+    // ⛔ ABSENCE IS THE NORMAL CASE. A note that renders on every healthy server
+    // is one every reader learns to skip, including on the day it is true.
+    const [, others] = buildConnectDevicePlaces(certified({ public_port: 443 }));
+    expect(others!.portNote).toContain('443');
+    expect(others!.portNote).not.toMatch(/asked for|could not open|did not/i);
+  });
+
+  it('⚠ the port THIS COMPUTER uses is unaffected — the LAN listener did not move', () => {
+    // The failed change is on the public listener. Saying anything about it on
+    // the loopback card would be borrowing another listener's problem.
+    const [here] = buildConnectDevicePlaces(
+      certified({ public_port: 443, public_port_requested: 8446 }),
+    );
+    expect(here!.portNote).not.toContain('8446');
+  });
+});
+

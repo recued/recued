@@ -222,6 +222,9 @@ interface SetupOpts {
   setApexRejectCode?: string;
   /** Omit runSetApex entirely (read-only picker). */
   noSetApex?: boolean;
+  /** Keeps `runApplyPreset` pending until this resolves — the only honest way
+   *  to observe the `busy` guard. */
+  applyPresetHold?: Promise<void>;
   /** Paired server URL for the "Connection example" button. Absent ⇒ the
    *  button does not render, which is the production fail-quiet. */
   serverUrl?: string;
@@ -276,6 +279,10 @@ const setup = async (over: SetupOpts = {}) => {
         }),
     runApplyPreset: async (req) => {
       calls.applyPreset.push(req);
+      // ⚠ HOLDS THE RPC OPEN so `busy` is observably true while a second click
+      // arrives. Poking the flag instead would prove the guard reads a variable,
+      // not that the variable is set when it matters.
+      if (over.applyPresetHold !== undefined) await over.applyPresetHold;
       return okResponse(over.applyPresetState ?? buildState({ derived_preset_label: req.preset }));
     },
     runSetPathResolution: async (req) => {
@@ -838,6 +845,55 @@ describe('D-272 — the LAN bind posture, moved here from Connect a device', () 
       readLanReachedFromOutside: () => true,
     });
     expect(m.text()).toContain('was reached from the internet');
+    // ⚠ FOUND BY MUTATION: deleting "and it is not encrypted" from THIS branch
+    // reddened nothing — the phrase is asserted on the milder unknown-state
+    // note above, and the two were never checked in the same test. This is the
+    // worst branch (the port was actually reached), so it is the one that must
+    // say what is at stake, and it must name the way out.
+    expect(m.text(), 'the worst branch stopped saying the port is unencrypted')
+      .toContain('not encrypted');
+    expect(m.text()).toMatch(/firewall|bind it/i);
+  });
+
+  it('⛔ a LAN check cannot be started twice at once', async () => {
+    // ⚠ HELD OPEN, not flag-poked: `checkingLan` is set around the call, so a
+    // second press while the first is in flight is the only thing that proves
+    // the guard. Without it the button re-fires a 5s cloud probe per click.
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((r) => { release = r; });
+    let started = 0;
+    const m = await mountWith({
+      readLanPosture: async () => exposed,
+      checkLanFromOutside: async () => { started += 1; await gate; },
+    });
+    const btn = findByAttr(m.host, 'data-recued-exposure-lan-check')!;
+    btn.click();
+    for (let i = 0; i < 4; i++) await Promise.resolve();
+    btn.click();
+    btn.click();
+    for (let i = 0; i < 4; i++) await Promise.resolve();
+    expect(started, 'the LAN check re-fired while one was already running').toBe(1);
+    release!();
+    await gate;
+  });
+
+  it('⛔⛔ a LAN check that THROWS leaves the reader\'s last verdict alone', async () => {
+    // ⛔ A check that could not RUN says nothing about the port. Clearing the
+    // verdict on a failed check would turn "we could not ask" into "it is not
+    // reachable" — a false all-clear about an unencrypted listener on a public
+    // address, which is the one direction this page must never fail in.
+    const m = await mountWith({
+      readLanPosture: async () => exposed,
+      readLanReachedFromOutside: () => true,
+      checkLanFromOutside: async () => { throw new Error('probe unavailable'); },
+    });
+    expect(m.text()).toContain('was reached from the internet');
+    findByAttr(m.host, 'data-recued-exposure-lan-check')!.click();
+    for (let i = 0; i < 8; i++) await Promise.resolve();
+    expect(
+      m.text(),
+      'a failed check downgraded a port we KNOW was reached from the internet',
+    ).toContain('was reached from the internet');
   });
 
   it('⚠ softens but does NOT reassure when the check could not get in', async () => {
@@ -889,3 +945,223 @@ describe('D-272 — the LAN bind posture, moved here from Connect a device', () 
     expect(asked).toEqual([9100]);
   });
 });
+
+/** ⚠ FOUND BY MUTATION (2026-09-17). The CELL click path is covered — its ack
+ *  modal and its lockout modal both red when deleted. The PRESET click path,
+ *  four lines away, had NONE of its four guards pinned: busy, is_current,
+ *  requires_ddns and triggers_ws_lockout all survived.
+ *
+ *  ⛔ THE LOCKOUT ONE IS THE POINT. `maintenance` projects /ws to
+ *  `{ lan: false, public: false }`, and the confirmation phrase is the only
+ *  thing between a click and the owner losing the admin channel they are
+ *  clicking in. The cell path that reaches the same state IS gated and IS
+ *  tested; the preset path was gated and untested, which is one edit away from
+ *  gated nowhere. */
+describe('R26.2 Delta 1 — the preset click path is gated too', () => {
+  it('⛔⛔ the maintenance preset opens the lockout modal instead of firing', async () => {
+    const { host, mount, calls } = await setup();
+    mount.clickPreset('maintenance');
+    expect(
+      calls.applyPreset,
+      'maintenance fired with no confirmation — /ws goes fully off on one click',
+    ).toHaveLength(0);
+    expect(findByAttr(host, EXPOSURE_MODAL_ATTR)).not.toBeNull();
+    expect(mount.getState().wsLockoutModal.kind).toBe('open');
+  });
+
+  it('⛔⛔ the phrase the owner types REACHES the rpc', async () => {
+    // ⚠ Dropping it from the dispatch survived every test: the modal opens, the
+    // owner types the phrase, the server refuses for want of it, and the modal
+    // re-opens. A gate that cannot be satisfied reads as a broken page.
+    const { mount, calls } = await setup();
+    mount.clickPreset('maintenance');
+    mount.setModalPhrase(WS_LOCKOUT_DISCONNECT_PHRASE);
+    await mount.submitModal();
+    expect(calls.applyPreset).toHaveLength(1);
+    expect(calls.applyPreset[0]).toMatchObject({
+      preset: 'maintenance',
+      lockout_confirmation_phrase: WS_LOCKOUT_DISCONNECT_PHRASE,
+    });
+  });
+
+  it('⛔ the preset that is ALREADY current does not fire an rpc', async () => {
+    // A no-op write still emits an audit row, a broadcast and a listener
+    // rebind — every client re-renders so the owner can click the preset they
+    // are already on.
+    const { mount, calls } = await setup();
+    const current = mount.getState().model!.preset_rows.find((r) => r.is_current);
+    expect(current, 'fixture drifted — no preset reads as current').toBeDefined();
+    mount.clickPreset(current!.preset);
+    expect(calls.applyPreset, 'the current preset re-fired').toHaveLength(0);
+  });
+
+  it('⛔ a preset that needs DDNS does not fire on a server without it', async () => {
+    // The row renders disabled; this pins the HANDLER, because the disabled
+    // attribute is a rendering choice and a keyboard or programmatic activation
+    // reaches the handler either way.
+    const { mount, calls } = await setup({ hasDdns: false });
+    const needsDdns = mount.getState().model!.preset_rows.find((r) => r.requires_ddns);
+    expect(needsDdns, 'fixture drifted — no preset requires DDNS here').toBeDefined();
+    mount.clickPreset(needsDdns!.preset);
+    expect(
+      calls.applyPreset,
+      'fired a preset the server will refuse for want of DDNS',
+    ).toHaveLength(0);
+  });
+
+  it('⛔ neither a preset nor a cell fires while a write is in flight', async () => {
+    // ⚠ DRIVEN THROUGH A PENDING RPC, not by setting a flag. `busy` is set by
+    // `setBusy` around the dispatch, so a test that pokes the flag would prove
+    // the guard reads a variable, not that the variable is ever true when a
+    // second click arrives.
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((r) => { release = r; });
+    const { mount, calls } = await setup({
+      applyPresetHold: gate,
+    });
+    const target = mount.getState().model!.preset_rows.find(
+      (r) => !r.is_current && !r.requires_ddns && !r.triggers_ws_lockout,
+    );
+    expect(target, 'fixture drifted — no directly-clickable preset').toBeDefined();
+    mount.clickPreset(target!.preset);
+    expect(mount.getState().busy).toBe(true);
+
+    mount.clickPreset(target!.preset);
+    mount.clickCell('webhooks', 'lan');
+    expect(calls.applyPreset, 'a second preset click fired mid-write').toHaveLength(1);
+    expect(calls.setPath, 'a cell click fired mid-write').toHaveLength(0);
+
+    release!();
+    await gate;
+  });
+
+  it('⛔⛔ no MODAL opens while a write is in flight', async () => {
+    // ⚠ THIS IS THE ONLY THING THE CLICK-LEVEL `busy` GUARD UNIQUELY DOES, and
+    // mutation is what showed it: deleting `if (busy) return` from
+    // `onPresetClick` / `onCellClick` reddened NOTHING, because `fireDirect`
+    // opens with `if (disposed || busy) return` and refuses the dispatch anyway.
+    // One rule at two ends — the direct path is covered twice and the MODAL path
+    // only once.
+    //
+    // ⛔ And the modal path is the one that matters. A lockout or ack modal
+    // opened mid-write is a confirmation prompt about a grid that is being
+    // rewritten underneath it: the owner types a phrase for a transition
+    // computed from state the in-flight response is about to replace.
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((r) => { release = r; });
+    const { mount, calls } = await setup({ applyPresetHold: gate });
+    const target = mount.getState().model!.preset_rows.find(
+      (r) => !r.is_current && !r.requires_ddns && !r.triggers_ws_lockout,
+    );
+    mount.clickPreset(target!.preset);
+    expect(mount.getState().busy).toBe(true);
+
+    mount.clickPreset('maintenance');
+    expect(
+      mount.getState().wsLockoutModal.kind,
+      'the /ws lockout modal opened over an in-flight write',
+    ).toBe('idle');
+
+    mount.clickCell('mcp', 'public');
+    expect(
+      mount.getState().publicMcpModal.kind,
+      'the public-MCP ack modal opened over an in-flight write',
+    ).toBe('idle');
+
+    expect(calls.applyPreset).toHaveLength(1);
+    release!();
+    await gate;
+  });
+
+  it('⛔ the controls are DISABLED while a write is in flight', async () => {
+    // ⚠ THIS IS THE ENFORCEMENT THAT REACHES A USER, and the reason the
+    // handler-level `busy` guard on `onCellClick` is untestable: the render
+    // disables the input, so no click — real or driven — arrives at the handler
+    // at all. Mutation proved the ordering: deleting `if (busy ...)` from
+    // `onCellClick` reddens nothing, because the disabled input swallows the
+    // click first and `fireDirect` refuses the dispatch after.
+    //
+    // ⇒ Three places enforce one rule. That is defensible for a destructive
+    // action, but it means the handler guard is NOT what is keeping the page
+    // honest — this is. If the render ever stops disabling, no other guard
+    // produces a visible difference, and the owner clicks a live grid mid-write.
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((r) => { release = r; });
+    const { host, mount } = await setup({ applyPresetHold: gate });
+    // ⛔ A CELL THAT IS ENABLED AT REST, found rather than named. The first
+    // version of this test asserted `webhooks.lan` was disabled during the
+    // write — and it is disabled at rest too, for want of DDNS, so it passed
+    // whether or not `busy` was consulted. Two rules agreeing on one fixture,
+    // the same shape this sweep keeps finding, in the test written to close it.
+    const liveCell = (() => {
+      for (const row of mount.getState().model!.path_rows) {
+        for (const bit of ['lan', 'public'] as const) {
+          const id = `${row.path}.${bit}`;
+          const el = findByAttr(host, EXPOSURE_CELL_ATTR, id) as
+            | (FakeElement & { disabled?: boolean })
+            | null;
+          if (el && el.disabled !== true) return { id, disabled: el.disabled };
+        }
+      }
+      return null;
+    })();
+    expect(liveCell, 'fixture drifted — every cell is already disabled at rest').not.toBeNull();
+
+    const target = mount.getState().model!.preset_rows.find(
+      (r) => !r.is_current && !r.requires_ddns && !r.triggers_ws_lockout,
+    );
+    mount.clickPreset(target!.preset);
+    expect(mount.getState().busy).toBe(true);
+
+    const cellOf = (id: string) =>
+      findByAttr(host, EXPOSURE_CELL_ATTR, id) as
+        | (FakeElement & { disabled?: boolean })
+        | null;
+    expect(
+      liveCell!.disabled,
+      `fixture drifted — ${liveCell!.id} was expected enabled at rest`,
+    ).not.toBe(true);
+    expect(
+      cellOf(liveCell!.id)!.disabled,
+      'a cell that was clickable at rest stayed clickable during a write',
+    ).toBe(true);
+
+    // ⚠ AND THE PRESET ROWS, which are disabled by a SEPARATE line. Mutation
+    // treats them separately because they are separate: deleting `busy` from
+    // the cell branch and from the preset branch are two different edits, and
+    // the first test here caught only the first.
+    const presetRow = findByAttr(host, EXPOSURE_PRESET_ROW_ATTR, target!.preset) as
+      | (FakeElement & { children?: ArrayLike<FakeElement & { disabled?: boolean }> })
+      | null;
+    expect(
+      presetRow?.children?.[0]?.disabled,
+      'a preset stayed clickable during a write',
+    ).toBe(true);
+
+    release!();
+    await gate;
+  });
+});
+
+/* ─── Mutation sweep of `settings/exposure-panel.ts`, 2026-09-17 ────────────
+ *  21 mutations of the decision logic (copy branches, the monotonic broadcast
+ *  guard, both click paths, the LAN check, dispatch routing); 20 caught.
+ *
+ *  The one survivor is `onCellClick`'s `if (busy || state === null) return`,
+ *  specifically its `busy` half. It is REDUNDANT THREE TIMES OVER and cannot
+ *  be distinguished by any test:
+ *    1. the render sets `input.disabled = true` while busy, so the browser
+ *       never delivers the click — and `clickCell` honours `disabled`, exactly
+ *       as a real user's pointer does;
+ *    2. `fireDirect` opens with `if (disposed || busy) return`, so the dispatch
+ *       is refused even if the handler runs;
+ *    3. the modal paths, which ARE uniquely the handler's, are covered by
+ *       "no MODAL opens while a write is in flight" above.
+ *  ⇒ Keep it (defence-in-depth on a destructive control) but know that (1) is
+ *  what keeps the page honest: it is pinned here in both directions, and if the
+ *  render ever stops disabling, nothing else produces a visible difference.
+ *
+ *  ⚠ The equivalent guard on `onPresetClick` is NOT redundant and IS pinned —
+ *  its modal path (`maintenance` → the lockout phrase) reaches the handler.
+ * ────────────────────────────────────────────────────────────────────────── */
+

@@ -17,6 +17,7 @@
 
 import {
   AUDIT_EXPORT_BYTES_PER_ENTRY,
+  csvCell,
   clampAuditExportPageSize,
   type AuditExportEntry,
   type AuditExportEnvelope,
@@ -231,11 +232,16 @@ export const buildExportEntry = (
 /** CSV escape — wraps in quotes when the value contains a comma /
  *  quote / newline; doubles internal quotes. Conservative: never under-
  *  quotes a value that might confuse a downstream parser. */
+/** ⚠ NEUTRALISATION ADDED 2026-09-18 via the shared `csvCell`. This escaped
+ *  for the PARSER and stopped, which reads as the whole job and is not: a cell
+ *  beginning `=` is a live formula however well it is quoted. The cells here
+ *  carry `output_string` (AI text, steerable by ingested mail or a peer
+ *  exchange), `trigger_url` and the D-232 peer fields — none of them this
+ *  module's to trust.
+ *  ⚠ Quote-if-needed is preserved: only the neutralisation is new. */
 const csvEscape = (raw: unknown): string => {
   if (raw === null || raw === undefined) return '';
-  const s = typeof raw === 'string' ? raw : JSON.stringify(raw);
-  if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
-  return s;
+  return csvCell(typeof raw === 'string' ? raw : JSON.stringify(raw));
 };
 
 const CSV_HEADERS = [

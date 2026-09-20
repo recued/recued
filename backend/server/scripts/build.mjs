@@ -309,6 +309,31 @@ const assertNoUnresolvedBareRequires = (outfile) => {
     // `createRequire('file:///…')` takes a PATH, not a package — skip those the
     // same way relative specifiers are skipped.
     if (spec.startsWith('.') || spec.startsWith('/') || spec.startsWith('file:')) continue;
+    // ⛔ `node:`-PREFIXED IS A BUILTIN BY DEFINITION, NOT BY ENUMERATION. This
+    // line used to rely on `builtins` alone, and `builtinModules` is an
+    // ADVERTISEMENT of what a given Node lists — not a statement of what
+    // resolves. The two disagree per version: Node 24 carries `node:sea` in
+    // that array (prefixed, so `builtinModules.includes('sea')` is still
+    // false), Node 22 carries neither form. Same source, same esbuild output,
+    // and the guard fired on `node:sea (2×)` under `node:22-slim` while passing
+    // on a v24 host — which is why the DOCKER IMAGE COULD NOT BE BUILT while
+    // every host build and every test stayed green. Nothing else would have
+    // caught it: there is no CI, and the one test that runs this script runs it
+    // on the host.
+    //
+    // ⚠ The stale pin was fixed too (the Dockerfiles are `node:24-slim` now,
+    // matching what the binary channel already used), so do not read this rule
+    // as load-bearing only for Node 22. It is what keeps the guard from being a
+    // function of WHICH Node runs the build at all — the next builtin to land
+    // `node:`-prefixed-only would reproduce this exactly.
+    //
+    // The scheme is reserved — no npm package can be named `node:x`, and an
+    // unknown `node:` specifier throws ERR_UNKNOWN_BUILTIN_MODULE at require
+    // time rather than falling through to `node_modules`. So it can never be
+    // the missing-package case this guard exists to catch, on any version.
+    // `sea-bundler-visible-requires.ratchet.test.ts` states the same rule the
+    // same way: builtins "resolve inside a SEA by definition."
+    if (spec.startsWith('node:')) continue;
     if (builtins.has(spec) || OPTIONAL_UNRESOLVED.has(spec)) continue;
     // A deep import into a package (`nodemailer/lib/x`) fails the same way.
     offenders.set(spec, (offenders.get(spec) ?? 0) + 1);

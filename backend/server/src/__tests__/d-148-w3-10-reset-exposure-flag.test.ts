@@ -371,3 +371,75 @@ describe('W3.10 Codex P1 fold — daemon dispatch forwards --reset-exposure', ()
     expect(extraArgs).toEqual(['--reset-exposure']);
   });
 });
+
+/** ⚠ FOUND BY MUTATION (2026-09-17). 16 mutations of `reset-flag.ts`; 12 were
+ *  caught. The four that survived were all of one kind — the helper's three
+ *  defensive copies and the identity of its timestamp — because no existing
+ *  test keeps a reference across the call or advances the clock during it.
+ *
+ *  This helper is the LOCKOUT RECOVERY path: its return value seeds the live
+ *  state machine, and its audit payload is the only forensic record of what
+ *  the operator recovered to. Structure shared between those two and the
+ *  caller's own bootstrap means a later write to any one of them silently
+ *  edits the others. */
+describe('W3.10 — the recovery result shares no mutable structure', () => {
+  it('⛔ neither the caller\'s bootstrap nor the audit payload aliases the persisted state', async () => {
+    const bootstrap = makeBootstrap();
+    let seen: ResetAuditPayload | null = null;
+    const outcome = await applyResetExposureBoot({
+      store: createInMemoryExposureStore(),
+      bootstrap,
+      resetRequested: true,
+      recordAudit: async (payload) => {
+        seen = payload;
+      },
+      now: () => BOOTSTRAP_AT_TEST_START,
+    });
+    expect(outcome.reset).toBe(true);
+    const wsLanAtReset = outcome.persisted.resolution.ws.lan;
+    const ackAtReset = outcome.persisted.public_mcp_acknowledgement.acknowledged;
+    expect(seen).not.toBeNull();
+
+    // The caller keeps its own bootstrap object and is entitled to reuse it.
+    bootstrap.resolution.ws.lan = !wsLanAtReset;
+    bootstrap.public_mcp_acknowledgement.acknowledged = !ackAtReset;
+    expect(
+      outcome.persisted.resolution.ws.lan,
+      'writing to the caller\'s bootstrap changed the recovered state',
+    ).toBe(wsLanAtReset);
+    expect(
+      outcome.persisted.public_mcp_acknowledgement.acknowledged,
+      'writing to the caller\'s bootstrap changed the recovered acknowledgement',
+    ).toBe(ackAtReset);
+
+    // An audit writer that batches or normalises holds its payload.
+    const payload = seen as unknown as ResetAuditPayload;
+    payload.resolution.ws.lan = !wsLanAtReset;
+    expect(
+      outcome.persisted.resolution.ws.lan,
+      'the audit writer wrote through its payload into the recovered state',
+    ).toBe(wsLanAtReset);
+  });
+
+  it('⛔ the audit row is stamped at the SAME instant as the state it records', async () => {
+    // ⚠ Every existing test injects a CONSTANT clock, so `applied_at: at` and
+    // a second `now()` call are indistinguishable — the mutation survived.
+    // With a moving clock they are not: the forensic trail would place the
+    // reset at a different instant than the state it recorded, and this is
+    // the one row saying how the operator got out of a lockout.
+    let t = BOOTSTRAP_AT_TEST_START;
+    let seen: ResetAuditPayload | null = null;
+    const outcome = await applyResetExposureBoot({
+      store: createInMemoryExposureStore(),
+      bootstrap: makeBootstrap(),
+      resetRequested: true,
+      recordAudit: async (payload) => {
+        seen = payload;
+      },
+      now: () => ++t,
+    });
+    const payload = seen as unknown as ResetAuditPayload;
+    expect(payload.applied_at).toBe(outcome.persisted.last_changed_at);
+  });
+});
+

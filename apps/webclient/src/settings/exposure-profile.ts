@@ -21,6 +21,7 @@ import {
   applyPreset,
   applyPathResolution,
   anyPathPublic,
+  isAcknowledgementEffectivelyOn,
   deriveLabel,
   type DerivedPresetLabel,
   type ExposurePreset,
@@ -129,11 +130,19 @@ export const isPathResolutionTransitionAllowed = (args: {
   if (!(PATH_ROLES as ReadonlyArray<PathRole>).includes(args.path)) {
     return { ok: false, error: 'path_unknown' };
   }
+  // ⛔ FIXED 2026-09-17 — this read `!…acknowledgement.acknowledged`, which
+  // is NOT the gate. A record carrying `acknowledged: true` with a missing or
+  // non-canonical phrase is malformed, and the server refuses it; this
+  // pre-flight said "ok", so the UI fired the rpc and the owner got a
+  // round-trip error instead of the acknowledgement modal. The sibling
+  // pre-flight in `exposure-surface.ts` took the Codex W3.8 P2 #1 fold for
+  // exactly this; this one was missed because the two are separate helpers
+  // for the same gate.
   if (
     args.path === 'mcp'
     && args.resolution.public
     && !args.current.resolution.mcp.public
-    && !args.current.public_mcp_acknowledgement.acknowledged
+    && !isAcknowledgementEffectivelyOn(args.current.public_mcp_acknowledgement)
   ) {
     return { ok: false, error: 'public_mcp_not_acknowledged' };
   }

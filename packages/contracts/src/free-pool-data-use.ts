@@ -109,17 +109,58 @@ const LOCAL_HOSTS: ReadonlySet<string> = new Set([
  *  owner's own network count as local. Anything ambiguous falls through to the
  *  table, and then to `unreviewed` — the direction that tells the owner to
  *  look rather than the direction that reassures them. */
+/** The four octets of a dotted-quad, or null when `host` is not an IPv4
+ *  literal at all.
+ *
+ *  ⛔⛔ THIS EXISTS BECAUSE A PREFIX TEST ON A HOSTNAME IS NOT AN ADDRESS TEST.
+ *  `isLocalHost` used `h.startsWith('10.')`, `h.startsWith('192.168.')` and
+ *  `/^172\.(\d{1,2})\./` — all three of which match an ordinary DNS NAME whose
+ *  first labels happen to look numeric. Driven live before the fix:
+ *
+ *      local  <- https://10.evil.com/v1
+ *      local  <- https://192.168.example.com/v1
+ *      local  <- https://172.16.attacker.net/v1
+ *
+ *  Those are public hostnames that resolve wherever their owner points them.
+ *  🔑 AND `local` IS THE ONE KIND THAT SAYS NOTHING — `freePoolDataUseNotice`
+ *  returns `undefined` for it, which this module's own suite describes as
+ *  *"nothing leaves, so nothing to warn about"*. So the failure was not a
+ *  mislabel; it was TOTAL SILENCE while the owner's prompts went to a public
+ *  host. That is the exact direction the header above forbids: *"the direction
+ *  that tells the owner to look rather than the direction that reassures
+ *  them."*
+ *
+ *  🔑🔑 THE CORRECT COPY WAS ALREADY IN THIS PACKAGE. `chat.ts`'s private-host
+ *  check parses octets numerically and says why in its own comment — *"Avoids
+ *  substring false-positives on hostnames like `192.168.example.com` whose
+ *  first labels happen to look like a private prefix."* One directory apart,
+ *  one right and one wrong, sharing no name. ⚠ They are NOT merged here: that
+ *  copy also accepts all of `127.0.0.0/8` and IPv6 `fc00::/7`, so adopting it
+ *  would WIDEN what counts as local — i.e. widen the silence — which is a
+ *  separate decision from fixing the matching.
+ *
+ *  ⚠ Octal / short forms need no handling: the only caller passes
+ *  `new URL(...).hostname`, which canonicalises `010.0.0.1` to `8.0.0.1`
+ *  before this sees it. */
+const ipv4Octets = (host: string): [number, number, number, number] | null => {
+  const parts = host.split('.');
+  if (parts.length !== 4) return null;
+  const octets = parts.map((p) => (/^\d{1,3}$/.test(p) ? Number(p) : Number.NaN));
+  if (!octets.every((n) => Number.isInteger(n) && n >= 0 && n <= 255)) return null;
+  return octets as [number, number, number, number];
+};
+
 const isLocalHost = (host: string): boolean => {
   const h = host.toLowerCase();
   if (LOCAL_HOSTS.has(h)) return true;
+  // `.local` (RFC 6762 mDNS) and `.internal` (ICANN private-use) are reserved
+  // and undelegable, so a SUFFIX test on them is an address test.
   if (h.endsWith('.local') || h.endsWith('.internal')) return true;
-  if (h.startsWith('10.') || h.startsWith('192.168.')) return true;
-  // 172.16.0.0 – 172.31.255.255
-  const m = /^172\.(\d{1,2})\./.exec(h);
-  if (m !== null) {
-    const second = Number(m[1]);
-    if (second >= 16 && second <= 31) return true;
-  }
+  const o = ipv4Octets(h);
+  if (o === null) return false;
+  if (o[0] === 10) return true;                          // 10.0.0.0/8
+  if (o[0] === 192 && o[1] === 168) return true;         // 192.168.0.0/16
+  if (o[0] === 172 && o[1] >= 16 && o[1] <= 31) return true; // 172.16.0.0/12
   return false;
 };
 

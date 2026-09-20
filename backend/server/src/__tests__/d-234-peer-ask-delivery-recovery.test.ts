@@ -142,6 +142,126 @@ describe('peer ask delivery power-cut recovery', () => {
     expect((await h.gatedActions.get('action-1'))?.status).toBe('in_doubt');
   });
 
+  // \u26d4\u26d4 RETIREMENT IS TWO GUARDED DURABLE WRITES AND THE FIRST REWRITES WHAT THE
+  // SECOND READS. These drive the re-ENTRY, which is a different test from the
+  // existing "terminal audit committed then threw" case below: that one loses an
+  // acknowledgement inside ONE invocation, where the guards are already computed.
+  // A boot retirement that fails re-enters the function and derives them again.
+  const retireTwice = async (
+    h: Awaited<ReturnType<typeof harness>>,
+    breakWrite: 'action' | 'anchor',
+  ): Promise<void> => {
+    if (breakWrite === 'action') {
+      vi.spyOn(h.gatedActions, 'finish').mockImplementationOnce(async () => {
+        throw new Error('interrupted before the gated action settled');
+      });
+    } else {
+      vi.spyOn(h.auditLog, 'append').mockImplementationOnce(async () => {
+        throw new Error('interrupted before the terminal anchor settled');
+      });
+    }
+    await expect(recoverPeerAskDelivery(h.outbox.getDelivery(REF)!, {
+      ...h.deps, retireUnanchoredStaged: true,
+    })).rejects.toThrow('interrupted');
+    // The journal row survives precisely so the next boot retries.
+    expect(h.outbox.getDelivery(REF)).not.toBeNull();
+    await recoverPeerAskDelivery(h.outbox.getDelivery(REF)!, {
+      ...h.deps, retireUnanchoredStaged: true,
+    });
+  };
+
+  it('\u26d4 settles the action after the anchor write already committed', async () => {
+    // Sub-case the inline comment calls out: the action still points at the
+    // APPROVAL checkpoint (== anchor.checkpoint_id) while the staged row points
+    // at the PEER one, so ownership rests ONLY on the disjunct that reads
+    // `anchor.commit_status === 'awaiting_approval'` \u2014 which the anchor write
+    // destroys. Without the persisted claim the receipt stayed `dispatching`
+    // forever, with its checkpoint deleted and its journal closed.
+    const h = await harness(awaiting('awaiting_approval'));
+    h.outbox.stage(stage());
+    expect(await h.gatedActions.get('action-1')).toMatchObject({
+      status: 'dispatching', current_checkpoint_id: 'approval-checkpoint-1',
+    });
+
+    await retireTwice(h, 'action');
+
+    expect((await h.auditLog.get('run-1'))?.commit_status).toBe('in_doubt');
+    expect((await h.gatedActions.get('action-1'))?.status).toBe('in_doubt');
+    expect(h.outbox.getDelivery(REF)).toBeNull();
+    expect(await h.checkpoints.listByRun('run-1')).toEqual([]);
+  });
+
+  it('\u26d4 settles the anchor after the action write already committed', async () => {
+    // \u26a0 THIS ONE DOES NOT DISCRIMINATE, AND SAYS SO. Mutation-checked: it stays
+    // green with the claim removed, because a FAILED anchor write leaves the
+    // anchor and the action untouched, so re-entry recomputes the same answer.
+    // It is here as the other half of the interruption matrix \u2014 an interrupted
+    // anchor write must still converge \u2014 not as proof of the reorder hazard.
+    // That hazard is hypothetical by construction (it needs the writes swapped),
+    // so it is argued at the call site in `peer-ask-delivery-recovery.ts` rather
+    // than asserted here. Only `settles the action after the anchor write
+    // already committed` above reds without the claim.
+    const h = await harness(awaiting('awaiting_approval'));
+    h.outbox.stage(stage());
+
+    await retireTwice(h, 'anchor');
+
+    expect((await h.auditLog.get('run-1'))?.commit_status).toBe('in_doubt');
+    expect((await h.gatedActions.get('action-1'))?.status).toBe('in_doubt');
+    expect(h.outbox.getDelivery(REF)).toBeNull();
+  });
+
+  it('\u26d4 a replayed claim grants authority, never a second write', async () => {
+    // The claim says "may settle", never "has settled" \u2014 so a pass that re-runs
+    // over an already-settled row must not append a second terminal anchor or
+    // re-finish the receipt. Completion stays a FRESH read.
+    const h = await harness(awaiting('awaiting_approval'));
+    h.outbox.stage(stage());
+    const row = h.outbox.getDelivery(REF)!;
+    await recoverPeerAskDelivery(row, { ...h.deps, retireUnanchoredStaged: true });
+    const appends = vi.spyOn(h.auditLog, 'append');
+    const finishes = vi.spyOn(h.gatedActions, 'finish');
+    // Feed the retired row back in, as a duplicate boot pass would.
+    await recoverPeerAskDelivery(row, { ...h.deps, retireUnanchoredStaged: true });
+    expect(appends).not.toHaveBeenCalled();
+    expect(finishes).not.toHaveBeenCalled();
+    expect((await h.gatedActions.get('action-1'))?.status).toBe('in_doubt');
+  });
+
+  it('the claim does not widen what a stale row may terminalize', async () => {
+    // The superseding-checkpoint refusal below must still hold WITH a claim
+    // recorded: a claim can only carry forward a decision, never invent one.
+    const h = await harness(awaiting('awaiting_approval'));
+    h.outbox.stage(stage());
+    await h.gatedActions.bindDispatchCheckpoint('action-1', 'later-checkpoint');
+
+    // \u26a0 With a superseding checkpoint BOTH halves decline, so there is no
+    // settle-write to interrupt \u2014 the claim recorded is
+    // `{settle_anchor: false, settle_action: false}`. To prove the SECOND pass
+    // obeys that rather than reading a stored claim as permission, the row has
+    // to survive the first one, so the interruption goes on the checkpoint
+    // delete instead. (Two earlier drafts of this test were wrong: one expected
+    // a throw from a write that never happens, the next read the claim off a row
+    // that a successful retirement had already closed.)
+    vi.spyOn(h.checkpoints, 'delete').mockImplementationOnce(async () => {
+      throw new Error('interrupted before the checkpoint was reclaimed');
+    });
+    await expect(recoverPeerAskDelivery(h.outbox.getDelivery(REF)!, {
+      ...h.deps, retireUnanchoredStaged: true,
+    })).rejects.toThrow('interrupted');
+    expect(h.outbox.getDelivery(REF)?.retire_claim)
+      .toMatchObject({ settle_anchor: false, settle_action: false });
+
+    await recoverPeerAskDelivery(h.outbox.getDelivery(REF)!, {
+      ...h.deps, retireUnanchoredStaged: true,
+    });
+
+    expect((await h.auditLog.get('run-1'))?.commit_status).toBe('awaiting_approval');
+    expect(await h.gatedActions.get('action-1')).toMatchObject({
+      status: 'dispatching', current_checkpoint_id: 'later-checkpoint',
+    });
+  });
+
   it('does not let a stale staged row terminalize a superseding action checkpoint', async () => {
     const h = await harness(awaiting('awaiting_approval'));
     h.outbox.stage(stage());

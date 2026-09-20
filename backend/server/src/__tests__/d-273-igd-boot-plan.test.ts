@@ -128,3 +128,61 @@ describe('D-273 — may we delete what we recorded?', () => {
     expect(mayDeleteRecorded(entry({ enabled: false }), RECORD)).toBe(true);
   });
 });
+
+/** D-273 — the two halves of "is this ours" are not one test.
+ *
+ *  ⚠ FOUND BY MUTATION (2026-09-18). The ownership check is a DISJUNCTION —
+ *  the router's entry points at where we are NOW, or at where our record says
+ *  we were. Every fixture in this file has those two addresses EQUAL (the
+ *  record was written from this machine at this address), so both disjuncts
+ *  agree on every case and deleting the first one changed nothing.
+ *
+ *  ⛔ The second disjunct has a test (the DHCP move: the router still says
+ *  .42 while we are .77). The first does not, and it is the mirror image — our
+ *  RECORD is stale while the ROUTER is current, which is what a reconcile that
+ *  remapped and then failed to write its record leaves behind. */
+describe('D-273 — ownership when the record and the router disagree', () => {
+  it('⛔⛔ an entry pointing at us NOW is ours, even when the record says otherwise', () => {
+    // The router forwards to our current address, but on the wrong internal
+    // port — so `isServingUs` is false and we fall to the ownership test. The
+    // record still names an older address.
+    //
+    // ⛔ WITHOUT THE FIRST DISJUNCT THIS READS AS `conflict`: another machine
+    // holds the port, do not touch it. We would then refuse to repair OUR OWN
+    // mapping, on a router that is pointing at us, and the port would stay
+    // broken until someone cleared the record by hand.
+    const staleRecord: PortMappingRecord = { ...RECORD, internalIp: '192.168.1.9' };
+    const out = plan(entry({ internalClient: '192.168.1.42', internalPort: 8443 }), staleRecord);
+    expect(
+      out.action,
+      'a mapping pointing at this machine was treated as another machine’s',
+    ).toBe('remap');
+    expect(out.heldBy).toBe('192.168.1.42');
+    // ⚠ And the reason must be the wrong-port one, not the moved-address one:
+    // the address is right, it is the port that is wrong.
+    expect(out.why).toBe('ours, pointing at the wrong internal port');
+  });
+
+  it('⚠ neither address matching is still a conflict — the disjunction is not a free pass', () => {
+    // The complement that keeps the case above from passing under "anything is
+    // ours". A third address matches neither the desired nor the recorded one.
+    const staleRecord: PortMappingRecord = { ...RECORD, internalIp: '192.168.1.9' };
+    const out = plan(entry({ internalClient: '192.168.1.200', internalPort: 8443 }), staleRecord);
+    expect(out.action).toBe('conflict');
+    expect(out.heldBy).toBe('192.168.1.200');
+  });
+});
+
+/* ─── Mutation sweep of `network/igd-boot-plan.ts`, 2026-09-18 ──────────────
+ *  20 mutations; 19 caught. The survivor is EQUIVALENT:
+ *
+ *  `mayDeleteRecorded`'s `observedAtRecordedPort !== null` can be replaced with
+ *  optional chaining. A null entry yields `undefined`, and `undefined ===
+ *  recorded.internalIp` is false for any real record, so `&&` short-circuits
+ *  before the property read that would throw. Both forms refuse the delete.
+ *  ⚠ THAT EQUIVALENCE RESTS ON THE RECORD BEING VALID — it would break for a
+ *  record whose `internalIp` is itself `undefined`, which is exactly what the
+ *  store used to be able to hand back before its shape gate landed. The
+ *  explicit null check is the honest spelling and stays.
+ * ────────────────────────────────────────────────────────────────────────── */
+

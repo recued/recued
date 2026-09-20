@@ -79,7 +79,7 @@
       "task.search": "unsupported body filters replaced by documented query parameters",
       "email_account.search": "unsupported page/per_page arguments removed"
     },
-    "composition_bytes": 131187,
+    "composition_bytes": 131218,
     "risk_counts": {
       "admin": 7,
       "destructive": 1,

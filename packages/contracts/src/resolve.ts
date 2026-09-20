@@ -6,6 +6,7 @@ import { activeVendorAliasRegistry } from './vendor-alias-registry.js';
 import type { RefHint } from './values.js';
 import { isRefHint, isRef, hasInterpolation } from './values.js';
 import { soqlLikeOperand, soqlQuotedLiteral } from './soql.js';
+import { toRecentMs } from './recent-date.js';
 
 const PROTOTYPE_SENSITIVE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 
@@ -140,6 +141,14 @@ export const interpolationText = (value: unknown): string => {
   return JSON.stringify(value) ?? '';
 };
 
+/** An ISO string for a RECENT epoch number, or null when the number is not one.
+ *  Shares `toRecentMs` with the renderer so the two format paths cannot drift on
+ *  the ms-vs-seconds question. */
+const isoFromRecentEpoch = (value: number): string | null => {
+  const ms = toRecentMs(value);
+  return ms === null ? null : new Date(ms).toISOString();
+};
+
 /** Apply a value hint for string interpolation. Uses environment locale (browser or
  *  Node) for the display hints. */
 export const formatHint = (value: unknown, hint: RefHint): string => {
@@ -154,18 +163,41 @@ export const formatHint = (value: unknown, hint: RefHint): string => {
   if (hint === 'number' && !isNaN(n)) return new Intl.NumberFormat().format(n);
   if (hint === 'currency' && !isNaN(n)) return new Intl.NumberFormat(undefined, { style: 'currency', currency: 'USD' }).format(n);
   if (hint === 'percent' && !isNaN(n)) return new Intl.NumberFormat(undefined, { style: 'percent', maximumFractionDigits: 1 }).format(n);
-  if (hint === 'date' && typeof value === 'string') {
-    const d = new Date(value);
-    return isNaN(d.getTime()) ? String(value) : new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(d);
-  }
-  if (hint === 'relative' && typeof value === 'string') {
-    const d = new Date(value);
-    if (isNaN(d.getTime())) return String(value);
-    const days = Math.floor((Date.now() - d.getTime()) / 86_400_000);
-    if (days === 0) return 'today';
-    if (days === 1) return 'yesterday';
-    if (days > 0) return `${days} days ago`;
-    return `in ${Math.abs(days)} days`;
+  // ⛔⛔ THESE TWO WERE `typeof value === 'string'` ONLY, SO AN EPOCH NUMBER FELL
+  //   THROUGH TO `String(value)` AND PRINTED THE RAW INTEGER. The renderer's
+  //   `formatValue` (`packages/renderer/src/format.ts`) already carries the fix
+  //   and the damage count: *"a date hint on an epoch NUMBER used to fall
+  //   through to String(value) and print the raw integer — `1751328000000` where
+  //   a date belonged, at success:true, invisible to every gate (12 recipes
+  //   shipped that way)"*. It landed there and not here, and these are the SAME
+  //   directive vocabulary read by two different paths: a render section goes
+  //   through `formatValue`, a `{{step.x:relative}}` inside a transform param
+  //   goes through here. `travel-day-prep-checklist` rendered
+  //   `Starts 1784003600000` on the second path while the first was correct.
+  //
+  // ⚠ `toRecentMs` is the SHARED decider, so this never guesses: its two
+  //   accepted ranges (ms and seconds) are disjoint, and a number outside both
+  //   is not a recent timestamp and still falls through to the text form — the
+  //   same zero-regression argument the renderer makes.
+  if (hint === 'date' || hint === 'relative') {
+    const iso = typeof value === 'string'
+      ? value
+      : typeof value === 'number'
+        ? isoFromRecentEpoch(value)
+        : null;
+    if (iso !== null) {
+      const d = new Date(iso);
+      // A string that does not parse keeps its pre-existing passthrough.
+      if (isNaN(d.getTime())) return String(value);
+      if (hint === 'date') {
+        return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(d);
+      }
+      const days = Math.floor((Date.now() - d.getTime()) / 86_400_000);
+      if (days === 0) return 'today';
+      if (days === 1) return 'yesterday';
+      if (days > 0) return `${days} days ago`;
+      return `in ${Math.abs(days)} days`;
+    }
   }
   // A hint on a value its branch can't format falls through here — keep the
   // garble-aware text form so a hinted object never renders "[object Object]".

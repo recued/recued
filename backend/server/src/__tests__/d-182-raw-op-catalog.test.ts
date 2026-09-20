@@ -264,6 +264,91 @@ describe('grant catalog raw-op projection', () => {
     });
   });
 
+  /** ⛔⛔ A DESCRIPTIVE SCHEMA IS STILL THE BEST AVAILABLE AI CONTRACT.
+   *
+   *  This door used to require `isClosedRequestSchema` and fall back to
+   *  `{ connection, additionalProperties: true }` otherwise, so 3,539 operations
+   *  whose parameters are fully documented in their pack advertised NONE of them
+   *  and the model had to guess argument names that were sitting in the manifest.
+   *
+   *  🔑 The flag it keyed on answers a different question. `additionalProperties:
+   *  false` means "the gateway REFUSES an undeclared argument", and earning it
+   *  needs every value bounded — bounds vendor specs mostly do not state, and
+   *  which 1,746 operations can never have because the vendor accepts arbitrary
+   *  keys. None of that bears on whether the argument NAMES are worth publishing.
+   *
+   *  ⚠ AND THE DESCRIPTIVE PATH MUST NOT LOOK LIKE A GATE. `additionalProperties`
+   *  stays TRUE — the accurate statement of a dispatcher that admits anything.
+   *  The assertions below pin the DIFFERENCE between the two paths, because a
+   *  descriptive schema that advertised `false` would be this repo's own
+   *  "assurance-shaped non-assurance": a promise no runtime keeps. */
+  it('advertises a DESCRIPTIVE schema too, without claiming it is enforced', () => {
+    const descriptiveCatalog = {
+      ...crmCatalog,
+      operations: {
+        ...crmCatalog.operations,
+        'deal.search': {
+          ...crmCatalog.operations?.['deal.search'],
+          request_schema: {
+            type: 'object',
+            // No `maxLength`, a free-form nested object, an unbounded array:
+            // this schema can NEVER opt in, which is precisely the case that
+            // used to be advertised as nothing at all.
+            required: ['query'],
+            properties: {
+              query: { type: 'string' },
+              filters: { type: 'object' },
+              tags: { type: 'array', items: { type: 'string', nullable: true } },
+            },
+          },
+        },
+      },
+    } as IngredientManifest;
+    const descriptor = buildRawOpToolDescriptors(
+      scanInstalledPacks,
+      (slug) => slug === descriptiveCatalog.slug ? descriptiveCatalog : registry().get(slug),
+    ).find((entry) => entry.wireName === READ_OP);
+
+    expect(descriptor?.inputSchema).toEqual({
+      type: 'object',
+      // ⛔ TRUE, and that is the whole contract of this path.
+      additionalProperties: true,
+      required: ['connection', 'query'],
+      properties: {
+        connection: expect.objectContaining({ type: 'string' }),
+        query: { type: 'string' },
+        filters: { type: 'object' },
+        // `nullable` is OpenAPI, not JSON Schema — a strict validator rejects an
+        // unknown keyword rather than ignoring it, and a rejected `inputSchema`
+        // costs the model the whole tool.
+        tags: { type: 'array', items: { type: 'string' } },
+      },
+    });
+  });
+
+  it('⛔ still falls back to the permissive descriptor when there is nothing to say', () => {
+    // THE CONTROL. Without it, a change that advertised the permissive schema
+    // for EVERY op would pass the assertion above while proving nothing — and a
+    // change that projected something for an op with no schema would invent a
+    // contract out of an absence.
+    const bareCatalog = {
+      ...crmCatalog,
+      operations: {
+        ...crmCatalog.operations,
+        'deal.search': { ...crmCatalog.operations?.['deal.search'], request_schema: undefined },
+      },
+    } as IngredientManifest;
+    const descriptor = buildRawOpToolDescriptors(
+      scanInstalledPacks,
+      (slug) => slug === bareCatalog.slug ? bareCatalog : registry().get(slug),
+    ).find((entry) => entry.wireName === READ_OP);
+    expect(descriptor?.inputSchema).toEqual({
+      type: 'object',
+      properties: { connection: expect.objectContaining({ type: 'string' }) },
+      additionalProperties: true,
+    });
+  });
+
   it('emits NO raw ops without the installed-pack scan (back-compatible)', () => {
     const names = buildMcpGrantCatalogLegacyEntries(registry()).map((e) => e.name);
     expect(names.some((n) => n.startsWith('recued_op_'))).toBe(false);

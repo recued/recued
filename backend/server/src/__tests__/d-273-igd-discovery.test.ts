@@ -87,6 +87,53 @@ describe('D-273 — bounding what we will fetch', () => {
     ]) expect(isPlausibleIgdLocation(ok)).toBe(true);
   });
 
+  it('⛔⛔ the private/public BOUNDARIES hold — one address either side of each', () => {
+    // ⚠ FOUND BY MUTATION. Widening the private set to all of `172.x`, or
+    // adding `8.x`, changed NOTHING: the public-refusal case above names one
+    // address, and a range can be widened anywhere it does not sit. A guard
+    // deciding whether to fetch an attacker-supplied URL needs its EDGES
+    // asserted, not one representative on each side.
+    //
+    // ⛔ Every `false` row below is a routable public address. Accepting one
+    // means a LAN peer — or anything that can reach this host's multicast
+    // group — chooses a URL this server then requests.
+    const cases: ReadonlyArray<readonly [string, boolean]> = [
+      // 10.0.0.0/8
+      ['9.255.255.255', false], ['10.0.0.0', true], ['10.255.255.255', true], ['11.0.0.0', false],
+      // 172.16.0.0/12 — the range most often widened by accident.
+      ['172.15.255.255', false], ['172.16.0.0', true], ['172.31.255.255', true], ['172.32.0.0', false],
+      // 192.168.0.0/16
+      ['192.167.255.255', false], ['192.168.0.0', true], ['192.168.255.255', true], ['192.169.0.0', false],
+      // 169.254.0.0/16 link-local
+      ['169.253.255.255', false], ['169.254.0.0', true], ['169.254.255.255', true], ['169.255.0.0', false],
+      // Public addresses that share a first octet with nothing private.
+      ['8.8.8.8', false], ['1.1.1.1', false], ['203.0.113.7', false],
+    ];
+    for (const [host, expected] of cases) {
+      expect(
+        isPlausibleIgdLocation(`http://${host}:5000/d.xml`),
+        `${host} should be ${expected ? 'accepted' : 'REFUSED'}`,
+      ).toBe(expected);
+    }
+  });
+
+  it('⚠ IPv6 boundaries too — fe80::/10 and fc00::/7, not "starts with f"', () => {
+    const cases: ReadonlyArray<readonly [string, boolean]> = [
+      ['fe80::1', true], ['feba::1', true],
+      // fec0::/10 was site-local and is DEPRECATED — not link-local, not ULA.
+      ['fec0::1', false],
+      ['fc00::1', true], ['fd00::1', true],
+      // Global unicast.
+      ['2001:4860:4860::8888', false], ['::1', false],
+    ];
+    for (const [host, expected] of cases) {
+      expect(
+        isPlausibleIgdLocation(`http://[${host}]:5000/d.xml`),
+        `${host} should be ${expected ? 'accepted' : 'REFUSED'}`,
+      ).toBe(expected);
+    }
+  });
+
   it('refuses a non-http scheme and unparseable junk', () => {
     expect(isPlausibleIgdLocation('file:///etc/passwd')).toBe(false);
     expect(isPlausibleIgdLocation('not a url')).toBe(false);

@@ -35,15 +35,30 @@ export interface NetworkRpcDeps {
    *  ephemeral boot reports the real port instead of `:0`. Combined with each
    *  detected address to build the reachable URLs. */
   getPort: () => number;
-  /** The PUBLIC TLS listener's configured port (`public_port`). Optional so an
-   *  embedding that has no listener set — tests, the bare `startServer` harness
-   *  — simply omits the field rather than inventing 443.
+  /** The PUBLIC TLS port being SERVED. Optional so an embedding that has no
+   *  listener set — tests, the bare `startServer` harness — simply omits the
+   *  field rather than inventing 443.
    *
-   *  ⚠ CONFIGURED, NOT BOUND, and the difference is not pedantry: the public
-   *  listener does not bind until a path is made public, so there is no
-   *  post-bind number to read the way `getPort` reads one. Reporting the
-   *  configured value is the honest answer to "which port would that be". */
+   *  ⚠ THIS COMMENT SAID "CONFIGURED, NOT BOUND" UNTIL 2026-09-17, on the
+   *  reasoning that the public listener does not bind until a path is made
+   *  public so there is no post-bind number to read. That half is still true AT
+   *  BOOT — but `public_port` became live-editable, and production now threads
+   *  `boundPublicPort`, which moves only when a rebind succeeded. Reporting the
+   *  raw config key here is the defect this whole field exists to avoid: a
+   *  failed rebind would have every client surface advertising a dead port. */
   getPublicPort?: () => number;
+  /** D-273 — the owner's CONFIGURED `public_port`, whatever it currently says.
+   *
+   *  ⛔ SEPARATE FROM `getPublicPort` ON PURPOSE, and the pair is the point.
+   *  This one is the wish and that one is the truth; the handler reports the
+   *  difference and only the difference. Folding them into one accessor would
+   *  make the caller choose which to send, which is exactly the choice that went
+   *  wrong before (`network.local_urls` read the config key and started handing
+   *  out an address on a port nothing was bound to).
+   *
+   *  Optional: absent → the server never claims a divergence, which is right for
+   *  an embedding that has no runtime config to diverge from. */
+  getRequestedPublicPort?: () => number | undefined;
   /** D-272 — the address the LAN listener actually BOUND, read at call time.
    *
    *  ⛔ NOT THE ADVERTISED LAN IP. `resolveLanAddress` returns two different
@@ -101,7 +116,22 @@ export const handleNetworkLocalUrls = async (
   requireCallerInstance(caller, method);
   const lanPort = deps.getPort();
   const publicPort = deps.getPublicPort?.();
+  const requestedPublicPort = deps.getRequestedPublicPort?.();
   const lanBindAddress = deps.getLanBindAddress?.();
+  // D-273 — report the WISH only when it is not the TRUTH.
+  //
+  // ⛔ THE COMPARISON LIVES HERE, not in the accessor, so the rule is visible
+  // where the field is built. An accessor that returned undefined when the two
+  // agree would put "is there a divergence" in the composition root, one layer
+  // away from the only place that can see both numbers.
+  //
+  // ⚠ BOTH MUST BE PRESENT. An embedding with no runtime config supplies no
+  // requested port; claiming a divergence against an absent value would report
+  // a failed port change on every server that simply cannot answer.
+  const portDiverged =
+    publicPort !== undefined
+    && requestedPublicPort !== undefined
+    && requestedPublicPort !== publicPort;
   return {
     urls: buildLocalServerUrls(lanPort, deps.networkInterfaces),
     lan_port: lanPort,
@@ -109,6 +139,10 @@ export const handleNetworkLocalUrls = async (
     // tell "this server did not say" from "this server says 443"; one that
     // receives a 443 we invented here cannot.
     ...(publicPort !== undefined ? { public_port: publicPort } : {}),
+    // ⛔ ONLY WHEN THEY DIFFER. Sending it always would make every client carry
+    // a second port it must then compare — and a client that forgot to compare
+    // would show a "your port did not apply" warning on every healthy server.
+    ...(portDiverged ? { public_port_requested: requestedPublicPort } : {}),
     // ⛔ SAME RULE, AND IT MATTERS MORE HERE. Omitting is "nobody looked";
     // inventing `publicly_routable: false` would be this server telling its
     // owner it is not exposed on the strength of having failed to check.

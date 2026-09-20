@@ -143,10 +143,10 @@
       "adobe-sign-platform-admin": 38
     },
     "composition_bytes": {
-      "adobe-sign": 24724,
-      "adobe-sign-agreement-workflows": 45136,
-      "adobe-sign-signing-content": 86293,
-      "adobe-sign-platform-admin": 44630
+      "adobe-sign": 24734,
+      "adobe-sign-agreement-workflows": 45162,
+      "adobe-sign-signing-content": 86343,
+      "adobe-sign-platform-admin": 44662
     },
     "risk_counts": {
       "write": 40,

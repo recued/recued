@@ -154,8 +154,28 @@ const ACTION_ARGS: Record<RecordsAction, readonly OperationArgSpec[]> = {
   // default only because the import is already idempotent — a re-run of the
   // same file replays rather than doubles. If that ever stops being true, the
   // default becomes the wrong way round.
+  // ⛔⛔ `csv` AND `csv_ref` ARE BOTH OPTIONAL HERE AND EXACTLY ONE IS REQUIRED
+  // AT RUNTIME — this envelope cannot say "one of", and pretending otherwise
+  // would be worse than the gap. Marking `csv` required again would refuse every
+  // ref-taking call at authoring time; marking `csv_ref` required would refuse
+  // every text call. The exactly-one-of check lives where both values are
+  // actually present — `resolveRecordsImportCsvRef` (both ⇒ refuse, neither ⇒
+  // the store's "import requires csv text").
+  //
+  // ⚠ So this declaration is WIDER than the runtime, which is the safe
+  // direction: the runtime refuses what the declaration admits, never the
+  // reverse. Do not "tighten" it back without giving the envelope a real
+  // one-of primitive — a required flag here is a claim about every call.
+  //
+  // 🔑 `csv_ref` IS `'object'`, NOT `'file_ref'`, AND THE DISTINCTION IS LOAD-
+  // BEARING. `file_ref` is the DURABLE `data.file` record reference — the arg
+  // type behind `input_materialize` / `upload`, and the thing a Kitchen picker
+  // offers from the owner's file inventory. This arg takes a run-scoped
+  // `TempFileRef` and REFUSES a durable id, so declaring it `file_ref` would
+  // advertise a picker whose every value the op rejects at dispatch.
   import: [
-    { key: 'csv', type: 'string', required: true },
+    { key: 'csv', type: 'string', required: false },
+    { key: 'csv_ref', type: 'object', required: false },
     { key: 'spec', type: 'object', required: true },
     { key: 'dry_run', type: 'boolean', required: false },
   ],

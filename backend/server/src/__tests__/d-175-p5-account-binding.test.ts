@@ -555,6 +555,32 @@ describe('D-175 P5 — degraded states', () => {
     expect((thrown as RpcError).status).toBe(502);
   });
 
+  it('⛔ an unauthenticated account maps to 401, not a generic 400', async () => {
+    // ⚠ FOUND BY MUTATION (2026-09-18). 503 and 502 are pinned above; this
+    // third class was not, so collapsing it into the 400 default was invisible.
+    //
+    // ⛔ THE STATUS IS THE INSTRUCTION. The comment at the mapping says the
+    // classes exist so a caller does not "drive the wrong retry", and 401 is
+    // the only one that says WHAT to do: sign in and try again. Reported as
+    // 400 the client reads "your input was bad" and shows a token error to
+    // somebody whose token is fine and who simply is not logged in — the one
+    // failure with an obvious remedy, rendered as the one with none.
+    const exchange = makeMockExchange(() => ({
+      ok: false,
+      code: 'account_not_authenticated',
+    }));
+    const h = makeHarness({ exchange });
+    let thrown: unknown;
+    try {
+      await h.manager.bind({ binding_token: tokenFor(ACCT_A) }, ACTOR);
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(RpcError);
+    expect((thrown as RpcError).status).toBe(401);
+    expect((thrown as RpcError).code).toBe('binding_exchange_failed');
+  });
+
   it('keeps token / proof failures as 4xx (client input)', async () => {
     const h = makeHarness();
     await expect(

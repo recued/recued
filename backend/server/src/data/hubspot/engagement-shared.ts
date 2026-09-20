@@ -12,7 +12,11 @@
  *
  *  Spec: D-139 § A.3, § A.3.2, § A.3.3, § A.3.6, § A.3.7. */
 
-import { composePlatformRecordTargetId } from '@recued/contracts';
+import {
+  composePlatformRecordTargetId,
+  parseAddressListEmails,
+  truncateUtf8,
+} from '@recued/contracts';
 import type {
   Authorship,
   ConnectionRecord,
@@ -161,20 +165,23 @@ export const canonicalizeEmail = (
   return trimmed;
 };
 
-/** Parse a HubSpot email-list field. Splits on `;`, `,`, or `\n` and
- *  canonicalizes each entry. */
+/** Parse a HubSpot email-list field (`hs_email_to_email`, `hs_email_cc_email`,
+ *  `attendee_emails`) into canonical emails.
+ *
+ *  ⛔ THIS USED TO BE `split(/[;,\n]/)` + `trim().toLowerCase()`, WHICH MANGLED
+ *  EVERY ADDRESS CARRYING A DISPLAY NAME. `Bob Smith <bob@x.com>` came out as
+ *  the string `"bob smith <bob@x.com>"` and was written straight into
+ *  `engagement_edges.target_id` with `target_kind: 'data.contact'` — a contact
+ *  key that matches no contact, so the same person was counted twice by
+ *  `account_engagement_breadth`. `EngagementStore` states the invariant it
+ *  broke: *"Emails are raw-stored (already D-138-canonical at edge-write
+ *  time)"*. Every test used a bare address, so nothing saw it.
+ *
+ *  ⚠ THE SALESFORCE COPY IS THE SAME FUNCTION and must stay that way —
+ *  `vendor-email-list-parity.test.ts` pins them together. */
 export const parseEmailList = (
   raw: string | null | undefined,
-): string[] => {
-  if (raw === null || raw === undefined || raw === '') return [];
-  const parts = raw.split(/[;,\n]/);
-  const out: string[] = [];
-  for (const p of parts) {
-    const c = canonicalizeEmail(p);
-    if (c !== null) out.push(c);
-  }
-  return out;
-};
+): string[] => parseAddressListEmails(raw);
 
 /** True when `email`'s domain matches one of `internalDomains`
  *  (case-insensitive). Used by direction's internal-domain analysis. */
@@ -369,8 +376,16 @@ export const pickInlineBodyState = (body: string): BodyStateProjection => {
   if (byteLength <= ENGAGEMENT_BODY_INLINE_MAX_BYTES) {
     return { body_state: 'inline_body', body_inline: body };
   }
-  const truncated = body.slice(
-    0,
+  // ⛔ WAS `body.slice(0, CAP / 2)`, AND THE HALVING WAS THE FUDGE FOR THIS.
+  //   `slice` counts UTF-16 units, the cap counts BYTES, so halving buys a
+  //   margin only while every character is 1–2 bytes. A CJK body came out at
+  //   9,216 bytes — 50% OVER the 6,144 cap the truncation exists to stay under.
+  //   The HubSpot copy said so in as many words: *"byte-wise it may be slightly
+  //   UNDER 6 KB which is fine for the cap"*. `truncateUtf8` bounds exactly, so
+  //   the `/2` now means what it says — inline at most half the cap — and is
+  //   kept only so stored inline sizes do not change.
+  const truncated = truncateUtf8(
+    body,
     Math.floor(ENGAGEMENT_BODY_INLINE_MAX_BYTES / 2),
   );
   return {

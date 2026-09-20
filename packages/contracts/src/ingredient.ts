@@ -1,7 +1,7 @@
 import type { AiCooperativeManifestDeclaration } from './ai-cooperative.js';
 import type { CommitmentEvidenceDeclaration } from './commitment-evidence.js';
 import type { WorkEntitySourceDeclaration } from './work-entity-sources.js';
-import type { ProgressContract } from './execution-lane.js';
+import type { AuthorableProgressContract } from './execution-lane.js';
 import type { BridgeSurfaceKind } from './bridge.js';
 import type { ValueHint } from './value-hint.js';
 import type { ExecutionScope } from './execution-scope.js';
@@ -680,15 +680,29 @@ export interface IngredientManifest {
   // ── D-181 Slice 3 — long-op progress / stall-detection (additive,
   //    optional; both default safely when omitted). ──
 
-  /** Per-op progress signal the stall detector observes (§6). When omitted
-   *  the monitor falls back to the per-kind default (`resolveProgressContract`
-   *  — `service` → `silent`, `http`/`mcp`/`connection`/`ai` →
-   *  `provider-event`, `dom`/`chat`/`storage` → `silent`). A `silent` op is
-   *  bounded only by the generous wall-clock fail-safe; the three signalling
-   *  contracts kill (unattended) / flag (attended) on no progress for `k·T`.
-   *  Simple-form ingredients declare it here; a catalog-form cli op declares
-   *  it per binding (`CliMethodBinding.progress`), which is more specific. */
-  progress_contract?: ProgressContract;
+  /** Per-op progress signal the stall detector observes (§6). The three
+   *  signalling contracts kill (unattended) / flag (attended) on no progress
+   *  for `k·T`; a `silent` op is bounded only by the generous wall-clock
+   *  fail-safe. Simple-form ingredients declare it here; a catalog-form cli op
+   *  declares it per binding (`CliMethodBinding.progress`), which is more
+   *  specific.
+   *
+   *  ⛔ D-274 § 2b — THIS COMMENT USED TO SAY the monitor "falls back to the
+   *  per-kind default (`resolveProgressContract`)" WHEN OMITTED. It does not:
+   *  `resolveProgressContract` has no non-test caller, and the cli executor's
+   *  `buildStallMonitor` returned `undefined` for an undeclared binding, so
+   *  BOTH the kill arm and the attended flag arm were skipped. The prose
+   *  described an intended wiring that was never built and read as reassurance
+   *  for 455 of 457 shipped cli ops.
+   *
+   *  ⇒ What actually happens for an undeclared CLI BINDING is now D-274's
+   *  host-assigned `resource` contract (report-only, never authored here).
+   *  Every other kind is still governed by its own executor; if you need a
+   *  per-kind default, WIRE `resolveProgressContract` — do not assume it.
+   *
+   *  ⚠ Typed `AuthorableProgressContract`, not `ProgressContract`: `resource`
+   *  is assigned by the host and is not declarable (§ 6a). */
+  progress_contract?: AuthorableProgressContract;
   /** Explicit fast-path opt-out (§3d) — a known-cheap op the deterministic
    *  publish-gate op-set walk can't *prove* cheap (so it would otherwise be
    *  gated, since misclassification fails safe). `true` makes the lane

@@ -99,6 +99,61 @@ describe('handleNetworkLocalUrls', () => {
     expect(res.public_port).toBe(8446);
   });
 
+  /** D-273 — the divergence between the port the owner ASKED for and the one
+   *  being served.
+   *
+   *  ⛔ THE ONLY SIGNAL A FAILED LIVE PORT CHANGE PRODUCES ON THE CLIENT SIDE.
+   *  `server.setConfigField` resolves as soon as the key is persisted; the
+   *  rebind runs after the reply and, on failure, writes one `console.warn` and
+   *  keeps the old port. The settings page renders the config value and this rpc
+   *  reports the bound one, so before this field the two owner-facing surfaces
+   *  disagreed with nothing anywhere to explain why. */
+  describe('D-273 — public_port_requested', () => {
+    it('⛔ carries the requested port when the server could not move to it', async () => {
+      const res = await handleNetworkLocalUrls(
+        { ...deps, getPublicPort: () => 443, getRequestedPublicPort: () => 8446 },
+        undefined,
+        { instance_id: 'wc_1' },
+      );
+      expect(res.public_port, 'advertised the port that failed to bind').toBe(443);
+      expect(res.public_port_requested).toBe(8446);
+    });
+
+    it('⛔ is ABSENT when the ports agree — the normal case', async () => {
+      // ⚠ A client that receives it renders a "your change did not apply"
+      // warning. Sending it always would put that warning on every healthy
+      // server and make the field mean nothing.
+      const res = await handleNetworkLocalUrls(
+        { ...deps, getPublicPort: () => 8446, getRequestedPublicPort: () => 8446 },
+        undefined,
+        { instance_id: 'wc_1' },
+      );
+      expect(res.public_port).toBe(8446);
+      expect('public_port_requested' in res).toBe(false);
+    });
+
+    it('⛔ is ABSENT when the embedding cannot say what was requested', async () => {
+      // ⚠ NOT a divergence. An embedding with no runtime config has no wish to
+      // diverge from; claiming one against an absent value would report a failed
+      // port change on every server that simply cannot answer the question.
+      const res = await handleNetworkLocalUrls(
+        { ...deps, getPublicPort: () => 8446 }, undefined, { instance_id: 'wc_1' },
+      );
+      expect('public_port_requested' in res).toBe(false);
+    });
+
+    it('⛔ is ABSENT when the server cannot say what it is serving', async () => {
+      // Half an answer is not an answer: without a served port there is nothing
+      // to compare, and reporting the wish alone would read as "this is the
+      // port", which is the exact misreading the field exists to prevent.
+      const res = await handleNetworkLocalUrls(
+        { ...deps, getRequestedPublicPort: () => 8446 }, undefined, { instance_id: 'wc_1' },
+      );
+      expect('public_port' in res).toBe(false);
+      expect('public_port_requested' in res).toBe(false);
+    });
+  });
+
   it('⛔⛔ D-272 — reports the LAN listener as EXPOSED when the bind reaches a public address', async () => {
     // The cloud-VM shape: one private NIC, one public. `resolveLanAddress`
     // returns `0.0.0.0` for exactly that host, and there is no source-address

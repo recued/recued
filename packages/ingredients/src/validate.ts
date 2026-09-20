@@ -8,6 +8,7 @@ import {
   isServiceManifest,
   isCatalogForm,
   closedRequestSchemaDefinitionIssues,
+  closedRequestSchemaBacktrackingIssues,
   // D-165 P2 — catalog policy enum guards + numeric bounds (strict validator).
   isMediaKind,
   isCatalogKind,
@@ -60,7 +61,7 @@ import {
   RECONNECT_POLICIES,
   CLI_STDIN_HANDLINGS,
   CLI_OUTPUT_SHAPES,
-  PROGRESS_CONTRACTS,
+  AUTHORABLE_PROGRESS_CONTRACTS,
   CLI_DETACHED_MODES,
   CLI_DETACHED_COMPLETION_KINDS,
   CLI_DETACHED_CANCEL_KINDS,
@@ -1350,7 +1351,11 @@ const validateCliDetachedSpec = (
  *  RAM-scarce `service` lane (a heavy subprocess marking itself fast_path would
  *  evade RAM gating). It is redundant-but-harmless on `storage` / `ai` (those
  *  already bypass the semaphore by kind), so only `service` is rejected. */
-const PROGRESS_CONTRACT_SET = new Set<string>(PROGRESS_CONTRACTS);
+// D-274 § 6a — derived from the AUTHORABLE list, never from `PROGRESS_CONTRACTS`.
+// The runtime vocabulary carries `resource`, which is host-assigned and carries
+// no `stall_ms`; deriving this set from the runtime list is what would silently
+// make it declarable and strand the author at the cloud publish gate.
+const PROGRESS_CONTRACT_SET = new Set<string>(AUTHORABLE_PROGRESS_CONTRACTS);
 const validateLongOpFields = (m: Record<string, unknown>, add: AddFn): void => {
   if (m.progress_contract !== undefined
     && (typeof m.progress_contract !== 'string' || !PROGRESS_CONTRACT_SET.has(m.progress_contract))) {
@@ -3348,6 +3353,23 @@ const validateCatalogForm = (m: Record<string, unknown>, add: AddFn): void => {
         `operation '${opKey}' closed request schema is invalid: ${message}`,
       );
     }
+    // \u26d4\u26d4 THE DEFINITION CHECK ABOVE ONLY ASKS WHETHER THE PATTERN COMPILES.
+    //   A `pattern` is the one unbounded computation a "closed" schema admits,
+    //   and it runs per dispatch INSIDE the gateway against caller-supplied
+    //   values \u2014 on a thread no timeout can interrupt, because `setTimeout`
+    //   cannot preempt a synchronous regex. `^(a+)+$` against 32 characters
+    //   blocks the whole server for 43 seconds. This is the install-time half:
+    //   probe the pattern here, once, where third-party content enters, rather
+    //   than discover it when a caller supplies the input that detonates it.
+    //   See internal design notes.
+    for (const message of closedRequestSchemaBacktrackingIssues(spec.request_schema)) {
+      add(
+        'error',
+        'CATALOG_REQUEST_SCHEMA_INVALID',
+        `${path}.request_schema`,
+        `operation '${opKey}' ${message}`,
+      );
+    }
     // request_metadata.custom_headers — author-supplied headers must not carry
     // auth/session material; the gateway owns those (spec § API-surface gates,
     // Codex review MED). Other request_metadata fields gate in a later slice.
@@ -3377,11 +3399,27 @@ const validateCatalogForm = (m: Record<string, unknown>, add: AddFn): void => {
     }
     // timeout_ms — bounded [MIN, catalog default × MULT] (Invariant 6).
     if (spec.timeout_ms !== undefined) {
-      const ceiling = catalogDefaultTimeout * CATALOG_OP_TIMEOUT_MULTIPLIER;
+      // ⛔ The BINDING IS NOT ON THE OP SPEC in catalog form — it lives under
+      // `surfaces.connector.executes[op]`, which is why a `spec.bind` probe
+      // reads undefined and every op silently takes the network ceiling.
+      const surfaces = isObjectRecord(m.surfaces) ? m.surfaces : {};
+      const connector = isObjectRecord(surfaces.connector) ? surfaces.connector : {};
+      const executes = isObjectRecord(connector.executes) ? connector.executes : {};
+      const opBinding = isObjectRecord(executes[opKey]) ? executes[opKey] : {};
+      const isCli = opBinding.kind === 'cli_invocation';
+      // A local cli op is floor-only: the author declares the duration, because
+      // the author is the only party who knows it. A REST op keeps its ceiling —
+      // a socket nobody asked to wait on is a different thing from compute the
+      // owner started and can stop from the active list.
+      const ceiling = isCli
+        ? Number.MAX_SAFE_INTEGER
+        : catalogDefaultTimeout * CATALOG_OP_TIMEOUT_MULTIPLIER;
       if (spec.timeout_ms !== 0
         && !isIntInRange(spec.timeout_ms, CATALOG_MIN_OP_TIMEOUT_MS, ceiling)) {
         add('error', 'CATALOG_TIMEOUT_INVALID', `${path}.timeout_ms`,
-          `operation '${opKey}' timeout_ms must be 0 (unbounded) or an integer in [${CATALOG_MIN_OP_TIMEOUT_MS}, ${ceiling}] (catalog default × ${CATALOG_OP_TIMEOUT_MULTIPLIER})`);
+          isCli
+            ? `operation '${opKey}' timeout_ms must be 0 (unbounded) or an integer of at least ${CATALOG_MIN_OP_TIMEOUT_MS}`
+            : `operation '${opKey}' timeout_ms must be 0 (unbounded) or an integer in [${CATALOG_MIN_OP_TIMEOUT_MS}, ${ceiling}] (catalog default × ${CATALOG_OP_TIMEOUT_MULTIPLIER})`);
       }
     }
     // cache_ttl_ms — Invariant 7: a positive TTL is read-tier only.

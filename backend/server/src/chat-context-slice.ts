@@ -26,6 +26,10 @@
 /** How much a single slice may return. Deliberately small: the value was
  *  dropped BECAUSE the packet did not fit, so a generous slice would undo the
  *  trim it is compensating for. */
+// ⚠ `truncateUtf8` LIVED HERE, correctly, while four other sites cut a byte
+//   budget with `String.slice`. Shared so the next one has somewhere to reach.
+import { truncateUtf8 } from '@recued/contracts';
+
 export const CONTEXT_SLICE_MAX_BYTES = 2_048;
 
 export interface ContextSliceRequest {
@@ -132,19 +136,6 @@ const windowAround = (
   const start = Math.max(0, at - lead);
   const body = truncateUtf8(text.slice(start), room);
   return `${start > 0 ? marker : ''}${body}${start + body.length < text.length ? marker : ''}`;
-};
-
-/** Cut to a byte budget on a character boundary — never mid-code-point. */
-const truncateUtf8 = (text: string, maxBytes: number): string => {
-  let out = '';
-  let used = 0;
-  for (const ch of text) {
-    const size = Buffer.byteLength(ch, 'utf8');
-    if (used + size > maxBytes) break;
-    out += ch;
-    used += size;
-  }
-  return out;
 };
 
 /** Take from `items` until the byte budget is spent. Returns whole elements —

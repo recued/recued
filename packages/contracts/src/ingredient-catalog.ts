@@ -185,6 +185,30 @@ export const CATALOG_MIN_OP_TIMEOUT_MS = 1_000;
 export const CATALOG_OP_TIMEOUT_MULTIPLIER = 3;
 export const CATALOG_REST_TIMEOUT_SOFT_CAP_MS = 60_000;
 export const CATALOG_MAX_DEFAULT_TIMEOUT_MS = 180_000;
+/** ⛔⛔ A LOCAL CLI OP HAS NO SYSTEM-IMPOSED CEILING (owner ruling, 2026-09-18).
+ *  Only the floor (`CATALOG_MIN_OP_TIMEOUT_MS`) applies; the AUTHOR declares how
+ *  long the work takes, because the author is the only party who knows.
+ *
+ *  The old rule bounded a cli op the same way it bounds a REST socket
+ *  (`default x 3` = 90s) — an extension-era budget, sized when the product lived
+ *  in a browser tab. The measured tell: 21 ops across whisper / ffmpeg / ollama
+ *  / docling / libreoffice / ghostscript / tesseract / sox all declared EXACTLY
+ *  that ceiling. Transcoding a recording, transcribing an hour of audio or
+ *  running a local model are hours-scale jobs; at 90s all three simply failed.
+ *
+ *  🔑 WHAT REPLACES THE WALL IS VISIBILITY, NOT A BIGGER WALL. `execution.active`
+ *  already carries `started_at`, `step_id`, `intent`, `stalled` and a `kill`
+ *  descriptor, and `execution.kill` ends a run — a process table with elapsed
+ *  time and a stop button, which is what every operating system offers for
+ *  exactly this. A system that guesses a duration on the owner's behalf is
+ *  guessing; a system that SHOWS them the job is not.
+ *
+ *  ⛔ AND DO NOT "FIX" THIS WITH A SILENT NO-PROGRESS FAILSAFE. Proposed and
+ *  rejected same day: arming the 30-minute silent backstop for ops that declare
+ *  no progress would auto-kill precisely the jobs this ruling exists to allow.
+ *  Most local tools emit nothing parseable, so elapsed SILENCE carries no
+ *  information about health — a stall threshold is only meaningful for an op
+ *  that could have signalled and did not. */
 export const CATALOG_DEFAULT_CACHE_TTL_MS = 60_000;
 export const CATALOG_MAX_CACHE_TTL_MS = 86_400_000;
 export const CATALOG_CACHE_OUTLIER_MULTIPLIER = 3;

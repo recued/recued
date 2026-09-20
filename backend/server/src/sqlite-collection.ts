@@ -197,12 +197,31 @@ export const createSQLiteCollection = <V>(
         //
         // 🔑 What it WILL seek on is a LEADING SINGLE-COLUMN range. Hoisting
         // `eff <= ?` out as its own conjunct turns the plan from
-        // `SCAN t USING INDEX` into `SEARCH t USING INDEX (<expr><?)`; the
-        // disjunction stays behind as a residual that can only discard rows
-        // TIED with the cursor on effective time. Logically identical — every
-        // row satisfying the OR satisfies `eff <= ?` — which is exactly why the
-        // difference is invisible to a result assertion and only a plan
-        // assertion pins it.
+        // `SCAN t USING INDEX` into `SEARCH t USING INDEX (<expr><?)`.
+        //
+        // ⛔⛔ THE HOIST IS LOAD-BEARING, NOT A SEEK HINT — DO NOT "SIMPLIFY" IT
+        // AWAY. This comment used to say the two were *"logically identical —
+        // every row satisfying the OR satisfies `eff <= ?`"*, which is FALSE and
+        // is an invitation to delete the conjunct. A row NEWER than the cursor
+        // with a SMALLER id satisfies the OR (via `id < ?`) and fails
+        // `eff <= ?`; only the conjunction excludes it. Driven, cursor
+        // `(eff=100, id='m')` over rows a/200, m/100, z/100, b/100, c/50:
+        //
+        //     eff<c OR (eff=c AND id<i)        -> b,c   (the form this replaced)
+        //     eff<=c AND (eff<c OR id<i)       -> b,c   (shipped)
+        //     (eff<c OR id<i)                  -> a,b,c (hoist dropped)
+        //
+        // `a` is newer than the cursor and comes back on every later page.
+        //
+        // ✅ The two SHIPPED forms really are equivalent, case-wise: eff<c → both
+        // true; eff=c ∧ id<i → both true; eff=c ∧ id≥i → both false; eff>c → both
+        // false. What the rewrite buys is only the PLAN.
+        //
+        // 🔑 Both halves are pinned. `memory-list-bounded-window.test.ts` walks
+        // 400 tie-heavy rows against a JS reference (results), and a sibling
+        // asserts the EXPLAIN says SEEK (plan) — dropping the conjunct reds four
+        // of them. The results half is what a reader who believed the old
+        // sentence would have hit; keep both.
         where = ` WHERE ${eff} <= ? AND (${eff} < ? OR ${id} < ?)`;
         params.push(query.before.ts, query.before.ts, query.before.id);
       }

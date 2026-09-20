@@ -78,11 +78,26 @@ export const DEFAULT_EXPECTED_INTERVAL_MS: Record<ProgressContract, number> = {
   'file-growth': 10_000,
   'provider-event': 15_000,
   silent: 0,
+  // D-274 — one no-movement sample window. k=6 ⇒ flag after ~3 min during which
+  // the process tree consumed no CPU and its RSS did not move.
+  resource: 30_000,
 };
 
 /** Per-kind default progress contract (§4). The manifest's own
  *  `progress_contract` overrides this; the default reflects how the kind's
- *  executor surfaces progress:
+ *  executor surfaces progress.
+ *
+ *  ⛔ D-274 — `resolveProgressContract` STILL HAS NO NON-TEST CALLER. This map
+ *  is a declared intention, not a wiring: nothing consults it at runtime, and
+ *  `ingredient.ts` used to claim the monitor "falls back" to it, which it never
+ *  did. The cli BINDING path is now covered instead by the host-assigned
+ *  `resource` contract in `cli-invocation-executor.ts` — NOT by this map, whose
+ *  `cli: 'silent'` row would impose a 30-minute kill if anyone wired it naively.
+ *  Every other kind remains governed by its own executor. ⇒ If you need a
+ *  per-kind default, WIRE this and decide the cap deliberately; do not assume
+ *  it is already in force because a table exists.
+ *
+ *  Per-kind rationale:
  *    - `service` / `cli` → `silent`  (a cli subprocess may buffer stdout / write
  *      its output only at the end — opt into `heartbeat` / `file-growth` per op).
  *    - `http` / `mcp` / `connection` / `ai` → `provider-event` (streaming /
@@ -127,6 +142,14 @@ export interface StallEvalInput {
   now: number;
   /** Expected progress interval `T`; defaults to the per-contract seed. */
   expected_interval_ms?: number;
+  /** D-274 § 6b — evaluate for REPORTING ONLY: `stalled` is forced false on
+   *  BOTH origins and `flagged` alone carries the signal. Set by the `resource`
+   *  contract, whose signal is universal but noisy (work outside the process
+   *  tree, GPU-resident work, iowait all read as idle). A false "looks idle"
+   *  costs the watching human one glance; a false KILL costs them the whole
+   *  completed run — so the noisy signal is admissible for the first and not
+   *  the second. The three DECLARED contracts never set this. */
+  flag_only?: boolean;
   /** `k` factor; defaults to `STALL_FACTOR_K`. */
   factor_k?: number;
   /** Generous wall-clock fail-safe; defaults to `SILENT_OP_HARD_CAP_MS`. */
@@ -172,13 +195,25 @@ export const evaluateStall = (input: StallEvalInput): StallDecision => {
   const progressStalled = input.contract !== 'silent' && t > 0 && idleMs >= k * t;
   const silentExceeded = runMs >= cap;
 
-  const stalled = input.kill_on_no_progress === true
+  // D-274 — `flag_only` is checked FIRST so no origin can route around it: the
+  // unattended arm below is `progressStalled || silentExceeded` unconditionally,
+  // so a report-only contract could not otherwise be expressed without lying
+  // about `origin`.
+  const stalled = input.flag_only === true
+    ? false
+    : input.kill_on_no_progress === true
     ? progressStalled || silentExceeded
     : input.origin === 'unattended'
     ? progressStalled || silentExceeded
     : silentExceeded; // attended: only the fail-safe kills; no-progress flags
 
-  const reason: StallReason | null = silentExceeded
+  // D-274 — under `flag_only` the wall-clock cap is not in play at all (the
+  // caller disables it; the authored `timeout_ms` is the real backstop), so
+  // reporting `silent_cap` here would name a bound that never applied. The only
+  // honest reason for a report-only contract is the no-progress one.
+  const reason: StallReason | null = input.flag_only === true
+    ? (progressStalled ? 'no_progress' : null)
+    : silentExceeded
     ? 'silent_cap'
     : progressStalled
       ? 'no_progress'

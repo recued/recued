@@ -94,6 +94,15 @@ describe('D-148 W3.8 — exposure-surface page model', () => {
     expect(pub?.requires_ddns).toBe(true);
     const lan = model.preset_rows.find((r) => r.preset === 'lan_only');
     expect(lan?.requires_ddns).toBe(false);
+    // ⚠ FOUND BY MUTATION: the two rows above differ in whether the preset has
+    // ANY public bit, so `&& !has_ddns` never decided either one — dropping it
+    // left this test green. The flag means "you must set up DDNS first", so the
+    // case that matters is the same public preset on a server that HAS it.
+    const withDdns = buildExposurePageModel({ state: buildState(), has_ddns: true });
+    expect(
+      withDdns.preset_rows.find((r) => r.preset === 'public')?.requires_ddns,
+      'the public preset still demanded DDNS on a server that has it',
+    ).toBe(false);
   });
 
   it('triggers_ws_lockout flag flips on maintenance preset when /ws currently on', () => {
@@ -102,6 +111,18 @@ describe('D-148 W3.8 — exposure-surface page model', () => {
     expect(maint?.triggers_ws_lockout).toBe(true);
     const lan = model.preset_rows.find((r) => r.preset === 'lan_only');
     expect(lan?.triggers_ws_lockout).toBe(false);
+    // ⚠ FOUND BY MUTATION: `lan_only` keeps /ws on, so `!projected.ws.lan`
+    // already decided both rows and the `(live.ws.lan || live.ws.public)`
+    // conjunct never ran. A server ALREADY in maintenance must not be warned
+    // it is about to lock itself out of a /ws it does not have.
+    const alreadyOff = buildExposurePageModel({
+      state: buildState({ resolution: resolution({ ws: { lan: false, public: false } }) }),
+      has_ddns: true,
+    });
+    expect(
+      alreadyOff.preset_rows.find((r) => r.preset === 'maintenance')?.triggers_ws_lockout,
+      'warned about a /ws lockout when /ws was already fully off',
+    ).toBe(false);
   });
 
   it('requires_public_mcp_ack flag set on /mcp row when ack missing', () => {
@@ -110,6 +131,18 @@ describe('D-148 W3.8 — exposure-surface page model', () => {
     expect(mcpRow?.requires_public_mcp_ack).toBe(true);
     const wsRow = model.path_rows.find((r) => r.path === 'ws');
     expect(wsRow?.requires_public_mcp_ack).toBe(false);
+    // ⚠ FOUND BY MUTATION: both rows above differ by PATH, so `!row.public`
+    // never decided either. The ack is a promotion gate — once /mcp is already
+    // public the row must not keep asking for a confirmation already given
+    // (and the toggle it labels is now a DEMOTION).
+    const alreadyPublic = buildExposurePageModel({
+      state: buildState({ resolution: resolution({ mcp: { lan: true, public: true } }) }),
+      has_ddns: true,
+    });
+    expect(
+      alreadyPublic.path_rows.find((r) => r.path === 'mcp')?.requires_public_mcp_ack,
+      're-asked for the public-MCP acknowledgement on an already-public /mcp',
+    ).toBe(false);
   });
 
   it('requires_public_mcp_ack flag clears once ack is valid', () => {
@@ -329,6 +362,19 @@ describe('D-148 W3.8 — projection helpers', () => {
         active_ws_connections: 1,
       }),
     ).toBe(WS_LOCKOUT_DISCONNECT_PHRASE);
+    // ⚠ FOUND BY MUTATION: the preset variant has an "already off" case; this
+    // one did not, so its identical guard was unpinned. Re-confirming a /ws
+    // that is already off is a no-op transition — demanding the phrase for it
+    // trains the operator to type lockout phrases that change nothing.
+    expect(
+      projectPathWsLockout({
+        path: 'ws',
+        next_resolution: { lan: false, public: false },
+        current_resolution: resolution({ ws: { lan: false, public: false } }),
+        active_ws_connections: 1,
+      }),
+      'demanded a lockout phrase for a /ws that was already off',
+    ).toBeNull();
   });
 
   it('projectRequiresPublicMcpAck only fires on /mcp public-promotion', () => {
@@ -356,6 +402,42 @@ describe('D-148 W3.8 — projection helpers', () => {
         acknowledgement: ackOn(),
       }),
     ).toBe(false);
+    // ⚠ FOUND BY MUTATION: all three cases above promote /mcp from a
+    // not-public baseline, so the `!next.public` and `current.mcp.public`
+    // guards never ran — deleting either left this green. The name says
+    // "public-PROMOTION"; these are the two non-promotions it excludes.
+    expect(
+      projectRequiresPublicMcpAck({
+        path: 'mcp',
+        next_resolution: { lan: true, public: false },
+        current_resolution: resolution({ mcp: { lan: true, public: true } }),
+        acknowledgement: ackOff(),
+      }),
+      'demanded an acknowledgement to turn /mcp public OFF',
+    ).toBe(false);
+    // ⚠ …and the case above is ITSELF decided by the `current.mcp.public`
+    // guard, not by `!next.public`. The only input that isolates `!next.public`
+    // is a non-public target on an already-non-public /mcp — i.e. clicking the
+    // /mcp LAN cell on a LAN-only server, which must not raise the public-MCP
+    // consent modal.
+    expect(
+      projectRequiresPublicMcpAck({
+        path: 'mcp',
+        next_resolution: { lan: false, public: false },
+        current_resolution: resolution({ mcp: { lan: true, public: false } }),
+        acknowledgement: ackOff(),
+      }),
+      'raised the public-MCP consent modal for a LAN-only /mcp toggle',
+    ).toBe(false);
+    expect(
+      projectRequiresPublicMcpAck({
+        path: 'mcp',
+        next_resolution: { lan: true, public: true },
+        current_resolution: resolution({ mcp: { lan: true, public: true } }),
+        acknowledgement: ackOff(),
+      }),
+      're-asked for an acknowledgement on an already-public /mcp',
+    ).toBe(false);
   });
 
   it('Codex P2 #1 — projectRequiresPublicMcpAck treats malformed ack as unacknowledged', () => {
@@ -381,5 +463,34 @@ describe('D-148 W3.8 — projection helpers', () => {
     });
     expect(next.webhooks).toEqual({ lan: false, public: true });
     expect(next.ws).toEqual({ lan: true, public: false });
+  });
+
+  it('projectCellToggle toggles OFF as well as on, and on the lan cell too', () => {
+    // ⚠ FOUND BY MUTATION: the case above starts from `public: false`, so
+    // "toggle" and "set true" are the same answer — and it never touches a
+    // `lan` cell, so that branch had no case at all. Both mutations survived
+    // 26 green tests, on the one function behind every click in the grid.
+    const offAgain = projectCellToggle({
+      current_resolution: resolution({ webhooks: { lan: false, public: true } }),
+      path: 'webhooks',
+      cell: 'public',
+    });
+    expect(offAgain.webhooks.public, 'a second click did not turn the cell back off').toBe(false);
+
+    const lanOff = projectCellToggle({
+      current_resolution: resolution(),
+      path: 'ws',
+      cell: 'lan',
+    });
+    expect(lanOff.ws.lan, 'clicking a live lan cell did not turn it off').toBe(false);
+    expect(lanOff.ws.public, 'the lan click moved the public bit').toBe(false);
+
+    const lanOn = projectCellToggle({
+      current_resolution: resolution({ webhooks: { lan: false, public: false } }),
+      path: 'webhooks',
+      cell: 'lan',
+    });
+    expect(lanOn.webhooks.lan).toBe(true);
+    expect(lanOn.webhooks.public, 'the lan click moved the public bit').toBe(false);
   });
 });

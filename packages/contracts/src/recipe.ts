@@ -118,6 +118,38 @@ export const OUTPUT_TYPES = [
    *  server-derived file metadata and may include a hash-pinned recipe action;
    *  authenticated preview/download remains a host-owned interaction. */
   'file_artifact',
+  /** D-274 — ONE file drawn INLINE, where `file_artifact` draws a card about a
+   *  file. Two shapes, and the difference is whether the file is COPIED:
+   *
+   *    - `{ record_id, filename? }` — a durable `data.file` record. The host
+   *      resolves the rest, exactly as `file_artifact` does, so a recipe can
+   *      neither forge a descriptor nor name a file it was not given.
+   *    - `{ bytes_b64, mime_type, filename }` — the bytes themselves, for a file
+   *      the owner keeps on disk and Recued never copies. A run reads it live
+   *      (`image.preview` → `file.read-temp`), draws it, and keeps nothing.
+   *
+   *  ⚠ THE SECOND SHAPE EXISTS BECAUSE A COPY IS A CACHE WITH NO INVALIDATION.
+   *  Persisting a thumbnail of a roster photo means swapping that photo leaves
+   *  the stored copy silently showing the old face — with nothing anywhere to
+   *  reconcile it, and identity is exactly what that picture is being used to
+   *  check. Live bytes cannot go stale because they are not kept.
+   *
+   *  ⚠ And it is for ONE bounded artifact a human is about to look at. The
+   *  bytes ride in the result, which is the retention `csv-filter` exists to
+   *  avoid for bulk; `file.read-temp` caps the size to keep that honest.
+   *
+   *  ⛔ IT IS A REQUEST TO DRAW, NOT A PROMISE OF A PICTURE. Only a browser
+   *  surface can decode bytes and mount an `<img>`; `packages/renderer` emits
+   *  HTML strings for non-browser channels and renders a card instead. A
+   *  consumer that does not draw — chat, MCP — receives the resolved DESCRIPTOR
+   *  as `data`, which is more useful to a model than markup: it carries a
+   *  `record_id` the model can read through the gated file-read op if it holds
+   *  that grant.
+   *
+   *  ⚠ Named for the SURFACE it reuses (`files/file-preview.ts`), not for
+   *  `image`: that module already draws text and pdf as well, so a block called
+   *  `image` would either lie about a pdf or need a twin. */
+  'file_preview',
   /** D-196 § 4.5 / D-207 slice 2 — plain outbound navigation: label + absolute
    *  HTTPS URL + optional description (`ReceptionLinkButton`). The ONE block
    *  that navigates, and the only actionable one a visitor-facing surface can

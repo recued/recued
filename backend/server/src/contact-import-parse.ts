@@ -228,7 +228,7 @@ const parseVCardBlock = (lines: string[], startLine: number): ParsedContactEntry
   const email = pick(emails);
   if (email !== undefined) {
     const canonical = canonicalizeEmail(email);
-    if (canonical !== null) entry.email = canonical;
+    if (canonical !== '') entry.email = canonical;
   }
   const phone = pick(phones);
   if (phone !== undefined) entry.phone = phone;
@@ -414,7 +414,7 @@ const parseCsv = (text: string): ParseResult => {
       if (raw === undefined || raw.length === 0) continue;
       if (field === 'email') {
         const canonical = canonicalizeEmail(raw);
-        if (canonical !== null) entry.email = canonical;
+        if (canonical !== '') entry.email = canonical;
         continue;
       }
       if (field === 'address') continue; // structured; not a single CSV cell

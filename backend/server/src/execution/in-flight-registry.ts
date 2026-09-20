@@ -133,6 +133,11 @@ export interface InFlightRegistryOptions {
 interface SubprocessHandle {
   pid: number;
   kill: () => void;
+  /** D-274 §8 — what this child IS and when IT started, for the per-op clock on
+   *  the active list. Optional so a caller that cannot name its op still gets a
+   *  kill handle; the readout simply falls back to the run's elapsed. */
+  op?: string;
+  started_at?: number;
 }
 
 interface RunProgress {
@@ -351,14 +356,23 @@ export class InFlightRegistry {
    *  subprocess runs, and detaches it (via the returned child id) on settle. A
    *  run may have several live at once (parallel prefetch), so each is tracked
    *  separately; `kill` reaches all of them. Returns the child id for `detach`. */
-  attachSubprocess(run_id: string, pid: number, kill: () => void): string {
+  attachSubprocess(
+    run_id: string,
+    pid: number,
+    kill: () => void,
+    meta?: { op: string; started_at: number },
+  ): string {
     const child_id = `child_${++this.childSeq}`;
     let inner = this.subprocesses.get(run_id);
     if (!inner) {
       inner = new Map();
       this.subprocesses.set(run_id, inner);
     }
-    inner.set(child_id, { pid, kill });
+    inner.set(child_id, {
+      pid,
+      kill,
+      ...(meta !== undefined ? { op: meta.op, started_at: meta.started_at } : {}),
+    });
     return child_id;
   }
 
@@ -526,6 +540,18 @@ export class InFlightRegistry {
       const kill: KillDescriptor = firstChild
         ? { mechanism: 'sigkill', pid: firstChild.pid }
         : { mechanism: 'abandon_await', run_id: reg.run_id };
+      // D-274 §8 — the per-op clock. A run can hold several live children
+      // (parallel prefetch); pick the one that has been running LONGEST, since
+      // that is the one a waiting human is actually watching. A handle attached
+      // without meta contributes nothing rather than a half-filled entry — a
+      // clock with no start is worse than no clock.
+      let currentOp: { op: string; started_at: number; pid: number } | undefined;
+      for (const h of this.subprocesses.get(reg.run_id)?.values() ?? []) {
+        if (h.op === undefined || h.started_at === undefined) continue;
+        if (currentOp === undefined || h.started_at < currentOp.started_at) {
+          currentOp = { op: h.op, started_at: h.started_at, pid: h.pid };
+        }
+      }
       const observedProgress = this.progressByRun.get(reg.run_id);
       const laneSignalAt = held?.last_signal_at;
       const lastSignalAt = observedProgress === undefined
@@ -574,6 +600,10 @@ export class InFlightRegistry {
           // distinct layers — so the registry's per-run flag is authoritative.
           stalled: this.stalledRuns.has(reg.run_id) || (held?.stalled ?? false),
         },
+        // D-274 §8 — the OLDEST live child, not an arbitrary one: with parallel
+        // prefetch a run can hold several, and the one a human is waiting on is
+        // the one that has been going longest.
+        ...(currentOp !== undefined ? { current_op: currentOp } : {}),
         kill,
       });
     }

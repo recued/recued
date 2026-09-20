@@ -10,6 +10,7 @@
 import {
   CONNECTION_AUTH_TYPES,
   RpcError,
+  isPrivateHost,
   type ConnectionAuth,
   type IngredientManifest,
   type RpcRequest,
@@ -195,49 +196,6 @@ const MAX_GUIDE_FIELDS = 24;
  *  an adapter or upstream provider stalls. The UI already exposes a safe Retry
  *  path, so a finite bound is preferable to an unrecoverable spinner. */
 export const CONNECTION_SETUP_GUIDE_TIMEOUT_MS = 90_000;
-
-const isPrivateIpv4 = (hostname: string): boolean => {
-  const match = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/u.exec(hostname);
-  if (!match) return false;
-  const octets = match.slice(1).map(Number);
-  if (octets.some((part) => part < 0 || part > 255)) return true;
-  const [a, b] = octets as [number, number, number, number];
-  return a === 0
-    || a === 10
-    || a === 127
-    || (a === 100 && b >= 64 && b <= 127)
-    || (a === 169 && b === 254)
-    || (a === 172 && b >= 16 && b <= 31)
-    || (a === 192 && b === 168)
-    || (a === 198 && (b === 18 || b === 19))
-    || a >= 224;
-};
-
-const isPrivateHost = (hostname: string): boolean => {
-  const host = hostname.toLowerCase().replace(/^\[|\]$/gu, '').replace(/\.$/u, '');
-  if (
-    host === 'localhost'
-    || !host.includes('.')
-    || host.endsWith('.localhost')
-    || host.endsWith('.local')
-    || host.endsWith('.internal')
-    || host.endsWith('.lan')
-    || host.endsWith('.home')
-  ) return true;
-  if (isPrivateIpv4(host)) return true;
-  // The fc/fd/fe8..feb prefixes are IPv6-only. Applying them to every host
-  // would incorrectly reject public domains such as `fc.example.com`.
-  if (!host.includes(':')) return false;
-  return host === '::1'
-    || host === '::'
-    || host.startsWith('::ffff:')
-    || host.startsWith('fc')
-    || host.startsWith('fd')
-    || host.startsWith('fe8')
-    || host.startsWith('fe9')
-    || host.startsWith('fea')
-    || host.startsWith('feb');
-};
 
 /** Canonicalize before egress. Query strings, fragments, and embedded
  *  credentials are never model context; obvious local/private names are

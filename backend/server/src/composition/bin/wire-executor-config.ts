@@ -1422,6 +1422,10 @@ export const composeExecutorConfig = async (
         const { handleCsvColumns } = await import('../../collections/file/csv-filter-handler.js');
         return handleCsvColumns(await csvFileDeps(deps), input);
       },
+      fileReadTemp: async (input) => {
+        const { handleFileReadTemp } = await import('../../collections/file/file-read-temp-handler.js');
+        return handleFileReadTemp(input);
+      },
       filePersist: async (input) => {
         const { handleFilePersist } = await import('../../collections/file/file-persist-handler.js');
         return handleFilePersist({ registry: deps.collectionRegistry }, input);

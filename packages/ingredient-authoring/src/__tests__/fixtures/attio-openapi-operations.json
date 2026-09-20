@@ -90,7 +90,7 @@
       "add-record-note-attio": 2,
       "create-follow-up-task-attio": 2
     },
-    "composition_bytes": 103402,
+    "composition_bytes": 103465,
     "risk_counts": {
       "admin": 12,
       "destructive": 8,

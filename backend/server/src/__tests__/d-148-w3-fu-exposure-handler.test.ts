@@ -460,6 +460,37 @@ describe('wire-shape validators (bad_request)', () => {
     ).rejects.toThrow(/resolution must be/);
   });
 
+  it('⛔⛔ set_path_resolution rejects a non-boolean PUBLIC bit too', async () => {
+    // ⚠ FOUND BY MUTATION: the case above pins only the `lan` half of
+    // `isPathResolution`; dropping `typeof v.public === 'boolean'` left the
+    // whole handler suite green. `public` is the half that decides what the
+    // listener binds to the internet, and every one of these values is truthy
+    // or coerces — the state machine would persist the bit verbatim and the
+    // listener would read it as "on".
+    //
+    // ⛔ THE SAME PREDICATE IS DUPLICATED, PRIVATE, IN TWO FILES —
+    // `exposure-handler.ts:104` and `exposure/sqlite-store.ts:79` — and BOTH
+    // had only the lan half pinned. Two copies of one rule drifting the same
+    // way is why the wire and the stored row could disagree about what a valid
+    // cell is. Consolidating them next to `PathResolution` in contracts is the
+    // real fix; this pins the wire end meanwhile.
+    for (const resolution of [
+      { lan: true, public: 1 },
+      { lan: true, public: 'false' },
+      { lan: true, public: null },
+      { lan: true },
+    ]) {
+      await expect(
+        handleExposureSetPathResolution(
+          makeDeps(makeMachine()),
+          { path: 'webhooks', resolution },
+          pairedCaller,
+        ),
+        `a resolution of ${JSON.stringify(resolution)} was accepted at the wire`,
+      ).rejects.toThrow(/resolution must be/);
+    }
+  });
+
   it('set_public_mcp_acknowledgement rejects non-boolean acknowledge', async () => {
     await expect(
       handleExposureSetPublicMcpAcknowledgement(

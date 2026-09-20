@@ -18,6 +18,7 @@ import {
   assertPathUnderRunScratch,
   cleanupRunScratch,
   readConfinedTempFile,
+  reclaimRunScratchUnlessResumable,
   runScratchRoot,
 } from '../execution/run-scratch.js';
 
@@ -137,5 +138,48 @@ describe('D-185 Slice 2 — run-scratch lifecycle', () => {
     expect(existsSync(runScratchRoot(id))).toBe(false);
     expect(() => cleanupRunScratch(id)).not.toThrow(); // idempotent, root gone
     cleanupRunScratch(''); // no-op on an absent run scope
+  });
+});
+
+/** ⛔⛔ THE RUN-END RECLAIM HAS ONE EXCEPTION, AND UNTIL NOW NOTHING TESTED IT.
+ *
+ *  The execute-handler's `finally` reclaims every run's scratch root — EXCEPT a
+ *  resumable pause, which continues under the same `run_id` and sweeps later. A
+ *  sweep for `resumablePause` found it in three places (two assignments and the
+ *  one condition) and in zero tests, so deleting the negation or dropping the
+ *  guard as a tidy-up would keep the whole suite green while destroying the temp
+ *  output of every run that stops to ask.
+ *
+ *  🔑 THAT PATH IS NOT AN EDGE CASE FOR ITS CONSUMERS. A records `import` taking
+ *  a `csv_ref` is `approval: 'ask'` in all three shipped packs: produce the file
+ *  with a cli step, ask the owner, read the bytes on resume. */
+describe('D-185 §3.4 — a resumable pause keeps the scratch alive', () => {
+  it('KEEPS the run root when the run is resumably paused', () => {
+    const id = freshRun('paused');
+    const dir = allocateRunScratchDir(id);
+    writeFileSync(join(dir, 'converted.csv'), 'Date,Amt\n01-Jan,1\n');
+    reclaimRunScratchUnlessResumable(id, true);
+    expect(existsSync(runScratchRoot(id))).toBe(true);
+    // Not merely "the directory survives" — the ref is still READABLE, which is
+    // what the run does when it resumes.
+    expect(readConfinedTempFile(
+      { backing: 'temp', path: join(dir, 'converted.csv'), mime_type: 'text/csv', filename: 'converted.csv' },
+      id,
+    ).mime_type).toBe('text/csv');
+  });
+
+  it('⚠ and RECLAIMS it on a terminal end — the guard is not just always-keep', () => {
+    // Without this arm the assertion above passes on a function that never
+    // reclaims anything, which is the vacuous-green shape: a temp ref would then
+    // outlive its run, which is the invariant D-185 §3.4 exists to prevent.
+    const id = freshRun('terminal');
+    const dir = allocateRunScratchDir(id);
+    writeFileSync(join(dir, 'converted.csv'), 'Date,Amt\n01-Jan,1\n');
+    reclaimRunScratchUnlessResumable(id, false);
+    expect(existsSync(runScratchRoot(id))).toBe(false);
+    expect(() => readConfinedTempFile(
+      { backing: 'temp', path: join(dir, 'converted.csv'), mime_type: 'text/csv', filename: 'converted.csv' },
+      id,
+    )).toThrow(/must not outlive its run/);
   });
 });

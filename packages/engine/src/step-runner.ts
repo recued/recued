@@ -1206,18 +1206,27 @@ export const MAX_CONTEXT_BYTES = 50 * 1024 * 1024; // 50MB
 const contextSizeByCtx = new WeakMap<ExecutionContext, number>();
 
 /** Accumulate a newly-stored step result's byte size against the
- *  recipe-level running total and throw CONTEXT_SIZE_EXCEEDED if the
- *  10MB cap is breached. Called after every `ctx.stores.step[id] = result`
- *  assignment (both sequential and prefetch). Null results are skipped
- *  — they contribute ~0 bytes and skipping keeps the counter stable
- *  when a step is nulled on error. */
+ *  recipe-level running total and throw CONTEXT_SIZE_EXCEEDED if
+ *  `MAX_CONTEXT_BYTES` is breached. Called after every
+ *  `ctx.stores.step[id] = result` assignment (both sequential and prefetch).
+ *  Null results are skipped — they contribute ~0 bytes and skipping keeps the
+ *  counter stable when a step is nulled on error.
+ *
+ *  ⛔ The thrown message DERIVES its ceiling from the constant. It read a
+ *  hardcoded `(max 10MB)` from the 2026-08-24 raise to 50MB until 2026-09-18,
+ *  so a run that tripped the REAL cap reported a number contradicting the cap
+ *  it had just hit — and that message, quoted verbatim, is what four other
+ *  sites cited as evidence the cap was 10MB. A drifting literal in an error
+ *  string does not just misinform the reader in front of it; it becomes the
+ *  source everyone else copies. */
 export const trackContextSize = (ctx: ExecutionContext, result: unknown): void => {
   if (result == null) return;
   const next = (contextSizeByCtx.get(ctx) ?? 0) + estimateSize(result);
   contextSizeByCtx.set(ctx, next);
   if (next > MAX_CONTEXT_BYTES) {
     throw Object.assign(
-      new Error(`step context is ${(next / 1024 / 1024).toFixed(1)}MB (max 10MB)`),
+      new Error(`step context is ${(next / 1024 / 1024).toFixed(1)}MB `
+        + `(max ${MAX_CONTEXT_BYTES / 1024 / 1024}MB)`),
       { code: 'CONTEXT_SIZE_EXCEEDED' },
     );
   }

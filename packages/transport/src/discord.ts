@@ -27,7 +27,7 @@ import {
   DEFAULT_TIMEOUT_MS,
   downloadToFile,
   classifyHttpError,
-  retryAfterSeconds,
+  retryAfterMs,
   patchJson,
   postJson,
   type HttpPostOutcome,
@@ -144,7 +144,7 @@ const handleDiscordOutcome = (outcome: HttpPostOutcome): TransportSendResult => 
         ? `${describeDiscordError(outcome.json)} [http ${outcome.status}]`
         : outcome.detail;
     const retryAfter = outcome.kind === 'http_error' ? Math.max(outcome.retry_after_ms ?? 0,
-      retryAfterSeconds((outcome.json as { retry_after?: unknown } | undefined)?.retry_after) ?? 0) : 0;
+      retryAfterMs((outcome.json as { retry_after?: unknown } | undefined)?.retry_after) ?? 0) : 0;
     return { ok: false, error: { kind, detail: `Discord: ${detail}`,
       ...(retryAfter > 0 ? { retry_after_ms: retryAfter } : {}),
     } };

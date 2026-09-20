@@ -190,14 +190,38 @@ const deriveScopeFromEdge = (
     (edge.edge_type === 'deal' || edge.edge_type === 'account')
     && edge.target_kind === 'connection.api'
   ) {
-    // <vendor>_<entity>_<connection>_<raw_id> (D-190) — closed list at v1.
-    // Read only the leading vendor + entity; the connection + raw segments
-    // ride along inside the verbatim target_id returned below.
-    const parts = edge.target_id.split('_');
-    if (parts.length < 3) return null;
-    const vendor = parts[0]!;
-    const entity = parts[1]!;
-    if (vendor.length === 0 || entity.length === 0) return null;
+    // <vendor>_<entity>_<connection>_<raw_id> (D-190).
+    //
+    // ⛔⛔ THIS WAS `target_id.split('_')` READING `[0]` AND `[1]`, WHICH IS ONLY
+    //   CORRECT WHILE NO VENDOR OR ENTITY NAME CONTAINS AN UNDERSCORE — and the
+    //   registry's own charset, `IDENTIFIER_REGEX = /^[a-z][a-z0-9_]*$/`
+    //   (`connection-vendors.ts:317`), explicitly ADMITS one. A registration of
+    //   `entity: 'line_item'` (HubSpot has `line_items`) is legal, and
+    //   `hubspot_line_item_acme_12345` then read as vendor `hubspot`, entity
+    //   `line` — silently forming `connection.api.hubspot.line`, a scope no
+    //   registry entry defines. Latent today only because every registered name
+    //   happens to be one word, and `enrichment-registry.ts` opens the
+    //   engagement plane to PACK-declared CRM vendors, so the name is not ours
+    //   to constrain.
+    //
+    // ⚠ MATCH THE REGISTERED `<vendor>_<entity>_` PREFIX WHOLE, which is what
+    //   makes an underscore inside either segment just part of the prefix — the
+    //   same rule `parsePlatformRecordTargetId` uses, and the same reason the
+    //   composer calls its trailing `_` load-bearing.
+    //
+    // ⚠ DELIBERATELY NOT `parsePlatformRecordTargetId` ITSELF, though it is the
+    //   canonical parser and handles this. It also REQUIRES the D-190 connection
+    //   segment, and ten-odd suites still build three-segment
+    //   `hubspot_deal_47291` fixtures. Whether those are stale shorthand or a
+    //   form still produced somewhere is a separate question from this bug, and
+    //   answering it by tightening the parser here would decide it silently.
+    const matches = registry.filter(
+      (e) => edge.target_id.startsWith(`${e.vendor}_${e.entity}_`),
+    );
+    // Never a guess: two entries that could both claim the id resolve to
+    // neither, matching the canonical parser's posture on ambiguity.
+    if (matches.length !== 1) return null;
+    const { vendor, entity } = matches[0]!;
     // D-192 — registry engagement-membership replaces the hardcoded
     // `hubspot`/`salesforce` pair (which WAS exactly the engagement-vendor set):
     // an engagement vendor's edge forms a scope (built-in or pack CRM). Precise

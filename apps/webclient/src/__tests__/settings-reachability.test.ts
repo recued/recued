@@ -19,6 +19,7 @@ import {
   diagnosticResponseHasReachablePort,
   createAddressReachableFromHereCheck,
   isProbeAnswerablePort,
+  isProbeAskableExtraPort,
 } from '../settings/reachability.js';
 
 const buildDiagnosticResponse = (
@@ -340,3 +341,75 @@ describe('D-272 — can this browser reach that address? (NAT hairpin)', () => {
     });
   });
 });
+
+/** D-272 — the two port questions, which are NOT the same question.
+ *
+ *  ⛔ `isProbeAnswerablePort` asks "is this on the closed list";
+ *  `isProbeAskableExtraPort` asks "is this inside the one bounded door past it".
+ *  Mutation swapped each for the other and only ONE direction reddened — nothing
+ *  pinned the case the module's own comment names as the reason the door exists.
+ *  Swap them and the LAN-port check silently stops being offered, which reads as
+ *  "we did not ask" rather than as a bug. */
+describe('the two port predicates answer differently, on purpose', () => {
+  it('⛔⛔ a LAN port fails the closed list and passes the extra-port door', () => {
+    // 7717 is `bind_port`'s default — user-configurable, so it can never be on a
+    // closed list, and "is my LAN listener reachable from the internet" is
+    // exactly the question worth asking about it.
+    expect(isProbeAnswerablePort(7717), '7717 is not on the allowlist').toBe(false);
+    expect(isProbeAskableExtraPort(7717), '7717 is what the door exists for').toBe(true);
+  });
+
+  it('an allowlisted port passes both', () => {
+    for (const port of DIAGNOSTIC_ALLOWED_PORTS) {
+      expect(isProbeAnswerablePort(port), `${port} is on the allowlist`).toBe(true);
+    }
+  });
+
+  it('⛔ neither accepts a non-integer or an out-of-range port', () => {
+    for (const bad of [0, -1, 65536, 1.5, Number.NaN]) {
+      expect(isProbeAnswerablePort(bad), `${bad} answerable`).toBe(false);
+      expect(isProbeAskableExtraPort(bad), `${bad} askable`).toBe(false);
+    }
+  });
+});
+
+/** ⛔⛔ `extra_port` TRAVELS AS ITS OWN FIELD AND MUST NEVER BE MERGED INTO
+ *  `ports`. The module's comment says why and nothing checked it: the worker
+ *  validates each by its own rule, and `ports` is closed-list — so a merged
+ *  off-list port fails the request WHOLE rather than being asked about. The
+ *  reader loses the whole diagnostic, not one row of it. */
+describe('extra_port stays out of the closed-list ports', () => {
+  it('⛔ a LAN extra_port is carried separately, not folded into ports', () => {
+    const req = buildReachabilityDiagnosticRequest({
+      account_id: 'acct_1',
+      hostname: 'alice.recued.net',
+      extra_port: 7717,
+    });
+    expect(req.extra_port).toBe(7717);
+    expect(req.ports, 'the off-list port was merged into the closed list').not.toContain(7717);
+    expect(req.ports).toEqual([...HOSTNAME_LISTENER_PORTS]);
+  });
+
+  it('a request with no extra_port omits the field entirely', () => {
+    const req = buildReachabilityDiagnosticRequest({
+      account_id: 'acct_1',
+      hostname: 'alice.recued.net',
+    });
+    expect('extra_port' in req).toBe(false);
+  });
+});
+
+/* ─── Mutation sweep of `settings/reachability.ts`, 2026-09-17 ──────────────
+ *  25 mutations; 24 caught. The one survivor is EQUIVALENT and is recorded here
+ *  so the next sweep does not re-derive it:
+ *
+ *  `diagnosticPortReachability`'s `if (result.payload.kind !==
+ *  'port_reachability') continue;` can be deleted with no behavioural change.
+ *  Only the `port_reachability` member of the payload union carries a `port`
+ *  field (`contracts/src/diagnostic.ts:108`), so for every other kind
+ *  `payload.port` is `undefined` and the NEXT line — `if (result.payload.port
+ *  !== port) continue;` — already skips it. The guard is load-bearing for
+ *  TypeScript (it narrows the union so `.port` is legal) and free at runtime.
+ *  ⇒ Keep it; no test can distinguish it.
+ * ────────────────────────────────────────────────────────────────────────── */
+

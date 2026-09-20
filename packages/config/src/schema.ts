@@ -178,7 +178,14 @@ export const RUNTIME_SCHEMA = [
     default: 5 * 1024 * 1024 * 1024, // 5 GB
     min: 1 * 1024 * 1024,
     description:
-      'Byte ceiling for the audit surface. Reserve rows (pressure-transition, kill-switch, quota-exceeded, audit-retention-prune, account-mismatch-rejected) are admitted up to the full quota; user-class entries stop at quota - reserve.',
+      'Ceiling for the audit surface, counted in CHARACTERS of stored JSON rather '
+      + 'than bytes on disk \u2014 the accounting is SQLite length(data), which the quota '
+      + 'has always been calibrated against (see audit-usage-counter.ts). For ASCII '
+      + 'content the two are identical; for CJK the log can reach roughly twice this '
+      + 'figure on disk, and ~1.24x for accented Latin or emoji. Size it for the '
+      + 'content you actually store. Reserve rows (pressure-transition, kill-switch, '
+      + 'quota-exceeded, audit-retention-prune, account-mismatch-rejected) are admitted '
+      + 'up to the full quota; user-class entries stop at quota - reserve.',
   },
   {
     key: 'audit.prune_at_pct',
@@ -284,7 +291,7 @@ export const RUNTIME_SCHEMA = [
     type: 'number',
     default: 100 * 1024 * 1024, // 100 MB
     min: 1024 * 1024,
-    description: 'Per-file size ceiling before rotation.',
+    description: '⛔ NOT WIRED (2026-09-18): `@recued/logger` has no consumer — nothing outside that package imports it, and the server logs through `console`. Setting this has no effect. Per-file size ceiling before rotation.',
   },
   {
     key: 'log.rotate_at_pct',
@@ -294,7 +301,7 @@ export const RUNTIME_SCHEMA = [
     default: 75,
     min: 10,
     max: 99,
-    description: 'Rotate the log file once it reaches this percent of log.max_bytes.',
+    description: '⛔ NOT WIRED (2026-09-18): no log rotation is implemented; `@recued/logger` has no consumer. Setting this has no effect. Rotate the log file once it reaches this percent of log.max_bytes.',
   },
   {
     key: 'log.debounce_window_s',
@@ -303,7 +310,7 @@ export const RUNTIME_SCHEMA = [
     type: 'number',
     default: 60,
     min: 1,
-    description: 'Rolling window (seconds) used to coalesce identical log entries into a single fingerprint + count.',
+    description: '⛔ NOT WIRED (2026-09-18): the coalescing logger (`@recued/logger`) has no consumer. Setting this has no effect. Rolling window (seconds) used to coalesce identical log entries into a single fingerprint + count.',
   },
   {
     key: 'log.max_fingerprints',
@@ -312,7 +319,7 @@ export const RUNTIME_SCHEMA = [
     type: 'number',
     default: 1000,
     min: 1,
-    description: 'Fingerprint map capacity; LRU-evicts (and flushes) the least-recent entries when exceeded.',
+    description: '⛔ NOT WIRED (2026-09-18): the coalescing logger (`@recued/logger`) has no consumer. Setting this has no effect. Fingerprint map capacity; LRU-evicts (and flushes) the least-recent entries when exceeded.',
   },
 
   // ─── Network ─────────────────────────────────────────────────
@@ -422,7 +429,7 @@ export const RUNTIME_SCHEMA = [
     type: 'number',
     default: 600, // 10 min
     min: 1,
-    description: 'Per-recipe hard timeout default. Recipes may declare their own, bounded by this.',
+    description: '⛔ NOT WIRED (2026-09-18): the engine reads only a recipe\u2019s own `metadata.budget_ms`; a recipe declaring none runs UNBOUNDED, and nothing caps one that does. Neither half of this key is applied. Per-recipe hard timeout default. Recipes may declare their own, bounded by this.',
   },
   {
     // D-157 N.8 / D-158 O-5 — the optional staleness guard for paused
@@ -448,7 +455,7 @@ export const RUNTIME_SCHEMA = [
     type: 'number',
     default: 72,
     min: 0,
-    description: 'Grace period after entitlement expiry during which Pro features keep working before degrading to free.',
+    description: '⛔ NOT WIRED (2026-09-18): no entitlement grace period is implemented anywhere — expiry does not degrade through a grace window. Setting this has no effect. Grace period after entitlement expiry during which Pro features keep working before degrading to free.',
   },
 
   // ─── Lifecycle + supervisor (D-105 Phase C) ──────────────────
@@ -601,7 +608,7 @@ export const RUNTIME_SCHEMA = [
     default: 4,
     min: 1,
     description:
-      'Concurrency ceiling for per-collection sync loops. Gmail/Graph paginated fetches honor this cap; IMAP fetches are serialised per folder regardless. Raising it trades latency for provider rate-limit headroom.',
+      '⛔ NOT WIRED (2026-09-18): no per-adapter sync concurrency cap exists (the `collection.service.*` keys are read; this one is not). Setting this has no effect. Concurrency ceiling for per-collection sync loops. Gmail/Graph paginated fetches honor this cap; IMAP fetches are serialised per folder regardless. Raising it trades latency for provider rate-limit headroom.',
   },
   {
     key: 'collection.retention_prune_interval_s',
@@ -611,7 +618,7 @@ export const RUNTIME_SCHEMA = [
     default: 3600,
     min: 60,
     description:
-      'Cron cadence for per-collection age-based retention. The eviction cascade also triggers retention inline on pressure, so this interval is a floor for the steady-state pass.',
+      '⛔ NOT WIRED (2026-09-18): the per-collection retention cron its description assumes is not registered \u2014 only `audit.prune_interval_s` is read. Setting this has no effect. Cron cadence for per-collection age-based retention. The eviction cascade also triggers retention inline on pressure, so this interval is a floor for the steady-state pass.',
   },
   {
     key: 'collection.mail.gmail.poll_seconds',

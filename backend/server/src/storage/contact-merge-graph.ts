@@ -324,7 +324,7 @@ export const contactAddressSet = (
   email: string,
 ): string[] => {
   const seed = canonicalizeEmail(email);
-  if (seed === null) return [];
+  if (seed === '') return [];
 
   const graph = graphFor(db);
   const { forward, reverse, aliases } = graph;

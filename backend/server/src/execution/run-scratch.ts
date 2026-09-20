@@ -81,6 +81,29 @@ export const assertPathUnderRunScratch = (filePath: string, run_id: string): voi
   }
 };
 
+/** Read a `temp` ref's RAW bytes, confined to the run's scratch root. The one
+ *  place the confinement check and the read are composed; every consumer goes
+ *  through this or through {@link readConfinedTempFile} below it.
+ *
+ *  ⚠ RAW RATHER THAN BASE64 BECAUSE NOT EVERY CONSUMER WANTS BASE64. The ai-*
+ *  doc-part realization builds a base64 content part, so that was the only shape
+ *  needed at first; the records `csv_ref` import wants UTF-8 text, and routing it
+ *  through the base64 form would cost three full copies of a file that can reach
+ *  32 MiB (buffer → base64 string → decoded buffer) for no gain. The base64
+ *  variant now delegates here, so the confinement check has ONE call site and a
+ *  second consumer cannot arrive with its own subtly different path handling. */
+export const readConfinedTempBytes = (
+  temp: TempFileRef,
+  run_id: string,
+): { bytes: Buffer; mime_type: string; filename: string } => {
+  assertPathUnderRunScratch(temp.path, run_id);
+  return {
+    bytes: readFileSync(temp.path),
+    mime_type: temp.mime_type,
+    filename: temp.filename,
+  };
+};
+
 /** Read a `temp` ref's bytes into the base64 content shape the ai-* doc-part
  *  realization consumes — confined to the run's scratch root. `mime_type` /
  *  `filename` ride on the ref (the producing op's `output_capture`), so no
@@ -89,13 +112,38 @@ export const readConfinedTempFile = (
   temp: TempFileRef,
   run_id: string,
 ): { bytes_b64: string; mime_type: string; filename: string } => {
-  assertPathUnderRunScratch(temp.path, run_id);
-  const bytes = readFileSync(temp.path);
-  return {
-    bytes_b64: bytes.toString('base64'),
-    mime_type: temp.mime_type,
-    filename: temp.filename,
-  };
+  const { bytes, mime_type, filename } = readConfinedTempBytes(temp, run_id);
+  return { bytes_b64: bytes.toString('base64'), mime_type, filename };
+};
+
+/** Run-end reclaim, WITH the one exception that makes held runs work.
+ *
+ *  ⛔⛔ THIS IS A NAMED FUNCTION RATHER THAN `if (!paused) cleanup(...)` AT THE
+ *  CALL SITE BECAUSE NOTHING TESTED THAT `!`. The inline form lived in the
+ *  execute-handler's run-end `finally`, and a sweep for `resumablePause` across
+ *  the tree found the flag in exactly three places — two assignments and that
+ *  condition — and in NO test. Deleting the negation, or dropping the guard as a
+ *  tidy-up, reclaims the scratch of a run that is about to resume; every `temp`
+ *  ref it produced then fails on resume with "must not outlive its run", and the
+ *  suite stays green because no test holds a run.
+ *
+ *  🔑 IT IS THE PROPERTY THE ASK-TIER TEMP CONSUMERS DEPEND ON. A records
+ *  `import` taking a `csv_ref` is `approval: 'ask'` in all three shipped packs,
+ *  so hold-then-resume is its NORMAL path, not an edge: the file is produced by
+ *  a cli step, the owner is asked, and the bytes must still be there when they
+ *  say yes. A run that is merely paused has not ended — it continues under the
+ *  SAME `run_id` in a later invocation, which performs the terminal sweep.
+ *
+ *  ⚠ `resumable` MEANS A CHECKPOINT WAS DURABLY WRITTEN, not "an ask was
+ *  raised". An orphaned checkpoint (the awaiting audit anchor failed) is rolled
+ *  back to a TERMINAL failure and must reclaim — which is why the caller passes
+ *  its own post-rollback flag rather than this deciding from an ask's existence. */
+export const reclaimRunScratchUnlessResumable = (
+  run_id: string,
+  resumablePause: boolean,
+): void => {
+  if (resumablePause) return;
+  cleanupRunScratch(run_id);
 };
 
 /** Remove the run's entire temp-scratch root. Best-effort — the OS temp reaper

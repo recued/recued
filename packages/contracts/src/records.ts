@@ -78,14 +78,29 @@ export const RECORDS_ACTIONS = [
   // D-226 — N declared writes, ONE transaction, all or none. The only action
   // whose unit of work is more than one row.
   'batch',
-  // ⛔⛔ THE ONE ACTION WHOSE ROWS ARRIVE AS TEXT, and the reason it exists.
-  // Every other write takes rows the caller built in recipe step state; a real
-  // 1000-row bank export carried through a dozen `map` steps is an 11.9 MB step
-  // context against a 10 MB cap, so the recipe could not import a real
-  // statement AT ALL. Here the CSV crosses as one string and the rows are
-  // planned, deduped and written inside the store — they never enter step
-  // state. Writes `create` only, to the bound entity only; that is why it
-  // needs no allow-list where `batch` does.
+  // ⛔⛔ THE ONE ACTION WHOSE ROWS ARRIVE AS TEXT. Every other write takes rows
+  // the caller built in recipe step state; here the CSV crosses as one string
+  // and the rows are planned, deduped and written inside the store — they never
+  // enter step state. Writes `create` only, to the bound entity only; that is
+  // why it needs no allow-list where `batch` does.
+  //
+  // ⛔⛔ THE SIZE ARGUMENT THIS COMMENT USED TO MAKE IS FALSE — corrected
+  // 2026-09-18. It read: "a real 1000-row bank export carried through a dozen
+  // `map` steps is an 11.9 MB step context against a 10 MB cap, so the recipe
+  // could not import a real statement AT ALL." The enforced ceiling is
+  // `MAX_CONTEXT_BYTES = 50MB` (`packages/engine/src/step-runner.ts`), raised
+  // from 10MB on 2026-08-24 — so 11.9 MB passes with 4x to spare and the
+  // "could not AT ALL" was never true after that raise. The claim survived
+  // because `trackContextSize`'s thrown message still formatted a hardcoded
+  // `(max 10MB)`, which this comment and three others quoted as evidence.
+  // ⇒ The size lens is a SHAPE argument, not a limit one: a recipe retaining
+  // the text plus the parsed rows plus derived copies is doing something the
+  // `core.storage.csv.*` / `file-persist` / `file-put-ref` route exists to
+  // replace, and headroom does not make that pattern correct.
+  //
+  // 🔑 WHAT ACTUALLY JUSTIFIES THE ACTION is the approval argument below —
+  // one intent, one gate. That reason is independent of any cap and is the one
+  // to cite.
   //
   // ⛔⛔ AND WHY IT IS AN ACTION RATHER THAN A KERNEL OP — the owner's reason,
   // recorded 2026-08-12 because it was nowhere in the tree. ONE USER INTENT
@@ -102,6 +117,51 @@ export const RECORDS_ACTIONS = [
   // the reason the mechanism was chosen. ⚠ Recorded as stated intent — the
   // no-second-ask consequence follows from the action route reusing the read's
   // grant, not from anything asserted here about a specific risk tier.
+  //
+  // ⛔⛔ AND THE APPROVAL FRAME ABOVE AIMS AT THE WRONG HAZARD FOR A *REF* ARG
+  // — which is why `csv_ref` looked unanswerable until it was measured. Today's
+  // flow costs ONE prompt, not two: the pack's `import` op is `approval: 'ask'`
+  // and `core.storage.data-file-read` is `risk_tier: 'read'` with no ask. So a
+  // ref-taking variant cannot ADD a prompt; it can only REMOVE the
+  // `core.storage.data-file-read` op-grant check (`grant-entry.ts`, keyed per
+  // `operation_id`). Asking "will it re-gate?" returns a reassuring no while the
+  // real risk is silent DE-gating.
+  //
+  // 🔑 THE BOUNDARY IS EGRESS, NOT DEREFERENCE. `cli-invocation-executor.ts`
+  // states the invariant the cli lane was built to hold: "the op's ONLY readable
+  // output is its own `output_capture` file_ref — whose read by a later ai-* /
+  // data-file-read step IS P5-gated. An actor lacking `data-file-read` can run
+  // docling on a ref but can never SEE the content through any stream." That is
+  // why `xlsx2csv`'s `spreadsheet.to_csv` already takes a durable `file_ref` at
+  // `approval: 'never'` — its sink is CONFINED (stdout/stderr suppressed, output
+  // is another opaque ref), so no content reaches the actor.
+  //
+  // ⛔⛔ `import`'S SINK IS NOT CONFINED, and that is the whole ruling. Imported
+  // rows are readable straight back through the pack's own `search` / `get`. So a
+  // DURABLE csv_ref (a `data.file.received` record id) would be a new ungated
+  // egress path for arbitrary file content, laundered through the records store —
+  // exactly what `value-hint.ts` forbids: "Enforcement still belongs at the
+  // file-read operation; this field is discovery UX, never an authority
+  // boundary." A `{slug, path}` pair is worse still: ambient authority over any
+  // enrolled instance, with no gated read anywhere in the picture.
+  //
+  // 🔑 SO `csv_ref` IS ADMITTED FOR ONE BACKING ONLY: a run-scoped `TempFileRef`
+  // (D-185 §3.2). That ref "carries no separate Gateway `file.read` gate (the
+  // producing op was already gated as its own write-tier step)" and its read is
+  // confined to the producing run's scratch root by `assertPathUnderRunScratch`.
+  // There is no second gate because there is no gate on that backing at all, and
+  // no new reach: the only nameable files are outputs of ops THIS run already
+  // dispatched under their own grants. Confinement is on the INPUT side rather
+  // than the output side, which is what makes the unconfined sink survivable.
+  //
+  // ⚠ A DURABLE REF MUST KEEP THE THREE-STEP PATH — `data-file-read` →
+  // `decode_base64` → `import`. It is one prompt, it is correct, and per the size
+  // correction above it has ample headroom. Do not "finish the symmetry" by
+  // admitting a CAS id here; the kernel csv ops take one because they ARE
+  // `entity: 'file'` ops (`kernel-op-registry.ts`) whose grant is a file grant,
+  // and a records-entity pack op taking a file address is not symmetry but the
+  // mis-grouping that same file warns about: "a mis-grouped op is a permission an
+  // owner revokes believing it covered something else."
   'import',
 ] as const;
 
@@ -182,6 +242,20 @@ export const validateRecordsBatchAllow = (
   return problems;
 };
 
+/** ⛔⛔ THE BYTE CEILING FOR A `csv_ref` IMPORT — AND IT EXISTS BECAUSE THE REF
+ *  PATH HAS NO OTHER ONE. Text passed as `csv` is bounded on the way in by the
+ *  engine's `MAX_CONTEXT_BYTES` (50 MB), because it transits step state. A ref's
+ *  bytes never enter step state, so nothing upstream bounds them and the
+ *  dereference site is the last place able to refuse before a file is decoded
+ *  into memory.
+ *
+ *  32 MiB, matching `CSV_FILTER_MAX_BYTES` — the same number the one other op
+ *  that reads a stored CSV outside step state already chose, for the same
+ *  reason. Deliberately NOT the 50 MB context cap: that is a limit on a
+ *  DIFFERENT resource (retained step values), and reusing it here would make a
+ *  future change to either one silently move the other. */
+export const RECORDS_IMPORT_MAX_CSV_BYTES = 32 * 1024 * 1024;
+
 /** How many per-row diagnostics an `import` returns alongside its counts.
  *
  *  ⛔ A CAP, NOT A PREFERENCE. The entire reason `import` exists is that rows
@@ -215,6 +289,20 @@ export interface RecordsImportFailure {
   reason: string;
 }
 
+/** What an import does with a row whose identity already exists but whose
+ *  VALUES differ. A byte-identical row is never this question — it is
+ *  `replayed`, in every mode.
+ *
+ *  ⛔ A CLOSED VOCABULARY WITH A WRITE-TIME DOOR, not a safe default: an
+ *  unrecognised value is REFUSED by `validateCsvImportSpec` rather than quietly
+ *  read as `'fail'`. A typo'd `'overwrite '` that fell back to the default would
+ *  leave an owner believing they had replaced rows they had not touched.
+ *
+ *  `'fail'` is the default because it is what the action did before this existed,
+ *  and because it is the only mode that cannot lose data without saying so. */
+export const RECORDS_IMPORT_CONFLICT_MODES = ['fail', 'skip', 'overwrite'] as const;
+export type RecordsImportConflictMode = typeof RECORDS_IMPORT_CONFLICT_MODES[number];
+
 /** ⛔⛔ THE SHAPE IS THE POINT — never a bare boolean, never `written` alone.
  *
  *  A `foreach` write reports SUCCESS when every single item was rejected: 1000
@@ -224,9 +312,18 @@ export interface RecordsImportFailure {
  *  also receive what did not.
  *
  *  🔑 THE ARITHMETIC IS AN INVARIANT, and it is stated rather than implied:
- *      rows_read === written + replayed + failed + not_attempted
+ *      rows_read === written + replayed + updated + skipped + failed + not_attempted
  *  A caller can therefore prove it was told about every row, which is the one
- *  thing a partial import must never be able to hide. */
+ *  thing a partial import must never be able to hide.
+ *
+ *  ⚠ `updated` and `skipped` JOINED THE INVARIANT with `on_conflict`. They are
+ *  mode-exclusive — `'overwrite'` can only produce `updated`, `'skip'` only
+ *  `skipped`, `'fail'` (the default) neither — so on any given import at most
+ *  one of them is non-zero. They are separate counters rather than folded into
+ *  `written` because they are different facts about the owner's data: `written`
+ *  means a row that was not there, `updated` means one that was and no longer
+ *  says what it said. An owner who overwrote 200 rows by accident needs to read
+ *  that number, not have it hidden inside a total. */
 export interface RecordsImportResult {
   /** Data lines the file yielded — the denominator for everything else. */
   rows_read: number;
@@ -237,6 +334,14 @@ export interface RecordsImportResult {
    *  the normal second-run outcome and the number an owner reads as
    *  "already had". */
   replayed: number;
+  /** Rows that already existed with DIFFERENT values and were overwritten from
+   *  the file. Only ever non-zero under `on_conflict: 'overwrite'`. */
+  updated: number;
+  /** Rows that already existed with DIFFERENT values and were left exactly as
+   *  they were. Only ever non-zero under `on_conflict: 'skip'`.
+   *  ⚠ NOT a failure and NOT a `replayed`: the file disagreed with the store and
+   *  the store won. An owner reads this as "rows I already had, kept as mine". */
+  skipped: number;
   failed: number;
   /** Rows never attempted because the import halted — see `halted_reason`. */
   not_attempted: number;
@@ -267,6 +372,21 @@ export interface RecordsImportResult {
    *  ⚠ A reader must never take `written` from a dry run as rows that exist.
    *  Anything rendering this result has to say "would" when this is set. */
   dry_run?: true;
+  /** SHA-256 of the exact bytes imported — present ONLY when the rows came from
+   *  a `csv_ref`, absent for `csv` text.
+   *
+   *  🔑 IT EXISTS BECAUSE THE AUDIT ROW CANNOT NAME THE CONTENT ON THE REF PATH.
+   *  The gateway hashes `effectiveArgs` BEFORE dispatch, so a `csv` call commits
+   *  the text itself to the arg hash while a `csv_ref` call commits only
+   *  `{backing, path, mime_type, filename}` — and that `path` is a run-scoped
+   *  scratch location reclaimed at run end, so it names nothing afterwards.
+   *  Without this field the provenance question "which bytes produced these
+   *  rows" has no answer once the run is over.
+   *
+   *  ⚠ Set on a dry run too, and correctly so: the rehearsal read the same
+   *  bytes, and a caller comparing a dry run against the real one needs to know
+   *  they were the same file. */
+  source_sha256?: string;
 }
 
 export const RECORDS_SLOT_FAMILIES = {

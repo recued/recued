@@ -76,7 +76,7 @@ const EXPECTED_DOMAIN_COUNTS: Record<string, number> = {
   // D-232 § 23 — +1 for `core.storage.exchange.status`, the asker's own
   // "what happened to my letter" read.
   // 19 → 23 on 2026-08-16: D-244 csv.filter/columns/stats, D-245 file.put-ref.
-  storage: 24,
+  storage: 25,
   schedule: 1,
   // D-207 §4.5 — 14 offer/order + the 4 D-196 `customer-access` ops merged in
   // from their retired top-level domain (`core.seller.customer-access.*`), + the
@@ -334,6 +334,7 @@ describe('D-182 slice 3a — kernel op registry', () => {
       'core.storage.file.persist|storage|file-persist|write',
       // D-245 — the ref → named-record writer.
       'core.storage.file.put-ref|storage|file-put-ref|write',
+      'core.storage.file.read-temp|storage|file-read-temp|read',
       'core.storage.file.read|storage|file-read|read',
       'core.storage.file.render-markdown-template|storage|file-render-markdown-template|write',
       'core.storage.file.set-scan-status|storage|file-set-scan-status|write',

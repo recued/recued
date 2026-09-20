@@ -39,13 +39,27 @@
  */
 import { executionSourceContractId, type ExecutionSource } from './commits.js';
 
-/** Step types that CANNOT have done anything: pure computation over values
- *  already in hand. Anything else — `ingredient`, `prefetch`, or a type added
- *  later — dispatches, and a dispatch is the thing an audit row is FOR.
+/** Step types that cannot DISPATCH: no network, no connection, no external
+ *  effect. Anything else — `ingredient`, `prefetch`, or a type added later —
+ *  dispatches, and a dispatch is the thing an audit row is FOR.
+ *
+ *  ⚠ THE CRITERION IS DISPATCH, NOT "TOUCHES NOTHING", and the distinction is
+ *  load-bearing rather than pedantic. This comment used to say a member must
+ *  "provably cannot reach a STORE" — which `transform`, the member sitting right
+ *  below it, does not satisfy: `{{data.memory.<id>}}` resolves through
+ *  `SharedResolvers.dataMemory.lookup` into `userMemoryStore.get`, and
+ *  `enrichment-or-fetch` reads the enrichment layer through
+ *  `ctx.readEnrichmentRow`. Those are LOCAL reads of the owner's own warehouse,
+ *  which is precisely what this exemption is for — "the owner reading their own
+ *  data on their own client". A criterion that the set's own member fails is one
+ *  a future reader must either ignore or misapply.
  *
  *  ⛔ Adding a member is a decision about evidence, not a classification tidy-up.
- *  A new pure step kind belongs here only once it provably cannot reach a store,
- *  a network, or a connection. */
+ *  A new step kind belongs here only once it provably cannot cause an effect
+ *  OUTSIDE this server — and note that a write to a durable local store is also
+ *  out (a `transform`'s only writes are per-run RAM, disposed when the run
+ *  resolves; a run that checkpoints is never exempt anyway, because
+ *  `commit_status` must be `'succeeded'`). */
 export const NON_DISPATCHING_STEP_TYPES: ReadonlySet<string> = new Set([
   'transform',
   'guard',

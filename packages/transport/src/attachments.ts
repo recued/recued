@@ -2,7 +2,7 @@
  * attachment; receipts belong to the caller's durable delivery journal. */
 import { openAsBlob } from 'node:fs';
 import { stat } from 'node:fs/promises';
-import { classifyHttpError, postFileBody, postJson, retryAfterSeconds, type HttpPostOutcome } from './http.js';
+import { classifyHttpError, postFileBody, postJson, retryAfterMs, type HttpPostOutcome } from './http.js';
 import type { OutboundAttachment, TransportSendResult } from './types.js';
 
 interface Options { fetchImpl: typeof fetch; timeoutMs: number }
@@ -51,8 +51,8 @@ export const sendTelegramAttachment = async (file: OutboundAttachment, options: 
     kind: env.error_code === 429 ? 'rate_limited' : env.error_code === 401 || env.error_code === 403 ? 'auth'
       : env.error_code === 400 ? 'invalid_request' : 'vendor_error',
     detail: 'Telegram rejected the attachment.',
-    ...(record(env.parameters) && retryAfterSeconds(env.parameters.retry_after) !== undefined
-      ? { retry_after_ms: retryAfterSeconds(env.parameters.retry_after)! } : {}),
+    ...(record(env.parameters) && retryAfterMs(env.parameters.retry_after) !== undefined
+      ? { retry_after_ms: retryAfterMs(env.parameters.retry_after)! } : {}),
   } };
   if (env.ok !== true || !record(env.result) || !Number.isSafeInteger(env.result.message_id)) return missing();
   return { ok: true, vendor_message_id: String(env.result.message_id) };

@@ -201,6 +201,44 @@ export const createLifecycle = (
   const log = opts.log ?? noopLog;
   const now = opts.now ?? (() => Date.now());
 
+  // ⛔⛔ THE THREE `lifecycle.crash_loop_*` KEYS WERE INERT. They are declared in
+  // `packages/config/src/schema.ts` with labels, defaults and descriptions — an
+  // operator can set them in `config.toml` and the Settings surface lists them —
+  // but nothing ever supplied `crashLoopConfig`, so `DEFAULT_CRASH_LOOP_CONFIG`
+  // always won. Setting `lifecycle.crash_loop_threshold = 3` still tripped at 5.
+  //
+  // 🔑 THE TESTS ARE WHY IT SURVIVED. `collection-drain`, `phase-c-e2e` and
+  // `lifecycle-index` all PASS a `crashLoopConfig` explicitly, so the option's
+  // plumbing is exercised and green — while `serve/compose-lifecycle.ts`, the only
+  // production caller, never passed one. A harness that supplies a dependency the
+  // composition root does not is testing the harness.
+  //
+  // ⚠ The defaults MATCHED the schema defaults (60 / 5 / 3600), which is what made
+  // it silent: nothing looked wrong until an operator changed a value and nothing
+  // happened. Read them here, beside the sibling `lifecycle.*` reads, rather than
+  // at the composition root — `drain_timeout_s` and `watch_config` already resolve
+  // this way, and an explicit option still wins for tests.
+  const crashLoopFromStore = (): Partial<CrashLoopConfig> => {
+    const out: Partial<CrashLoopConfig> = {};
+    const read = (key: string): number | undefined => {
+      try {
+        const v = opts.runtimeStore.get(key);
+        return typeof v === 'number' && v > 0 ? v : undefined;
+      } catch { return undefined; }
+    };
+    const window_s = read('lifecycle.crash_loop_window_s');
+    if (window_s !== undefined) out.window_s = window_s;
+    const threshold = read('lifecycle.crash_loop_threshold');
+    if (threshold !== undefined) out.threshold = threshold;
+    const auto_reset_after_s = read('lifecycle.crash_loop_auto_reset_after_s');
+    if (auto_reset_after_s !== undefined) out.auto_reset_after_s = auto_reset_after_s;
+    return out;
+  };
+  const resolvedCrashLoopConfig: Partial<CrashLoopConfig> = {
+    ...crashLoopFromStore(),
+    ...(opts.crashLoopConfig ?? {}),
+  };
+
   // Supervisor mode — resolve from the runtime store if not overridden.
   const configuredMode: SupervisorMode =
     opts.supervisorMode ?? (() => {
@@ -215,8 +253,24 @@ export const createLifecycle = (
   const supervisor = createSupervisor(mode);
 
   // Instance lock.
-  const lockPath = opts.lockPath && opts.lockPath.length > 0
-    ? opts.lockPath
+  // ⛔ `lifecycle.lock_file` WAS INERT — same shape as the crash-loop keys. The
+  // schema declares it ("Override the in-process lock file location. Empty
+  // string uses {data_path}/recued-server.lock") and `createLifecycle` accepts
+  // `lockPath`, but `serve/compose-lifecycle.ts` never passed one, so the
+  // fallback below always won and the override did nothing. Resolved here beside
+  // the sibling `lifecycle.*` reads; an explicit option still wins for tests.
+  const configuredLockPath = (() => {
+    if (opts.lockPath && opts.lockPath.length > 0) return opts.lockPath;
+    try {
+      const v = opts.runtimeStore.get('lifecycle.lock_file');
+      // The schema's default is the EMPTY STRING and it means "use the data
+      // path", so empty must fall through rather than become a lock at ''.
+      if (typeof v === 'string' && v.length > 0) return v;
+    } catch { /* fall through */ }
+    return undefined;
+  })();
+  const lockPath = configuredLockPath !== undefined
+    ? configuredLockPath
     : `${opts.dataPath}/recued-server.lock`;
   const lock = createInstanceLock({ lockPath });
 
@@ -302,7 +356,7 @@ export const createLifecycle = (
     },
     log: (lvl, msg, data) => log(lvl, msg, data),
     now,
-    config: opts.crashLoopConfig,
+    config: resolvedCrashLoopConfig,
   });
 
   // Drain orchestrator. Default timeout read from runtime store, with a

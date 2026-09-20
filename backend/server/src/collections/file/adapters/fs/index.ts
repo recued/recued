@@ -68,6 +68,25 @@ const asConfig = (raw: Record<string, unknown>): FsAdapterConfig => {
   return { path, ignore, debounceMs };
 };
 
+/** Resolve a record path against the adapter root, refusing the two STRING
+ *  forms that leave it: an absolute path, and a `..` traversal.
+ *
+ *  ⛔⛔ WHAT THIS DOES NOT DO, DESPITE THE NAME: it never touches the disk, so
+ *  it cannot see a SYMLINK. A link that lives inside `root` and points outside
+ *  it passes every check here, and the caller then reads, writes or deletes the
+ *  TARGET. Demonstrated in `fs-adapter-factory.test.ts` — *"a SYMLINK inside
+ *  the root is followed, in AND out"* — which pins the behaviour and states the
+ *  open question rather than deciding it.
+ *
+ *  ⚠ The sibling containment check in this codebase takes the other posture:
+ *  `execution/run-scratch.ts` calls `realpathSync` BEFORE comparing. Neither
+ *  site says why it differs from the other, and that is the part worth
+ *  resolving — following a user's own `~/Documents/work -> /Volumes/Work` is
+ *  defensible, and so is refusing it; claiming containment while doing the
+ *  first is not.
+ *
+ *  🔑 The caller cannot CREATE the link: `writeRecord` uses `writeFile`, which
+ *  writes a regular file. The link must already exist. */
 const ensureInsideRoot = (root: string, requested: string): string => {
   if (isAbsolute(requested)) {
     throw new Error(`fs adapter: absolute path not permitted: ${requested}`);

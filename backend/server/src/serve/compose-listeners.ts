@@ -3187,6 +3187,14 @@ export const composeListeners = async (
       // ⚠ Still a getter, for the reason the one beside it is: the value is
       // declared further down and a lazy read keeps the two in one place.
       getPublicPort: () => boundPublicPort,
+      // D-273 — the owner's WISH, beside the truth above. Reading the config key
+      // at call time is correct HERE and wrong one line up: the handler wants
+      // both numbers so it can report the gap between them, which is the only
+      // signal a failed live port change produces on the client side. The
+      // rebind's own failure path is a `console.warn` the owner never sees.
+      ...(runtimeConfig
+        ? { getRequestedPublicPort: () => runtimeConfig.get('public_port') as number }
+        : {}),
       // ⛔ THE BOUND ADDRESS, NOT THE ADVERTISED ONE — see `getLanBindAddress`.
       // Read through the ref for the same reason as `getPublicPort` beside it:
       // the resolution happens later in this function.

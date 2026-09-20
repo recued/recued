@@ -20,9 +20,12 @@
  *       the provider call.
  */
 
+import { allocateRunScratchDir, cleanupRunScratch } from '../../../execution/run-scratch.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { createHash } from 'node:crypto';
+import { MAIL_SEND_CLAIMS_TABLE } from '../../../storage/mail-send-claim-store.js';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { IngredientError } from '@recued/ingredients';
@@ -381,5 +384,171 @@ describe('D-172 P2 — unresolvable attachment ref refuses the send (I-6)', () =
     const detail = JSON.parse(sendRows[0].detail ?? '{}') as { success: boolean; error?: { code: string } };
     expect(detail.success).toBe(false);
     expect(detail.error?.code).toBe('MAIL_SEND_ATTACHMENT_UNRESOLVABLE');
+  });
+});
+
+// ────────────────────────────────────────────────────────────────
+// Run-scoped temp attachments — send the bytes, keep nothing
+// ────────────────────────────────────────────────────────────────
+
+describe('⛔⛔ A TEMP ATTACHMENT IS SENT AND NOTHING DURABLE IS CREATED', () => {
+  /** The lifecycle rides the TYPE. A `data.file` record id names something the
+   *  owner KEEPS — sent, never touched. A `TempFileRef` names bytes the caller
+   *  produced in THIS run in order to send them, so there is nothing to delete
+   *  afterwards and no destructive authority on this path at all.
+   *
+   *  ⛔ WHY NOT A `{ file, cleanup_after }` FLAG, which is the obvious design:
+   *  `file-list` takes a CALLER-SUPPLIED slug, so a recipe can enumerate the
+   *  owner's whole `received` warehouse and would then be able to name any file
+   *  of theirs as disposable — destroying it under this op's `write` risk tier
+   *  instead of `destructive`'s `always` approval floor. A temp ref cannot be
+   *  forged into that, and the last test here is what says so. */
+  const tempFile = (run_id: string, name: string, bytes: Buffer) => {
+    const dir = allocateRunScratchDir(run_id);
+    const path = join(dir, name);
+    writeFileSync(path, bytes);
+    return { backing: 'temp' as const, path, mime_type: 'image/jpeg', filename: name,
+             size_bytes: bytes.length };
+  };
+
+  it('the bytes reach provider.send, byte-identical', async () => {
+    const h = withHarness();
+    const run_id = `run-temp-${Date.now()}`;
+    const bytes = Buffer.from('\xff\xd8\xff a photograph', 'binary');
+    const ref = tempFile(run_id, 'd-group.jpg', bytes);
+
+    const result = await h.collection.send({ ...baseInput, attachments: [ref], run_id });
+
+    expect(h.stub.sendCalls).toHaveLength(1);
+    const sent = h.stub.sendCalls[0];
+    expect(sent.attachments).toHaveLength(1);
+    expect(sent.attachments?.[0]).toMatchObject({
+      filename: 'd-group.jpg', mime_type: 'image/jpeg', size_bytes: bytes.length,
+    });
+    expect(Buffer.from(sent.attachments![0].bytes_b64, 'base64').equals(bytes)).toBe(true);
+    expect(result.warnings).toBeUndefined();
+    cleanupRunScratch(run_id);
+  });
+
+  it('⛔⛔ THE RECONCILIATION PROOF IS THE SAME AS A PERSISTED COPY WOULD GIVE', async () => {
+    // ⛔ THE PROPERTY THAT MAKES "DON'T PERSIST" SAFE RATHER THAN MERELY CHEAP.
+    // The D-207 claim stores `attachment_sha256` so a reconciler can later find
+    // the message in the Sent folder. That proof is built from the resolved
+    // attachment's `blob_hash` — and for a temp ref we compute the sha256 over
+    // the same bytes `handleFilePersist` would have hashed. So a send whose
+    // attachment was never kept reconciles exactly as one whose was.
+    //
+    // ⚠ Asserted on the CLAIM ROW, not on the provider payload: `blob_hash` is
+    // internal and never reaches `OutgoingAttachment`. Asserting it there passed
+    // `undefined` to `toBe` and would have proven nothing about reconciliation.
+    const h = withHarness();
+    const run_id = `run-hash-${Date.now()}`;
+    const bytes = Buffer.from('the same bytes either way');
+    const reconciliation_id = `recon-${Date.now()}`;
+    await h.collection.send({
+      ...baseInput, attachments: [tempFile(run_id, 'x.jpg', bytes)], run_id,
+      reconciliation_id,
+    });
+    const row = h.db.prepare(
+      `SELECT attachment_sha256, attachment_size_bytes, attachment_filename
+         FROM ${MAIL_SEND_CLAIMS_TABLE} WHERE reconciliation_id = ?`,
+    ).get(reconciliation_id) as { attachment_sha256: string | null;
+                                  attachment_size_bytes: number | null;
+                                  attachment_filename: string | null } | undefined;
+    expect(row, 'a claim was written for the send').toBeDefined();
+    expect(row!.attachment_sha256).toBe(createHash('sha256').update(bytes).digest('hex'));
+    expect(row!.attachment_size_bytes).toBe(bytes.length);
+    expect(row!.attachment_filename).toBe('x.jpg');
+    cleanupRunScratch(run_id);
+  });
+
+  it('mixes with a durable record id in one message, in input order', async () => {
+    const h = withHarness();
+    const run_id = `run-mix-${Date.now()}`;
+    const kept = await h.ingestFile(Buffer.from('kept'), 'kept.txt', 'text/plain', 'mix-1');
+    const temp = tempFile(run_id, 'temp.jpg', Buffer.from('temp'));
+    await h.collection.send({ ...baseInput, attachments: [kept, temp], run_id });
+    expect(h.stub.sendCalls[0].attachments?.map((x) => x.filename))
+      .toEqual(['kept.txt', 'temp.jpg']);
+    cleanupRunScratch(run_id);
+  });
+
+  it('an over-cap temp file is DROPPED with a warning, like a record', async () => {
+    const h = withHarness();
+    const run_id = `run-big-${Date.now()}`;
+    const big = Buffer.alloc(MAIL_SEND_ATTACHMENT_MAX_BYTES + 1, 0x41);
+    await h.collection.send({
+      ...baseInput, attachments: [tempFile(run_id, 'big.jpg', big)], run_id,
+    });
+    // The message still goes; the picture does not, and it says so.
+    expect(h.stub.sendCalls).toHaveLength(1);
+    expect(h.stub.sendCalls[0].attachments ?? []).toHaveLength(0);
+    cleanupRunScratch(run_id);
+  });
+
+  it('⛔⛔ THE AUDIT ROW NAMES WHAT LEFT — for a temp attachment too', async () => {
+    // ⛔ THE GAP THIS CLOSES, which the temp-ref path itself created. D-172's
+    // I-4 made `handleFileRead` the ONE audited byte-egress path, so a
+    // record-id attachment left a `file_content_read` row naming it. A temp ref
+    // never touches that path, and `MailSendAuditDetail` had NO attachment
+    // field — so bytes crossed the machine boundary with no trace of WHAT.
+    const h = withHarness();
+    const run_id = `run-audit-${Date.now()}`;
+    const bytes = Buffer.from('a photograph that left the building');
+    const kept = await h.ingestFile(Buffer.from('kept doc'), 'kept.pdf', 'application/pdf', 'aud-1');
+    await h.collection.send({
+      ...baseInput, attachments: [kept, tempFile(run_id, 'sent.jpg', bytes)], run_id,
+    });
+
+    const row = h.auditRows.find((r) => r.action === 'mail_send');
+    expect(row, 'a mail_send row was written').toBeDefined();
+    const detail = JSON.parse(String(row!.detail)) as {
+      attachments?: Array<{ filename: string; size_bytes: number; sha256: string; carrier: string }>;
+    };
+    expect(detail.attachments, 'the row names the attachments').toHaveLength(2);
+    // ⛔ AND IT DISTINGUISHES THE CARRIERS. "two attachments" would be true of a
+    // row that could not tell the owner's document from a throwaway copy.
+    expect(detail.attachments!.map((a) => [a.filename, a.carrier])).toEqual([
+      ['kept.pdf', 'record'],
+      ['sent.jpg', 'run_scoped'],
+    ]);
+    // the hash identifies the bytes later, without keeping them
+    expect(detail.attachments![1]!.sha256).toBe(createHash('sha256').update(bytes).digest('hex'));
+    expect(detail.attachments![1]!.size_bytes).toBe(bytes.length);
+    cleanupRunScratch(run_id);
+  });
+
+  it('⛔ refuses a temp ref with NO run scope', async () => {
+    const h = withHarness();
+    const run_id = `run-noscope-${Date.now()}`;
+    const ref = tempFile(run_id, 'x.jpg', Buffer.from('x'));
+    await expect(h.collection.send({ ...baseInput, attachments: [ref] }))
+      .rejects.toThrow(/run scope/i);
+    expect(h.stub.sendCalls, 'nothing was sent').toHaveLength(0);
+    cleanupRunScratch(run_id);
+  });
+
+  it('⛔⛔ REFUSES A TEMP REF BELONGING TO A DIFFERENT RUN — the confinement IS the authorization', async () => {
+    // THE TEST THE WHOLE DESIGN RESTS ON. If a caller could name a path outside
+    // its own run, a temp ref would be exactly as forgeable as a `cleanup_after`
+    // flag and none of the reasoning above would hold.
+    const h = withHarness();
+    const mine = `run-mine-${Date.now()}`;
+    const theirs = `run-theirs-${Date.now()}`;
+    // ⛔⛔ `mine` MUST HAVE A SCRATCH ROOT OF ITS OWN, and the first version of
+    // this test did not give it one. `assertPathUnderRunScratch` fails EARLY
+    // when the reader's own root does not resolve ("no run-scratch root for
+    // run …"), so the send was refused before the containment comparison ever
+    // ran — delete that comparison entirely and this test still passed. It named
+    // one guard and was decided by another.
+    tempFile(mine, 'mine.jpg', Buffer.from('mine'));
+    const strangersFile = tempFile(theirs, 'not-mine.jpg', Buffer.from('not mine'));
+
+    await expect(h.collection.send({
+      ...baseInput, attachments: [strangersFile], run_id: mine,
+    })).rejects.toThrow(/escapes the run-scratch root/i);   // the containment check, by name
+    expect(h.stub.sendCalls, 'nothing was sent').toHaveLength(0);
+    cleanupRunScratch(mine);
+    cleanupRunScratch(theirs);
   });
 });

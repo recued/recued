@@ -320,7 +320,49 @@ const retireUnsendableStaged = async (
       && exactActionOwnsStage
       && exactAction?.status === 'dispatching')
   );
-  if (ownsAwaitingAnchor) {
+  // ⛔⛔ RECORD THE DECISION BEFORE THE FIRST WRITE, THEN OBEY THE RECORD.
+  // Both halves below are guarded by predicates computed from the anchor, and
+  // the FIRST half REWRITES that anchor (`in_doubt`, `checkpoint_id` cleared).
+  // Re-deriving on re-entry therefore answers differently than it did a moment
+  // earlier: in the pre-anchor-power-cut shape above — where the action still
+  // points at the APPROVAL checkpoint, so only `exactActionOwnsStage`'s second
+  // disjunct holds — the anchor write destroys that disjunct's inputs, the
+  // action half is then skipped, and steps 3/4 below still delete the checkpoint
+  // and close the journal. The receipt is left `dispatching` with nothing
+  // pointing at it: `checkpoint-retention` reaches actions THROUGH checkpoints
+  // and throws on `dispatching` rather than reaping it.
+  //
+  // ⚠ The trigger is not only a power cut. `recoverPeerAskDeliveries` catches
+  // per row and continues, so ANY throw from the action write leaves the anchor
+  // settled and the row alive for the next boot.
+  //
+  // 🔑 A plain reorder does not fix it — it mirrors it. Settling the action first
+  // makes `exactAction.status` terminal, and `ownsAwaitingAnchor`'s second branch
+  // requires `'dispatching'`, so a crash before the anchor write would strand the
+  // ANCHOR at `awaiting_approval` instead. Both guards read what the other writes,
+  // so the decision has to outlive the writes rather than be recomputed after them.
+  const claim = deps.outbox.claimRetirement(row.exchange_ref, {
+    settle_anchor: ownsAwaitingAnchor,
+    settle_action: row.action_ref !== undefined
+      && deps.gatedActions !== undefined
+      && exactAction !== null
+      && exactActionOwnsStage,
+    reason,
+  });
+  // A vanished row has nothing left to retire; an unparseable one falls back to
+  // this pass's own reading, which is exactly the pre-claim behaviour.
+  const settleAnchor = claim?.settle_anchor ?? ownsAwaitingAnchor;
+  const settleAction = claim?.settle_action ?? (row.action_ref !== undefined
+    && deps.gatedActions !== undefined
+    && exactAction !== null
+    && exactActionOwnsStage);
+  const settleReason = claim?.reason ?? reason;
+
+  // ⚠ AUTHORITY FROM THE CLAIM, COMPLETION FROM A FRESH READ. The claim never
+  // says a half is done — replaying it must not double-write — so each half
+  // still checks live state: the anchor's own `commit_status` here, and
+  // `isGatedActionTerminal` below.
+  if (settleAnchor && anchor !== null && anchor.commit_status !== 'in_doubt') {
     const at = (deps.now ?? Date.now)();
     const terminal = buildAuditEntry({
       ...anchor,
@@ -338,7 +380,7 @@ const retireUnsendableStaged = async (
         },
         details: {
           exchange_ref: row.exchange_ref,
-          reason,
+          reason: settleReason,
         },
         timestamp: new Date(at).toISOString(),
         retryable: false,
@@ -356,10 +398,10 @@ const retireUnsendableStaged = async (
     }
   }
 
-  if (row.action_ref !== undefined
+  if (settleAction
+    && row.action_ref !== undefined
     && deps.gatedActions !== undefined
     && exactAction !== null
-    && exactActionOwnsStage
     && !isGatedActionTerminal(exactAction.status)) {
       await deps.gatedActions.finish(row.action_ref, {
         status: 'in_doubt',
@@ -367,7 +409,7 @@ const retireUnsendableStaged = async (
         result: {
           exchange_ref: row.exchange_ref,
           status: 'in_doubt',
-          reason,
+          reason: settleReason,
         },
         observed: { items: 1, succeeded: 0, failed: 0 },
       });

@@ -356,6 +356,16 @@ describe('D-273 gate — what a hostile or broken router does to us', () => {
     expect(sup.status().last?.outcome).toBe('failed');
     expect(store.get()).toBeNull();
     expect(router.table()).toHaveLength(0);
+    // ⛔⛔ THE ASSERTION THAT MAKES THE THREE ABOVE MEAN ANYTHING. Every one of
+    // them is ALSO true when the chain never reached the router at all — a
+    // 404 on the description produces `failed`, a null store and an empty
+    // table. Proven by breaking the harness at discovery: this test passed.
+    //
+    // ⇒ A test about how a REFUSAL is reported must first show a refusal was
+    // obtained. That is the same confusion D-273 exists to prevent, one layer
+    // up: a failure reported as a different failure.
+    expect(router.actions(), 'never reached the router — this proves nothing about 725')
+      .toContain('AddPortMapping');
   });
 
   it('⛔⛔ a description naming ANOTHER HOST is refused before any SOAP is sent', async () => {
@@ -363,10 +373,21 @@ describe('D-273 gate — what a hostile or broken router does to us', () => {
     // fetched from the router, and its controlURL points elsewhere.
     const router = await withRouter({ advertisedHost: '192.168.1.1' });
     const chain = buildChain(router);
+    // ⚠ WHAT CAME BACK IS INSPECTED, not merely counted. "No SOAP was sent" is
+    // true of a chain that never started, so breaking the harness at discovery
+    // made this test pass. A COUNTER did not fix it either: the harness's
+    // fetch does not throw on a 404, it returns the error page — so the
+    // description was "fetched" and the count was 1.
+    //
+    // ⇒ The only thing that distinguishes "got a real description and refused
+    // it on the control URL's host" from "got junk and had nothing to refuse"
+    // is whether the description NAMED A SERVICE.
+    let describedService = false;
     const hostile = {
       ...router,
       fetchDescription: async (url: string) => {
         const real = await router.fetchDescription(url);
+        if (real.includes('<controlURL>')) describedService = true;
         return real.replace('http://192.168.1.1/ctl/IPConn', 'http://127.0.0.1:7717/private');
       },
     };
@@ -378,6 +399,10 @@ describe('D-273 gate — what a hostile or broken router does to us', () => {
       httpPost: hostile.httpPost,
       fetchDescription: hostile.fetchDescription,
     });
+    // ⛔ THE CHAIN GOT AS FAR AS THE DESCRIPTION — so the refusal below is
+    // about the control URL's host, not about never having looked.
+    expect(describedService, 'no service description was obtained — nothing was refused')
+      .toBe(true);
     // No IGD actuator is produced at all, and no POST was ever attempted.
     expect(resolved).toBeNull();
     expect(router.actions()).toHaveLength(0);

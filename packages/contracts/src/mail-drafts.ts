@@ -36,8 +36,18 @@ export const parseMailDraftContent = (value: unknown): MailDraftContent => {
   if (normalized.subject.length > MAIL_MESSAGE_SUBJECT_MAX) bad('The draft subject is too long.');
   const content: MailDraftContent = { sender_mail_instance: normalized.instance, to: normalized.to, subject: normalized.subject,
     body: normalized.body_html ?? normalized.body_text, body_format: normalized.body_html !== undefined ? 'html' : 'text' };
-  for (const key of ['cc', 'bcc', 'in_reply_to', 'references', 'reply_to', 'reconciliation_id', 'attachments'] as const) {
+  for (const key of ['cc', 'bcc', 'in_reply_to', 'references', 'reply_to', 'reconciliation_id'] as const) {
     if (normalized[key] !== undefined) content[key] = normalized[key]!;
+  }
+  // ⛔ A DRAFT OUTLIVES THE RUN THAT WROTE IT, so it may hold only durable
+  // record ids. A run-scoped temp ref saved here would dangle the moment its
+  // run ended — the draft would look complete and send nothing.
+  if (normalized.attachments !== undefined) {
+    const durable = normalized.attachments.filter((a): a is string => typeof a === 'string');
+    if (durable.length !== normalized.attachments.length) {
+      bad('A saved draft cannot carry a run-scoped attachment. Keep the file first.');
+    }
+    if (durable.length) content.attachments = durable;
   }
   if (new TextEncoder().encode(JSON.stringify(content)).length > PREAPPROVAL_LIMITS.plan_bytes) bad('The saved draft is too large for review.');
   return content;

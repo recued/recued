@@ -1045,7 +1045,13 @@ const applyPipedriveCondition = (
 
 const buildPipedriveSearch: VendorSearchBuilder = ({ vendorEntity, conditionGroups, sort, limit }) => {
   const out: Record<string, unknown> = {
-    'query.limit': String(Math.min(limit, PIPEDRIVE_SEARCH_PAGE_MAX)),
+    // ⛔ NOT `String(...)`. `deal.search` and its siblings declare `query.limit`
+    // as `{ type: 'number' }`, and the binding's own `pagination.page_size.value`
+    // is the NUMBER 100 for that same param — so the runtime already puts a
+    // number there on the paginated path. The stringified first page disagreed
+    // with both, which nothing could see while the request schema carried
+    // `additionalProperties: true` and the gate therefore discarded it whole.
+    'query.limit': Math.min(limit, PIPEDRIVE_SEARCH_PAGE_MAX),
   };
 
   const nonEmptyGroups = conditionGroups.filter((g) => g.length > 0);

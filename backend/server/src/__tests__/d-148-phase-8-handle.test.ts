@@ -518,7 +518,28 @@ describe('D-148 P8 — handle transfer (dual signature)', () => {
     expect(req).toBeDefined();
     expect(req?.outgoing_publisher_id).toBe('pub_alice');
     expect(req?.incoming_publisher_id).toBe('pub_bob');
-    expect(req?.outgoing_signature.length).toBeGreaterThan(0);
+    // ⛔⛔ VERIFIED, NOT MEASURED. `length > 0` proved something was in the
+    // slot, not that it was the OUTGOING server's signature — mutation showed
+    // it: putting `args.incoming_signature` in both slots passes a length
+    // check, and the whole point of the dual-signature transfer is that the
+    // two slots carry two parties' consent. § A.5.6 makes handle ownership
+    // load-bearing for marketplace publisher provenance; one party supplying
+    // both halves is exactly what it must not permit.
+    expect(req?.outgoing_signature).not.toBe(req?.incoming_signature);
+    expect(
+      ed25519Verify(
+        outgoingKey.public_key_b64,
+        canonicalJSONStringify({
+          outgoing_publisher_id: 'pub_alice',
+          incoming_publisher_id: 'pub_bob',
+          handle: 'alice',
+          nonce: 'nonce-123',
+          timestamp: 1_700_000_000_000,
+        }),
+        req!.outgoing_signature,
+      ),
+      'the outgoing slot did not carry this server’s signature over this transfer',
+    ).toBe(true);
     expect(req?.incoming_signature).toBe('fake-sig');
     expect(req?.nonce).toBe('nonce-123');
     expect(audit.find((a) => a.detail?.includes('transferred_out'))).toBeDefined();
@@ -585,14 +606,65 @@ describe('D-148 P8 — handle transfer (dual signature)', () => {
       nonce: 'nonce-aaa',
       timestamp: 1_700_000_000_000,
     });
-    expect(result.signature.length).toBeGreaterThan(0);
-    expect(result.payload).toEqual({
+    const expectedPayload = {
       outgoing_publisher_id: 'pub_alice',
       incoming_publisher_id: 'pub_bob',
       handle: 'alice',
       nonce: 'nonce-aaa',
       timestamp: 1_700_000_000_000,
-    });
+    };
+    expect(result.payload).toEqual(expectedPayload);
+    // ⛔⛔ "VALID" IS NOW CHECKED, NOT COUNTED. This asserted
+    // `signature.length > 0` and echoed the payload back — neither of which
+    // says the bytes verify, nor that THIS key produced them. Mutation showed
+    // what that cost: dropping `nonce` from the signed bytes, and dropping
+    // `timestamp`, both survived.
+    expect(
+      ed25519Verify(
+        incomingKey.public_key_b64,
+        canonicalJSONStringify(expectedPayload),
+        result.signature,
+      ),
+      'the acceptance signature does not verify over its own payload',
+    ).toBe(true);
+  });
+
+  it('⛔⛔ an acceptance signature does NOT carry over to a different transfer', async () => {
+    // ⛔ THE INCOMING SIDE'S CONSENT IS ONE-TIME. § A.5.6 makes a transfer need
+    // both parties, and the nonce + timestamp are what bind that consent to ONE
+    // transfer. If they are outside the signed bytes, the same acceptance is
+    // valid for every later transfer of the same (outgoing, incoming, handle)
+    // triple — so the outgoing party can reuse a consent the incoming party
+    // gave once, for a hand-back they never agreed to.
+    //
+    // ⚠ Asserted as a NON-verification against a neighbouring payload, which is
+    // the only shape that can see it: signing and verifying the same bytes
+    // agrees whether or not the field is in them.
+    const incomingKey = generateEd25519Keypair('server_identity_key');
+    const cloud = makeCloud();
+    const { machine } = makeMachine(incomingKey, cloud);
+    const base = {
+      outgoing_publisher_id: 'pub_alice',
+      incoming_publisher_id: 'pub_bob',
+      handle: 'alice',
+      nonce: 'nonce-aaa',
+      timestamp: 1_700_000_000_000,
+    };
+    const result = machine.signTransferAcceptance(base);
+
+    for (const [field, replayed] of [
+      ['nonce', { ...base, nonce: 'nonce-bbb' }],
+      ['timestamp', { ...base, timestamp: 1_800_000_000_000 }],
+    ] as const) {
+      expect(
+        ed25519Verify(
+          incomingKey.public_key_b64,
+          canonicalJSONStringify(replayed),
+          result.signature,
+        ),
+        `the acceptance verified for a transfer differing only in ${field}`,
+      ).toBe(false);
+    }
   });
 });
 

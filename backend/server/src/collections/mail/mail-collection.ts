@@ -20,6 +20,7 @@
  */
 
 import { assertPreapprovalOrdinaryRun, currentPreapprovalIo } from '../../preapproval-io-context.js';
+import { readConfinedTempBytes } from '../../execution/run-scratch.js';
 import { createHash } from 'node:crypto';
 import { MAIL_RFC_MESSAGE_ID_HOT_FIELD } from './mail-twin-resolver.js';
 import type Database from 'better-sqlite3';
@@ -40,7 +41,7 @@ import {
   MAIL_SEND_ATTACHMENT_MAX_BYTES,
   MAIL_SEND_ATTACHMENT_OVERSIZE_WARNING,
 } from '@recued/contracts';
-import { isMailReconciliationId } from '@recued/contracts';
+import { isMailReconciliationId, isTempFileRef, type TempFileRef } from '@recued/contracts';
 import type { WarehouseEventBus } from '@recued/warehouse-events';
 import { IngredientError } from '@recued/ingredients';
 
@@ -343,8 +344,24 @@ export interface MailSendInput {
   references?: string[];
   reply_to?: string;
   reconciliation_id?: string;
-  /** D-172 P2 (Attachments-v2) — `data.file` record-id refs to attach.
-   *  The INPUT carries refs (record-ids), NOT bytes: `MailCollection.send`
+  /** D-172 P2 (Attachments-v2) — the attachments to send.
+   *
+   *  ⛔⛔ TWO SHAPES, AND THE SHAPE IS THE LIFECYCLE. A `data.file` record-id
+   *  string names something the owner KEEPS — read, sent, never touched. A
+   *  `TempFileRef` names bytes the caller produced IN THIS RUN purely in order
+   *  to send them: read, sent, and reclaimed with the run scratch. Nothing
+   *  durable is created for the second kind, so there is nothing to delete
+   *  afterwards and NO destructive authority anywhere on this path.
+   *
+   *  🔑 WHY NOT `{ file, cleanup_after }`. A caller-set flag is authority on the
+   *  wire: `file-list` takes a caller-supplied slug, so a recipe can enumerate
+   *  the owner's whole `received` warehouse and would then be able to mark any
+   *  file of theirs disposable — destroying it under THIS op's `write` risk tier
+   *  rather than `destructive`'s `always` approval floor. A temp ref cannot be
+   *  forged into that: the confinement means the caller can only ever name bytes
+   *  it just produced.
+   *
+   *  The INPUT carries refs, NOT bytes: `MailCollection.send`
    *  resolves each through the Gateway-gated `file.read` (`handleFileRead`,
    *  the one audited byte-egress path — I-4) into an
    *  `OutgoingAttachment[]` before calling `provider.send`. Empty /
@@ -353,7 +370,12 @@ export interface MailSendInput {
    *  is present but `fileReadDeps` is absent the send throws
    *  `MAIL_SEND_ATTACHMENT_UNRESOLVABLE` rather than silently dropping
    *  the file (I-6). */
-  attachments?: string[];
+  attachments?: (string | TempFileRef)[];
+  /** ⛔ THE RUN SCOPE FOR A TEMP ATTACHMENT, and the only authorization on one:
+   *  `readConfinedTempFile` confines the read to the producing run's scratch
+   *  root. Required only when `attachments` carries a `TempFileRef`; the kernel
+   *  refuses such a send without it. */
+  run_id?: string;
   /** D-127 follow-on — engine-supplied step identity threaded from the
    *  kernel `mail-send` ingredient via `ResolvedCall.stepMeta`. When
    *  populated, the `mail_send` audit row carries both fields so the
@@ -412,7 +434,11 @@ export interface MailSendResult {
  *  resolve time. The hash is for the CLAIM (the byte-proof the reconciler will ask
  *  the provider to match); the provider itself has no use for it, so it is stripped
  *  before dispatch rather than widening the wire shape. */
-type ResolvedAttachment = OutgoingAttachment & { blob_hash: string };
+/** `blob_hash` is the content sha256 — for a record it comes off the CAS read,
+ *  for a run-scoped temp ref it is computed over the same bytes, so the D-207
+ *  claim proof and the audit row are identical either way. `run_scoped` marks
+ *  WHICH carrier it came from, so the audit can say so; absent means a record. */
+type ResolvedAttachment = OutgoingAttachment & { blob_hash: string; run_scoped?: boolean };
 
 /** D-127 P1.6 — `MailCollection` extends `Collection` with the
  *  mail-specific surface. The rpc handler runtime-checks the
@@ -1204,6 +1230,13 @@ export const createMailCollection = (
       }
     };
 
+    // ⛔ DECLARED BEFORE `buildDetail`, WHICH CLOSES OVER IT. It used to be
+    // declared below, and `buildDetail` is CALLED on the early failure paths
+    // (capability gate, self-loop guard) before that line is reached — so the
+    // audit row threw `Cannot access 'resolvedAttachments' before
+    // initialization` instead of recording the failure. Every one of those
+    // paths reports a refusal, which is exactly when an audit row matters most.
+    let resolvedAttachments: ResolvedAttachment[] | undefined;
     const buildDetail = (
       success: boolean,
       messageId: string,
@@ -1220,6 +1253,18 @@ export const createMailCollection = (
         body_bytes: bodyBytes,
         success,
       };
+      // ⛔ NAME WHAT LEFT. Built from the RESOLVED set, so it reflects what was
+      // actually handed to the provider — an over-cap attachment that was
+      // dropped is absent here and present in `warnings`, which is the honest
+      // pair. Without this a run-scoped attachment left no trace anywhere.
+      if (resolvedAttachments !== undefined && resolvedAttachments.length > 0) {
+        detail.attachments = resolvedAttachments.map((a) => ({
+          filename: a.filename,
+          size_bytes: a.size_bytes,
+          sha256: a.blob_hash,
+          carrier: a.run_scoped === true ? ('run_scoped' as const) : ('record' as const),
+        }));
+      }
       // `redact_audit_recipients` wins over the count threshold — the threshold
       // is a noise rule, this is a PII rule, and a sealed address must not be
       // attached just because there happened to be only one of it.
@@ -1309,7 +1354,6 @@ export const createMailCollection = (
     // ref) is a hard error — partial attachment sends would silently mislead
     // the recipient about what they received, so we refuse the whole send
     // rather than ship a mail missing files the recipe author asked for.
-    let resolvedAttachments: ResolvedAttachment[] | undefined;
     const resolveWarnings: Array<{ code: string; message: string }> = [];
     if (Array.isArray(args.attachments) && args.attachments.length > 0) {
       const readDeps = opts.fileReadDeps?.();
@@ -1331,6 +1375,76 @@ export const createMailCollection = (
       const fileCollection = readDeps.registry.get('file', DATA_FILE_RECEIVED_SLUG);
       const kept: ResolvedAttachment[] = [];
       for (const [attachmentIndex, ref] of args.attachments.entries()) {
+        // ⛔⛔ A RUN-SCOPED TEMP ATTACHMENT — bytes the caller made in order to
+        // send them. Read under the scratch-root confinement, sent, and left to
+        // the run's own reclaim. NOTHING DURABLE IS CREATED, so there is no
+        // record to delete afterwards and no destructive authority here.
+        //
+        // 🔑 The confinement is the authorization. A recipe can only name a temp
+        // file it produced in THIS run, so unlike a `cleanup_after` flag it
+        // cannot be pointed at the owner's own files.
+        //
+        // ⚠ Held sends are the NORMAL path for this (`liftOutboundSend` asks the
+        // owner), and the bytes survive it: `reclaimRunScratchUnlessResumable`
+        // preserves the scratch of a run that is merely paused, and the run
+        // resumes under the SAME run_id. Same property the ask-tier records
+        // `import` depends on for its `csv_ref`.
+        if (isTempFileRef(ref)) {
+          if (reviewed) {
+            // The preapproval replay reads by RECORD ID
+            // (`readMailAttachment(recordId: string, …)`), so it cannot carry a
+            // temp ref. Fail closed rather than resolve an attachment the
+            // reviewer never saw.
+            throw new IngredientError(
+              'BAD_INPUT',
+              'mail-send: a temp file_ref attachment cannot go through deferred review — '
+                + 'persist it first if the send must be reviewed out of band',
+              { slug, attachment_index: attachmentIndex },
+            );
+          }
+          if (typeof args.run_id !== 'string' || args.run_id.length === 0) {
+            // The kernel refuses this first; this is the fail-closed backstop for
+            // a direct caller that assembled the args itself.
+            throw new IngredientError(
+              'MAIL_SEND_ATTACHMENT_UNRESOLVABLE',
+              'mail-send: a temp file_ref attachment requires a run scope',
+              { slug, attachment_index: attachmentIndex },
+            );
+          }
+          let temp;
+          try {
+            temp = readConfinedTempBytes(ref, args.run_id);
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            const wrapped = new IngredientError(
+              'MAIL_SEND_ATTACHMENT_UNRESOLVABLE',
+              `mail-send: temp attachment could not be read: ${message}`,
+              { kind: provider.kind, slug, attachment_index: attachmentIndex },
+            );
+            await emitAudit(buildDetail(false, '', { error: { code: wrapped.code, message: wrapped.message } }));
+            throw wrapped;
+          }
+          if (temp.bytes.byteLength > MAIL_SEND_ATTACHMENT_MAX_BYTES) {
+            // Same visible drop the record path takes — never a silent omission.
+            const msg = `attachment '${temp.filename}' (${temp.bytes.byteLength} bytes) exceeds the ${MAIL_SEND_ATTACHMENT_MAX_BYTES}-byte attachment cap and was omitted from the send`;
+            log?.('warn', `mail-send: ${msg}`, { slug });
+            resolveWarnings.push({ code: MAIL_SEND_ATTACHMENT_OVERSIZE_WARNING, message: msg });
+            continue;
+          }
+          kept.push({
+            filename: temp.filename,
+            mime_type: temp.mime_type,
+            bytes_b64: temp.bytes.toString('base64'),
+            size_bytes: temp.bytes.byteLength,
+            // ⛔ THE SAME VALUE A CAS RECORD WOULD CARRY. `blob_hash` is the
+            // content sha256 (`handleFilePersist` computes it identically), and
+            // the D-207 claim's `attachment_sha256` proof is built from it — so a
+            // temp attachment reconciles exactly as a persisted one does.
+            blob_hash: createHash('sha256').update(temp.bytes).digest('hex'),
+            run_scoped: true,
+          });
+          continue;
+        }
         if (reviewed) {
           const file = await reviewed.readMailAttachment(ref, attachmentIndex, readDeps);
           if (file.size_bytes > MAIL_SEND_ATTACHMENT_MAX_BYTES) {

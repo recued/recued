@@ -107,6 +107,10 @@ export interface MountConnectDevicePanelOptions {
   readPorts?: () => Promise<{
     lan_port?: number;
     public_port?: number;
+    /** D-273 — present ONLY when a live `public_port` change failed to bind, so
+     *  the server is still on the old port. Absent is the normal case; forwarded
+     *  verbatim and never derived. */
+    public_port_requested?: number;
     /** D-272 — the LAN listener's bind posture. ⚠ Absent = the server did not
      *  say, which is NOT "not exposed"; it renders no note either way. */
     lan_exposure?: {
@@ -290,6 +294,11 @@ export const mountConnectDevicePanel = (
   // a server too old to say), and the opening guess stands.
   let lanPort: number | undefined;
   let publicPort: number | undefined;
+  /** D-273 — the port the owner asked for, when the server is not on it.
+   *  ⛔ NO FALLBACK AND NO OPENING GUESS, unlike the two above. There is nothing
+   *  sensible to assume before the server answers: guessing a divergence would
+   *  tell every reader their port change failed until the rpc said otherwise. */
+  let requestedPublicPort: number | undefined;
   /** ⚠ STILL READ, THOUGH THE WARNING MOVED TO EXPOSURE. The check action needs
    *  to know whether the LAN port is worth asking the probe about; the FINDING
    *  is Exposure's to display. Reading a fact and rendering it are separate
@@ -358,6 +367,9 @@ export const mountConnectDevicePanel = (
   const currentFacts = (): ConnectDeviceFacts => ({
     lan_port: effectiveLanPort(),
     public_port: effectivePublicPort(),
+    ...(requestedPublicPort !== undefined
+      ? { public_port_requested: requestedPublicPort }
+      : {}),
     certified_hostnames: certifiedHostnames,
     // ⛔ ASKED ABOUT THE PORT THIS CARD IS ACTUALLY TALKING ABOUT. Reading a
     // verdict for 443 while the card names 8446 would report another port's
@@ -802,6 +814,13 @@ export const mountConnectDevicePanel = (
         // ⚠ Same rule again: assigned only when the server actually sent it, so
         // a server that cannot tell leaves the note unrendered rather than
         // asserting "not exposed" on nobody's behalf.
+        // D-273 — ⛔ ASSIGNED EVEN WHEN ABSENT, unlike its neighbours. For every
+        // other field here absent means "this server did not say" and the right
+        // move is to keep what we had. This one is a LIVE divergence that the
+        // server clears the moment a later port change succeeds — so holding a
+        // stale value would keep telling the reader their port did not apply
+        // after it did. Absent is a fact about now, not a silence.
+        requestedPublicPort = ports.public_port_requested;
         if (ports.lan_exposure !== undefined) lanExposure = ports.lan_exposure;
         render();
       } catch {

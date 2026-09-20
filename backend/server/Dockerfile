@@ -22,9 +22,24 @@
 # ─────────────────────────────────────────────────────────────────
 
 # ── Stage 1: deps ────────────────────────────────────────────────
-# Pinned to node:22 LTS slim — matches engines.node in package.json
-# and Phase D's Node 20+ requirement.
-FROM node:22-slim AS deps
+# Node 24 LTS slim — the version this repo actually builds on, and the one the
+# binary channel already used (`scripts/build-binary-docker.mjs` DEFAULT_IMAGE,
+# `build-binary.mjs`: "linux shipped Node 24").
+#
+# ⛔ THIS WAS `node:22-slim` AND THE IMAGE COULD NOT BE BUILT AT ALL. `npm ci`
+# and esbuild were fine; `scripts/build.mjs` aborted on `node:sea (2×)`. Its
+# `assertNoUnresolvedBareRequires` exempts builtins via `builtinModules`, which
+# ENUMERATES what a given Node lists rather than stating what resolves — Node 24
+# carries `node:sea` there (prefixed, so `includes('sea')` is still false) and
+# Node 22 carries neither form. Same source, same bundle, green on every host
+# build and every test, dead in the image.
+#
+# ⚠ Nothing would have caught it: there is no CI, and the one test that runs
+# that script runs it on the HOST. Same shape as the bindings failure recorded
+# below — "the only test that would have noticed is starting the thing".
+# `build.mjs` now exempts `node:`-prefixed specifiers by definition, so the
+# guard no longer depends on which Node builds it; this pin is the other half.
+FROM node:24-slim AS deps
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       python3 \
@@ -84,7 +99,7 @@ RUN node scripts/build.mjs
 RUN node /opt/recued/apps/webclient/scripts/build.mjs --minify
 
 # ── Stage 3: runtime ─────────────────────────────────────────────
-FROM node:22-slim AS runtime
+FROM node:24-slim AS runtime
 
 # Non-root user. Fixed uid/gid 1001 so volume permissions survive
 # rebuilds.
@@ -123,7 +138,27 @@ RUN chmod +x /usr/local/bin/recued-entrypoint
 
 USER recued
 
+# ⛔ `RECUED_DISTRIBUTION_CHANNEL` IS A SECOND VARIABLE, NOT A RESTATEMENT OF
+# `RECUED_SUPERVISOR_MODE`. They share the value `docker-thin`, which is exactly
+# why this was missed: the managed image sets the supervisor mode and reads as
+# though it had declared its channel too.
+#
+# Without it `resolveDistributionChannel` (`update/install-paths.ts`) falls to
+# its default `'binary'`, and `resolveUpdateBinaryPath` then answers
+# `process.execPath` — which under `node /opt/recued/dist/bin.js` is the NODE
+# runtime, `/usr/local/bin/node`. The update lease is keyed on the binary's
+# DIRECTORY (`updateLeasePathFor`), so the server tried to claim
+# `/usr/local/bin/recued-update.lock` as uid 1001 against a root-owned dir:
+#
+#     EACCES: permission denied, open '/usr/local/bin/recued-update.lock.claim.6.…'
+#
+# It crashlooped on boot — `status=restarting`, `/health` unreachable — so the
+# container never served a request. `docker-baked` is the truthful value and
+# also the correct semantic: the image is immutable, so update is a DELEGATED
+# channel (notify-only, no self-apply — `auto-apply-task.ts`), and the lease has
+# no executable to guard here at all.
 ENV RECUED_SUPERVISOR_MODE=docker \
+    RECUED_DISTRIBUTION_CHANNEL=docker-baked \
     RECUED_WEBCLIENT_DIR=/opt/recued/webclient \
     NODE_ENV=production
 
@@ -134,7 +169,8 @@ VOLUME ["/var/lib/recued", "/var/log/recued"]
 # Probes the D-103 /health endpoint exposed by Phase A.
 #
 # ⛔ NOT `wget`. The comment here used to claim "wget is preinstalled on
-# node:22-slim" — it is not, and `docker exec … command -v wget` says so. The
+# node:22-slim" — it is not (nor on node:24-slim), and `docker exec … command -v
+# wget` says so. The
 # healthcheck therefore ALWAYS failed (`/bin/sh: 1: wget: not found`) and the
 # container sat permanently `unhealthy` while serving 200s perfectly well. That
 # is not cosmetic: `depends_on: condition: service_healthy` never proceeds, and

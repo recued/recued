@@ -28,22 +28,49 @@ export interface BootstrapDerivedExposureStateInput {
   webhook_port: number;
   /** `RECUED_PUBLIC_REACHABLE` env var (parsed to boolean). When true,
    *  the legacy single-listener flow served every path on the public
-   *  port — mirror by widening health + ws + webhooks' public bits.
-   *  `/mcp` stays LAN-only (ack-gated per § A.7.2); `/reception` stays
-   *  off (D-149 opt-in per Must Hold I-1). */
+   *  port — mirror by widening health + ws + llm_gateway + webhooks'
+   *  public bits. ⚠ FOUR paths: `llm_gateway` was missing from this list
+   *  and from the table below, and from the test written off them.
+   *  `/mcp` stays LAN-only (ack-gated per § A.7.2); `/reception`,
+   *  `/oauth` and `/ask` stay off (opt-in surfaces per Must Hold I-1),
+   *  and `/webclient` is never auto-public. */
   public_reachable: boolean;
 }
 
 /** Derive the initial `ExposureState` from explicit operator gestures.
  *
- *  | path       | lan | public                                     |
- *  |:-----------|:----|:-------------------------------------------|
- *  | health     | ✓   | ✓ iff public_reachable                     |
- *  | ws         | ✓   | ✓ iff public_reachable                     |
- *  | mcp        | ✓   | — (ack-gated; user toggles via Settings)   |
- *  | webhooks   | ✓ iff webhook_port>0 | ✓ iff webhook_port>0 AND public_reachable |
- *  | reception  | — | — (D-149 opt-in)                            |
- *  | oauth      | — | — (D-165 opt-in)                            |
+ *  ⚠ ALL NINE ROLES, ON PURPOSE. This table previously listed six and
+ *  omitted `llm_gateway`, `ask` and `webclient` — and the acceptance test
+ *  was written FROM the table, so those three were unasserted too. A
+ *  mutation flipping `llm_gateway.public` in either direction redded
+ *  nothing. Keep this table total: it is what a reader consults to answer
+ *  "what does a fresh server expose?", and an omission here answers wrong.
+ *
+ *  | path        | lan                  | public                                    |
+ *  |:------------|:---------------------|:------------------------------------------|
+ *  | health      | ✓                    | ✓ iff public_reachable                    |
+ *  | ws          | ✓                    | ✓ iff public_reachable                    |
+ *  | mcp         | ✓                    | — (ack-gated; user toggles via Settings)  |
+ *  | llm_gateway | ✓                    | ✓ iff public_reachable                    |
+ *  | webhooks    | ✓ iff webhook_port>0 | ✓ iff webhook_port>0 AND public_reachable |
+ *  | reception   | —                    | — (D-149 opt-in)                          |
+ *  | oauth       | —                    | — (D-165 opt-in)                          |
+ *  | ask         | —                    | — (D-158 opt-in)                          |
+ *  | webclient   | ✓                    | — (R26.2 D3: never auto-public)           |
+ *
+ *  🔑 `/llm_gateway` widens with `public_reachable` — a FOURTH path, not the
+ *  three the input doc above names. That is deliberate and matches the
+ *  `public` preset, which also carries `llm_gateway: public`. It is
+ *  bearer-gated (`llmGatewayTokenId` + seller admission), which is why it
+ *  does not need `/mcp`'s acknowledgement gate — but it IS an AI-facing door
+ *  reachable from the internet on a `public_reachable` server, so it belongs
+ *  in the table a reader checks.
+ *
+ *  ⛔ THE INVARIANT: nothing here may be public where
+ *  `EXPOSURE_PRESET_PATH_MAP.public` keeps it private. A bootstrap more
+ *  exposed than the most permissive preset lands first boot on a shape no
+ *  preset can explain and no later gesture can reach. Pinned in the
+ *  acceptance suite.
  *
  *  `derived_preset_label = 'custom'` because the bootstrap-shaped state
  *  isn't one of the 3 closed-list presets (`lan_only` / `public` /

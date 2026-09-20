@@ -244,3 +244,51 @@ describe('StallMonitor — stop() idempotent', () => {
     expect(h.hasPending()).toBe(false);
   });
 });
+
+describe('D-274 — the flag latch is per EPISODE, not per monitor lifetime', () => {
+  it('flags again after a stall, a recovery, and a SECOND stall', () => {
+    // ⛔ The regression this pins: `flaggedFired` was set once per monitor, while
+    // the registry's latch (`stalledRuns`) is CLEARED by the same progress
+    // signal that ends the episode. After one stall + recovery the registry read
+    // "not stalled" and the monitor could never say otherwise, so the second
+    // stall was silent FOREVER. A long op that blips, resumes, then wedges for
+    // real would spend its only flag on the blip.
+    const h = makeHarness();
+    let moving = true;
+    const source: ProgressSource = { grewSince: () => moving };
+    const monitor = new StallMonitor({
+      contract: 'resource', origin: 'attended', source,
+      expectedIntervalMs: 100, factorK: 2,
+      silentHardCapMs: Number.POSITIVE_INFINITY, flagOnly: true,
+      pollMs: 50, now: h.now, setTimer: h.setTimer, clearTimer: h.clearTimer,
+    });
+    const flags: StallDecision[] = [];
+    const kills: StallDecision[] = [];
+    monitor.start((d) => kills.push(d), (d) => flags.push(d));
+    const run = (ms: number): void => { for (let i = 0; i < ms / 50; i += 1) h.advance(50); };
+
+    run(300);                      // moving
+    moving = false; run(400);      // episode 1
+    expect(flags).toHaveLength(1);
+    moving = true;  run(300);      // recovered
+    moving = false; run(600);      // episode 2
+    expect(flags).toHaveLength(2);
+    // report-only throughout: the op is never killed on either episode
+    expect(kills).toHaveLength(0);
+  });
+
+  it('does not re-flag WITHIN one episode (bounded to one per episode)', () => {
+    const h = makeHarness();
+    const source: ProgressSource = { grewSince: () => false };
+    const monitor = new StallMonitor({
+      contract: 'resource', origin: 'attended', source,
+      expectedIntervalMs: 100, factorK: 2,
+      silentHardCapMs: Number.POSITIVE_INFINITY, flagOnly: true,
+      pollMs: 50, now: h.now, setTimer: h.setTimer, clearTimer: h.clearTimer,
+    });
+    const flags: StallDecision[] = [];
+    monitor.start(() => {}, (d) => flags.push(d));
+    for (let i = 0; i < 40; i += 1) h.advance(50);   // 2s of unbroken stillness
+    expect(flags).toHaveLength(1);                    // not 1-per-poll
+  });
+});

@@ -99,6 +99,38 @@ export interface PeerAskDeliveryPlan {
   readonly carrier?: PeerAskResolvedCarrier;
 }
 
+/** The retirement decision, resolved ONCE from pre-write state and recorded
+ *  BEFORE the first durable write of `retireUnsendableStaged`.
+ *
+ *  ⛔⛔ WHY IT IS PERSISTED RATHER THAN RECOMPUTED. Retirement makes two guarded
+ *  durable writes — the terminal audit anchor, then the gated-action receipt —
+ *  and the FIRST one mutates state the SECOND one's guard reads (it sets
+ *  `commit_status: 'in_doubt'` and clears `checkpoint_id`, which is exactly what
+ *  the action-ownership test consults). Re-deriving the decision on re-entry
+ *  therefore answers differently than it did before the first write, so a
+ *  retirement interrupted between them settled the anchor and then declined to
+ *  settle the action — leaving a live `dispatching` receipt with its checkpoint
+ *  deleted and its journal row closed, which nothing afterwards can find.
+ *
+ *  🔑 The claim makes the stopping point a RECORDED FACT instead of an inference
+ *  over mutable records. The send leg already had that property (`delivery_state`
+ *  + `continuation_claimed`); the settle leg did not.
+ *
+ *  ⚠ It records AUTHORITY ("may this pass settle each half"), never completion.
+ *  Whether a half is already done stays a fresh read — the anchor's own
+ *  `commit_status` and `isGatedActionTerminal` — so replaying a claim cannot
+ *  double-write. */
+export interface PeerAskRetireClaim {
+  /** May this pass write the terminal audit anchor? */
+  readonly settle_anchor: boolean;
+  /** May this pass settle the gated-action receipt? */
+  readonly settle_action: boolean;
+  /** The diagnosis that opened the retirement. First write wins, so a re-entry
+   *  reports the reason that actually matched rather than one re-derived from
+   *  state the first pass already changed. */
+  readonly reason: string;
+}
+
 /** One exact peer question plus its crash-recovery state. */
 export interface PeerAskOutboxRow extends PeerAskOutboxBaseRow {
   /** Exact peer-pause checkpoint this delivery may activate against. */
@@ -114,6 +146,8 @@ export interface PeerAskOutboxRow extends PeerAskOutboxBaseRow {
   /** Durable no-replay fence for the answer continuation. Once true, a process
    * may repair/verify its audit outcome but must never re-run post-peer effects. */
   readonly continuation_claimed?: boolean;
+  /** Present once boot retirement has resolved what it is allowed to settle. */
+  readonly retire_claim?: PeerAskRetireClaim;
 }
 
 export type PeerAskOutboxOpenRow = PeerAskOutboxBaseRow;
@@ -146,6 +180,16 @@ export interface PeerAskOutboxStore {
     exchange_ref: string,
     checkpoint_id: string,
   ): PeerAskContinuationClaim;
+  /** Record what boot retirement is allowed to settle, BEFORE it settles any of
+   *  it. FIRST WRITE WINS and the EFFECTIVE claim is returned — the stored one
+   *  when a previous pass already decided, otherwise the one just written — so a
+   *  pass that re-enters after settling only half acts on the original decision
+   *  instead of re-deriving it from state that half already changed.
+   *  `null` when the row is gone (nothing left to retire). */
+  claimRetirement(
+    exchange_ref: string,
+    claim: PeerAskRetireClaim,
+  ): PeerAskRetireClaim | null;
   get(exchange_ref: string): PeerAskOutboxRow | null;
   /** Includes staged/refused delivery journal rows hidden from the live
    * conversation API. */
@@ -174,6 +218,7 @@ interface Raw {
   delivery_json: string | null;
   refusal_json: string | null;
   continuation_claimed: number;
+  retire_claim_json: string | null;
 }
 
 const DELIVERY_STATES: ReadonlySet<string> = new Set([
@@ -237,6 +282,30 @@ const parseRefusal = (raw: string | null): PeerAskDeliveryRefusal | undefined =>
   }
 };
 
+/** ⚠ STRICT, unlike `offered_json`'s tolerant read. A half-parsed claim would
+ *  grant authority nobody decided; `undefined` falls back to recomputing, which
+ *  is exactly the pre-claim behaviour and never widens what may be settled. */
+const parseRetireClaim = (raw: string | null): PeerAskRetireClaim | undefined => {
+  if (raw === null) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return undefined;
+    }
+    const row = parsed as Record<string, unknown>;
+    if (typeof row.settle_anchor !== 'boolean'
+      || typeof row.settle_action !== 'boolean'
+      || typeof row.reason !== 'string' || row.reason.length === 0) return undefined;
+    return {
+      settle_anchor: row.settle_anchor,
+      settle_action: row.settle_action,
+      reason: row.reason,
+    };
+  } catch {
+    return undefined;
+  }
+};
+
 const hydrate = (r: Raw): PeerAskOutboxRow => {
   // ⚠ TOLERANT ON READ. A row whose `offered_json` cannot be parsed yields an
   // EMPTY offered set, which makes `parsePeerAnswer` refuse every option rather
@@ -251,6 +320,7 @@ const hydrate = (r: Raw): PeerAskOutboxRow => {
     : 'delivered';
   const delivery = parseDelivery(r.delivery_json);
   const refusal = parseRefusal(r.refusal_json);
+  const retireClaim = parseRetireClaim(r.retire_claim_json);
   return {
     exchange_ref: r.exchange_ref,
     run_id: r.run_id,
@@ -270,6 +340,7 @@ const hydrate = (r: Raw): PeerAskOutboxRow => {
     ...(delivery !== undefined ? { delivery } : {}),
     ...(refusal !== undefined ? { refusal } : {}),
     continuation_claimed: r.continuation_claimed === 1,
+    ...(retireClaim !== undefined ? { retire_claim: retireClaim } : {}),
   };
 };
 
@@ -332,6 +403,7 @@ export const createPeerAskOutboxStore = (db: Database.Database): PeerAskOutboxSt
     'continuation_claimed',
     `ALTER TABLE ${TABLE} ADD COLUMN continuation_claimed INTEGER NOT NULL DEFAULT 0`,
   );
+  ensureColumn('retire_claim_json', `ALTER TABLE ${TABLE} ADD COLUMN retire_claim_json TEXT`);
 
   const insert = db.prepare(
     `INSERT OR IGNORE INTO ${TABLE}
@@ -434,6 +506,23 @@ export const createPeerAskOutboxStore = (db: Database.Database): PeerAskOutboxSt
             AND delivery_state IN ('pending', 'delivered')`,
       ).get(exchange_ref, checkpoint_id) as { continuation_claimed: number } | undefined;
       return row?.continuation_claimed === 1 ? 'already_claimed' : 'not_open';
+    },
+    claimRetirement(exchange_ref, claim) {
+      if (exchange_ref === '') return null;
+      // ⚠ `retire_claim_json IS NULL` is the whole fence: the second caller's
+      // UPDATE matches nothing and it reads back the first caller's decision.
+      // Deliberately NOT scoped by `delivery_state` — the states this runs over
+      // (`staged` / `pending`) are exactly what the first half of retirement may
+      // leave behind, so narrowing it would drop the claim on re-entry.
+      db.prepare(
+        `UPDATE ${TABLE} SET retire_claim_json = ?
+          WHERE exchange_ref = ? AND retire_claim_json IS NULL`,
+      ).run(JSON.stringify(claim), exchange_ref);
+      const stored = db.prepare(
+        `SELECT retire_claim_json FROM ${TABLE} WHERE exchange_ref = ?`,
+      ).get(exchange_ref) as { retire_claim_json: string | null } | undefined;
+      if (stored === undefined) return null;
+      return parseRetireClaim(stored.retire_claim_json) ?? null;
     },
     get(exchange_ref) {
       if (exchange_ref === '') return null;

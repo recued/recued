@@ -218,12 +218,19 @@ const parseChainPem = (chain_pem: string | undefined): X509Certificate[] => {
  *  to any plausible `now_ms`).
  *
  *  Reads `cert.validTo` (string, available since Node v15.6.0) and
- *  parses via `Date.parse`. The newer `cert.validToDate` field was
- *  only added in Node v23.0.0 — `backend/server` engines floor is
- *  Node ≥ 20.0.0 (Codex W3.6 P1 #1 fold) so we MUST use the portable
- *  string. The validTo format is the OpenSSL-style ASN.1 GeneralizedTime
- *  rendering (e.g., `Mar 12 12:00:00 2027 GMT`) which `Date.parse`
- *  handles. */
+ *  parses via `Date.parse`. The validTo format is the OpenSSL-style ASN.1
+ *  GeneralizedTime rendering (e.g., `Mar 12 12:00:00 2027 GMT`) which
+ *  `Date.parse` handles.
+ *
+ *  ⚠ THE ORIGINAL REASON FOR THE STRING NO LONGER HOLDS, AND THE CHOICE
+ *  STANDS ANYWAY. This said `cert.validToDate` "was only added in Node
+ *  v23.0.0 — `backend/server` engines floor is Node ≥ 20.0.0 (Codex W3.6
+ *  P1 #1 fold) so we MUST use the portable string." The floor is now
+ *  ≥ 24.0.0, so `validToDate` is available and nothing forces this. It is
+ *  kept because a working parse of a stable OpenSSL rendering is not worth
+ *  re-verifying against a live CA chain to save one `Date.parse`, not
+ *  because it is required — so a later reader weighing the swap is weighing
+ *  ergonomics, not compatibility. */
 export const readExpiresAt = (cert_pem: string): number => {
   const cert = tryParseCert(cert_pem);
   if (!cert) return 0;

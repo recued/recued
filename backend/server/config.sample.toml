@@ -106,6 +106,10 @@
 # Storage quotas — per-surface overrides. Defaults in the schema
 # cover typical single-user workloads; raise for heavy mail volume.
 # "vault.quota.total_bytes"               = 52428800     # 50 MB
+# ⚠ audit.quota.bytes counts CHARACTERS of stored JSON, not bytes on disk.
+#   Identical for ASCII; ~1.24x larger on disk for accented Latin or emoji and
+#   ~2x for CJK. Deliberate — the default is calibrated against that count — but
+#   size your disk for the content you store. Default is 5 GB, not the example.
 # "audit.quota.bytes"                     = 104857600    # 100 MB
 # "cache.quota.bytes"                     = 209715200    # 200 MB
 # "collection.mail.default.quota_bytes"   = 2147483648   # 2 GB

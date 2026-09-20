@@ -58,6 +58,44 @@ describe('D-148 P2 — signActivityEntry + verifyActivityEntry round-trip', () =
     expect(result.ok).toBe(true);
   });
 
+  it('⛔⛔ a LEGACY row — signed, no signer_fingerprint — still verifies', () => {
+    // ⚠ FOUND BY MUTATION (2026-09-18). `stripSignatureFields` early-returns
+    // only when BOTH fields are absent; flipping that `&&` to `||` survived
+    // every test, because no fixture has one without the other.
+    //
+    // ⛔ THE MODULE'S OWN COMMENT SAYS THESE ROWS EXIST: "rows signed before
+    // fingerprint recording landed have no fingerprint". Under the mutant such
+    // a row is handed to the verifier UNSTRIPPED — signature included in its
+    // own signed bytes — so it can never verify. Every high-assurance row
+    // written before that field landed would read as TAMPERED, which is the
+    // worst possible false positive for an audit trail: it accuses the record
+    // of exactly what it exists to disprove.
+    const server_identity = generateEd25519Keypair('server_identity_key');
+    const signed = signActivityEntry(baseEntry('pair_revoke'), server_identity);
+    const { signer_fingerprint: _dropped, ...legacy } = signed;
+    expect(legacy.signature).toBeDefined();
+    expect('signer_fingerprint' in legacy).toBe(false);
+
+    // The single-key resolver is the documented fallback for exactly this row.
+    const result = verifyActivityEntry(legacy as ActivityEntry, server_identity.public_key_b64);
+    expect(result.ok, 'a pre-fingerprint row was reported as unverifiable').toBe(true);
+  });
+
+  it('⚠ and an unsigned row carrying a stray fingerprint signs the same way', () => {
+    // The other half of the `&&`: a row with a fingerprint but no signature
+    // must still have that fingerprint stripped before signing, or the
+    // signature commits to a fingerprint of the key about to sign it — the
+    // circularity the strip exists to prevent.
+    const server_identity = generateEd25519Keypair('server_identity_key');
+    const withStray = {
+      ...baseEntry('pair_revoke'),
+      signer_fingerprint: 'sha256:stale',
+    } as ActivityEntry;
+    const signed = signActivityEntry(withStray, server_identity);
+    expect(signed.signer_fingerprint).toBe(server_identity.public_key_fingerprint);
+    expect(verifyActivityEntry(signed, server_identity.public_key_b64).ok).toBe(true);
+  });
+
   it('verify fails when row is tampered', () => {
     const server_identity = generateEd25519Keypair('server_identity_key');
     const entry = baseEntry('key_rotation');

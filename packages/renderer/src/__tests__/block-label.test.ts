@@ -44,6 +44,9 @@ const DATA: Record<string, unknown> = {
       { key: 'title', label: 'Title', kind: 'string', present: true, value: 'Replace the pump' },
     ],
   },
+  file_preview: {
+    record_id: 'file_1', filename: 'group.jpg', mime_type: 'image/jpeg', size_bytes: 74719,
+  },
   button: [{ kind: 'recipe.run', label: 'Run', recipe_id: 'r' }],
   link_button: [{ label: 'Pay', url: 'https://example.com/pay' }],
 };

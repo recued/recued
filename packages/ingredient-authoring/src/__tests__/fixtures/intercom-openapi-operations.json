@@ -53,10 +53,10 @@
       "intercom-admin-data": 25
     },
     "composition_bytes": {
-      "intercom": 70719,
-      "intercom-support-operations": 51010,
-      "intercom-content-engagement": 112020,
-      "intercom-admin-data": 33593
+      "intercom": 70611,
+      "intercom-support-operations": 50857,
+      "intercom-content-engagement": 108796,
+      "intercom-admin-data": 33549
     },
     "callable_pagination_count": 12,
     "generated_pagination_authority_ids": [

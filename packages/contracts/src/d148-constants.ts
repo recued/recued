@@ -64,10 +64,18 @@ export const CERT_ROTATION_OVERLAP_MS = 7 * 24 * 60 * 60 * 1000;
  *  🔑 AND THE INPUT IS NOT MISSING EITHER. An earlier draft of this note
  *  claimed a lifetime-aware lead time "needs a persisted `valid_from` on the
  *  cert row first". **That was wrong and is retracted.** The certificate
- *  itself is already stored — `cert_pem_encrypted BLOB NOT NULL`
- *  (`backend/server/src/storage/hostname-registry.ts:103`) — and an X.509
- *  cert carries `notBefore`. Lifetime is already in hand; it is simply not
- *  parsed out. A `valid_from` column would CACHE a fact we hold, not supply a
+ *  itself is already stored — `tls_domains.cert_pem TEXT NOT NULL`
+ *  (`backend/server/src/tls/domain-store.ts`), the row `readExpiresAt` already
+ *  parses `validTo` out of — and an X.509 cert carries `notBefore` beside it.
+ *  Lifetime is already in hand; it is simply not parsed out.
+ *
+ *  ⚠ THE RETRACTION ORIGINALLY CITED THE WRONG TABLE: `cert_pem_encrypted BLOB
+ *  NOT NULL` in `hostname-registry.ts`. That column is real and that table is
+ *  created at every boot, but **`cert_blob` has no reader and no writer
+ *  anywhere in the tree** — no INSERT, SELECT, UPDATE or DELETE names it, and
+ *  `private_key_pem_encrypted` / `sub_dek_id` occur exactly once each, in the
+ *  CREATE itself. A conclusion can be right and its evidence still point at an
+ *  empty table; the tripwire below would have sent its implementer there. A `valid_from` column would CACHE a fact we hold, not supply a
  *  missing one, and is worth adding only if something reads it on a hot path.
  *
  *  ⇒ THE TRIPWIRE, which is the whole point of this note: **the day anyone

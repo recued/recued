@@ -22,7 +22,11 @@ recued pair            # prints a pairing code + an app.recued.com/pair link
 # Open that link to complete pairing.
 ```
 
-See [`distribution/homebrew/README.md`](../../distribution/homebrew/README.md) for Homebrew service management and [`distribution/vps/README.md`](../../distribution/vps/README.md) for provider-specific cloud-init details. The Docker variant's compose file is at [`docker-compose.yml`](./docker-compose.yml) — `docker compose up -d` with a mounted `config.toml` works out of the box.
+See [`distribution/homebrew/README.md`](../../distribution/homebrew/README.md) for Homebrew service management and [`distribution/vps/README.md`](../../distribution/vps/README.md) for provider-specific cloud-init details.
+
+**Docker — two compose files, two different acts.** The repo-root [`docker-compose.yml`](../../docker-compose.yml) **builds from source**: `docker compose up` from a fresh clone, with no config file to author and no variable to set. The one beside this README, [`backend/server/docker-compose.yml`](./docker-compose.yml), **deploys a published image** and requires `RECUED_IMAGE_REF` pinned to a verified `@sha256` digest — a prebuilt binary from a registry is a supply-chain input and D-178 admits it by signature or not at all. Neither is a relaxed version of the other; pick by whether you are running your own build or someone's release.
+
+**Verifying an image change:** `npm run test:docker-smoke` builds the production image, starts it, and asserts the container actually serves — `running` plus a green HEALTHCHECK, with container logs attached to any failure. It runs automatically in `npm run ci` wherever a Docker daemon is live (adding ~4–5 min); `RECUED_SKIP_DOCKER_SMOKE=1` declines a single run. It is the only check that catches a break visible solely when you *start* the thing: compiling, bundling and packing all stayed green through four separate defects that each left the image unusable.
 
 ### `RECUED_IDENTITY_PASSPHRASE` — sealing the key file (D-212)
 

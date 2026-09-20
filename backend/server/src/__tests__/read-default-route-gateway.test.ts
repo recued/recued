@@ -41,6 +41,65 @@ describe('parseProcNetRouteGateway', () => {
     expect(out).toBe('192.168.1.1');
   });
 
+  it('⛔ a SUBNET route VIA A GATEWAY is still not the default route', () => {
+    // ⚠ FOUND BY MUTATION. The case above has a non-default row whose gateway
+    // is ALSO zero, so the gateway filter excluded it and the DESTINATION
+    // filter never ran — deleting that filter reddened nothing. A real routing
+    // table has subnet routes that do go via a router (a VPN's 10.0.0.0/8 via
+    // 192.168.1.254), and taking one as "the default" points every port-mapping
+    // request at the wrong device.
+    const out = parseProcNetRouteGateway(
+      [
+        PROC_HEADER,
+        // 10.0.0.0/8 via 192.168.1.254 — a real gateway, NOT the default route,
+        // and with a LOWER metric so it wins on every tiebreak but the right one.
+        'tun0\t0000000A\tFE01A8C0\t0003\t0\t0\t10\t000000FF\t0\t0\t0',
+        // The actual default route, deliberately later and worse-metric.
+        'eth0\t00000000\t0101A8C0\t0003\t0\t0\t100\t00000000\t0\t0\t0',
+      ].join('\n'),
+    );
+    expect(out).toBe('192.168.1.1');
+  });
+
+  it('⛔ a zero GATEWAY on a default row is not an address', () => {
+    // Its own case: the previous fixtures conflate this filter with the
+    // destination one. `0.0.0.0` parses as a dotted quad, so without this the
+    // on-link default would be handed to the router as a gateway.
+    const out = parseProcNetRouteGateway(
+      [
+        PROC_HEADER,
+        'eth0\t00000000\t00000000\t0001\t0\t0\t0\t00000000\t0\t0\t0',
+        'eth0\t00000000\t0101A8C0\t0003\t0\t0\t100\t00000000\t0\t0\t0',
+      ].join('\n'),
+    );
+    expect(out).toBe('192.168.1.1');
+  });
+
+  it('⛔ malformed hex in the gateway column is skipped, not converted', () => {
+    const out = parseProcNetRouteGateway(
+      [
+        PROC_HEADER,
+        'eth0\t00000000\tZZZZZZZZ\t0003\t0\t0\t1\t00000000\t0\t0\t0',
+        'eth0\t00000000\t0101A8C0\t0003\t0\t0\t100\t00000000\t0\t0\t0',
+      ].join('\n'),
+    );
+    expect(out).toBe('192.168.1.1');
+  });
+
+  it('⚠ prefers the lowest metric even when it is the FIRST row', () => {
+    // The existing metric case lists the winner LAST, so "lowest metric wins"
+    // and "last row wins" agree and the comparison is never tested. This is the
+    // same table with the order reversed.
+    const out = parseProcNetRouteGateway(
+      [
+        PROC_HEADER,
+        'eth0\t00000000\t010011AC\t0003\t0\t0\t100\t00000000\t0\t0\t0',  // 172.17.0.1
+        'wlan0\t00000000\t0101A8C0\t0003\t0\t0\t600\t00000000\t0\t0\t0', // 192.168.1.1
+      ].join('\n'),
+    );
+    expect(out).toBe('172.17.0.1');
+  });
+
   it('prefers the LOWEST metric when several interfaces publish a default', () => {
     const out = parseProcNetRouteGateway(
       [
@@ -66,6 +125,26 @@ describe('parseProcNetRouteGateway', () => {
 });
 
 describe('parseRouteGetDefaultGateway', () => {
+  it('⛔ the FIRST gateway line decides — a later address does not rescue it', () => {
+    // ⚠ FOUND BY MUTATION: changing the `link#` branch from `return undefined`
+    // to `continue` was invisible, because every fixture has one gateway line.
+    // Real `route -n get default` prints one — but "the first line decides" is
+    // a DELIBERATE choice (a point-to-point route genuinely has no gateway
+    // address), and a parser that kept scanning would turn malformed output
+    // into a confident wrong answer instead of an honest undefined.
+    expect(parseRouteGetDefaultGateway(
+      ['   route to: default', '   gateway: link#14', '   gateway: 192.168.1.1'].join('\n'),
+    )).toBeUndefined();
+  });
+
+  it('⚠ `gateway:` must be the KEY, not a substring of some other line', () => {
+    // The regex is anchored at line start for a reason; without that, any line
+    // mentioning a gateway would be read as one.
+    expect(parseRouteGetDefaultGateway(
+      ['   route to: default', '   note: no gateway: 10.0.0.1 was found'].join('\n'),
+    )).toBeUndefined();
+  });
+
   it('reads the gateway line out of a BSD key/value block', () => {
     expect(
       parseRouteGetDefaultGateway(

@@ -10,6 +10,7 @@ import {
   isGatedCallClass,
   EXECUTION_LANES,
   PROGRESS_CONTRACTS,
+  AUTHORABLE_PROGRESS_CONTRACTS,
   type CallClass,
 } from '../execution-lane.js';
 import { INGREDIENT_KINDS, type IngredientKind } from '../ingredient.js';
@@ -74,6 +75,12 @@ describe('isGatedCallClass', () => {
 describe('closed sets', () => {
   it('EXECUTION_LANES + PROGRESS_CONTRACTS are stable', () => {
     expect(EXECUTION_LANES).toEqual(['local-heavy', 'external-io']);
-    expect(PROGRESS_CONTRACTS).toEqual(['heartbeat', 'file-growth', 'provider-event', 'silent']);
+    expect(PROGRESS_CONTRACTS).toEqual(['heartbeat', 'file-growth', 'provider-event', 'silent', 'resource']);
+    // D-274 § 6a — the AUTHORABLE set is a DIFFERENT closed list and must stay
+    // short by one. Pinning both is the point: a future member added to the
+    // runtime list without a deliberate decision about declarability shows up
+    // here as a red, not as a silently-widened publish surface.
+    expect(AUTHORABLE_PROGRESS_CONTRACTS).toEqual(['heartbeat', 'file-growth', 'provider-event', 'silent']);
+    expect(AUTHORABLE_PROGRESS_CONTRACTS).not.toContain('resource');
   });
 });

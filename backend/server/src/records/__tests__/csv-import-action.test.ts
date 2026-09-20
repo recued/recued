@@ -117,7 +117,7 @@ describe('core.records.import', () => {
    *  failure this action was built to remove, and only the arithmetic can prove it did
    *  not happen — `written` alone is exactly the number a broken import gets right. */
   const accounted = (r: RecordsImportResult): RecordsImportResult => {
-    expect(r.written + r.replayed + r.failed + r.not_attempted,
+    expect(r.written + r.replayed + r.updated + r.skipped + r.failed + r.not_attempted,
       `unaccounted rows: ${JSON.stringify(r)}`).toBe(r.rows_read);
     return r;
   };
@@ -261,6 +261,173 @@ describe('core.records.import', () => {
       expect(rows()[1]!.s3).toBe('groceries');
     });
 
+    it('⛔ and in the DEFAULT mode that is still what happens — no mode, no change', () => {
+      // The three modes were added under `on_conflict`; its absence must keep
+      // meaning exactly what it meant before, or every already-installed pack
+      // changes behaviour by being upgraded.
+      importCsv(THREE);
+      db.prepare('UPDATE core_records SET s3=? WHERE pk=?').run('groceries', rows()[1]!.pk);
+      const r = accounted(importCsv(THREE));
+      expect(r.failed).toBe(1);
+      expect(r.updated, 'nothing was overwritten').toBe(0);
+      expect(r.skipped, 'and nothing was silently passed over').toBe(0);
+    });
+  });
+
+  describe('⛔⛔ on_conflict — the owner chooses what a disagreement means', () => {
+    /** The file says one thing, the stored row says another. That is the only
+     *  case any of this decides: a byte-identical row is `replayed` in every
+     *  mode and always was. */
+    /** ⚠ EDITS A MAPPED FIELD (`description`), not the defaulted `category`.
+     *  The distinction is the whole of `overwrite`'s semantics: the file can only
+     *  rewrite what the file carries, so an edit to a DEFAULTED field is a
+     *  collision no overwrite can resolve — asserted separately below. Picking
+     *  the defaulted field here by accident made the first version of these tests
+     *  fail with `records_noop`, which is the right answer to a different
+     *  question. `description` is not part of `dedup_on`'s identity tuple, so the
+     *  edited row still collides rather than becoming a new one. */
+    const withEditedRow = (): string => {
+      importCsv(THREE);
+      const edited = rows()[1]!.pk;
+      db.prepare('UPDATE core_records SET s2=? WHERE pk=?').run('SALARY (corrected)', edited);
+      return edited;
+    };
+    const mode = (m: string): unknown => ({ ...SPEC, on_conflict: m });
+
+    it('skip: the store wins, the row is NOT a failure, and the edit survives', () => {
+      withEditedRow();
+      const r = accounted(importCsv(THREE, mode('skip')));
+      expect(r.skipped, 'exactly the row that disagreed').toBe(1);
+      expect(r.failed, 'a skip is a decision, not a refusal').toBe(0);
+      expect(r.replayed, 'the other two agreed and are NOT skips').toBe(2);
+      expect(r.updated).toBe(0);
+      expect(r.written).toBe(0);
+      // ⛔ THE OUTCOME, not just the counter: the owner's own edit is still there.
+      expect(rows()[1]!.s2).toBe('SALARY (corrected)');
+      expect(rowCount(), 'and a skip never seats a second copy').toBe(3);
+    });
+
+    it('overwrite: the file wins, and the row really is replaced', () => {
+      withEditedRow();
+      const r = accounted(importCsv(THREE, mode('overwrite')));
+      expect(r.updated).toBe(1);
+      expect(r.failed).toBe(0);
+      expect(r.skipped).toBe(0);
+      expect(r.replayed, 'the two that already agreed were not rewritten').toBe(2);
+      expect(r.written, 'an overwrite is not a new row and must not read as one').toBe(0);
+      // ⛔ THE EDIT IS GONE — that is what the owner asked for, and asserting the
+      // counter alone would pass on an overwrite that quietly did nothing.
+      expect(rows()[1]!.s2).toBe('salary');
+      expect(rowCount()).toBe(3);
+    });
+
+    it('⛔⛔ neither mode touches a row that AGREES — that is still `replayed`', () => {
+      importCsv(THREE);
+      for (const m of ['skip', 'overwrite']) {
+        const r = accounted(importCsv(THREE, mode(m)));
+        expect(r.replayed, m).toBe(3);
+        expect(r.updated + r.skipped + r.failed + r.written, m).toBe(0);
+      }
+    });
+
+    it('⛔⛔ overwrite writes ONLY what the file carries — a DEFAULT is not a claim', () => {
+      // `defaults` exist so a `create` has every declared field; they say nothing
+      // about a row that already exists. Writing them on an overwrite would reset
+      // fields the file never mentioned — a roster's `enrolled_at: <now>` would
+      // silently become "when I last re-imported", every run.
+      //
+      // Here the owner categorised a line. `category` is DEFAULTED, not mapped,
+      // so the file has nothing to say about it and the edit must survive even
+      // under overwrite.
+      importCsv(THREE);
+      const edited = rows()[1]!.pk;
+      db.prepare('UPDATE core_records SET s3=? WHERE pk=?').run('groceries', edited);
+
+      const r = accounted(importCsv(THREE, mode('overwrite')));
+      expect(rows()[1]!.s3, 'the defaulted field was NOT reset to \'\'').toBe('groceries');
+      // and it is reported as the store's value surviving, which is a skip —
+      // not `replayed` (the row is not byte-identical) and not a failure.
+      expect(r.skipped).toBe(1);
+      expect(r.updated).toBe(0);
+      expect(r.failed).toBe(0);
+    });
+
+    it('⛔⛔ overwrite does NOT swallow a refusal that is not a collision', () => {
+      // The catch is narrowed to `records_conflict` on purpose. A mode that
+      // caught everything would report a clean import over rows that never
+      // landed — the exact defect this action exists to remove, reintroduced by
+      // the feature meant to make it friendlier.
+      //
+      // ⚠ The obvious way to write this does NOT work and is worth naming: an
+      // unsatisfied required field is refused by the SPEC validator before any
+      // row runs, so it never reaches the catch at all. This uses a per-ROW
+      // refusal instead — a number where the entity declares a string is
+      // rejected by `normalizeValues`, one row at a time.
+      const r = accounted(importCsv(
+        csvOf('04-Jan,book,0,9.99,3177.53'),
+        { ...(mode('overwrite') as Record<string, unknown>),
+          numeric_fields: ['money_in', 'money_out', 'balance', 'description'] },
+      ));
+      expect(r.failed, 'a per-row refusal is still a failure under overwrite').toBe(1);
+      expect(r.updated).toBe(0);
+      expect(r.skipped, 'and it is NOT laundered into a skip').toBe(0);
+      expect(r.failures_sample[0]?.code).not.toBe('records_conflict');
+    });
+
+    it('⛔⛔⛔ NOR UNDER SKIP — where the narrow catch is the ONLY thing holding', () => {
+      // ⚠ THIS IS THE CASE THAT MATTERS, and the overwrite version above does
+      // NOT cover it. Mutation proved it: widening the catch to every error left
+      // the overwrite test green, because the inner `update` re-fails on the same
+      // refusal and rethrows — two guards, one property, and the narrow one is
+      // redundant on that path.
+      //
+      // Skip has no second guard. Every refusal it swallows is returned as
+      // `skipped`, so a file of rows that could not be stored would report as
+      // "rows I already had, kept as mine" — the import would look clean and the
+      // data would not be there.
+      const r = accounted(importCsv(
+        csvOf('04-Jan,book,0,9.99,3177.53'),
+        { ...(mode('skip') as Record<string, unknown>),
+          numeric_fields: ['money_in', 'money_out', 'balance', 'description'] },
+      ));
+      expect(r.failed, 'a per-row refusal is a failure under skip too').toBe(1);
+      expect(r.skipped, '⛔ NOT laundered into "already had it"').toBe(0);
+      expect(r.written).toBe(0);
+      expect(r.failures_sample[0]?.code).not.toBe('records_conflict');
+    });
+
+    it('⛔ a skip inside a slice does not cost its neighbours a rollback', () => {
+      // The mode is applied INSIDE the row write rather than in the per-row
+      // catch, so a skipped row never throws and the slice transaction holds.
+      // With 3 rows this is invisible; it is asserted through the outcome that
+      // would differ — every other row still lands in the same call.
+      withEditedRow();
+      const grown = csvOf(
+        '01-Jan,coffee,0,3.50,996.50',
+        '02-Jan,salary,"3,391.02",0,"4,387.52"',
+        '03-Jan,rent,0,"1,200.00","3,187.52"',
+        '04-Jan,book,0,9.99,3177.53',
+      );
+      const r = accounted(importCsv(grown, mode('skip')));
+      expect(r.skipped).toBe(1);
+      expect(r.replayed).toBe(2);
+      expect(r.written, 'the new line landed in the same call').toBe(1);
+      expect(rowCount()).toBe(4);
+    });
+
+    it('⛔⛔ an unadmitted mode is refused BEFORE any row runs', () => {
+      // A DOOR, not a safe default. `'Overwrite'` falling back to `'fail'` would
+      // report `updated: 0` and read as a clean run over rows it never replaced.
+      withEditedRow();
+      expect(() => importCsv(THREE, mode('Overwrite')))
+        .toThrow(/on_conflict .* is not admitted/);
+      expect(() => importCsv(THREE, mode('overwrite ')))
+        .toThrow(/on_conflict/);
+      expect(rows()[1]!.s2, 'and nothing was written on the way to refusing').toBe('SALARY (corrected)');
+    });
+  });
+
+  describe('⛔⛔ one bad row does not cost its neighbours (continued)', () => {
     it('the failure sample is capped, and the COUNT is still exact', () => {
       /** The whole point of the action is that rows never enter step state; an uncapped
        *  failure list would put every one of them straight back into it. */

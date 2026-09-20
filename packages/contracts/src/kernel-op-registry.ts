@@ -710,6 +710,12 @@ export const KERNEL_OP_REGISTRY: readonly KernelOpEntry[] = [
   // D-185 Slice 4 — the explicit temp→cas keep step: ingest a run-scoped temp
   // file_ref's bytes into data.file.received, returning a durable cas_ref.
   op('core.storage.file.persist', 'storage', 'file-persist', 'write', 'file'),
+  /** D-274 — hand a run-scoped temp ref's BYTES back to the recipe that made
+   *  them, so a view can draw a file the owner keeps on disk WITHOUT copying it.
+   *  `persist` is the copying sibling; a copy of a file the owner still edits is
+   *  a cache with no invalidation. Confined to the producing run's scratch root,
+   *  so it can name nothing this run did not just create. */
+  op('core.storage.file.read-temp', 'storage', 'file-read-temp', 'read', 'file'),
   /** D-245 — write a REF's bytes into a record the RECIPE named. Closes the knot
    *  that a CAS id is content-derived (no name a recipe can choose in advance)
    *  while the only writer for a named `{slug, path}` record is value-shaped

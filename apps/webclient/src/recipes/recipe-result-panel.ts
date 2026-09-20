@@ -196,6 +196,24 @@ ${REFERENCE_PROVENANCE_STYLES}
   font-size: 13px;
   font-weight: 650;
 }
+/* A file_preview had NO RULE AT ALL, and the two UA defaults it inherited both
+   hurt: a figure carries margin 1em 40px, which pushed the picture past the
+   card's own border, and an img with no max-width renders at its natural size.
+   A preview is 768px wide; a phone column is about 366px. Measured in real
+   Chrome at a 390px viewport: the image overflowed the page and the photograph
+   was cut off at the right edge.
+   That is the ONE control the photo pack's safety rests on - a wrong face is
+   caught by a person LOOKING at the picture, and half of it was off screen.
+   Found by rendering it; no test asserts pixels. */
+[${RECIPE_RESULT_HOST_ATTR}] .recipes-file-preview {
+  margin: 0;
+}
+[${RECIPE_RESULT_HOST_ATTR}] .recipes-file-preview img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  border-radius: 6px;
+}
 [${RECIPE_RESULT_HOST_ATTR}] .recipes-result-list,
 [${RECIPE_RESULT_HOST_ATTR}] .recipes-result-checklist {
   display: grid;
@@ -1423,6 +1441,8 @@ const sectionTitle = (section: RenderedOutputSection): string => {
       return 'Actions';
     case 'file_artifact':
       return 'Files';
+    case 'file_preview':
+      return 'Preview';
     case 'link_button':
       return 'Links';
     case 'json':
@@ -1725,6 +1745,54 @@ const renderOneFileArtifact = (
         : ''}
     </article>
   `;
+};
+
+/** D-274 — a `file_preview` block is drawn in TWO passes, because this panel
+ *  builds HTML STRINGS and drawing a file needs a live element: decode, an
+ *  object URL, `img.decode()`. So the string pass emits an empty MOUNT and the
+ *  route's post-render pass fills it via the shared `renderFilePreviewBody` —
+ *  the same function the modal viewer uses, so the two cannot drift.
+ *
+ *  ⚠ The fallback text inside the mount is what a reader sees if the second
+ *  pass never runs (no preview caller wired, an older host). It says what the
+ *  file is rather than showing an empty box, which is also what the
+ *  non-browser renderer emits for the same block. */
+export const RECIPES_FILE_PREVIEW_MOUNT_ATTR = 'data-recipe-file-preview';
+export const RECIPES_FILE_PREVIEW_NAME_ATTR = 'data-recipe-file-preview-name';
+
+const renderFilePreviewResultSection = (section: RenderedOutputSection): string => {
+  const record = section.data !== null && typeof section.data === 'object' && !Array.isArray(section.data)
+    ? section.data as Record<string, unknown>
+    : null;
+  const recordId = typeof record?.record_id === 'string' && record.record_id.trim() !== ''
+    ? record.record_id.trim()
+    : null;
+  // D-274 — the LIVE shape: bytes the run just read from a file on disk, which
+  // Recued never copied. Drawn from the result itself, so there is no second
+  // fetch and nothing to go stale.
+  const inline = typeof record?.bytes_b64 === 'string' && record.bytes_b64.length > 0
+    && typeof record?.mime_type === 'string' && record.mime_type.startsWith('image/')
+    ? { bytes_b64: record.bytes_b64, mime_type: record.mime_type }
+    : null;
+  if (recordId === null && inline === null) {
+    return '<p class="recipes-detail-note">This file cannot be shown: the block carries no file.</p>';
+  }
+  const filename = typeof record?.filename === 'string' && record.filename.trim() !== ''
+    ? record.filename.trim()
+    : 'this file';
+  if (inline !== null) {
+    // ⚠ A data: URL rather than a mount, because there is nothing to fetch — the
+    // bytes are already here. That also means it draws with no second pass, so
+    // a host that never runs one still shows the picture.
+    return `<figure class="recipes-file-preview">
+    <img alt="${e(filename)}" src="data:${e(inline.mime_type)};base64,${e(inline.bytes_b64)}">
+  </figure>`;
+  }
+  return `<figure class="recipes-file-preview"
+    ${RECIPES_FILE_PREVIEW_MOUNT_ATTR}="${e(recordId as string)}"
+    ${RECIPES_FILE_PREVIEW_NAME_ATTR}="${e(filename)}">
+    <p class="recipes-detail-note">Loading ${e(filename)}…</p>
+  </figure>`;
 };
 
 const renderFileArtifactResultSection = (
@@ -2320,6 +2388,8 @@ export const renderRecipeResultSection = (
               ? renderAiAnalysisBlock(section.data)
               : section.type === 'button'
                 ? renderResultActionControls(section.data, registry)
+                : section.type === 'file_preview'
+                  ? renderFilePreviewResultSection(section)
                 : section.type === 'file_artifact'
                   ? renderFileArtifactResultSection(section, registry)
                   // A link button is a plain anchor — no action registry, no

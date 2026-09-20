@@ -283,7 +283,7 @@ describe('trackContextSize — context cap', () => {
     trackContextSize(ctx, halfCapString);    // ~6MB
     trackContextSize(ctx, null);             // no-op
     trackContextSize(ctx, undefined);        // no-op
-    // Still ~6MB — another ~2MB value fits under the 10MB cap.
+    // Still ~6MB — another ~1MB value fits well under MAX_CONTEXT_BYTES.
     const oneMB = 'b'.repeat(1 * 1024 * 1024);
     expect(() => trackContextSize(ctx, oneMB)).not.toThrow();
   });

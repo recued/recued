@@ -72,7 +72,7 @@ const resolveIdentity = (
 ): { contact: ContactRecord | null; ambiguous: boolean } => {
   if (entry.email !== undefined) {
     const canonical = canonicalizeEmail(entry.email);
-    if (canonical !== null) {
+    if (canonical !== '') {
       try {
         // Through the ADDRESS SPACE — the same resolution the sync's match uses.
         // Recued may know this person under a different address (an import attached

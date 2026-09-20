@@ -55,8 +55,25 @@ export type HttpPostOutcome =
   | { ok: false; kind: 'timeout' | 'network'; detail: string }
   | { ok: false; kind: 'http_error'; status: number; detail: string; json?: unknown; retry_after_ms?: number };
 
-/** Slack/Discord Retry-After and Telegram response parameters use seconds. */
-export const retryAfterSeconds = (value: unknown): number | undefined => {
+/** Normalise a vendor's retry-after hint to MILLISECONDS.
+ *
+ *  ⛔⛔ IN SECONDS, OUT MILLISECONDS — and the old name said the wrong one.
+ *  This was `retryAfterSeconds`, which describes the INPUT (Slack / Discord
+ *  `Retry-After` and Telegram `parameters.retry_after` are all in seconds)
+ *  while the function returns `value * 1000`. Every call site was already
+ *  correct — all four assign straight into `retry_after_ms` — so nothing
+ *  behaved wrongly; the name was a loaded gun for the next one.
+ *
+ *  🔑 WHAT MADE IT WORSE THAN AN ORDINARY BAD NAME: `retryAfterSeconds` is a
+ *  live identifier ELSEWHERE in this repo meaning ACTUAL seconds —
+ *  `ui-shared/accounts/page.ts` renders "wait about ${n} seconds" from it, and
+ *  `reception/handler.ts` puts it in the RFC `Retry-After` header. One spelling,
+ *  two meanings, 1000x apart. A reader who met either of those first would read
+ *  `retryAfterSeconds(x) * 1000` as obviously right.
+ *
+ *  ⚠ Rename was per-file, NOT a tree-wide substring — the other uses are
+ *  genuinely seconds and must keep the name. */
+export const retryAfterMs = (value: unknown): number | undefined => {
   if (typeof value !== 'number' && (typeof value !== 'string' || value.trim() === '')) return undefined;
   const ms = Math.ceil(Number(value) * 1000);
   return Number.isSafeInteger(ms) && ms >= 0 && ms <= Number.MAX_SAFE_INTEGER - Date.now() ? ms : undefined;
@@ -237,7 +254,7 @@ const requestJson = async (
       } catch {
         errJson = undefined;
       }
-      const retryAfter = retryAfterSeconds(response.headers?.get('retry-after'));
+      const retryAfter = retryAfterMs(response.headers?.get('retry-after'));
       return {
         ok: false,
         kind: 'http_error',

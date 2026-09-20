@@ -16,7 +16,11 @@ import {
   UNATTENDED_TRIGGER_SOURCES,
   type StallEvalInput,
 } from '../stall-detection.js';
-import { PROGRESS_CONTRACTS, type ProgressContract } from '../execution-lane.js';
+import {
+  PROGRESS_CONTRACTS,
+  AUTHORABLE_PROGRESS_CONTRACTS,
+  type ProgressContract,
+} from '../execution-lane.js';
 import { INGREDIENT_KINDS, type IngredientKind } from '../ingredient.js';
 
 const base = (over: Partial<StallEvalInput>): StallEvalInput => ({
@@ -185,5 +189,87 @@ describe('evaluateStall — overrides + edges', () => {
     const d = evaluateStall(base({ started_at: 0, last_signal_at: 200, now: 1_200 }));
     expect(d.run_ms).toBe(1_200);
     expect(d.idle_ms).toBe(1_000);
+  });
+});
+
+describe('D-274 — the `resource` contract + flag_only (report-only)', () => {
+  const T = DEFAULT_EXPECTED_INTERVAL_MS.resource;
+  const idle = (ms: number): StallEvalInput =>
+    base({ contract: 'resource', flag_only: true, started_at: 0, last_signal_at: 0, now: ms });
+
+  it('flags an UNATTENDED resource op past k·T but never kills it', () => {
+    // `origin: 'unattended'` is deliberate: that arm is
+    // `progressStalled || silentExceeded` unconditionally, so this pins the new
+    // flag_only clause specifically. Under attended origin the assertion would
+    // be decided by the pre-existing rule and would pass either way.
+    const d = evaluateStall({ ...idle(STALL_FACTOR_K * T), origin: 'unattended' });
+    expect(d.flagged).toBe(true);
+    expect(d.stalled).toBe(false);
+    expect(d.reason).toBe('no_progress');
+  });
+
+  it('the SAME input without flag_only DOES kill — proving the clause is load-bearing', () => {
+    const d = evaluateStall({
+      ...base({ contract: 'resource', started_at: 0, last_signal_at: 0, now: STALL_FACTOR_K * T }),
+      origin: 'unattended',
+    });
+    expect(d.stalled).toBe(true);
+  });
+
+  it('does not flag a resource op whose tree is still moving', () => {
+    const now = STALL_FACTOR_K * T;
+    const d = evaluateStall({ ...idle(now), last_signal_at: now - T });
+    expect(d.flagged).toBe(false);
+    expect(d.stalled).toBe(false);
+  });
+
+  it('⛔ L1 — a resource op past the 30-min silent cap is NOT killed', () => {
+    // The landmine this whole D exists to avoid: `resolveProgressContract` maps
+    // cli → 'silent', and `silentExceeded = runMs >= SILENT_OP_HARD_CAP_MS`
+    // kills an ATTENDED run too. Wiring the previously-documented fallback would
+    // therefore SIGKILL whisper (authored 4h) at minute 30. Assert past the cap
+    // on BOTH origins.
+    const past = SILENT_OP_HARD_CAP_MS + 60_000;
+    for (const origin of ['attended', 'unattended'] as const) {
+      const d = evaluateStall({ ...idle(past), origin });
+      expect(d.stalled).toBe(false);
+      // and the reason must not name a cap that was never in play
+      expect(d.reason).not.toBe('silent_cap');
+    }
+
+    // ⚠ The discriminating half. Without `flag_only` the SAME input kills on the
+    // cap, on BOTH origins — which is precisely the whisper-at-minute-30 bug.
+    // Asserting only the flag_only case would pass against an implementation
+    // that had no cap handling at all, so it could not tell the two guards
+    // apart; an executor-level version of this test WAS vacuous for that reason.
+    for (const origin of ['attended', 'unattended'] as const) {
+      const d = evaluateStall({
+        ...base({ contract: 'resource', started_at: 0, last_signal_at: 0, now: past }),
+        origin,
+      });
+      expect(d.stalled).toBe(true);
+      expect(d.reason).toBe('silent_cap');
+    }
+  });
+
+  it('⛔ L2 — `resource` CAN flag, where `silent` structurally cannot', () => {
+    const now = STALL_FACTOR_K * DEFAULT_EXPECTED_INTERVAL_MS['file-growth'];
+    const asSilent = evaluateStall(base({ contract: 'silent', now, last_signal_at: 0 }));
+    expect(asSilent.flagged).toBe(false); // `progressStalled` is gated on !== 'silent'
+    expect(evaluateStall(idle(STALL_FACTOR_K * T)).flagged).toBe(true);
+  });
+
+  it('flag_only leaves the three DECLARED contracts untouched', () => {
+    for (const c of ['heartbeat', 'file-growth', 'provider-event'] as const) {
+      const t = DEFAULT_EXPECTED_INTERVAL_MS[c];
+      const d = evaluateStall(base({ contract: c, origin: 'unattended', now: STALL_FACTOR_K * t }));
+      expect(d.stalled).toBe(true); // kill arm intact — no flag_only set
+    }
+  });
+
+  it('`resource` is in the runtime vocabulary and NOT in the authorable one', () => {
+    expect(PROGRESS_CONTRACTS).toContain('resource');
+    expect(AUTHORABLE_PROGRESS_CONTRACTS).not.toContain('resource');
+    expect(DEFAULT_EXPECTED_INTERVAL_MS.resource).toBeGreaterThan(0);
   });
 });

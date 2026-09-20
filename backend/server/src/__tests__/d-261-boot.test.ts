@@ -195,6 +195,30 @@ const openStdio = async (dir: string, bearer: string): Promise<StdioSession> => 
   });
   children.add(child); let output = ''; let errors = '';
   child.stderr.on('data', bytes => { errors += String(bytes); });
+  // ⛔⛔ A NEGATIVE MUST NAME ITS CAUSE, AND THE TAIL OF STDERR IS NOT THE CAUSE.
+  //   This used to report `Stdio exited: ${errors.slice(-3000)}`, which threw away
+  //   the exit CODE and SIGNAL — so a clean `exit 0`, a crash, and a SIGKILL all
+  //   read identically — and quoted only the LAST 3000 chars, so whatever the boot
+  //   happened to chatter last stood where the cause should be. A run that failed
+  //   here printed the D-259 stale-pack warning, which is emitted on a HEALTHY boot
+  //   and had nothing to do with the exit; chasing it cost a reader the whole trail
+  //   through `installed-manifest-boot-check` and `cli-context/mcp` before landing
+  //   back at "the child just exited". Head AND tail, code AND signal.
+  let exited: { code: number | null; signal: NodeJS.Signals | null } | null = null;
+  child.once('exit', (code, signal) => { exited = { code, signal }; });
+  const why = (what: string): string => {
+    const how = exited === null
+      ? 'still running'
+      : `exit code=${exited.code} signal=${exited.signal}`;
+    // ⚠ Only ELIDE when there is something to elide. Head 1200 + tail 1800 = 3000,
+    //   so below that the two halves would overlap and the count would go NEGATIVE
+    //   — "…[-1000 chars elided]…" in the very message that exists to be trusted.
+    if (errors.length <= 3_000) return `${what} (${how})\n--- stderr ---\n${errors}`;
+    const head = errors.slice(0, 1_200);
+    const tail = errors.slice(-1_800);
+    return `${what} (${how})\n--- stderr head ---\n${head}`
+      + `\n  …[${errors.length - 3_000} chars elided]…\n--- stderr tail ---\n${tail}`;
+  };
   // One reader for the whole session — the id-keyed waiters replace the single
   // in-flight promise the old helper closed over.
   const waiters = new Map<number, { ok: (v: unknown) => void; no: (e: Error) => void }>();
@@ -209,11 +233,11 @@ const openStdio = async (dir: string, bearer: string): Promise<StdioSession> => 
   // ⛔ An exit must reject EVERY waiter, not just the current one: a dead child
   //   otherwise hangs the test until vitest's timeout, which reports nothing.
   child.once('exit', () => {
-    for (const waiter of waiters.values()) waiter.no(new Error(`Stdio exited: ${errors.slice(-3000)}`));
+    for (const waiter of waiters.values()) waiter.no(new Error(why('Stdio exited')));
     waiters.clear();
   });
   const await_ = (id: number, ms: number, what: string) => new Promise<unknown>((ok, no) => {
-    const timer = setTimeout(() => { waiters.delete(id); no(new Error(`Stdio ${what} timed out: ${errors.slice(-3000)}`)); }, ms);
+    const timer = setTimeout(() => { waiters.delete(id); no(new Error(why(`Stdio ${what} timed out`))); }, ms);
     waiters.set(id, { ok: v => { clearTimeout(timer); ok(v); }, no: e => { clearTimeout(timer); no(e); } });
   });
   const ready = await_(1, 60_000, 'boot');

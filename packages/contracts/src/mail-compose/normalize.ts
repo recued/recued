@@ -2,6 +2,7 @@
  * This is pure normalization; it does not grant access, read files or send. */
 import { RpcError } from '../rpc/types.js';
 import { isMailReconciliationId } from '../mail.js';
+import { isTempFileRef, type TempFileRef } from '../ingredient-catalog.js';
 
 export interface NormalizedMailSend {
   instance: string;
@@ -15,7 +16,27 @@ export interface NormalizedMailSend {
   references?: string[];
   reply_to?: string;
   reconciliation_id?: string;
-  attachments?: string[];
+  /** ⛔⛔ A DURABLE RECORD ID, OR A RUN-SCOPED TEMP REF — AND THE DIFFERENCE IS
+   *  THE LIFECYCLE, not a flag the sender sets.
+   *
+   *  A `file:<32 hex>` id names something the owner KEEPS: it is read, sent, and
+   *  never touched. A `TempFileRef` names bytes the caller produced IN THIS RUN
+   *  purely in order to send them: they are read, sent, and reclaimed with the
+   *  run scratch. Nothing durable is created, so there is nothing to delete and
+   *  no destructive authority anywhere on this path.
+   *
+   *  🔑 WHY THE TYPE AND NOT A `{ file, cleanup_after }` FLAG. A flag is the
+   *  CALLER asserting "you may destroy this", which is authority on the wire. A
+   *  recipe can enumerate the owner's whole `received` warehouse (`file-list`
+   *  takes a caller-supplied slug) and would then be able to name any file of
+   *  theirs as disposable — destroying it under the SEND's `write` risk tier
+   *  instead of `destructive`'s `always` approval floor. A temp ref cannot be
+   *  forged that way: `readConfinedTempFile` confines it to the producing run's
+   *  scratch root, so the caller can only ever name bytes it just made. */
+  attachments?: (string | TempFileRef)[];
+  /** Required only when `attachments` carries a `TempFileRef` — the scratch-root
+   *  confinement for reading it back. Threaded from `StepMeta.run_id`. */
+  run_id?: string;
 }
 
 export const normalizeMailSend = (input: Record<string, unknown>): NormalizedMailSend => {
@@ -44,7 +65,12 @@ export const normalizeMailSend = (input: Record<string, unknown>): NormalizedMai
     result.reconciliation_id = input.reconciliation_id as string;
   }
   if (input.attachments !== undefined && input.attachments !== null) {
-    const attachments = strings(input.attachments, 'attachments');
+    const raw = Array.isArray(input.attachments) ? input.attachments : [input.attachments];
+    const attachments = raw.map((item) => {
+      if (typeof item === 'string') return item;
+      if (isTempFileRef(item)) return item;
+      return bad('attachments must be record-id strings or run-scoped temp file_refs');
+    });
     if (attachments.length) result.attachments = attachments;
   }
   return result;

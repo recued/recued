@@ -792,6 +792,18 @@ export interface KernelDispatchers {
     filename: string;
     size_bytes: number;
   }>;
+  /** D-274 — backs `file-read-temp`. Returns a run-scoped temp file_ref's bytes
+   *  to the recipe (CONFINED by `run_id`), for drawing a file the owner keeps on
+   *  disk without copying it. `filePersist` is the copying sibling. */
+  fileReadTemp?: (input: {
+    ref: TempFileRef;
+    run_id: string;
+  }) => Promise<{
+    bytes_b64: string;
+    mime_type: string;
+    filename: string;
+    size_bytes: number;
+  }>;
   /** D-244 — backs `csv-filter`. Reads one stored CSV, keeps the rows whose
    *  named column matches, and ingests the RESULT as a new record. The source
    *  bytes never enter recipe step state — which is the point: the old route
@@ -1589,10 +1601,20 @@ export interface KernelDispatchers {
      * Providers carry it in X-Recued-Reconciliation-ID so source-truth
      * ingestion can find an otherwise response-less accepted message. */
     reconciliation_id?: string;
-    /** D-172 P2 — `data.file` record-id refs to attach. Resolved to
-     *  bytes at the backend `MailCollection.send` layer (the kernel
-     *  forwards refs only). */
-    attachments?: string[];
+    /** D-172 P2 — the attachments to send. Resolved to bytes at the backend
+     *  `MailCollection.send` layer (the kernel forwards refs only).
+     *
+     *  A `data.file` record-id string names something the owner KEEPS: read,
+     *  sent, never touched. A `TempFileRef` names bytes the caller produced in
+     *  THIS RUN in order to send them — read, sent, and reclaimed with the run
+     *  scratch, so nothing durable is created and there is nothing to delete.
+     *  ⛔ The lifecycle rides the TYPE, never a caller-set flag; see the note on
+     *  `NormalizedMailSend.attachments` for why a `cleanup_after` boolean would
+     *  be authority on the wire. */
+    attachments?: (string | TempFileRef)[];
+    /** Required only when `attachments` carries a `TempFileRef` — the
+     *  scratch-root confinement for reading it back. */
+    run_id?: string;
     recipe_id?: string;
     step_id?: string;
   }) => Promise<{
@@ -2412,6 +2434,35 @@ export const createKernelAdapter = (dispatchers: KernelDispatchers): Adapter => 
           run_id,
           ...(call.stepMeta?.step_id ? { step_id: call.stepMeta.step_id } : {}),
         });
+      }
+      case 'file-read-temp': {
+        // D-274 — the read sibling of `file-persist`, with the same two guards
+        // for the same reason: a temp ref only, and a run scope, because the
+        // run scope IS the authorization on a temp backing.
+        if (!dispatchers.fileReadTemp) {
+          throw new IngredientError(
+            'SERVER_NOT_REACHABLE',
+            'file-read-temp unavailable — no paired server or file dispatcher',
+            { slug },
+          );
+        }
+        const input = call.input as { ref?: unknown };
+        if (!isTempFileRef(input.ref)) {
+          throw new IngredientError(
+            'BAD_INPUT',
+            "file-read-temp: 'ref' must be a temp file_ref (read a durable record with data-file-read)",
+            { slug },
+          );
+        }
+        const run_id = call.stepMeta?.run_id;
+        if (typeof run_id !== 'string' || run_id.length === 0) {
+          throw new IngredientError(
+            'BAD_INPUT',
+            'file-read-temp: requires a run scope (no run_id on the step)',
+            { slug },
+          );
+        }
+        return dispatchers.fileReadTemp({ ref: input.ref, run_id });
       }
       case 'csv-filter': {
         if (!dispatchers.csvFilter) {
@@ -4814,6 +4865,25 @@ export const createKernelAdapter = (dispatchers: KernelDispatchers): Adapter => 
         }
         if (call.stepMeta?.step_id) {
           dispatchInput.step_id = call.stepMeta.step_id;
+        }
+        // ⛔ A TEMP ATTACHMENT NEEDS ITS RUN SCOPE, and is refused without one.
+        // `readConfinedTempFile` confines the read to the producing run's
+        // scratch root — that confinement IS the authorization on a temp ref
+        // (the op that produced it was already gated), so sending one with no
+        // run scope would be reading an unconfined path off the caller's word.
+        // Required only when a temp ref is actually present: a send of durable
+        // record ids is unchanged and still works off a run, from a draft, or
+        // from any caller with no step identity at all.
+        if (dispatchInput.attachments?.some(isTempFileRef) === true) {
+          const run_id = call.stepMeta?.run_id;
+          if (typeof run_id !== 'string' || run_id.length === 0) {
+            throw new IngredientError(
+              'BAD_INPUT',
+              'mail-send: a temp file_ref attachment requires a run scope (no run_id on the step)',
+              { slug },
+            );
+          }
+          dispatchInput.run_id = run_id;
         }
         try {
           return await dispatchers.mailSend(dispatchInput);

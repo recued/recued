@@ -1,4 +1,5 @@
 import type { TransformFn, ChecklistItem, TableColumn, SummaryField } from './types.js';
+import { csvCell as sharedCsvCell } from '@recued/contracts';
 import { getField } from './evaluate.js';
 
 export const to_checklist: TransformFn = (p, ctx) => {
@@ -81,12 +82,20 @@ const csvCell = (value: unknown): string => {
   return String(value);
 };
 
-/** RFC-4180 field escaping: quote (and double interior quotes) any cell that
- *  contains the delimiter, a quote, or a newline. */
+/** RFC-4180 field escaping plus spreadsheet-formula neutralisation.
+ *
+ *  ⚠ NEUTRALISATION ADDED 2026-09-18 via the shared `csvCell`. These cells are
+ *  RECIPE OUTPUT written to an artifact a person opens — the most
+ *  externally-steerable content of the four CSV writers. Quoting alone never
+ *  disarmed a formula; see `packages/contracts/src/csv.ts`.
+ *  ⚠ The caller's delimiter is threaded through, and quote-if-needed is
+ *  preserved: only the neutralisation is new.
+ *  ⚠ ALIASED, because this file's OWN `csvCell` is a value->string RENDERER,
+ *  not an escaper — the same name doing a different job, which is a third of
+ *  why the four surfaces drifted apart. The separation here was already right;
+ *  only the escaping half moved. */
 const escapeCsvField = (cell: string, delimiter: string): string =>
-  /["\r\n]/.test(cell) || cell.includes(delimiter)
-    ? `"${cell.replace(/"/g, '""')}"`
-    : cell;
+  sharedCsvCell(cell, { delimiter });
 
 /** Serialize an array of rows to a CSV string (`\n`-terminated lines, which
  *  Excel and Sheets both open). The "export structured data as an artifact"

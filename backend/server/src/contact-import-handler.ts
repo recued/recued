@@ -126,11 +126,15 @@ const strangersOf = (
     const rawEmail = metaString(row.meta, 'email');
     if (rawEmail === undefined) continue;
     const email = canonicalizeEmail(rawEmail);
+    // ⚠ `!== ''`, not `!== null` — `canonicalizeEmail` returns the EMPTY STRING for
+    // an unparseable address, never null, so the null form was vacuous and this
+    // filter never ran. The `resolveCanonicalEmail` throw below caught the fallout
+    // by accident and logged it as a corrupt redirect chain.
     // No usable address ⇒ not a candidate. Identity resolves through the address
     // space, and the CRM mirror carries no phone-keyed identity to fall back on. We
     // filter rather than offer-then-refuse: a row you cannot act on does not belong
     // in a picker.
-    if (email === null) continue;
+    if (email === '') continue;
 
     // 🔑 THE STRANGER TEST, and it must ride the SAME address space the sync's match
     // does — `resolveCanonicalEmail` resolves any known address (primary, secondary
@@ -256,8 +260,13 @@ const handlePromote = (
     }
 
     const rawEmail = metaString(row.meta, 'email');
-    const email = rawEmail === undefined ? null : canonicalizeEmail(rawEmail);
-    if (email === null) {
+    // ⚠ Two ways to have no address and they are NOT the same check: the column
+    // is absent (`undefined`) or it is present and unparseable (`''`). The null
+    // form only covered the first, so `a@b@c.com` reached `resolveCanonicalEmail`
+    // and surfaced as "corrupt redirect chain" — a true sentence about the wrong
+    // thing, since the message one line down was already right.
+    const email = rawEmail === undefined ? '' : canonicalizeEmail(rawEmail);
+    if (email === '') {
       failures.push(`${target_id}: no usable email — identity resolves on the address space`);
       continue;
     }

@@ -272,6 +272,76 @@ describe('W3.9 — corrupted-row resilience', () => {
     expect(await store.load()).toBeNull();
   });
 
+  it('⛔⛔ load() returns null when a path cell\'s bits are NOT BOOLEANS', async () => {
+    // ⚠ FOUND BY MUTATION: relaxing `typeof lan === boolean && typeof public
+    // === boolean` to `true` reddened nothing. Every existing corrupt-row case
+    // removes or renames a field; none supplies one of the WRONG TYPE.
+    //
+    // ⛔ IT DECIDES WHAT REACHES THE INTERNET. A row saying `public: 1` or
+    // `public: "no"` is truthy, so a hand-edited or half-migrated row would be
+    // loaded as live exposure state and the listener would serve that path
+    // publicly. Refusing the row falls back to the safe bootstrap instead.
+    //
+    // ⚠⚠ THE ROLE IS PART OF THE FIXTURE. A truthy-but-not-boolean `public` on
+    // `mcp` is rejected by the public-MCP proof guard further down (truthy
+    // `mcp.public` + ack off ⇒ null), so an `mcp` fixture passes this test
+    // under a mutant that drops the `public` typecheck entirely — two rules
+    // agreeing, and only one of them under test. The truthy cases therefore
+    // sit on `ws`/`health`, which no later guard reads.
+    for (const { role, cell } of [
+      { role: 'ws', cell: { lan: true, public: 1 } },
+      { role: 'ws', cell: { lan: true, public: 'false' } },
+      { role: 'ws', cell: { lan: 1, public: true } },
+      { role: 'health', cell: { lan: 'yes', public: false } },
+      { role: 'health', cell: { lan: null, public: null } },
+      { role: 'mcp', cell: { lan: true, public: 0 } },
+    ] as const) {
+      db.prepare('DELETE FROM exposure_state').run();
+      const bad = JSON.stringify({
+        resolution: { ...cloneDefault().resolution, [role]: cell },
+        derived_preset_label: 'lan_only',
+        public_mcp_acknowledgement: { acknowledged: false },
+        last_changed_at: 0,
+        changed_by_client_id: '',
+      });
+      db.prepare(
+        `INSERT INTO exposure_state (id, state_json, updated_at) VALUES (1, @s, 1)`,
+      ).run({ s: bad });
+      expect(
+        await createSqliteExposureStore(db).load(),
+        `${role} cell ${JSON.stringify(cell)} was loaded as live exposure state`,
+      ).toBeNull();
+    }
+  });
+
+  it('⛔⛔ load() returns null when `acknowledged` is not a boolean', async () => {
+    // ⛔ THE MCP GATE READS THIS FIELD. A stored `acknowledged: "yes"` or `1` is
+    // truthy, so a row that never carried a real acknowledgement would let the
+    // public-MCP gate pass — the I-13 consent check satisfied by a type error.
+    for (const ack of [
+      { acknowledged: 'yes' },
+      { acknowledged: 1 },
+      { acknowledged: null },
+      {},
+    ]) {
+      db.prepare('DELETE FROM exposure_state').run();
+      const bad = JSON.stringify({
+        resolution: cloneDefault().resolution,
+        derived_preset_label: 'lan_only',
+        public_mcp_acknowledgement: ack,
+        last_changed_at: 0,
+        changed_by_client_id: '',
+      });
+      db.prepare(
+        `INSERT INTO exposure_state (id, state_json, updated_at) VALUES (1, @s, 1)`,
+      ).run({ s: bad });
+      expect(
+        await createSqliteExposureStore(db).load(),
+        `an acknowledgement of ${JSON.stringify(ack)} was accepted`,
+      ).toBeNull();
+    }
+  });
+
   it('next save() overwrites a corrupted row with valid shape', async () => {
     db.prepare(
       `INSERT INTO exposure_state (id, state_json, updated_at) VALUES (1, '{not json', 1)`,

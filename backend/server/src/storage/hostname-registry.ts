@@ -96,6 +96,24 @@ const hostnameRegistryTableDdl = (
       updated_at INTEGER NOT NULL
     )`;
 
+/** ⛔⛔ `cert_blob` IS DECLARED AND NEVER USED — DO NOT CITE IT AS "where the
+ *  certificate is stored".
+ *
+ *  Verified 2026-09-18: no INSERT / SELECT / UPDATE / DELETE names that table
+ *  anywhere in the tree, and its `private_key_pem_encrypted` and `sub_dek_id`
+ *  columns each occur exactly ONCE in the whole repo — in the CREATE below.
+ *  `hostname_registry.cert_blob_id` is fully plumbed (accepted by the rpc,
+ *  carried through updates, persisted) but nothing ever PRODUCES a value for
+ *  it, so it is null in practice.
+ *
+ *  🔑 The live cert store is `tls_domains` (`backend/server/src/tls/domain-store.ts`)
+ *  — `cert_pem` plus `private_key_encrypted`, written through its upsert and read
+ *  by `readExpiresAt`. `d148-constants.ts` cited THIS table as proof the
+ *  certificate is stored, which is how a correct conclusion came to rest on an
+ *  empty one.
+ *
+ *  ⚠ Left in place rather than dropped: removing a table is a migration, and an
+ *  unused CREATE costs nothing except the confusion this note now absorbs. */
 export const ensureHostnameRegistrySchema = (db: Database.Database): void => {
   db.exec(`
     CREATE TABLE IF NOT EXISTS cert_blob (

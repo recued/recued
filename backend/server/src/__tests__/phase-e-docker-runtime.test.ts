@@ -1,8 +1,35 @@
 /** Phase E (D-107) - Docker runtime artifact smoke.
  *
- *  This suite is intentionally opt-in because it builds the production
- *  Docker image. Run with:
+ *  Builds the production image, runs it, and asserts the container SERVES —
+ *  `state === 'running'` plus a green HEALTHCHECK, with the container logs
+ *  attached to the failure message. It is the only test that catches a break
+ *  visible solely when you start the thing.
  *
+ *  ⛔⛔ IT USED TO BE OPT-IN BEHIND `RECUED_DOCKER_RUNTIME_SMOKE=1`, AND THAT IS
+ *  WHY IT CAUGHT NOTHING. Unset, the gate below resolved to `describe.skip`, and
+ *  a skipped suite is indistinguishable from a passing one in a summary line. Its
+ *  only runner was a human reading a checklist box — which lived in
+ *  internal design notes, a provenance manifest for a release that
+ *  predates calendar versioning. Between ceremonies FOUR independent breaks
+ *  landed, each fatal to the image on its own, with every default test run green:
+ *  no `.dockerignore`; `builtinModules` used as a membership test; a stale
+ *  `node:22-slim` pin; and `RECUED_DISTRIBUTION_CHANNEL` declared nowhere, which
+ *  EACCES-crashlooped the container before its boot banner.
+ *
+ *  🔑 THE FIX IS THE POLARITY, NOT THE MECHANISM. A gate that defaults to SKIP
+ *  turns a broken product into silence. A gate that defaults to RUN turns a
+ *  broken environment into noise, and silencing it becomes a deliberate act.
+ *  `RECUED_SKIP_FS_WATCH_LIVE` is the one gate in this tree that already had it
+ *  the right way round; this now matches it, and matches the capability-detected
+ *  `HAVE_RG` / `HAVE_OFFICECLI` drives that run wherever they can.
+ *
+ *  ⚠ COST, STATED PLAINLY: on any machine with a live Docker daemon this now runs
+ *  inside `npm run ci` and adds roughly 4-5 minutes. Decline a single run with
+ *  `RECUED_SKIP_DOCKER_SMOKE=1`.
+ *
+ *  Force it on where detection cannot see a daemon it should:
+ *
+ *    npm run test:docker-smoke
  *    RECUED_DOCKER_RUNTIME_SMOKE=1 npx vitest run --pool forks \
  *      backend/server/src/__tests__/phase-e-docker-runtime.test.ts
  */
@@ -14,7 +41,37 @@ import { resolve } from 'node:path';
 
 const PKG_ROOT = resolve(__dirname, '..', '..');
 const REPO_ROOT = resolve(PKG_ROOT, '..', '..');
-const ENABLED = process.env.RECUED_DOCKER_RUNTIME_SMOKE === '1';
+/** ⛔ BINARY PRESENCE IS NOT ENOUGH — THE DAEMON HAS TO BE UP. The sibling
+ *  capability drives use `existsSync` on the well-known bin dirs, which is the
+ *  right probe for `rg` or `find` and the wrong one here: `docker` is on PATH
+ *  whenever Docker Desktop is INSTALLED, including while it is stopped, and this
+ *  suite's first act is `docker build`. Detecting the binary would have converted
+ *  "not available" into a red suite, which is the failure mode the default-run
+ *  polarity exists to avoid. Asking the daemon is what keeps it self-healing. */
+const dockerAvailable = (): boolean => {
+  try {
+    execFileSync('docker', ['info', '--format', '{{.ServerVersion}}'], {
+      stdio: 'ignore',
+      timeout: 15_000,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/** Explicit decline for one run — the escape hatch that makes default-run
+ *  tolerable while iterating. Opt OUT, never opt in. */
+const OPTED_OUT = process.env.RECUED_SKIP_DOCKER_SMOKE === '1';
+
+/** Retained so every invocation already written down keeps working
+ *  (internal design notes, the 0.2.0 checklist, `npm run
+ *  test:docker-smoke`). It now FORCES the suite on rather than being the only way
+ *  to enable it — and forcing it where no daemon answers fails loudly, which is
+ *  the informative result for someone who asked for it by name. */
+const FORCED = process.env.RECUED_DOCKER_RUNTIME_SMOKE === '1';
+
+const ENABLED = !OPTED_OUT && (FORCED || dockerAvailable());
 const IMAGE_TAG = `recued-server:phase-e-runtime-smoke-${process.pid}`;
 
 const readPackageJson = (): {
@@ -83,6 +140,14 @@ describeDocker('Phase E - Docker runtime artifact smoke', () => {
       '/etc/recued/config.toml',
     ]);
     expect(inspect.Config.Env ?? []).toContain('RECUED_SUPERVISOR_MODE=docker');
+    // ⛔ A SECOND VARIABLE, NOT A RESTATEMENT OF THE LINE ABOVE — they share the
+    // value `docker-thin`, which is how the managed image came to set only the
+    // supervisor mode and read as though it had declared its channel too.
+    // Unset, `resolveDistributionChannel` defaults to `'binary'`, `bin.ts` leases
+    // `dirname(process.execPath)` = root-owned `/usr/local/bin` as uid 1001, and
+    // the container EACCES-crashloops before its banner. The serving assertions
+    // at the bottom of this file catch that — when this suite is actually run.
+    expect(inspect.Config.Env ?? []).toContain('RECUED_DISTRIBUTION_CHANNEL=docker-baked');
     expect(inspect.Config.Labels?.['org.opencontainers.image.title']).toBe('recued-server');
     expect(inspect.Config.Labels?.['org.opencontainers.image.licenses']).toBe(pkg.license);
     expect(Object.keys(inspect.Config.ExposedPorts ?? {}).sort()).toEqual([

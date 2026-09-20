@@ -43,6 +43,8 @@ import {
   createFileGrowthSource,
   type ProgressSource,
 } from './execution/stall-monitor.js';
+import { ResourceProgressSource } from './execution/resource-progress-source.js';
+import type { ProgressContract } from '@recued/contracts';
 import { allocateRunScratchDir } from './execution/run-scratch.js';
 import { assertPreapprovalOrdinaryRun, currentPreapprovalIo } from './preapproval-io-context.js';
 import type { InFlightRegistry } from './execution/in-flight-registry.js';
@@ -79,7 +81,10 @@ const isMaterializableFileRef = (value: unknown): value is string =>
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const MIN_TIMEOUT_MS = 100;
-const MAX_TIMEOUT_MS = 120_000;
+// ⛔ NO UPPER CLAMP. The authored `timeout_ms` is honoured as declared; this
+// end and the authoring end are floor-only for cli, and clamping here would
+// silently hand a pack a shorter wall than it asked for — which is what the
+// old 120s clamp did to a 90s-capped author for as long as both existed.
 /** Keep the existing by-value stdout channel small. D-259 removes the 64 MiB
  * produced-file ceiling by streaming file refs; it must not turn that old file
  * bound into permission to send 64 MiB of stdout through recipes/the model. */
@@ -100,6 +105,22 @@ export interface StallTuning {
   factorK?: number;
   expectedIntervalMs?: number;
   silentHardCapMs?: number;
+  /** D-274 — how often the `resource` source actually samples the process
+   *  tree. Production leaves it at `RESOURCE_SAMPLE_MS` (15s, deliberately slow
+   *  so a `ps` spawn per poll never happens); tests shrink it so a stalled tree
+   *  is observed in milliseconds. */
+  resourceSampleMs?: number;
+  /** D-274 — the meaningful-window floor below which "did not move" is not a
+   *  claim the sampler can make (`MIN_COMPARISON_MS`). Tests shrink it so a
+   *  stalled tree is CONCLUDED in milliseconds rather than after 5s. */
+  resourceMinComparisonMs?: number;
+  /** D-274 — inject the process-tree sampler. Tests use this so an executor-level
+   *  assertion about FLAGGING does not depend on how fast a real `ps -A` returns
+   *  under whatever else the machine is doing. The physics (does a still tree
+   *  read as still?) is covered deterministically in
+   *  `resource-progress-source.test.ts`; this seam lets the executor suite assert
+   *  the WIRING without re-asserting the physics. */
+  resourceSampler?: ConstructorParameters<typeof ResourceProgressSource>[0]['sampler'];
 }
 
 export interface CliInvocationExecutorOptions {
@@ -203,7 +224,6 @@ const resolveTimeoutMs = (raw: unknown): number => {
   if (typeof raw !== 'number' || !Number.isFinite(raw)) return DEFAULT_TIMEOUT_MS;
   if (raw === 0) return 0;
   if (raw < MIN_TIMEOUT_MS) return MIN_TIMEOUT_MS;
-  if (raw > MAX_TIMEOUT_MS) return MAX_TIMEOUT_MS;
   return raw;
 };
 
@@ -483,11 +503,23 @@ const waitForLaunch = (
     child.once('error', onError);
   });
 
-/** D-181 Slice 3 — build the foreground stall monitor for an op that declared
- *  a progress contract. Returns `undefined` when no contract is declared (the
- *  op keeps the tight `timeout_ms` cap, behaviour-neutral). A legacy
- *  un-watchable `file-growth` declaration maps to `silent` to preserve its
- *  fail-safe-only behavior. A strict D-259 declaration instead observes zero
+/** D-181 Slice 3 / D-274 — build the foreground stall monitor.
+ *
+ *  ⛔ D-274 — THIS USED TO RETURN `undefined` FOR AN UNDECLARED BINDING, and
+ *  the caller's `if (monitor)` put BOTH the auto-kill arm and the attended
+ *  flag arm behind that gate. 455 of 457 shipped cli ops declare nothing — they
+ *  cannot, because `heartbeat` and `file-growth` both require the tool to EMIT
+ *  something — so the whole D-181 live-control apparatus was dark for 99.6% of
+ *  the surface and the authored `timeout_ms` was their only guard.
+ *
+ *  An undeclared binding now gets the host-assigned `resource` contract: OS
+ *  accounting of the process tree, which needs no cooperation from the tool.
+ *  It is REPORT-ONLY (`flagOnly`) — it surfaces the run on the active list for
+ *  the watching human and never kills, because the signal is universal but
+ *  noisy. An explicit declaration still wins; only the absent case changes.
+ *
+ *  A legacy un-watchable `file-growth` declaration maps to `silent` to preserve
+ *  its fail-safe-only behavior. A strict D-259 declaration instead observes zero
  *  progress and reaches its explicit stall threshold; a broken path must not
  *  silently disable the only bound on `timeout_ms: 0`. */
 const buildForegroundMonitor = (
@@ -495,10 +527,51 @@ const buildForegroundMonitor = (
   now: () => number,
   tuning: StallTuning,
   cwd: string | undefined,
-  onProgressSignal?: (contract: 'heartbeat' | 'file-growth', at: number) => void,
+  // `silent` is excluded deliberately: a silent contract HAS no signal to
+  // report, so a callback that accepted it would describe a call that cannot
+  // happen — and the registry's own signature already says so.
+  onProgressSignal?: (contract: Exclude<ProgressContract, 'silent'>, at: number) => void,
+  pid?: number,
 ): StallMonitor | undefined => {
   const spec = call.binding.progress;
-  if (!spec) return undefined;
+  if (!spec) {
+    // No pid ⇒ nothing to sample. Returning undefined here is the honest
+    // answer, not a fallback: it restores exactly the prior behaviour for a
+    // call that never got a process.
+    if (pid === undefined) return undefined;
+    return new StallMonitor({
+      contract: 'resource',
+      origin: runAttentionForTriggerSource(call.stepMeta?.trigger_source),
+      now,
+      source: new ResourceProgressSource({
+        pid,
+        ...(tuning.resourceSampleMs !== undefined ? { sampleMs: tuning.resourceSampleMs } : {}),
+        ...(tuning.resourceMinComparisonMs !== undefined
+          ? { minComparisonMs: tuning.resourceMinComparisonMs }
+          : {}),
+        ...(tuning.resourceSampler !== undefined ? { sampler: tuning.resourceSampler } : {}),
+      }),
+      onSignal: (at: number) => onProgressSignal?.('resource', at),
+      ...(tuning.pollMs !== undefined ? { pollMs: tuning.pollMs } : {}),
+      ...(tuning.factorK !== undefined ? { factorK: tuning.factorK } : {}),
+      ...(tuning.expectedIntervalMs !== undefined ? { expectedIntervalMs: tuning.expectedIntervalMs } : {}),
+      // ⛔ D-274 L1 — `SILENT_OP_HARD_CAP_MS` is 30 minutes and `evaluateStall`
+      // kills an ATTENDED run on it, so a resource monitor that inherited it
+      // would SIGKILL whisper (authored 4h) at minute 30. The authored
+      // `timeout_ms`, enforced below, is the real backstop.
+      //
+      // ⚠ HONESTLY: this line is UNREACHABLE while `flagOnly` holds — that
+      // forces `stalled = false` on both origins, so the cap cannot fire and
+      // deleting this changes nothing observable (verified by mutation, not
+      // assumed). It is kept for ONE reason: §3 leaves "may unattended kill on
+      // the resource signal?" open pending the telemetry harvest, and the
+      // change that answers yes would clear `flagOnly` — silently reviving L1
+      // at 30 minutes. This line is the guard for that future edit, not for
+      // today's behaviour. Do not read it as the thing preventing the kill.
+      silentHardCapMs: Number.POSITIVE_INFINITY,
+      flagOnly: true,
+    });
+  }
 
   let source: ProgressSource | undefined;
   if (spec.contract === 'file-growth' && spec.watch_path) {
@@ -613,7 +686,13 @@ const runForeground = async (
     const killRunId = call.stepMeta?.run_id;
     let killChildId: string | undefined;
     if (registry && killRunId !== undefined && child.pid !== undefined) {
-      killChildId = registry.attachSubprocess(killRunId, child.pid, killTree);
+      killChildId = registry.attachSubprocess(killRunId, child.pid, killTree, {
+        // D-274 §8 — the op key + ITS start, so the active list can show the
+        // op's own elapsed next to the recipe's. `operation_key` is declared
+        // form, never argv or args.
+        op: call.operation_key,
+        started_at: now(),
+      });
     }
     const detachKill = (): void => {
       if (registry && killRunId !== undefined && killChildId !== undefined) {
@@ -634,6 +713,7 @@ const runForeground = async (
       registry && killRunId !== undefined
         ? (contract, at) => registry.reportProgress(killRunId, contract, at)
         : undefined,
+      child.pid,
     );
     const progress = call.binding.progress;
     const d259Heartbeat = progress !== undefined && progress.contract === 'heartbeat'
@@ -1335,7 +1415,21 @@ const captureToolOutputToTemp = (
     mime_type: capture.mime_type,
     filename,
   };
-  return { file_ref, filename, mime_type: capture.mime_type };
+  // ⛔⛔ THE SIZE RIDES BESIDE THE REF, NEVER INSIDE IT. `TempFileRef` is a
+  // FROZEN WIRE SHAPE: a producing step's ref handed to the next op is checked
+  // against that op's closed request schema, which walks the object's keys and
+  // refuses any it does not declare. Putting `size_bytes` on the carrier broke
+  // `officecli.document.template_author` with "undeclared property
+  // 'size_bytes'", and would have broken any installed pack declaring the shape
+  // the moment the runtime started producing it — a version skew with no deploy
+  // order to hide behind. An op's OUTPUT has no such gate.
+  //
+  // Best-effort: a stat failure must not fail a capture that otherwise
+  // succeeded, so the size is simply absent and the consumer handles that.
+  let size_bytes: number | undefined;
+  try { size_bytes = statSync(filePath).size; } catch { size_bytes = undefined; }
+  return { file_ref, filename, mime_type: capture.mime_type,
+           ...(size_bytes !== undefined ? { size_bytes } : {}) };
 };
 
 export const createCliInvocationExecutor = (

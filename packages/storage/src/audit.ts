@@ -490,7 +490,11 @@ export type ActivityAction =
   // D-221 — ONE row per `core.records.import` call, whatever the file's size.
   // Target carries `<publisher>/<pack_slug>:<entity>`; `detail` is JSON-encoded
   // `RecordsImportAuditDetail` (the exact outcome: rows_read / written /
-  // replayed / failed / not_attempted / unparsed, plus `halted_reason`).
+  // replayed / updated / skipped / failed / not_attempted / unparsed, plus
+  // `conflict_mode` and `halted_reason`). `updated` and `skipped` are what the
+  // owner's `on_conflict` choice did to rows that already existed, and
+  // `conflict_mode` records the choice itself — the counts alone cannot, since
+  // every mode reports zero for both on a file that collided with nothing.
   //
   // ⛔⛔ IT EXISTS BECAUSE THE GATEWAY ROW CANNOT TELL THE TRUTH HERE. An import
   // returns a RESULT rather than throwing on a partial write, so the dispatch
@@ -1521,12 +1525,43 @@ export interface AuditLogStore {
   ): Promise<Map<string, AuditEntry>>;
   /** Fetch one entry by run_id, or null if missing. */
   get(run_id: string): Promise<AuditEntry | null>;
-  /** Delete entries older than the cutoff (epoch ms). Returns count deleted.
-   *  Reserve-class entries are skipped. */
+  /** ⛔⛔ SWEEP NOTE (call-path census, 2026-09-18) — THE SIX METHODS MARKED
+   *  `NO CALLER` BELOW ARE DEAD, AND THEY ARE WELL TESTED, WHICH IS WHY THEY
+   *  READ AS ALIVE. `clearOlderThan`, `clearByRecipe`, `clearOldestEntries`,
+   *  `clearOldestActivities`, `countReserveEntries` and
+   *  `countReserveActivities` are each declared here, implemented below, and
+   *  forwarded verbatim by `audit/signing.ts` + `audit/drainable.ts` — and
+   *  called by nothing. They also carry 14 test call sites between them, so
+   *  the suite stays green and the surface looks load-bearing.
+   *
+   *  🔑 WHY: internal design notes:736` commissioned them "for the pruner".
+   *  The pruner then shipped as `backend/server/src/audit-retention.ts`, which
+   *  goes straight to SQL (`DELETE FROM audit_entries WHERE …`) and never
+   *  touches this interface. The eviction cascade's `audit` surface calls
+   *  `auditRetention.run()`; `server.runPressureReclaim` reaches the same
+   *  place. Nothing routes back here.
+   *
+   *  ⚠ The cost is not the dead branches — it is that every one of the ~15
+   *  hand-written `AuditLogStore` doubles across `backend/server/src/__tests__`
+   *  must keep stubbing all six, and that a reader costing a change to this
+   *  interface prices in call sites that do not exist. Removing them is a
+   *  separate, wider change (interface + impl + 2 wrappers + every double);
+   *  it is recorded rather than done here.
+   *
+   *  Delete entries older than the cutoff (epoch ms). Returns count deleted.
+   *  Reserve-class entries are skipped. ⛔ NO CALLER. */
   clearOlderThan(cutoff_ms: number): Promise<number>;
-  /** Delete all entries for a given recipe_id. Used when the user
-   *  uninstalls a recipe and wants to purge its audit trail. Reserve
-   *  entries are deleted too — this is explicit user intent. */
+  /** Delete all entries for a given recipe_id. Reserve entries are deleted
+   *  too — this is explicit user intent.
+   *
+   *  ⛔ NO CALLER, and this doc previously said "Used when the user uninstalls
+   *  a recipe and wants to purge its audit trail". IT IS NOT: neither
+   *  `recipe-delete-handler.ts` (`recipe.delete`) nor `pack-uninstall-handler.ts`
+   *  touches the audit log. That is defensible on its own terms — `data.audit`
+   *  is the RUN-PROVENANCE trail (D-231), and dropping provenance because the
+   *  recipe was removed is how you lose the record of what it did — but a
+   *  sentence describing a wiring that does not exist is how the wiring gets
+   *  added on the strength of the sentence. */
   clearByRecipe(recipe_id: string): Promise<number>;
   /** Export the entire log as a JSON-serializable array. Callers should
    *  stream this to a download; for very large logs, prefer paginated
@@ -1546,14 +1581,18 @@ export interface AuditLogStore {
   exportActivities(): Promise<ActivityEntry[]>;
   /** Delete the oldest non-reserve activity entries (Phase B retention
    *  pruner, size-based pass). Reserve rows are never returned. */
+  /** ⛔ NO CALLER — see the census note above `clearOlderThan`. */
   clearOldestActivities(limit: number): Promise<number>;
   /** Delete the oldest non-reserve audit entries (Phase B retention
    *  pruner, size-based pass). Reserve rows are never returned. */
+  /** ⛔ NO CALLER — see the census note above `clearOlderThan`. */
   clearOldestEntries(limit: number): Promise<number>;
   /** Count reserve-class entries + activities. Used by the pruner to
    *  enforce the reserve floor (never drop non-reserve below the
    *  remaining reserve count). */
+  /** ⛔ NO CALLER — see the census note above `clearOlderThan`. */
   countReserveEntries(): Promise<number>;
+  /** ⛔ NO CALLER — see the census note above `clearOlderThan`. */
   countReserveActivities(): Promise<number>;
   /** D-169 P0 Slice 4 § A.8 — thin read over `bridge_dispatch_succeeded`
    *  activity rows. Returns the `timestamp` of the most recent matching
@@ -1691,6 +1730,13 @@ export const createAuditLogStore = (
   const autoTrim = async (): Promise<void> => {
     if (maxEntries === undefined) return;
     const all = await backing.list();
+    // ⚠ SWEEP NOTE (mutation, 2026-09-18) — `<=` vs `<` is an EQUIVALENT
+    // MUTANT here, and deliberately so: at exactly `maxEntries` the `<` form
+    // falls through, but `trimmable.slice(maxEntries)` is then empty, so
+    // nothing is deleted and `freed` stays 0. This guard buys the sort, not
+    // the correctness. ⛔ The boundary that DOES bind is the `slice` — if that
+    // ever becomes `slice(maxEntries - 1)` or the filter moves after it, this
+    // line stops being redundant and starts being wrong.
     if (all.length <= maxEntries) return;
     const trimmable = all.filter((e) => e.reserve !== true).sort(sortByStartedAtDesc);
     const excess = trimmable.slice(maxEntries);
@@ -1707,6 +1753,16 @@ export const createAuditLogStore = (
       if (!entry.run_id) throw new Error('AuditEntry.run_id is required');
       // Explicit options.reserve wins over entry.reserve so callers can
       // override the entry-level default (incl. forcing reserve=false).
+      //
+      // ⚠ SWEEP NOTE (mutation, 2026-09-18) — the `: entry.reserve` arm is an
+      // EQUIVALENT MUTANT and no test can kill it. Replace it with `undefined`
+      // and nothing observable changes, because the only consumer is the
+      // `base` line below: `undefined` short-circuits to `entry` (which still
+      // carries its own `reserve`), and any other value is spread back onto
+      // `entry` over the key it came from — same keys, same order, same JSON.
+      // It is kept for intent, not effect. ⛔ That also means it would stop
+      // being a no-op the moment `base` is built any other way, so the two
+      // lines have to move together.
       const reserve =
         options && hasOwn(options, 'reserve') ? options.reserve : entry.reserve;
       const base: AuditEntry =
@@ -1786,6 +1842,13 @@ export const createAuditLogStore = (
       // keeps `matched === all`, so the sort + slice are byte-identical to
       // pre-P3 (I-9). `execution_source?.actor` undefined → treated as
       // `'system'` inside the predicate (P1 column-default semantics).
+      //
+      // ⚠ SWEEP NOTE (mutation, 2026-09-18) — the `filter.length > 0` half of
+      // the test below is an EQUIVALENT MUTANT: `originActorPassesTimelineFilter`
+      // returns true for an empty filter on its own, so routing `[]` through the
+      // predicate yields `matched === all` either way. It is a fast path, not a
+      // rule. The rule lives in `timeline-lanes.ts` and is pinned there; the
+      // JOIN is pinned in `audit-store-read-and-wipe.test.ts`.
       const filter = opts?.origin_actors;
       const matched =
         filter !== undefined && filter.length > 0
@@ -2018,7 +2081,15 @@ export const createAuditLogStore = (
     async listActivities(limit) {
       const all = await activities.list();
       all.sort((a, b) => b.timestamp - a.timestamp);
-      return limit ? all.slice(0, limit) : all;
+      // ⛔ `limit === 0` MEANS NONE, NOT ALL. This was `limit ? … : all`, the
+      // JS idiom that folds 0 in with undefined — so a caller asking for zero
+      // rows was handed the ENTIRE activity log. It is one keystroke from
+      // live: `recipe-coverage-usage.ts` reads
+      // `listActivities(opts.scan_limit ?? 5_000)`, and `??` defaults only
+      // null/undefined, so an explicit `scan_limit: 0` passes 0 straight
+      // through. Only `undefined` means "no limit" — matching `listRecent`,
+      // whose sibling guard is `if (limit <= 0) return []`.
+      return limit === undefined ? all : all.slice(0, Math.max(0, limit));
     },
 
     async exportActivities() {

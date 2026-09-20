@@ -91,3 +91,62 @@ describe('D-273 — detecting port-mapping support', () => {
     expect(await detectPortMappingSupport(null)).toMatchObject({ kind: 'unknown' });
   });
 });
+
+/** D-273 — the epoch is OMITTED when the gateway did not send one.
+ *
+ *  ⚠ FOUND BY MUTATION (2026-09-18). `...(epochSeconds !== undefined ? {...} :
+ *  {})` could be replaced with a bare `epochSeconds,` and every test stayed
+ *  green, for two compounding reasons:
+ *
+ *    1. `mkClient` above types `externalAddress` as returning `epochSeconds:
+ *       number` — REQUIRED — while the production `PortMappingSupportProbe`
+ *       declares it optional. No fixture could omit it, so the absent branch
+ *       had no case at all.
+ *    2. `toMatchObject` and `toEqual` treat `{ epochSeconds: undefined }` and
+ *       `{}` as the same object, so even a fixture that omitted it would not
+ *       have seen the difference.
+ *
+ *  ⛔ AND THE ABSENT CASE IS THE COMMON ONE. IGD is the PREFERRED protocol at
+ *  runtime and its `externalAddress()` returns `{ externalIp }` alone — RFC
+ *  6886's epoch is a NAT-PMP concept. So the untested branch is the one most
+ *  installs take.
+ *
+ *  ⚠ This file's own idiom is "omitted, never defaulted", which is the same
+ *  rule `network.local_urls` states one layer up: a consumer must be able to
+ *  tell "the gateway did not say" from "the gateway said 0". A key present
+ *  with `undefined` answers neither. */
+describe('D-273 — an IGD-shaped probe carries no epoch', () => {
+  const igdShapedProbe = (externalIp: string) => ({
+    // Exactly what `createIgdClient().externalAddress()` resolves to.
+    externalAddress: async () => ({ externalIp }),
+  });
+
+  it('⛔ the key is ABSENT, not present-and-undefined', async () => {
+    const support = await detectPortMappingSupport(igdShapedProbe('203.0.113.7'));
+    expect(support.kind).toBe('enabled');
+    expect(
+      'epochSeconds' in support,
+      'the epoch key was emitted with no value — "did not say" is not "said nothing"',
+    ).toBe(false);
+    // ⚠ STRICT, because the loose matchers cannot tell those two apart.
+    expect(support).toStrictEqual({
+      kind: 'enabled',
+      externalIp: '203.0.113.7',
+      cgnat: false,
+    });
+  });
+
+  it('⚠ and a NAT-PMP-shaped probe still carries the epoch it was given', async () => {
+    // The complement: omitting is right only when there is nothing to send.
+    const support = await detectPortMappingSupport({
+      externalAddress: async () => ({ externalIp: '203.0.113.7', epochSeconds: 0 }),
+    });
+    // ⛔ ZERO, ON PURPOSE. A falsy-but-present epoch is exactly what a
+    // `?? undefined` or a truthiness test would drop, and RFC 6886 § 3.2 makes
+    // a reset gateway report 0 — the value a caller watching for the epoch
+    // going backwards most needs to see.
+    expect(support.epochSeconds).toBe(0);
+    expect('epochSeconds' in support).toBe(true);
+  });
+});
+

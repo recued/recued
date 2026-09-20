@@ -1,11 +1,16 @@
 /** CSV → records import planning: the deterministic core of `core.records.import-csv`.
  *
  *  ⛔⛔ THIS EXISTS BECAUSE THE RECIPE-LEVEL VERSION CANNOT BE MADE CORRECT. Driving
- *  `statement-import` against a real 1000-row bank export found six defects, and four of
- *  them are structural rather than bugs:
- *    · `step context is 11.9MB (max 10MB)` — a recipe carrying N rows through a dozen
- *      `map` steps cannot import a real statement at all. Planning here means the rows
- *      never enter step state.
+ *  `statement-import` against a real 1000-row bank export found six defects, three of
+ *  them structural rather than bugs (a fourth was retracted — see the first bullet):
+ *    · ⛔ RETRACTED 2026-09-18 — this bullet read "`step context is 11.9MB (max 10MB)` — a
+ *      recipe carrying N rows through a dozen `map` steps cannot import a real statement at
+ *      all." The quoted message was itself wrong: `MAX_CONTEXT_BYTES` has been 50MB since
+ *      2026-08-24 while `trackContextSize` kept formatting a hardcoded `(max 10MB)`, so
+ *      11.9 MB passed the whole time. Retaining the text plus the parsed rows plus derived
+ *      copies is still the wrong SHAPE — that is what `core.storage.csv.*` / `file-persist`
+ *      / `file-put-ref` exist to replace — but it is not a wall, and this file does not
+ *      need it to be one. THE THREE BELOW ARE UNAFFECTED and are why this exists.
  *    · Dedup by read-back is capped at `RECORDS_MAX_PAGE_SIZE` (200), so any account past
  *      200 rows compares against a fraction of itself and double-counts the rest.
  *    · `upsert` refuses a blind overwrite (it wants `expected_revision`), so idempotence
@@ -38,6 +43,9 @@
  *  store.
  */
 import { createHash } from 'node:crypto';
+import {
+  RECORDS_IMPORT_CONFLICT_MODES, type RecordsImportConflictMode,
+} from '@recued/contracts';
 
 /** One CSV column routed to one entity field. Declared by the owner, per source.
  *
@@ -84,6 +92,13 @@ export interface CsvImportSpec {
    *  requires EVERY declared field, so without these every row is refused for a column
    *  nobody was ever going to map. */
   readonly defaults?: Readonly<Record<string, unknown>>;
+  /** What to do with a row whose identity already exists but whose VALUES differ.
+   *  Absent means `'fail'` — what the action did before this existed.
+   *
+   *  ⚠ This decides nothing about a byte-identical row: that is `replayed` in
+   *  every mode, and always was. The question here only arises when the file
+   *  DISAGREES with a row the owner already has. */
+  readonly on_conflict?: RecordsImportConflictMode;
 }
 
 export interface CsvImportPlannedRow {
@@ -120,7 +135,7 @@ export interface CsvImportField {
 
 const SPEC_KEYS = new Set([
   'columns', 'dedup_on', 'scope', 'delimiter', 'thousands_separator',
-  'numeric_fields', 'defaults',
+  'numeric_fields', 'defaults', 'on_conflict',
 ]);
 
 const isPlainObject = (value: unknown): value is Record<string, unknown> =>
@@ -153,6 +168,17 @@ export const validateCsvImportSpec = (
   if (!isPlainObject(raw)) return ['spec must be an object'];
   const problems: string[] = [];
   const known = new Map(fields.map((field) => [field.key, field]));
+
+  // ⛔ A DOOR, NOT A SAFE DEFAULT. An unrecognised mode is refused here rather
+  // than falling back to 'fail': a typo ('Overwrite', 'overwrite ') that read as
+  // the default would leave the owner believing rows had been replaced that were
+  // silently left alone — the import would report `skipped: 0, updated: 0` and
+  // look like a clean no-op run.
+  if (raw.on_conflict !== undefined
+    && !RECORDS_IMPORT_CONFLICT_MODES.includes(raw.on_conflict as RecordsImportConflictMode)) {
+    problems.push(`on_conflict '${String(raw.on_conflict)}' is not admitted — one of `
+      + `${RECORDS_IMPORT_CONFLICT_MODES.join(', ')}`);
+  }
 
   for (const key of Object.keys(raw)) {
     if (!SPEC_KEYS.has(key)) {

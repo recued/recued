@@ -31,7 +31,7 @@
 
 import {
   PUBLIC_MCP_ACKNOWLEDGEMENT_PHRASE,
-  isAcknowledgementWellFormed,
+  isAcknowledgementEffectivelyOn,
   isValidPublicMcpAcknowledgementPhrase,
   type NetworkErrorCode,
   type PublicMcpAcknowledgement,
@@ -219,11 +219,18 @@ export const failPublicMcpModal = (
   };
 };
 
-/** True iff the live `PublicMcpAcknowledgement` is currently valid (per
- *  the contracts predicate). Used by the page-shell to pick which
- *  modal mode to open on the "Manage public MCP" button. */
+/** True iff the live `PublicMcpAcknowledgement` is currently valid. Used
+ *  by the page-shell to pick which modal mode to open on the "Manage
+ *  public MCP" button.
+ *
+ *  ⚠ THIS NAME IS KEPT ONLY BECAUSE IT IS PART OF THE WEBCLIENT'S PUBLIC
+ *  API (re-exported from `src/index.ts`). Its body was byte-identical to
+ *  `exposure-surface`'s privately-held `isAcknowledgementEffectivelyOn`
+ *  — one rule under two names, in two files, which is precisely why no
+ *  name-keyed duplicate scan found either of them. It now delegates to
+ *  the contracts predicate; prefer that directly in new code. */
 export const isPublicMcpAcknowledgementActive = (
   ack: PublicMcpAcknowledgement,
-): boolean => ack.acknowledged && isAcknowledgementWellFormed(ack);
+): boolean => isAcknowledgementEffectivelyOn(ack);
 
 export { PUBLIC_MCP_ACKNOWLEDGEMENT_PHRASE };

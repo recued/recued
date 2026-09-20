@@ -29,6 +29,8 @@
 import {
   type Authorship,
   type EngagementLifecycleState,
+  parseAddressListEmails,
+  truncateUtf8,
 } from '@recued/contracts';
 
 // ────────────────────────────────────────────────────────────────
@@ -104,21 +106,18 @@ export const canonicalizeEmail = (
   return trimmed;
 };
 
-/** Parse a Salesforce email-list field. Splits on `;`, `,`, or `\n`
- *  and canonicalizes each entry. EmailMessage.ToAddress / CcAddress /
- *  BccAddress arrive as semicolon-separated strings. */
+/** Parse a Salesforce email-list field into canonical emails.
+ *  `EmailMessage.ToAddress` / `CcAddress` / `BccAddress` arrive as
+ *  semicolon-separated strings, display names included.
+ *
+ *  ⛔ THIS USED TO BE `split(/[;,\n]/)` + `trim().toLowerCase()`, WHICH MANGLED
+ *  EVERY ADDRESS CARRYING A DISPLAY NAME — and tore `"Smith, Bob" <bob@x.com>`
+ *  in half at the comma INSIDE the quoted name. The result went straight into
+ *  `engagement_edges.target_id` with `target_kind: 'data.contact'`, a key that
+ *  matches no contact. See the HubSpot twin for the full note. */
 export const parseEmailList = (
   raw: string | null | undefined,
-): string[] => {
-  if (raw === null || raw === undefined || raw === '') return [];
-  const parts = raw.split(/[;,\n]/);
-  const out: string[] = [];
-  for (const p of parts) {
-    const c = canonicalizeEmail(p);
-    if (c !== null) out.push(c);
-  }
-  return out;
-};
+): string[] => parseAddressListEmails(raw);
 
 /** True when `email`'s domain matches one of `internalDomains`
  *  (case-insensitive). Used by direction's internal-domain analysis. */
@@ -168,8 +167,16 @@ export const pickInlineBodyState = (body: string): BodyStateProjection => {
   if (byteLength <= ENGAGEMENT_BODY_INLINE_MAX_BYTES) {
     return { body_state: 'inline_body', body_inline: body };
   }
-  const truncated = body.slice(
-    0,
+  // ⛔ WAS `body.slice(0, CAP / 2)`, AND THE HALVING WAS THE FUDGE FOR THIS.
+  //   `slice` counts UTF-16 units, the cap counts BYTES, so halving buys a
+  //   margin only while every character is 1–2 bytes. A CJK body came out at
+  //   9,216 bytes — 50% OVER the 6,144 cap the truncation exists to stay under.
+  //   The HubSpot copy said so in as many words: *"byte-wise it may be slightly
+  //   UNDER 6 KB which is fine for the cap"*. `truncateUtf8` bounds exactly, so
+  //   the `/2` now means what it says — inline at most half the cap — and is
+  //   kept only so stored inline sizes do not change.
+  const truncated = truncateUtf8(
+    body,
     Math.floor(ENGAGEMENT_BODY_INLINE_MAX_BYTES / 2),
   );
   return {

@@ -154,11 +154,11 @@
       "salesloft-platform-admin": 42
     },
     "composition_bytes": {
-      "salesloft": 53100,
-      "salesloft-crm-data": 84025,
-      "salesloft-cadence-workflow": 39252,
-      "salesloft-communications": 121892,
-      "salesloft-platform-admin": 51070
+      "salesloft": 53105,
+      "salesloft-crm-data": 84055,
+      "salesloft-cadence-workflow": 39266,
+      "salesloft-communications": 121929,
+      "salesloft-platform-admin": 51099
     },
     "risk_counts": {
       "read": 112,

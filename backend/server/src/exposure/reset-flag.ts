@@ -108,8 +108,17 @@ const cloneResolution = (
 /** Apply the boot-flag gate. Returns whether the reset path was taken
  *  and the state now in the store. The helper is the only entry point
  *  for the recovery action — callers that need to discard the
- *  persisted row should always route through here so the audit row is
- *  stamped atomically with the save. */
+ *  persisted row should always route through here so the reset and its
+ *  audit row stay together.
+ *
+ *  ⚠ NOT atomic, deliberately, and the INVERSE of `applyTransition` in
+ *  `./index.js` — which emits the audit row BEFORE the listener rebind so a
+ *  failed audit aborts the whole transition. Here the save lands FIRST and the
+ *  audit is best-effort, because this is the lockout recovery path: a wedged
+ *  audit store must not be what keeps Mary locked out of her own server. The
+ *  two orderings are both correct for what they protect; do not "fix" either
+ *  one into the other. (This line previously read "stamped atomically with the
+ *  save", which describes neither.) */
 export const applyResetExposureBoot = async (
   args: ApplyResetExposureBootArgs,
 ): Promise<ApplyResetExposureBootOutcome> => {

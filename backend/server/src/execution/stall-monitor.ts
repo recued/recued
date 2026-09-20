@@ -41,6 +41,9 @@ export interface StallMonitorOptions {
   factorK?: number;
   /** D-259 explicit stall thresholds kill attended work too. */
   killOnNoProgress?: boolean;
+  /** D-274 — REPORT ONLY: never kill on either origin, flag alone. Set by the
+   *  host-assigned `resource` contract, whose signal is universal but noisy. */
+  flagOnly?: boolean;
   /** Best-effort observer for a real semantic progress signal. It receives
    *  only the signal timestamp; progress bytes never cross this seam. */
   onSignal?: (at: number) => void;
@@ -62,6 +65,7 @@ export class StallMonitor {
   private readonly silentHardCapMs?: number;
   private readonly factorK?: number;
   private readonly killOnNoProgress?: boolean;
+  private readonly flagOnly?: boolean;
   private readonly onSignal?: (at: number) => void;
   private readonly pollMs: number;
   private readonly now: () => number;
@@ -83,6 +87,7 @@ export class StallMonitor {
     this.silentHardCapMs = opts.silentHardCapMs;
     this.factorK = opts.factorK;
     this.killOnNoProgress = opts.killOnNoProgress;
+    this.flagOnly = opts.flagOnly;
     this.onSignal = opts.onSignal;
     this.pollMs = opts.pollMs ?? DEFAULT_PROGRESS_POLL_MS;
     this.now = opts.now ?? Date.now;
@@ -92,10 +97,25 @@ export class StallMonitor {
     this.lastSignalAt = this.startedAt;
   }
 
-  /** Record a progress signal (a stdout chunk, an output-file growth). */
+  /** Record a progress signal (a stdout chunk, an output-file growth, a moving
+   *  process tree). */
   signal(): void {
     this.lastSignalAt = this.now();
     this.signals += 1;
+    // ⛔ D-274 — RESET THE FLAG LATCH. `flaggedFired` used to be set once per
+    // monitor LIFETIME, while the registry's own latch (`stalledRuns`) is
+    // CLEARED by this same signal via `reportProgress`. The two disagreed: after
+    // one stall and a recovery, the registry showed "not stalled" and the
+    // monitor could never say otherwise again — a second stall was silent
+    // forever.
+    //
+    // Harmless while only two declared-contract ops had a monitor; D-274 gives
+    // one to all 457, where the realistic shape is a long op that pauses
+    // briefly, resumes, and LATER wedges for real. The transient blip would
+    // consume the only flag and the real wedge would never surface, which
+    // inverts the feature. The latch is now per EPISODE: one `onFlag` per
+    // no-progress episode, bounded by k·T (3 min in production), not one ever.
+    this.flaggedFired = false;
     try {
       this.onSignal?.(this.lastSignalAt);
     } catch {
@@ -122,6 +142,7 @@ export class StallMonitor {
       ...(this.factorK !== undefined ? { factor_k: this.factorK } : {}),
       ...(this.silentHardCapMs !== undefined ? { silent_hard_cap_ms: this.silentHardCapMs } : {}),
       ...(this.killOnNoProgress !== undefined ? { kill_on_no_progress: this.killOnNoProgress } : {}),
+      ...(this.flagOnly !== undefined ? { flag_only: this.flagOnly } : {}),
     });
   }
 

@@ -36,6 +36,7 @@ import {
   PATH_ROLES,
   totalRecord,
   isAcknowledgementWellFormed,
+  isPathResolution,
   type ExposurePreset,
   type ExposureState,
   type PathResolution,
@@ -74,12 +75,6 @@ const isDerivedPresetLabel = (v: unknown): v is DerivedPresetLabel => {
   if (typeof v !== 'string') return false;
   if (v === 'custom') return true;
   return (EXPOSURE_PRESETS as ReadonlyArray<string>).includes(v);
-};
-
-const isPathResolution = (v: unknown): v is PathResolution => {
-  if (typeof v !== 'object' || v === null) return false;
-  const r = v as { lan?: unknown; public?: unknown };
-  return typeof r.lan === 'boolean' && typeof r.public === 'boolean';
 };
 
 const isResolution = (
@@ -158,6 +153,12 @@ const parseStateJson = (raw: string): ExposureState | null => {
   // acknowledged). A tampered row that sets mcp.public true without a
   // valid ack would otherwise survive load() and `reapply()` would bind
   // /mcp.public bypassing the gate.
+  // ⚠ DELIBERATELY NOT `isAcknowledgementEffectivelyOn`. The guard above
+  // already rejected ANY malformed acknowledgement, whether or not
+  // `mcp.public` is set — strictly stronger than the composite predicate, and
+  // right for a stored row: a row whose ack is malformed is corrupt even when
+  // nothing is currently public. Collapsing the pair into the composite would
+  // silently weaken that to "only malformed when it matters".
   if (r.resolution.mcp.public && !r.public_mcp_acknowledgement.acknowledged) {
     return null;
   }

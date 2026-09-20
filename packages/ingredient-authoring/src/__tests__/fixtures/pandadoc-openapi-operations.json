@@ -89,9 +89,9 @@
       "pandadoc-content-platform": 60
     },
     "composition_bytes": {
-      "pandadoc": 24908,
-      "pandadoc-document-workflows": 76550,
-      "pandadoc-content-platform": 79711
+      "pandadoc": 24915,
+      "pandadoc-document-workflows": 76589,
+      "pandadoc-content-platform": 79751
     },
     "risk_counts": {
       "read": 61,

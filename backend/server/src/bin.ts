@@ -150,7 +150,7 @@ const dispatch = async (): Promise<void> => {
       // rollback left its asides behind.
       bootTrace.markImport('./update/install-paths.js');
       const [
-        { resolveUpdateBinaryPath },
+        { resolveUpdateBinaryPath, resolveDistributionChannel, SELF_APPLY_CHANNELS },
         {
           reconcileInterruptedPairSwap,
           restoreSnapshot,
@@ -170,22 +170,49 @@ const dispatch = async (): Promise<void> => {
           import('./update/early-boot-update-lease.js'),
         ]);
       const binaryPath = resolveUpdateBinaryPath(process.env);
-      let earlyBootLease;
-      try {
-        earlyBootLease = acquireUpdateLease({
-          leasePath: updateLeasePathFor(binaryPath),
-          operation: 'boot-reconcile',
-        });
-      } catch (err) {
-        if (!(err instanceof UpdateLeaseHeldError)) throw err;
-        console.error(
-          `[recued] an update is in progress on this install (pid ${err.holder.pid}, `
-          + `${err.holder.operation}) — not starting until it finishes.`,
-        );
-        process.exitCode = 4;
-        return;
+
+      // ⛔⛔ THE LEASE GUARDS AN EXECUTABLE THIS CHANNEL DOES NOT HAVE. It excludes
+      // two updaters racing the same binary and its `.staged` / `.old` siblings,
+      // so it is keyed on that binary's DIRECTORY. On a delegated channel
+      // (`docker-baked` / `source`) nothing ever swaps a binary — `update.apply`
+      // answers `not-applicable` — and `resolveUpdateBinaryPath` has no binary to
+      // point at, so it answers `process.execPath`, which under `node …/bin.js`
+      // is the NODE RUNTIME.
+      //
+      // In the baked image that is `/usr/local/bin/node`, owned by root while the
+      // server runs as uid 1001. The claim write threw EACCES, and the catch below
+      // rethrows anything that is not `UpdateLeaseHeldError`, so it reached
+      // `bin.ts`'s top-level handler and exited — printing one bare
+      // `EACCES: permission denied, open '/usr/local/bin/recued-update.lock.claim…'`
+      // and nothing else. THE CONTAINER CRASHLOOPED BEFORE THE BOOT BANNER, so
+      // `/health` never answered and no log line named a cause.
+      //
+      // ⚠ Only the LEASE is skipped. The recovery below still runs on every
+      // channel: the pair-swap reconcile is two `existsSync` calls that find no
+      // asides on an immutable image, and the DATABASE recovery after it is not
+      // about the binary at all. `releaseEarlyBootUpdateLease` is idempotent and
+      // answers false when nothing was installed, so the release site is a no-op.
+      const selfApplies = SELF_APPLY_CHANNELS.has(
+        resolveDistributionChannel(process.env),
+      );
+      if (selfApplies) {
+        let earlyBootLease;
+        try {
+          earlyBootLease = acquireUpdateLease({
+            leasePath: updateLeasePathFor(binaryPath),
+            operation: 'boot-reconcile',
+          });
+        } catch (err) {
+          if (!(err instanceof UpdateLeaseHeldError)) throw err;
+          console.error(
+            `[recued] an update is in progress on this install (pid ${err.holder.pid}, `
+            + `${err.holder.operation}) — not starting until it finishes.`,
+          );
+          process.exitCode = 4;
+          return;
+        }
+        installEarlyBootUpdateLease(earlyBootLease);
       }
-      installEarlyBootUpdateLease(earlyBootLease);
       try {
         const sidecarPaths = sidecarPathsFor(binaryPath, process.env);
         const recovered = reconcileInterruptedPairSwap(

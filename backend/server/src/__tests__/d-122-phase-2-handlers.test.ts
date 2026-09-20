@@ -276,11 +276,39 @@ describe('handleLinkCreate', () => {
     expect(low.link.confidence).toBe(0);
   });
 
-  it('truncates evidence past 1 KB with an ellipsis marker', async () => {
+  /** ⛔ THIS TEST USED TO ASSERT `toHaveLength(1024)` — CHARACTERS — AGAINST A
+   *  CAP NAMED `MAX_LINK_EVIDENCE_BYTES`, so it pinned the bug rather than the
+   *  bound. The old `slice(0, CAP - 1) + '…'` produced 1,024 CHARACTERS and
+   *  1,026 BYTES, because `…` is U+2026: one code unit, three UTF-8 bytes. The
+   *  assertion passed on the overshoot and would have gone on passing at 3,072
+   *  bytes of CJK, since that is 1,024 characters too.
+   *
+   *  🔑 THE CAP IS IN BYTES, SO THE ASSERTION IS IN BYTES. 1,024 bytes of ASCII
+   *  is now 1,021 x's plus the 3-byte marker = 1,022 characters, and the
+   *  character count is no longer interesting. */
+  it('truncates evidence to the BYTE cap, marker included', async () => {
     const big = 'x'.repeat(2048);
     const res = await handleLinkCreate(deps, { ...baseInput, evidence: big });
-    expect(res.link.evidence).toHaveLength(1024);
+    expect(Buffer.byteLength(res.link.evidence!, 'utf8')).toBeLessThanOrEqual(1024);
     expect(res.link.evidence!.endsWith('…')).toBe(true);
+    // Not merely SAFE — a truncation to '' would satisfy the bound above.
+    expect(Buffer.byteLength(res.link.evidence!, 'utf8')).toBe(1024);
+  });
+
+  it('truncates MULTI-BYTE evidence to the same byte cap', async () => {
+    // ⚠ The case the old assertion could not see: 1,024 CJK characters are
+    //   3,072 bytes, so a character-counting check called a 3x overshoot correct.
+    const res = await handleLinkCreate(deps, {
+      ...baseInput,
+      from_id: 'multibyte-evidence',
+      evidence: '中'.repeat(2048),
+    });
+    const bytes = Buffer.byteLength(res.link.evidence!, 'utf8');
+    expect(bytes).toBeLessThanOrEqual(1024);
+    expect(bytes).toBeGreaterThan(1024 - 6); // a whole code point from the cap
+    expect(res.link.evidence!.endsWith('…')).toBe(true);
+    // And never a broken character at the cut.
+    expect(res.link.evidence).not.toMatch(/\uFFFD/);
   });
 
   it('rejects missing endpoints', async () => {

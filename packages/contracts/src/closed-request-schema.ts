@@ -362,6 +362,96 @@ export const projectClosedRequestSchemaForJsonSchema = (schema: unknown): unknow
   return rewrote ? { ...schema, properties } : schema;
 };
 
+/** ⛔⛔ KEYWORDS THAT ARE OPENAPI, NOT JSON SCHEMA. `nullable` is OpenAPI 3.0's
+ *  way of saying "may be null"; JSON Schema spells that as a type union. A
+ *  strict validator (ajv in strict mode, which an MCP client may well use)
+ *  REJECTS an unknown keyword rather than ignoring it, and a rejected
+ *  `inputSchema` costs the model the whole tool — worse than the missing
+ *  annotation. 320 properties across the corpus carry it. */
+const OPENAPI_ONLY_KEYWORDS = new Set(['nullable']);
+
+/** Rewrite a DESCRIPTIVE (non-closed) request schema into plain JSON Schema, for
+ *  the same door that projects closed ones.
+ *
+ *  ⛔⛔ WHY A DESCRIPTIVE SCHEMA REACHES A DOOR AT ALL. `closedRequestSchemaViolation`
+ *  enforces nothing unless a schema opts in with `additionalProperties: false`,
+ *  and opting in requires every VALUE to be fully bounded — `maxLength` on every
+ *  string, `maxItems` and an `items` schema on every array, `additionalProperties:
+ *  false` on every nested object. Thousands of catalog operations wrap vendor APIs
+ *  whose specs simply do not state those bounds, and 1,746 of them accept a
+ *  genuinely free-form object because the vendor means "arbitrary keys". Those
+ *  schemas can never opt in — and the raw-op door used to answer that by
+ *  advertising `{ connection, additionalProperties: true }` and NOTHING ELSE.
+ *
+ *  ⇒ The operation's parameters were documented, in the pack, and the model was
+ *  told none of them. It had to guess argument names for an operation whose
+ *  arguments were sitting right there. That is a DOCUMENTATION loss dressed up as
+ *  an enforcement decision: two separable purposes — "say what the arguments are"
+ *  and "refuse the ones you did not say" — collapsed into one opt-in.
+ *
+ *  🔑 THIS PROJECTS THE FIRST WITHOUT CLAIMING THE SECOND. `additionalProperties`
+ *  stays TRUE, which is not a concession — it is the literally accurate statement
+ *  of what the runtime does. The door now describes the arguments it knows and
+ *  admits the ones it does not, which is exactly the dispatcher's behaviour.
+ *
+ *  ⚠ NOT A GATE, AND MUST NEVER READ AS ONE. Nothing here is enforced at
+ *  dispatch. A caller may still send anything. `required` is carried through
+ *  because it is real vendor information that helps a model build a working call,
+ *  NOT because omitting the field would be refused — it would not be. */
+export const projectDescriptiveRequestSchemaForJsonSchema = (schema: unknown): unknown => {
+  /** ⚠ A STACK GUARD, NOT A POLICY BOUND — and deliberately NOT `MAX_SCHEMA_DEPTH`.
+   *  That rule is 8 and belongs to the CLOSED subset; a descriptive schema is
+   *  under no such limit, and the corpus already holds one nested 9 deep. Reusing
+   *  8 here meant that operation returned UNPROJECTED, carrying `nullable` past
+   *  the projection that exists to remove it — the cap silently doing the
+   *  opposite of the function's job. 32 is far above anything real and only ever
+   *  stops runaway recursion. */
+  const PROJECTION_DEPTH_CAP = 32;
+  /** ⚠ EVERY PLACE A SUBSCHEMA CAN HIDE, not just the two obvious ones. The first
+   *  version recursed through `properties` and `items` alone and left `nullable`
+   *  in place on a schema that reached it under `oneOf` — the projection walking
+   *  past the exact keyword it exists to remove. `enum` and `required` are
+   *  deliberately absent: they hold VALUES and names, not schemas. */
+  const SCHEMA_MAP_KEYWORDS = new Set(['properties', 'patternProperties', 'definitions', '$defs']);
+  const SCHEMA_LIST_KEYWORDS = new Set(['oneOf', 'anyOf', 'allOf', 'prefixItems']);
+  const SCHEMA_KEYWORDS = new Set(['items', 'not', 'contains', 'propertyNames']);
+  const project = (node: unknown, depth: number): unknown => {
+    if (!isRecord(node) || depth > PROJECTION_DEPTH_CAP) return node;
+    const out: Record<string, unknown> = {};
+    for (const [keyword, value] of Object.entries(node)) {
+      if (OPENAPI_ONLY_KEYWORDS.has(keyword)) continue;
+      if (SCHEMA_MAP_KEYWORDS.has(keyword) && isRecord(value)) {
+        const mapped: Record<string, unknown> = {};
+        for (const [name, child] of Object.entries(value)) mapped[name] = project(child, depth + 1);
+        out[keyword] = mapped;
+        continue;
+      }
+      if (SCHEMA_LIST_KEYWORDS.has(keyword) && Array.isArray(value)) {
+        out[keyword] = value.map((child) => project(child, depth + 1));
+        continue;
+      }
+      if (SCHEMA_KEYWORDS.has(keyword)) {
+        out[keyword] = Array.isArray(value)
+          ? value.map((child) => project(child, depth + 1))
+          : project(value, depth + 1);
+        continue;
+      }
+      // `additionalProperties` is a BOOLEAN here almost always, but JSON Schema
+      // allows a subschema — project that shape, pass the boolean through.
+      if (keyword === 'additionalProperties' && isRecord(value)) {
+        out[keyword] = project(value, depth + 1);
+        continue;
+      }
+      out[keyword] = value;
+    }
+    return out;
+  };
+  const projected = project(projectClosedRequestSchemaForJsonSchema(schema), 0);
+  if (!isRecord(projected)) return projected;
+  // ⛔ Never let a projection claim closure the runtime does not enforce.
+  return { ...projected, additionalProperties: true };
+};
+
 export const closedRequestSchemaDefinitionIssues = (schema: unknown): string[] => {
   if (!isClosedRequestSchema(schema)) return [];
   const root = schema as Record<string, unknown>;
@@ -504,4 +594,203 @@ export const closedRequestSchemaViolation = (
     if (issue) return issue;
   }
   return null;
+};
+
+// ════════════════════════════════════════════════════════════════
+// Catastrophic-backtracking probe — the install-time gate
+// ════════════════════════════════════════════════════════════════
+
+/** ⛔⛔ A `pattern` IS THE ONLY UNBOUNDED COMPUTATION IN A "CLOSED" SCHEMA.
+ *
+ *  It is compiled and run per dispatch inside the D-165 gateway
+ *  (`catalog-gateway.ts`) and the D-261 preapproval lane, against CALLER-supplied
+ *  values, *"before an approval pause/session-grant match can confer authority"*.
+ *  Node's loop is single-threaded and a synchronous regex is not interruptible,
+ *  so a pattern with catastrophic backtracking stops the WHOLE SERVER — not one
+ *  request. Measured through `closedRequestSchemaViolation` at an ordinary
+ *  `maxLength: 100`: `^(a+)+$` against `'a'×32 + '!'` blocks for 43 seconds.
+ *
+ *  Definition time only checks that the pattern COMPILES. This is the other half.
+ *
+ *  ⚠ EMPIRICAL, NOT A PROOF, AND THE LIMIT IS STATED RATHER THAN IMPLIED. It
+ *  drives each pattern with adversarial fuel and times it; one that blows up only
+ *  on input shapes outside the table passes. The tempting static rule — reject
+ *  nested quantifiers — is WORSE, because `^(a|a)*$` is star height ONE and took
+ *  19 seconds in the same measurement. A rule that catches `(a+)+` and misses
+ *  `(a|a)*` is assurance-shaped non-assurance.
+ *
+ *  ⚠ THE PROBE RUNS THE DANGEROUS REGEX, so it is bounded on both axes: each
+ *  measurement stops the pattern's escalation at the first superlinear sign, and
+ *  a whole-schema deadline stops the sweep. A schema that cannot be probed inside
+ *  its deadline is REFUSED — being too slow to check is itself the finding.
+ *
+ *  See internal design notes. */
+
+/** Single-character fuel: the classic `(a+)+` shape chews one repeated char. */
+const REDOS_CHAR_FUEL: ReadonlyArray<string> =
+  [' ', 'a', '0', 'x', '-', '	', '{', 'A', '9', '.', '_', '/', ':', '@'];
+
+/** Tails that force the match to FAIL, which is when backtracking explodes. */
+const REDOS_TAILS: ReadonlyArray<string> = ['!', '', 'é', '"'];
+
+/** Structured fuel — the shapes that need STRUCTURE to blow up: an email
+ *  local-part, a dotted path, a scheme. Generic single-character fuel misses
+ *  these entirely, which is the difference between a scan and a scan that
+ *  looked. */
+const REDOS_SHAPE_FUEL: ReadonlyArray<readonly [string, (n: number) => string]> = [
+  ['local.parts', (n) => 'a.'.repeat(n)],
+  ['local.parts+!', (n) => `${'a.'.repeat(n)}!`],
+  ['at then junk', (n) => `${'a'.repeat(n)}@${'b'.repeat(n)}!`],
+  ['dots+at', (n) => `${'a.'.repeat(n)}@b`],
+  ['dashes', (n) => `${'a-'.repeat(n)}!`],
+  ['slashes', (n) => `${'a/'.repeat(n)}!`],
+  ['colons', (n) => `${'a:'.repeat(n)}!`],
+  ['spaces+brace', (n) => `${' '.repeat(n * 2)}{`],
+  ['brace open only', (n) => '{'.repeat(n) + ' '.repeat(n)],
+  ['digits+sign', (n) => `${'-'.repeat(n)}${'0'.repeat(n)}!`],
+  ['hex-ish', (n) => `${'ab'.repeat(n)}!`],
+  ['proto', (n) => `${'a'.repeat(n)}://${'b'.repeat(n)}`],
+  ['iso-ish', (n) => `${'2020-02-'.repeat(n)}!`],
+];
+
+const REDOS_CHAR_LENGTHS: ReadonlyArray<number> = [10, 16, 22, 26, 30];
+const REDOS_SHAPE_SIZES: ReadonlyArray<number> = [6, 10, 14, 18, 22];
+
+export interface RedosProbeOptions {
+  /** A single measurement above this is superlinear.
+   *
+   *  ⚠ THE MARGIN IS ENORMOUS, WHICH IS WHY THE NUMBER IS SMALL. A benign
+   *  pattern's ENTIRE sweep — ~345 measurements — costs 0.3–1.1 ms, so one
+   *  measurement is around 3 MICROSECONDS. 50 ms is four orders of magnitude
+   *  above that; a hundredfold slowdown under load still would not reach it.
+   *  Tripping one escalation rung earlier matters because the rungs are
+   *  exponential: the same pattern measured 1,471 ms at 26 characters and under
+   *  the threshold at 22, so a lower bar makes DETECTION ~16x cheaper without
+   *  moving it anywhere near a legitimate pattern. Default 50. */
+  readonly per_probe_ms?: number;
+  /** Whole-schema deadline. Default 3000. */
+  readonly budget_ms?: number;
+  /** Injectable clock + timer for deterministic tests. */
+  readonly now?: () => number;
+}
+
+export interface RedosFinding {
+  /** The offending pattern source. */
+  readonly pattern: string;
+  /** Which fuel provoked it, for reproducing. */
+  readonly fuel: string;
+  /** Input length at which it blew up. */
+  readonly input_length: number;
+  /** Measured milliseconds (the confirming run). */
+  readonly ms: number;
+}
+
+const nowMs = (): number => Date.now();
+
+/** Probe ONE pattern. Returns the finding, or null when it stays linear.
+ *
+ *  ⚠ A SUSPECT IS RE-MEASURED BEFORE IT IS REPORTED. This is a timing check
+ *  running at install time on a machine that may be loaded, and a false refusal
+ *  of a legitimate pack is worse than a missed probe: a scheduling hiccup does
+ *  not repeat on demand, a catastrophic regex does. One retry turns the flake
+ *  into a retry and leaves the real signal untouched. */
+export const probePatternForBacktracking = (
+  source: string,
+  options: RedosProbeOptions = {},
+): RedosFinding | null => {
+  const perProbe = options.per_probe_ms ?? 50;
+  const budget = options.budget_ms ?? 3_000;
+  const clock = options.now ?? nowMs;
+  let re: RegExp;
+  try {
+    re = new RegExp(source);
+  } catch {
+    return null; // an uncompilable pattern is the definition check's problem
+  }
+  const startedAt = clock();
+  const measure = (input: string): number => {
+    const t0 = clock();
+    try {
+      re.test(input);
+    } catch {
+      // Some engines throw on pathological input; that is not this check.
+    }
+    return clock() - t0;
+  };
+  const suspect = (input: string, fuel: string): RedosFinding | null => {
+    if (measure(input) <= perProbe) return null;
+    // Confirm — see the note above.
+    const second = measure(input);
+    if (second <= perProbe) return null;
+    return { pattern: source, fuel, input_length: input.length, ms: second };
+  };
+
+  for (const fuel of REDOS_CHAR_FUEL) {
+    for (const tail of REDOS_TAILS) {
+      for (const length of REDOS_CHAR_LENGTHS) {
+        if (clock() - startedAt > budget) {
+          return { pattern: source, fuel: 'budget exhausted', input_length: length, ms: clock() - startedAt };
+        }
+        const hit = suspect(fuel.repeat(length) + tail, JSON.stringify(fuel + tail));
+        if (hit) return hit;
+      }
+    }
+  }
+  for (const [label, make] of REDOS_SHAPE_FUEL) {
+    for (const size of REDOS_SHAPE_SIZES) {
+      if (clock() - startedAt > budget) {
+        return { pattern: source, fuel: 'budget exhausted', input_length: size, ms: clock() - startedAt };
+      }
+      const hit = suspect(make(size), label);
+      if (hit) return hit;
+    }
+  }
+  return null;
+};
+
+/** Every `pattern` in a closed request schema, in declaration order. */
+const schemaPatterns = (schema: unknown): Array<{ path: string; source: string }> => {
+  const out: Array<{ path: string; source: string }> = [];
+  if (!isClosedRequestSchema(schema)) return out;
+  const properties = (schema as { properties?: Record<string, unknown> }).properties ?? {};
+  for (const [key, raw] of Object.entries(properties)) {
+    if (raw === null || typeof raw !== 'object') continue;
+    const pattern = (raw as { pattern?: unknown }).pattern;
+    if (typeof pattern === 'string' && pattern.length > 0) out.push({ path: key, source: pattern });
+  }
+  return out;
+};
+
+/** Human-readable issues for a schema whose patterns backtrack catastrophically.
+ *
+ *  Shaped to sit beside `closedRequestSchemaDefinitionIssues` at the same call
+ *  site — one returns "this schema is malformed", the other "this schema is a
+ *  denial of service". */
+export const closedRequestSchemaBacktrackingIssues = (
+  schema: unknown,
+  options: RedosProbeOptions = {},
+): string[] => {
+  const issues: string[] = [];
+  const clock = options.now ?? nowMs;
+  const budget = options.budget_ms ?? 3_000;
+  const startedAt = clock();
+  for (const { path, source } of schemaPatterns(schema)) {
+    const remaining = budget - (clock() - startedAt);
+    if (remaining <= 0) {
+      issues.push(
+        `property '${path}' pattern could not be checked within the ${budget}ms budget `
+        + '— the schema has too many patterns, or an earlier one is already pathological',
+      );
+      break;
+    }
+    const finding = probePatternForBacktracking(source, { ...options, budget_ms: remaining });
+    if (finding === null) continue;
+    issues.push(
+      `property '${path}' pattern backtracks catastrophically `
+      + `(${Math.round(finding.ms)}ms on ${finding.input_length} characters of ${finding.fuel}) — `
+      + 'it runs inside the gateway against caller-supplied values, on a thread that cannot be '
+      + 'interrupted. Rewrite without ambiguous alternation or nested quantifiers.',
+    );
+  }
+  return issues;
 };

@@ -30,6 +30,7 @@ import {
   composePlatformRecordTargetId,
   type Direction,
   type EngagementRow,
+  truncateUtf8,
 } from '@recued/contracts';
 
 import type {
@@ -426,8 +427,16 @@ const pickBodyState = (
   if (byteLength <= ENGAGEMENT_BODY_INLINE_MAX_BYTES) {
     return { body_state: 'inline_body', body_inline: body };
   }
-  const truncated = body.slice(
-    0,
+  // ⛔ WAS `body.slice(0, CAP / 2)`, AND THE HALVING WAS THE FUDGE FOR THIS.
+  //   `slice` counts UTF-16 units, the cap counts BYTES, so halving buys a
+  //   margin only while every character is 1–2 bytes. A CJK body came out at
+  //   9,216 bytes — 50% OVER the 6,144 cap the truncation exists to stay under.
+  //   The HubSpot copy said so in as many words: *"byte-wise it may be slightly
+  //   UNDER 6 KB which is fine for the cap"*. `truncateUtf8` bounds exactly, so
+  //   the `/2` now means what it says — inline at most half the cap — and is
+  //   kept only so stored inline sizes do not change.
+  const truncated = truncateUtf8(
+    body,
     Math.floor(ENGAGEMENT_BODY_INLINE_MAX_BYTES / 2),
   );
   return {

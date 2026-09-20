@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
   "source": {
-    "commit": "16da6e1706023c8dfc823e6908acd66134c4d77b",
-    "tree": "0eb0416f34ff83222045b1e3921f22b7064d0308",
-    "committed_at": "2026-09-17T09:36:54-07:00"
+    "commit": "77ed9ddffbdaba18525983c62ffb59ba5717513a",
+    "tree": "e43ba7eed145f5457f2e619f642d34895c627221",
+    "committed_at": "2026-09-20T02:32:43-07:00"
   },
-  "export_manifest_sha256": "7cd4757e0b272cf49f8a573d49cd1f6f05586a02dde56a5c6569b50a88bc36c1",
-  "version": "26.9.17",
+  "export_manifest_sha256": "568d1a762c4b7f71b8c99a330c0817891493e4a3e70295477763a56510f8bd52",
+  "version": "26.9.20",
   "license": "AGPL-3.0-only",
   "entrypoints": [
     "backend/server",
@@ -57,6 +57,7 @@
       "backend/server/src/__tests__/broadcast-kind-reachability.test.ts",
       "backend/server/src/__tests__/build-externals-declared.test.ts",
       "backend/server/src/__tests__/bundled-foundation-embed.test.ts",
+      "backend/server/src/__tests__/byte-budget-char-slice.test.ts",
       "backend/server/src/__tests__/calendar-e2e.test.ts",
       "backend/server/src/__tests__/d-125-in-app-notification-delivery.test.ts",
       "backend/server/src/__tests__/d-145-pa10-pack-list-rpc.test.ts",
@@ -154,6 +155,8 @@
       "backend/server/src/__tests__/dispatch-canonical-resolve.test.ts",
       "backend/server/src/__tests__/door-standing-closure-e2e.test.ts",
       "backend/server/src/__tests__/drives/fleet-money-dispatch-smtp-drive.ts",
+      "backend/server/src/__tests__/drives/photo-attribution-live-drive.ts",
+      "backend/server/src/__tests__/drives/photo-attribution-mail-drive.ts",
       "backend/server/src/__tests__/excel-workbook-semi-live.test.ts",
       "backend/server/src/__tests__/expense-ledger-import-workflow.test.ts",
       "backend/server/src/__tests__/federated-project-business-workflow.test.ts",
@@ -184,6 +187,8 @@
       "backend/server/src/__tests__/pack-install-first-party-op-steps.test.ts",
       "backend/server/src/__tests__/pack-resolve-bundled-records.test.ts",
       "backend/server/src/__tests__/peer-appointment-semi-live.test.ts",
+      "backend/server/src/__tests__/photo-attribution-drive.test.ts",
+      "backend/server/src/__tests__/photo-attribution-live-drive.test.ts",
       "backend/server/src/__tests__/pick-resolution-seal.test.ts",
       "backend/server/src/__tests__/pii-trace-classifier.test.ts",
       "backend/server/src/__tests__/pii-trace-corpus.test.ts",
@@ -302,6 +307,7 @@
       "packages/ingredient-authoring/src/__tests__/catalog-bind-tool-target-corpus.test.ts",
       "packages/ingredient-authoring/src/__tests__/cli-argv-pin-shipped-packs.test.ts",
       "packages/ingredient-authoring/src/__tests__/cli-pack-request-schema.test.ts",
+      "packages/ingredient-authoring/src/__tests__/closable-request-schema-ratchet.test.ts",
       "packages/ingredient-authoring/src/__tests__/connection-hints-corpus.test.ts",
       "packages/ingredient-authoring/src/__tests__/connection-scope-prefill-corpus.test.ts",
       "packages/ingredient-authoring/src/__tests__/create-invoice-template-boilerplate.test.ts",
@@ -398,6 +404,7 @@
       "packages/ingredient-authoring/src/__tests__/d-259-cli-corpus-ratchet.test.ts",
       "packages/ingredient-authoring/src/__tests__/decision-log-pack-audit.test.ts",
       "packages/ingredient-authoring/src/__tests__/deeptutor-daily-mastery-pack-audit.test.ts",
+      "packages/ingredient-authoring/src/__tests__/derivable-request-schema-ratchet.test.ts",
       "packages/ingredient-authoring/src/__tests__/excel-workbook-pack-audit.test.ts",
       "packages/ingredient-authoring/src/__tests__/exchange-require-connection-corpus.test.ts",
       "packages/ingredient-authoring/src/__tests__/federated-project-pack-audit.test.ts",
@@ -405,6 +412,7 @@
       "packages/ingredient-authoring/src/__tests__/fleet-money-pack-audit.test.ts",
       "packages/ingredient-authoring/src/__tests__/generator-version-drift-corpus.test.ts",
       "packages/ingredient-authoring/src/__tests__/idempotency-declared-corpus.test.ts",
+      "packages/ingredient-authoring/src/__tests__/inert-keyword-closure-ratchet.test.ts",
       "packages/ingredient-authoring/src/__tests__/job-status-board-pack-audit.test.ts",
       "packages/ingredient-authoring/src/__tests__/microsoft-graph-pack-audit.test.ts",
       "packages/ingredient-authoring/src/__tests__/midpage-case-law-pack-audit.test.ts",
@@ -585,7 +593,7 @@
       "packages/recipes/src/__tests__/zendesk-ticket-count-truth-pack-audit.test.ts",
       "packages/recipes/src/__tests__/zendesk-ticket-reply-closure-loop.test.ts"
     ],
-    "sha256": "6e6720abd909c7dc0a729c74208a0ba945569d3798ad118ad51d009d8093517b",
+    "sha256": "ed731774e418f084e14275fc27bc511f959c89fc089d726b48decedf0c6b530b",
     "roots": [
       "apps/auth-worker",
       "apps/bridge",
@@ -602,15 +610,15 @@
     ]
   },
   "internal_reference_scrub": {
-    "files_changed": 1072,
+    "files_changed": 1077,
     "rules": [
       {
         "id": "internal-spec-reference",
-        "comments_rewritten": 1013
+        "comments_rewritten": 1014
       },
       {
         "id": "internal-design-document",
-        "comments_rewritten": 113
+        "comments_rewritten": 119
       },
       {
         "id": "internal-handover-note",
@@ -700,7 +708,7 @@
     "packages/warehouse-events"
   ],
   "payload": {
-    "file_count": 6082,
-    "sha256": "7d19f4a5d0d340b1e9a84e8fdf95a54b29f972cf9f9e26187e7af90a97fbe884"
+    "file_count": 6123,
+    "sha256": "cafcafb7017f211314982711e7f59885d546d53d6f2eaebed711ec51b75388aa"
   }
 }

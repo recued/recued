@@ -493,8 +493,14 @@ const buildApiDispatchInput = (
   // the caller supplied no dynamic body fields, while retaining structured
   // `body.*` composition when it did. The marker is engine-owned because
   // caller `body_raw` was stripped above.
+  // ⚠ ...AND NOT WHEN THE CALLER SENT A WHOLE-OBJECT `body`. `body_raw` WINS in
+  // `buildConnectionApiBody`, so injecting `'{}'` here would silently replace a
+  // payload the operation declares (`{ key: 'body', type: 'object' }`) with an
+  // empty object — the empty-body defect this marker exists to avoid, delivered
+  // by the marker itself.
   if (hasStaticBody
     && staticBody.length === 0
+    && input.body == null
     && !Object.keys(input).some((key) => key.startsWith('body.'))) {
     input.body_raw = '{}';
   }

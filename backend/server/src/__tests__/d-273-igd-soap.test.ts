@@ -36,7 +36,54 @@ const DESCRIPTION = `<?xml version="1.0"?>
  </device>
 </root>`;
 
+const withControlUrl = (controlUrl: string): string => `<?xml version="1.0"?>
+<root xmlns="urn:schemas-upnp-org:device-1-0">
+ <device>
+  <serviceList>
+   <service>
+    <serviceType>urn:schemas-upnp-org:service:WANIPConnection:1</serviceType>
+    <controlURL>${controlUrl}</controlURL>
+   </service>
+  </serviceList>
+ </device>
+</root>`;
+
 describe('D-273 — finding the WAN connection service', () => {
+  it('⛔ refuses a control URL whose SCHEME is not http(s), even on the right host', () => {
+    // ⚠ FOUND BY MUTATION. Deleting the scheme check reddened nothing, because
+    // every other refusal case in this file fails the HOST comparison first —
+    // and a scheme swap keeps the host intact. `ftp://192.168.1.1/x` resolved
+    // against an `http://192.168.1.1:5000/...` description has a MATCHING
+    // hostname, so the host guard waves it through and only the scheme guard
+    // stands between the device description and an arbitrary protocol handler.
+    //
+    // ⛔ The description XML is attacker-influenced: it was fetched from a URL
+    // named by an unauthenticated multicast datagram.
+    for (const scheme of ['ftp', 'file', 'gopher', 'data', 'ws']) {
+      expect(
+        findIgdControlTarget(
+          withControlUrl(`${scheme}://192.168.1.1:5000/ctl`),
+          'http://192.168.1.1:5000/rootDesc.xml',
+        ),
+        `${scheme}: was accepted as a control URL`,
+      ).toBeNull();
+    }
+  });
+
+  it('accepts http and https on the device host — the two that are legitimate', () => {
+    // The control: proves the case above rejects on SCHEME, not because an
+    // absolute control URL is refused outright.
+    for (const scheme of ['http', 'https']) {
+      expect(findIgdControlTarget(
+        withControlUrl(`${scheme}://192.168.1.1:5000/ctl`),
+        'http://192.168.1.1:5000/rootDesc.xml',
+      )).toEqual({
+        serviceType: 'urn:schemas-upnp-org:service:WANIPConnection:1',
+        controlUrl: `${scheme}://192.168.1.1:5000/ctl`,
+      });
+    }
+  });
+
   it('⛔⛔ pairs the serviceType with the controlURL in ITS OWN block', () => {
     // A global "find serviceType, then find controlURL" pairs the type we wanted
     // with whichever control URL came first — here `/ctl/L3F`. The request would

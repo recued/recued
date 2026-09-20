@@ -1,7 +1,7 @@
 /** Mail and its required reads participate in the common invocation graph. */
 import type Database from 'better-sqlite3';
 import { MAIL_SEND_ATTACHMENT_MAX_BYTES, RpcError, normalizeMailSend, parsePreapprovalJson, preapprovalChildPath,
-  type IngredientManifest } from '@recued/contracts';
+  type IngredientManifest, isTempFileRef} from '@recued/contracts';
 import { describePreapprovalInvocation, type PreapprovalCall, type PreapprovalNormalAdmission,
   type PreapprovalRuntimeIdentity } from './preapproval-dispatch-description.js';
 import type { PreparedFutureExecution, PreapprovalActivationRecord, PreapprovalDependency, PreapprovalValidationStage } from './preapproval-model.js';
@@ -104,6 +104,15 @@ export const createPreapprovalMail = (deps: {
         revision: identity.revision, content_hash: identity.content_hash, until_phase: 'terminal' };
       const children: PreapprovalRuntimeIdentity['children'] = [];
       for (const [index, ref] of (payload.attachments ?? []).entries()) {
+        // ⛔ A RUN-SCOPED TEMP REF CANNOT BE SNAPSHOTTED FOR LATER REVIEW. The
+        // child is a durable record of what the reviewer approved, and the
+        // reviewer may answer long after the producing run's scratch is gone —
+        // so there would be nothing to send when they say yes. Refuse at the
+        // boundary rather than snapshot a reference that will dangle.
+        if (isTempFileRef(ref)) {
+          return fail('A run-scoped attachment cannot be sent through deferred review. '
+            + 'Keep the file first if the send must be reviewed out of band.');
+        }
         const { child, snapshot } = this.fileChild(call, context, 'attachments', index, ref);
         if (snapshot.file.size_bytes > MAIL_SEND_ATTACHMENT_MAX_BYTES) return fail(`Attachment ${snapshot.file.filename} exceeds the mail attachment limit.`);
         children.push(child);

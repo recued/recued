@@ -82,6 +82,34 @@ export const isAcknowledgementWellFormed = (
   return isValidPublicMcpAcknowledgementPhrase(acknowledgement.free_text_confirmation);
 };
 
+/** True iff the acknowledgement is BOTH set and well-formed — i.e. the
+ *  owner really did type the canonical phrase, and the record still
+ *  carries it. This is the question every `/mcp.public` gate actually
+ *  asks; `isAcknowledgementWellFormed` alone is not it, because it
+ *  answers `true` for an un-acknowledged record (nothing to be
+ *  malformed about), and `acknowledged` alone is not it either, because
+ *  a record can carry `acknowledged: true` with a missing or
+ *  non-canonical phrase.
+ *
+ *  ⛔ THE COMPOSITE WAS SPELLED SIX DIFFERENT WAYS before 2026-09-17 —
+ *  inline here in `applyPreset`, as two sequential guards returning the
+ *  same error code in the server state machine, and as two PRIVATE
+ *  helpers with DIFFERENT NAMES but identical bodies in the webclient
+ *  (`isAcknowledgementEffectivelyOn`, `isPublicMcpAcknowledgementActive`).
+ *  Five agreed. The sixth, the webclient's `isPathResolutionTransitionAllowed`
+ *  pre-flight, checked only `acknowledged` and so let a malformed record
+ *  through a gate every other site refused. Differing names are why no
+ *  name-keyed scan found them; it lives here now so there is one answer.
+ *
+ *  ⚠ NOT the right predicate for a stored-row validator. `sqlite-store`'s
+ *  `parseStateJson` deliberately rejects ANY malformed acknowledgement,
+ *  whether or not `mcp.public` is set — a strictly stronger check than
+ *  this one, and collapsing it to this would weaken it. */
+export const isAcknowledgementEffectivelyOn = (
+  acknowledgement: PublicMcpAcknowledgement,
+): boolean =>
+  acknowledgement.acknowledged && isAcknowledgementWellFormed(acknowledgement);
+
 /** D-148 § A.7 — literal string the user must type to acknowledge
  *  public MCP exposure. Free-text confirmation forces deliberate
  *  action — checkbox would normalize the gesture. */
@@ -402,6 +430,27 @@ export interface PathResolution {
   public: boolean;
 }
 
+/** Runtime validator for a `PathResolution` arriving from outside the
+ *  type system — an rpc argument off the wire, or a `state_json` cell
+ *  read back from SQLite. BOTH bits must be actual booleans: `public`
+ *  is what decides whether a path is bound to the public listener, and
+ *  every near-miss value a caller or a half-written row can supply
+ *  (`1`, `"false"`, `null`) is either truthy or coerces, so a cell that
+ *  merely *has* the keys would be persisted verbatim and read by the
+ *  listener as "on".
+ *
+ *  ⛔ THIS LIVED AS TWO PRIVATE COPIES — `exposure-handler.ts` (the wire
+ *  end) and `exposure/sqlite-store.ts` (the stored end) — and BOTH had
+ *  drifted to testing only the `lan` half, which is how the two ends
+ *  could disagree about what a valid cell is. It belongs next to the
+ *  type it validates so there is one answer; see
+ *  `packages/contracts/src/__tests__/path-resolution-guard.test.ts`. */
+export const isPathResolution = (value: unknown): value is PathResolution => {
+  if (typeof value !== 'object' || value === null) return false;
+  const v = value as { lan?: unknown; public?: unknown };
+  return typeof v.lan === 'boolean' && typeof v.public === 'boolean';
+};
+
 /** D-148 § A.7.1 — three named presets (closed list). Presets are
  *  snap-to-shape applicators over the per-path toggle grid; everything
  *  outside the three preset shapes is `Custom` (UI-level label only —
@@ -526,7 +575,7 @@ export const applyPreset = (
     lan: base[role].lan,
     public: base[role].public,
   }));
-  if (preset === 'public' && isAcknowledgementWellFormed(acknowledgement) && acknowledgement.acknowledged) {
+  if (preset === 'public' && isAcknowledgementEffectivelyOn(acknowledgement)) {
     out.mcp = { lan: out.mcp.lan, public: true };
   }
   return out;
@@ -1049,6 +1098,58 @@ export const zoneByLabel = (label: string): DdnsZone | undefined =>
  *  side; identity binding happens after they authenticate. */
 export const ROOT_REDIRECT_TARGET = 'https://app.recued.com/' as const;
 
+/** D-176 — the zone-matching core, taking the zone list EXPLICITLY.
+ *  `resolveProDdnsHost` binds it to the live enabled registry; this overload
+ *  exists so the multi-zone behaviour can be driven without mutating a const.
+ *
+ *  ⛔⛔ THE LOOP MUST `continue`, NOT `return null`, WHEN THE PREFIX IS
+ *  MULTI-LABEL. It used to return, which silently blacklisted an entire NESTED
+ *  zone. With `.recued.net` and `.eu.recued.net` both enabled and the parent
+ *  listed first — the order you get by APPENDING a new entry, which is exactly
+ *  what `DDNS_ZONES`' own comment invites (*"additional zones are pure config
+ *  … no code change"*) — `alice.eu.recued.net` matched `.recued.net`, produced
+ *  the prefix `alice.eu`, hit the dot check and returned null before
+ *  `.eu.recued.net` was ever tried. Driven, before the fix:
+ *
+ *      parent first:  alice.recued.net → alice   alice.eu.recued.net → null
+ *      nested first:  alice.recued.net → alice   alice.eu.recued.net → alice/eu
+ *
+ *  🔑 So the whole sub-zone was dark, not some edge of it, and WHICH behaviour
+ *  you got depended on array order in a registry that documents no ordering
+ *  rule. It failed silently too: null → `isProDdnsHost` false → the redirect
+ *  handler and reception trust-footer just treat those hosts as not-Pro-DDNS.
+ *
+ *  🔑🔑 `continue` IS ORDER-INDEPENDENT, NOT MERELY BETTER. For a given hostname
+ *  at most ONE zone can yield a single-label prefix, because two suffixes that
+ *  both match one host differ in label count, so their prefixes do too. The
+ *  leading dot each suffix carries is what keeps the match on a label boundary
+ *  (`alice.xrecued.net` does not end with `.recued.net`). ⇒ no longest-suffix
+ *  pass is needed; the first zone yielding a valid handle is the only one.
+ *
+ *  ⚠ Today this is a no-op: one zone is enabled, so the loop runs once and both
+ *  spellings fall through to the same final `return null`. The cost was only
+ *  ever payable on the NEXT zone added. */
+export const resolveProDdnsHostIn = (
+  zones: readonly DdnsZone[],
+  host: string | undefined | null,
+): { handle: string; zone: DdnsZone } | null => {
+  if (!host) return null;
+  const trimmed = host.trim().toLowerCase();
+  if (trimmed.length === 0) return null;
+  // Strip optional `:port` suffix. IPv6 literals would also include `]` but
+  // they cannot end in a zone suffix so they fall out at the suffix check.
+  const colonIdx = trimmed.indexOf(':');
+  const hostname = colonIdx >= 0 ? trimmed.slice(0, colonIdx) : trimmed;
+  for (const zone of zones) {
+    if (!hostname.endsWith(zone.suffix)) continue;
+    const handle = hostname.slice(0, hostname.length - zone.suffix.length);
+    // NOT `return null` — a nested zone later in the list may still match.
+    if (handle.length === 0 || handle.includes('.')) continue;
+    return { handle, zone };
+  }
+  return null;
+};
+
 /** D-176 — resolve a request Host header to its Pro DDNS `{ handle, zone }`,
  *  or null if it isn't a single-label handle subdomain of any ENABLED zone.
  *
@@ -1066,25 +1167,13 @@ export const ROOT_REDIRECT_TARGET = 'https://app.recued.com/' as const;
  *    ahead of any handle-resolution lookup; the only check is "Pro DDNS shape".
  *    Handle validity is a registration-time gate, not a redirect-time gate.
  *  - IPv6 literals (`[::1]`) and IP-only Host headers do not match — they
- *    don't end with any zone suffix. */
+ *    don't end with any zone suffix.
+ *  - A zone whose suffix matches but yields a multi-label prefix does NOT end
+ *    the search — see `resolveProDdnsHostIn`. */
 export const resolveProDdnsHost = (
   host: string | undefined | null,
-): { handle: string; zone: DdnsZone } | null => {
-  if (!host) return null;
-  const trimmed = host.trim().toLowerCase();
-  if (trimmed.length === 0) return null;
-  // Strip optional `:port` suffix. IPv6 literals would also include `]` but
-  // they cannot end in a zone suffix so they fall out at the suffix check.
-  const colonIdx = trimmed.indexOf(':');
-  const hostname = colonIdx >= 0 ? trimmed.slice(0, colonIdx) : trimmed;
-  for (const zone of enabledDdnsZones()) {
-    if (!hostname.endsWith(zone.suffix)) continue;
-    const handle = hostname.slice(0, hostname.length - zone.suffix.length);
-    if (handle.length === 0 || handle.includes('.')) return null;
-    return { handle, zone };
-  }
-  return null;
-};
+): { handle: string; zone: DdnsZone } | null =>
+  resolveProDdnsHostIn(enabledDdnsZones(), host);
 
 /** D-148 FU#7 — pure predicate: does the Host header point at any ENABLED Pro
  *  DDNS zone hostname? Thin wrapper over `resolveProDdnsHost` — the redirect
@@ -1205,10 +1294,36 @@ export interface NetworkLocalUrlsResponse {
    *  `urls`; carried separately so a caller that needs the number does not have
    *  to parse a URL to get it. */
   lan_port?: number;
-  /** The public TLS listener's configured port. ⚠ CONFIGURED, not verified
-   *  bound — the public listener does not bind at all until a path is made
-   *  public, so this says which port that listener WOULD use. */
+  /** The public TLS port this server is SERVING ON.
+   *
+   *  ⚠ CORRECTED 2026-09-17 — this said "configured, not verified bound", which
+   *  stopped being true when `public_port` became live-editable. Production
+   *  threads `boundPublicPort`, which starts at the configured value and
+   *  thereafter moves ONLY when a rebind actually succeeded. So it is the
+   *  configured value at boot (the public listener does not bind until a path is
+   *  made public, so there is no post-bind number to read there) and, after any
+   *  live port change, a port that bound.
+   *
+   *  ⛔ NEVER THE RAW CONFIG KEY. A failed rebind must not make this — and the
+   *  three surfaces built from it — start advertising a port nothing is
+   *  listening on. When the two diverge, `public_port_requested` carries the
+   *  wish and this keeps carrying the truth. */
   public_port?: number;
+  /** D-273 — the port the owner ASKED for, when it is not the one being served.
+   *
+   *  ⛔ PRESENT ONLY WHEN THEY DIFFER, which today means exactly one thing: a
+   *  live `public_port` edit was accepted, persisted, and then FAILED TO BIND
+   *  (taken, privileged, refused). The server keeps serving the old port — the
+   *  right call — but until this field existed the divergence had no way to
+   *  reach a client: `server.setConfigField` had already resolved OK, the
+   *  settings page renders the config value, this rpc reports the bound one, and
+   *  the only report of the failure was a line on the server's stdout. Two
+   *  owner-facing surfaces disagreed with nothing to explain why.
+   *
+   *  ⚠ ABSENT IS THE NORMAL CASE and means "no divergence" — OR an older server
+   *  that cannot say. Both render the same and should: there is nothing to tell
+   *  the reader in either. Never synthesise it from `public_port`. */
+  public_port_requested?: number;
   /** D-272 — where the LAN listener's bind actually puts it.
    *
    *  ⛔ "LAN-ONLY" IS A BIND ADDRESS, NOT AN ENFORCED BOUNDARY. There is no

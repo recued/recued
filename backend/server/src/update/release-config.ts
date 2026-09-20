@@ -56,7 +56,11 @@ import {
 // ⛔ MOVED TO A LEAF, RE-EXPORTED HERE. See `install-paths.ts`: this module pulls
 // `open-database`, which loads the native addon at module init, and the recovery
 // for a MISSING addon needs these paths without paying that.
-import { resolveDistributionChannel, resolveUpdateBinaryPath } from './install-paths.js';
+import {
+  resolveDistributionChannel,
+  resolveUpdateBinaryPath,
+  SELF_APPLY_CHANNELS,
+} from './install-paths.js';
 import {
   advanceHostSequenceFloor,
   hostSequenceFloorPathFor,
@@ -235,15 +239,10 @@ const makeFetchText =
     };
   };
 
-/** Channels whose binary lives on a writable volume and self-applies (I-8):
- *  `binary` (GA host binary) + `docker-thin` (the `:managed` self-updating
- *  image with the binary on the data volume). `docker-baked` (immutable image —
- *  the host re-pulls) and `source` (notify-only) DON'T self-apply a binary, so
- *  `update.apply` returns `not-applicable` there. */
-export const SELF_APPLY_CHANNELS: ReadonlySet<DistributionChannel> = new Set<DistributionChannel>([
-  'binary',
-  'docker-thin',
-]);
+/** Re-exported from `install-paths.ts`, where it moved so `bin.ts` can ask
+ *  before the native-addon module graph loads. One definition, unchanged
+ *  importers — same arrangement as the two resolvers above. */
+export { SELF_APPLY_CHANNELS };
 
 export interface BuildApplyOrchestratorOptions {
   db: Database.Database;

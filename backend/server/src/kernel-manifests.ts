@@ -3069,6 +3069,32 @@ const MANIFESTS = [
     }
   },
   {
+    "slug": "file-read-temp",
+    "name": "Read a run-scoped temp file back into the run",
+    "description": "Read the bytes of a run-scoped temp file_ref (a storage:'temp' cli op's output) back into the recipe as { bytes_b64, mime_type, filename, size_bytes }, so a step can RENDER what a previous step produced without keeping a copy of it. The read sibling of core.storage.file.persist and its deliberate opposite: persist ingests a temp artifact into the durable warehouse, this one hands the bytes straight to the output block and lets the artifact be reclaimed at run end. That is what makes a live view of a file on disk possible — a preview drawn from a persisted copy is a cache with no invalidation, because the file it was made from can change underneath it and the copy cannot know. Bytes are read CONFINED to the producing run's scratch root (no separate file.read gate — the producing op was already gated as its own write-tier step), and a cas ref or any path outside that run's scratch is rejected. Capped at 2 MB: this exists to draw a thumbnail-sized artifact inline, not to move bulk data through the rpc envelope. Gated under the data.file scope like file-persist / data-file-read.",
+    "author": "recued",
+    "kind": "storage",
+    "version": 1,
+    "category": "data",
+    "risk_tier": "read",
+    "tags": [
+      "kernel",
+      "file",
+      "temp",
+      "read",
+      "preview"
+    ],
+    "input": {
+      "ref": null
+    },
+    "output": {
+      "bytes_b64": "bytes_b64",
+      "mime_type": "mime_type",
+      "filename": "filename",
+      "size_bytes": "size_bytes"
+    }
+  },
+  {
     "slug": "file-set-scan-status",
     "name": "Report a file's virus-scan verdict",
     "description": "Patch a data.file.received record's scan_status hot field to a local virus scanner's verdict ('clean' / 'flagged'; 'pending' / 'unscanned' are also accepted) and emit an `updated` event. The reception inbox reads scan_status back, so a 'flagged' upload surfaces a sharper warning at approve while a 'clean' one clears the advisory scan-gate (D-173 P5). Idempotent: re-reporting the same verdict is a no-op (no spurious `updated`). Driven by the ClamAV scanner pack's reactive recipe after a local clamdscan over a freshly-ingested file. MCP-RESERVED: this kernel ingredient (author 'recued') is never exposed as an agent tool, so an external AI agent can never forge a 'clean' verdict on a malicious file — only the local scan recipe writes here. Gated under the data.file scope like file-persist / data-file-read.",

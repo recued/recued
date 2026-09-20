@@ -593,7 +593,7 @@ describe('deriveVendorSearchArgs - Pipedrive list params', () => {
   it('derives the per-page limit query param and clamps it to the Pipedrive page size', () => {
     const args = expectOk(pipedriveSearch({ limit: 500 }));
 
-    expect(args).toEqual({ 'query.limit': '50' });
+    expect(args).toEqual({ 'query.limit': 50 });
   });
 
   it('maps supported equality filters to Pipedrive query params', () => {
@@ -607,7 +607,7 @@ describe('deriveVendorSearchArgs - Pipedrive list params', () => {
     );
 
     expect(args).toEqual({
-      'query.limit': '50',
+      'query.limit': 50,
       'query.owner_id': '42',
       'query.status': 'open',
     });

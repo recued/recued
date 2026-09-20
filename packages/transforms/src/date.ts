@@ -8,8 +8,36 @@ const DIVISORS: Record<DateUnit, number> = {
   days: 86_400_000,
 };
 
+/** Values that are NOT a date but which `new Date()` turns into a VALID one.
+ *
+ *  ⛔⛔ `new Date(null)` IS EPOCH 0, NOT AN INVALID DATE — so an `isNaN` guard
+ *  passes it straight through and an absent date is silently stamped 1970.
+ *  `date_parse` already documents this at length ("an AI-extracted `due_date`
+ *  that is null when unstated ... written downstream (task `due_at` etc)") and
+ *  guards it. `toDate` and `date_format` did not, so the same absent date was
+ *  refused by one transform and rendered as 1970 by its two siblings.
+ *
+ *  ⚠ BOOLEANS BELONG HERE TOO, and `date_parse`'s own guard missed them:
+ *  `new Date(true)` is `1970-01-01T00:00:00.001Z`, so `date_parse(true)`
+ *  returned `1`. A boolean is never a date under any reading.
+ *
+ *  ⚠ `undefined`, `''`, `[]` and `{}` already fall out as Invalid Date and need
+ *  no guard — which is the trap: a MISSING field is safe while an explicit
+ *  `null` (a vendor JSON null, a SQL NULL) is not, so the failure never shows up
+ *  in authoring and appears in production.
+ *
+ *  ⚠ NUMERIC `0` IS DELIBERATELY NOT HERE. `date_parse(0)` returns `0` today,
+ *  treating it as a representable epoch; whether "0 is not a date" is a separate
+ *  call from "null is not a date", and making it here would change one
+ *  transform's contract under cover of fixing another's. Same for a unix-SECONDS
+ *  number, which `new Date()` reads as 1970 while `toRecentMs` normalises — a
+ *  real divergence, and a separate one. */
+const isNonDateValue = (v: unknown): boolean =>
+  v === null || v === undefined || v === '' || typeof v === 'boolean';
+
 const toDate = (v: unknown, ctx: { now: () => Date }): Date | null => {
   if (v === 'now') return ctx.now();
+  if (isNonDateValue(v)) return null;
   const d = new Date(v as string);
   return isNaN(d.getTime()) ? null : d;
 };
@@ -29,18 +57,57 @@ const toDate = (v: unknown, ctx: { now: () => Date }): Date | null => {
  *  That assertion is yours. See contracts/recent-date.ts. */
 export const to_recent_date: TransformFn = (p) => toRecentMs(p.input);
 
+/** The ms-per-unit for a `unit` the caller may have supplied dynamically, or
+ *  null when it is not one of the four.
+ *
+ *  ⛔ `DIVISORS[bad]` IS `undefined`, AND UNDEFINED POISONS THE ARITHMETIC.
+ *  `date_diff` divided by it and returned **NaN**; `date_add` multiplied by it
+ *  and threw **`RangeError: Invalid time value`** out of `.toISOString()`. Six
+ *  hostile inputs threw and three silently returned the unchanged date — while
+ *  every other transform in this file returns null and tells the author to
+ *  "Gate with `is_null`". `date_period` states the policy outright: the
+ *  validator's enum catches a bad name at publish time, "but a defensive null
+ *  lets recipes chain `skip_when`". These two had neither half. */
+const divisorFor = (unit: unknown): number | null => {
+  if (typeof unit !== 'string') return null;
+  const ms = DIVISORS[unit as DateUnit];
+  return typeof ms === 'number' ? ms : null;
+};
+
+/** A finite number from a value a template may have produced.
+ *
+ *  ⚠ STRINGS MUST WORK: 37 shipped steps pass `"amount": "{{config.…}}"`, and
+ *  a resolved template is a string. ⚠ AND `null` / `''` / `[]` MUST NOT: each
+ *  coerces through `Number()` to a valid **0**, so an UNSET config silently
+ *  produced "the same date" as though it had worked — the numeric twin of the
+ *  `new Date(null)` → 1970 footgun guarded above. An intentional no-op is
+ *  `"amount": 0`, which 231 shipped steps already write explicitly. */
+const finiteNumber = (v: unknown): number | null => {
+  if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+  if (typeof v === 'string' && v.trim() !== '') {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
+};
+
 export const date_diff: TransformFn = (p, ctx) => {
   const from = toDate(p.from, ctx);
   const to = toDate(p.to, ctx);
-  if (!from || !to) return null;
-  return Math.floor((to.getTime() - from.getTime()) / DIVISORS[p.unit as DateUnit]);
+  const per = divisorFor(p.unit);
+  if (!from || !to || per === null) return null;
+  return Math.floor((to.getTime() - from.getTime()) / per);
 };
 
 export const date_add: TransformFn = (p, ctx) => {
   const d = toDate(p.date, ctx);
-  if (!d) return null;
-  const ms = Number(p.amount) * DIVISORS[p.unit as DateUnit];
-  return new Date(d.getTime() + ms).toISOString();
+  const per = divisorFor(p.unit);
+  const amount = finiteNumber(p.amount);
+  if (!d || per === null || amount === null) return null;
+  const next = new Date(d.getTime() + amount * per);
+  // ⚠ The product can still overflow the Date range (`amount: 1e308`), which
+  //   yields an Invalid Date that throws only at `.toISOString()`.
+  return Number.isNaN(next.getTime()) ? null : next.toISOString();
 };
 
 /** Parses a date input (ISO string, unix-ms number, or any value the
@@ -67,7 +134,7 @@ export const date_parse: TransformFn = (p) => {
   // silently stamped 1970-01-01 and written downstream (task `due_at` etc).
   // `''`/`undefined` already fall out as Invalid below; the `null` case is the
   // footgun this closes.
-  if (p.input === null || p.input === undefined || p.input === '') return null;
+  if (isNonDateValue(p.input)) return null;
   const raw = p.input as string;
   // D-193 `require_offset` — for an ABSOLUTE instant (an LLM filling a
   // reminder / schedule arg) the string MUST carry an explicit timezone
@@ -94,6 +161,7 @@ export const is_future: TransformFn = (p, ctx) => {
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
 export const date_format: TransformFn = (p) => {
+  if (isNonDateValue(p.date)) return null;
   const d = new Date(p.date as string);
   if (isNaN(d.getTime())) return null;
   const fmt = String(p.format ?? 'YYYY-MM-DD');

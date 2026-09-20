@@ -93,10 +93,10 @@
       "outreach-platform-admin": 83
     },
     "composition_bytes": {
-      "outreach": 70198,
-      "outreach-crm-data": 87954,
-      "outreach-engagement-automation": 108278,
-      "outreach-platform-admin": 129645
+      "outreach": 70214,
+      "outreach-crm-data": 87992,
+      "outreach-engagement-automation": 108338,
+      "outreach-platform-admin": 129682
     },
     "risk_counts": {
       "write": 55,

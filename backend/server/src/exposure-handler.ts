@@ -33,11 +33,11 @@ import {
   EXPOSURE_PRESETS,
   PATH_ROLES,
   RpcError,
+  isPathResolution,
   isRootApexMode,
   type ExposurePreset,
   type ExposureState,
   type HandlerSlice,
-  type PathResolution,
   type PathRole,
   type RootApexMode,
   type ServerRpcRegistry,
@@ -100,12 +100,6 @@ const isExposurePreset = (value: unknown): value is ExposurePreset =>
 
 const isPathRole = (value: unknown): value is PathRole =>
   typeof value === 'string' && PATH_ROLE_SET.has(value);
-
-const isPathResolution = (value: unknown): value is PathResolution => {
-  if (!value || typeof value !== 'object') return false;
-  const v = value as Record<string, unknown>;
-  return typeof v.lan === 'boolean' && typeof v.public === 'boolean';
-};
 
 const requireCallerInstance = (
   caller: { instance_id: string | null | undefined } | undefined,

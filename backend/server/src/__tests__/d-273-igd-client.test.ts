@@ -138,3 +138,144 @@ describe('D-273 — AddPortMapping shape', () => {
     expect(result).toEqual({ externalPort: 8446, lifetimeSeconds: 600 });
   });
 });
+
+/** D-273 — what actually goes on the wire, and what comes back.
+ *
+ *  ⚠ FOUND BY MUTATION (2026-09-18). Six properties survived, and two of them
+ *  for the same reason the unmap external-port bug survived before it: every
+ *  fixture in this file uses `internalPort: 443, externalPort: 443` and
+ *  `protocol: 'tcp'`, so the two ports and the two protocols are
+ *  indistinguishable in every request the suite has ever inspected. */
+describe('D-273 — AddPortMapping puts each value in its own slot', () => {
+  const okEnvelope =
+    '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body>'
+    + '<u:AddPortMappingResponse xmlns:u="urn:schemas-upnp-org:service:WANIPConnection:1"/>'
+    + '</s:Body></s:Envelope>';
+
+  it('⛔⛔ the INTERNAL and EXTERNAL ports do not swap', async () => {
+    // ⛔ A router assigning a port we did not ask for is the whole reason the
+    // record exists; a client that cannot keep the two apart in the REQUEST
+    // creates the mapping on the wrong port and then records the wrong pair.
+    // Invisible while every fixture maps 443→443.
+    const sent: string[] = [];
+    const client = mk(async ({ body }) => { sent.push(body); return okEnvelope; });
+    await client.map({
+      protocol: 'tcp', internalPort: 8443, externalPort: 443, lifetimeSeconds: 600,
+    });
+    expect(sent[0]).toContain('<NewExternalPort>443</NewExternalPort>');
+    expect(sent[0]).toContain('<NewInternalPort>8443</NewInternalPort>');
+  });
+
+  it('⛔ UDP is sent as UDP', async () => {
+    // Every fixture is tcp, so `PROTO` mapping udp→TCP was invisible. A UDP
+    // request answered as TCP maps the wrong protocol and then reads back as
+    // "nothing mapped" on the one we asked about.
+    const sent: string[] = [];
+    const client = mk(async ({ body }) => { sent.push(body); return okEnvelope; });
+    await client.map({
+      protocol: 'udp', internalPort: 8443, externalPort: 443, lifetimeSeconds: 600,
+    });
+    expect(sent[0]).toContain('<NewProtocol>UDP</NewProtocol>');
+    expect(sent[0]).not.toContain('<NewProtocol>TCP</NewProtocol>');
+  });
+
+  it('⛔ a zero lease is refused — IGD reads it as PERMANENT', async () => {
+    // Same rule as the NAT-PMP client. A miscomputed lease reaching the router
+    // creates exactly the permanent mapping the 725 refusal above exists to
+    // prevent, and nothing releases on shutdown.
+    const client = mk(async () => okEnvelope);
+    for (const lifetimeSeconds of [0, -1]) {
+      await expect(
+        client.map({ protocol: 'tcp', internalPort: 443, externalPort: 443, lifetimeSeconds }),
+        `a lease of ${lifetimeSeconds} was sent`,
+      ).rejects.toThrow(/positive lifetime/);
+    }
+  });
+
+  it('⛔ only 725 becomes a permanent-lease refusal', async () => {
+    // The refusal carries a specific, actionable message. Reporting every SOAP
+    // fault as "your router only does permanent leases" sends the owner to a
+    // setting that is not the problem.
+    const client = mk(async () => fault(718)); // ConflictInMappingEntry
+    const err = await client.map({
+      protocol: 'tcp', internalPort: 443, externalPort: 443, lifetimeSeconds: 600,
+    }).catch((e: unknown) => e);
+    expect(err).not.toBeInstanceOf(IgdPermanentLeaseRefused);
+  });
+});
+
+describe('D-273 — GetExternalIPAddress must actually carry an address', () => {
+  const withIp = (inner: string): string =>
+    '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body>'
+    + '<u:GetExternalIPAddressResponse xmlns:u="urn:schemas-upnp-org:service:WANIPConnection:1">'
+    + inner
+    + '</u:GetExternalIPAddressResponse></s:Body></s:Envelope>';
+
+  it('⛔⛔ a reply with NO address is refused, not coalesced to empty', async () => {
+    // ⛔ A DOCUMENTED PAST BUG WITH NO TEST. This coalesced to `''`, and
+    // `detectPortMappingSupport` reads "the gateway answered" as `enabled` — so
+    // a reply carrying no address at all reported a working, UPnP-capable
+    // router. Worse, `isCgnatIpv4('')` is false, so it also CLEARED the CGNAT
+    // warning it had no basis to clear: the one answer that makes the whole
+    // feature pointless, silently withdrawn.
+    const client = mk(async () => withIp(''));
+    await expect(client.externalAddress()).rejects.toThrow(/no address/);
+  });
+
+  it('⛔ an EMPTY address element is refused too', async () => {
+    // Absent and present-but-empty are different inputs and only one of them
+    // was covered by the null check.
+    const client = mk(async () => withIp('<NewExternalIPAddress></NewExternalIPAddress>'));
+    await expect(client.externalAddress()).rejects.toThrow(/no address/);
+  });
+
+  it('a real address comes back verbatim', async () => {
+    const client = mk(async () => withIp('<NewExternalIPAddress>203.0.113.7</NewExternalIPAddress>'));
+    expect(await client.externalAddress()).toEqual({ externalIp: '203.0.113.7' });
+  });
+});
+
+/** ⛔ THE CLIENT NAMES THE ACTION IT SENT, so a well-formed envelope answering
+ *  something else cannot pass as a reply to ours.
+ *
+ *  ⚠ FOUND BY MUTATION: `parseSoapResponse(raw, action)` losing its second
+ *  argument reddened nothing — the check is inside `igd-soap` and tested there,
+ *  but nothing proved the CLIENT passes the action through. One rule, and the
+ *  call site that arms it was the untested half.
+ *
+ *  ⛔ It matters most for `getMapping`, where the caller reads the answer as a
+ *  fact about a port: a reply that is really an `AddPortMappingResponse` parses
+ *  to an entry with an empty internal client and port 0, which reads as "some
+ *  other machine holds this port" — a conflict invented out of a stray reply. */
+describe('D-273 — a reply must answer the action we sent', () => {
+  const responseFor = (action: string): string =>
+    '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body>'
+    + `<u:${action}Response xmlns:u="urn:schemas-upnp-org:service:WANIPConnection:1"/>`
+    + '</s:Body></s:Envelope>';
+
+  it('⛔⛔ getMapping refuses a reply to a DIFFERENT action', async () => {
+    const client = mk(async () => responseFor('AddPortMapping'));
+    await expect(
+      client.getMapping({ protocol: 'tcp', externalPort: 443 }),
+    ).rejects.toThrow(/GetSpecificPortMappingEntryResponse/);
+  });
+
+  it('⛔ map refuses one too', async () => {
+    const client = mk(async () => responseFor('GetExternalIPAddress'));
+    await expect(client.map({
+      protocol: 'tcp', internalPort: 443, externalPort: 443, lifetimeSeconds: 600,
+    })).rejects.toThrow(/AddPortMappingResponse/);
+  });
+
+  it('⚠ and a SELF-CLOSED reply to the right action is accepted', async () => {
+    // The complement, and not a formality: real gateways send
+    // `<u:AddPortMappingResponse/>` as often as the open/close pair, so a check
+    // that understood only one spelling would refuse working routers — the
+    // failure this guard is about, inverted.
+    const client = mk(async () => responseFor('AddPortMapping'));
+    await expect(client.map({
+      protocol: 'tcp', internalPort: 443, externalPort: 443, lifetimeSeconds: 600,
+    })).resolves.toEqual({ externalPort: 443, lifetimeSeconds: 600 });
+  });
+});
+

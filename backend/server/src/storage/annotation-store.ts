@@ -41,6 +41,7 @@ import {
   type LinkFilter,
   type OriginSurface,
   type StoredRowProvenance,
+  truncateUtf8WithMarker,
 } from '@recued/contracts';
 import {
   FTS_REINDEX_PAGE,
@@ -751,9 +752,11 @@ export const createAnnotationStore = (
     // form rationale and shouldn't need to length-guard themselves.
     const evidence =
       typeof input.evidence === 'string' && input.evidence.length > 0
-        ? (Buffer.byteLength(input.evidence, 'utf8') > MAX_LINK_EVIDENCE_BYTES
-            ? input.evidence.slice(0, MAX_LINK_EVIDENCE_BYTES - 1) + '…'
-            : input.evidence)
+        // ⛔ WAS `slice(0, MAX - 1) + '…'`, WHICH BOUNDS NOTHING. `slice` counts
+        //   UTF-16 units against a BYTE cap (3x for CJK), and `…` is THREE bytes,
+        //   so even pure ASCII landed at 1,026 against a 1,024 cap. The helper
+        //   budgets the marker by its encoded size and cuts on a code point.
+        ? truncateUtf8WithMarker(input.evidence, MAX_LINK_EVIDENCE_BYTES)
         : null;
     const confidence =
       typeof input.confidence === 'number' && Number.isFinite(input.confidence)
@@ -810,9 +813,11 @@ export const createAnnotationStore = (
     assertValidLinkInput(input);
     const evidence =
       typeof input.evidence === 'string' && input.evidence.length > 0
-        ? (Buffer.byteLength(input.evidence, 'utf8') > MAX_LINK_EVIDENCE_BYTES
-            ? input.evidence.slice(0, MAX_LINK_EVIDENCE_BYTES - 1) + '…'
-            : input.evidence)
+        // ⛔ WAS `slice(0, MAX - 1) + '…'`, WHICH BOUNDS NOTHING. `slice` counts
+        //   UTF-16 units against a BYTE cap (3x for CJK), and `…` is THREE bytes,
+        //   so even pure ASCII landed at 1,026 against a 1,024 cap. The helper
+        //   budgets the marker by its encoded size and cuts on a code point.
+        ? truncateUtf8WithMarker(input.evidence, MAX_LINK_EVIDENCE_BYTES)
         : null;
     const confidence =
       typeof input.confidence === 'number' && Number.isFinite(input.confidence)

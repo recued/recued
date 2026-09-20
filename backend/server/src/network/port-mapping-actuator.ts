@@ -104,9 +104,15 @@ export const resolvePortMappingActuator = async (
     }
   }
 
-  if (opts.gateway !== undefined && opts.gateway.length > 0) {
+  // ⚠ TRIMMED, like `resolveLanAddress` already trims the same value. Both read
+  // a gateway out of the routing table, and `'   '` passed `length > 0` here
+  // while being rejected there — so a whitespace-only read built a NAT-PMP
+  // client aimed at nowhere and reported a mapping failure the operator cannot
+  // act on, instead of the honest "no router found" that `null` means.
+  const gateway = opts.gateway?.trim() ?? '';
+  if (gateway.length > 0) {
     const client = createNatPmpClient({
-      gateway: opts.gateway,
+      gateway,
       ...(opts.natPmpSend !== undefined ? { send: opts.natPmpSend } : {}),
     });
     return {
@@ -203,9 +209,15 @@ export const createIgdDescriptionFetch = (
     IGD_HTTP_TIMEOUT_MS,
   );
 
-export const createIgdHttpPost = (): IgdHttpPost =>
+export const createIgdHttpPost = (
+  /** ⚠ Seamed exactly as `createIgdDescriptionFetch` is, and for the same
+   *  reason: the redirect confinement below is an SSRF boundary, and the
+   *  description fetch's identical guard is tested while this one was not — one
+   *  rule at two ends with only one end pinned. Production omits it. */
+  fetchImpl: typeof fetch = fetch,
+): IgdHttpPost =>
   ({ url, soapAction, body }) => withTimeout(
-    async (signal) => readCapped(await fetch(url, {
+    async (signal) => readCapped(await fetchImpl(url, {
       method: 'POST',
       // ⚠ Both headers are required by the SOAP binding, and `SOAPAction` must
       // arrive already quoted — `buildSoapRequest` does that.
@@ -225,11 +237,43 @@ export const createIgdHttpPost = (): IgdHttpPost =>
  *  Devices spread their answers randomly across MX to avoid a stampede, so the
  *  first arrival is not the only one and is not necessarily the router — a
  *  printer or a media server answering `ssdp:all` can be quicker. */
-export const createSsdpTransport = (): SsdpTransport => ({
+/** The slice of a UDP socket this transport actually uses.
+ *
+ *  ⚠ DECLARED SO THE TRANSPORT CAN BE DRIVEN. Every property below — pinning
+ *  the multicast interface, collecting for the whole window, treating a socket
+ *  error as an answer, settling once, and closing on every exit — was written
+ *  with a documented reason and NONE was reachable from a test while this
+ *  function reached for `node:dgram` itself. Same seam, same rationale, as the
+ *  `fetchImpl` parameters on the two fetch helpers above and `send` on
+ *  `createNatPmpClient`. */
+export interface SsdpSocket {
+  on(event: 'message', listener: (msg: { toString(encoding: 'utf8'): string }) => void): unknown;
+  on(event: 'error', listener: (err: Error) => void): unknown;
+  bind(options: { address?: string }, callback: () => void): unknown;
+  setMulticastInterface(address: string): void;
+  send(
+    message: string,
+    port: number,
+    address: string,
+    callback: (err: Error | null) => void,
+  ): void;
+  close(): void;
+}
+
+export type SsdpSocketFactory = () => SsdpSocket;
+
+/** ⚠ The one cast, contained here: `node:dgram`'s `Socket` satisfies the shape
+ *  above but its overloaded `on` does not line up structurally. */
+const defaultSsdpSocket: SsdpSocketFactory = () =>
+  createSocket({ type: 'udp4', reuseAddr: true }) as unknown as SsdpSocket;
+
+export const createSsdpTransport = (
+  createSsdpSocket: SsdpSocketFactory = defaultSsdpSocket,
+): SsdpTransport => ({
   search: ({ message, windowMs, bindAddress }) =>
     new Promise<ReadonlyArray<string>>((resolve) => {
       const replies: string[] = [];
-      const socket = createSocket({ type: 'udp4', reuseAddr: true });
+      const socket = createSsdpSocket();
       let settled = false;
       const finish = (): void => {
         if (settled) return;

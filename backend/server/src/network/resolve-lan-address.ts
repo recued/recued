@@ -348,6 +348,18 @@ export const resolveLanAddress = (
       if (entry.internal) continue;
       const addr = entry.address;
       if (typeof addr !== 'string' || addr.length === 0) continue;
+      // ⚠ THE NEXT TWO ARE REDUNDANT WITH THE RFC1918 TEST BELOW, DELIBERATELY.
+      // Neither `127.x` nor `169.254.x` is in RFC1918, so the third line
+      // already excludes both — mutation confirms it: deleting either changes
+      // no behaviour any test can see. They are kept as defence against ONE
+      // specific plausible edit: widening `RFC1918_PATTERNS` to admit
+      // link-local, which `igd-discovery.ts`'s own private-address predicate
+      // DOES accept for its different purpose (finding a router). A reader
+      // moving that list here would otherwise start offering the router an
+      // address no other machine can route to.
+      //
+      // ⛔ Recorded so nobody reads a surviving mutant here as a coverage gap
+      // and writes a test that passes either way.
       if (isLoopbackIpv4(addr)) continue;
       if (isLinkLocalIpv4(addr)) continue;
       if (!isRfc1918Ipv4(addr)) continue;

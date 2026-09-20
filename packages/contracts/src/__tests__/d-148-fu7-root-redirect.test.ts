@@ -13,6 +13,8 @@ import {
   ROOT_REDIRECT_TARGET,
   isProDdnsHost,
   resolveProDdnsHost,
+  resolveProDdnsHostIn,
+  type DdnsZone,
 } from '../network.js';
 
 describe('D-176 — DDNS zone registry', () => {
@@ -134,5 +136,76 @@ describe('D-176 — resolveProDdnsHost returns { handle, zone }', () => {
     expect(resolveProDdnsHost('recued.net')).toBeNull();
     expect(resolveProDdnsHost('a.b.recued.net')).toBeNull();
     expect(resolveProDdnsHost('mary.example.org')).toBeNull();
+  });
+});
+
+describe('\u26d4 D-176 \u2014 a NESTED zone suffix must not blacklist itself', () => {
+  // The registry invites this: "additional zones are pure config \u2014 add an
+  // entry \u2026 no code change". A sub-zone of a domain already listed
+  // (`.eu.recued.net` for residency, `.stg.recued.net` to stop staging sharing
+  // the production zone) is the CHEAPER expansion than a new registrable
+  // domain \u2014 no purchase, no delegation, no extra cert.
+  const PARENT: DdnsZone =
+    { suffix: '.recued.net', label: 'net', default: true, enabled: true };
+  const NESTED: DdnsZone =
+    { suffix: '.eu.recued.net', label: 'eu', default: false, enabled: true };
+
+  // \u26d4\u26d4 ORDER IS THE WHOLE POINT, so both orders are driven. The loop used to
+  // `return null` on a multi-label prefix: with the parent FIRST \u2014 what you
+  // get by APPENDING \u2014 `alice.eu.recued.net` matched `.recued.net`, yielded
+  // `alice.eu`, and returned before the nested zone was tried. The entire
+  // sub-zone went dark, and silently: null \u2192 `isProDdnsHost` false \u2192 the
+  // redirect handler treats the host as not-Pro-DDNS, with no error anywhere.
+  for (const [name, zones] of [
+    ['parent listed first (the append order)', [PARENT, NESTED]],
+    ['nested listed first', [NESTED, PARENT]],
+  ] as ReadonlyArray<readonly [string, readonly DdnsZone[]]>) {
+    it(`resolves both zones \u2014 ${name}`, () => {
+      expect(resolveProDdnsHostIn(zones, 'alice.recued.net'))
+        .toMatchObject({ handle: 'alice', zone: { label: 'net' } });
+      expect(resolveProDdnsHostIn(zones, 'alice.eu.recued.net'))
+        .toMatchObject({ handle: 'alice', zone: { label: 'eu' } });
+      expect(resolveProDdnsHostIn(zones, 'bob.eu.recued.net'))
+        .toMatchObject({ handle: 'bob', zone: { label: 'eu' } });
+    });
+  }
+
+  it('still refuses what a multi-label prefix is SUPPOSED to refuse', () => {
+    // \u26a0 The mirror failure of this fix: `continue` must not turn into
+    // "try harder until something matches". With only the parent enabled,
+    // a two-label prefix has no other zone to fall through to and stays null.
+    expect(resolveProDdnsHostIn([PARENT], 'a.b.recued.net')).toBeNull();
+    expect(resolveProDdnsHostIn([PARENT, NESTED], 'a.b.c.recued.net')).toBeNull();
+    expect(resolveProDdnsHostIn([PARENT, NESTED], 'recued.net')).toBeNull();
+  });
+
+  it('\u26a0 a nested zone COLLIDES with an existing handle of the same name', () => {
+    // I first asserted this was null and was wrong. To the PARENT zone,
+    // `eu.recued.net` is simply the handle `eu`, and returning it is correct
+    // here \u2014 this function decides Pro-DDNS SHAPE, and its own doc puts
+    // handle validity at registration time, not redirect time.
+    //
+    // \ud83d\udd11 But it names a real prerequisite for ever adding a nested zone: if the
+    // handle `eu` is already reserved under `.recued.net`, `.eu.recued.net`
+    // gives one name two owners. That gate belongs at handle RESERVATION
+    // (reject a handle equal to any zone's first label, and refuse a zone
+    // whose first label is a live handle) \u2014 not here, which is why this pins
+    // the shape answer rather than asking the resolver to arbitrate.
+    expect(resolveProDdnsHostIn([PARENT, NESTED], 'eu.recued.net'))
+      .toMatchObject({ handle: 'eu', zone: { label: 'net' } });
+  });
+
+  it('the leading dot keeps a match on a LABEL boundary', () => {
+    // `.recued.net` must not match `alice.xrecued.net`. This is what makes
+    // "at most one zone yields a single-label prefix" true, which is in turn
+    // why `continue` is order-independent rather than merely luckier.
+    expect(resolveProDdnsHostIn([PARENT], 'alice.xrecued.net')).toBeNull();
+  });
+
+  it('the live binding passes the ENABLED registry, not the whole one', () => {
+    // `resolveProDdnsHost` is a one-line binding over the core; pin that it
+    // filters, so a disabled zone cannot start resolving via the new seam.
+    expect(resolveProDdnsHost('alice.recued.cloud')).toBeNull();
+    expect(resolveProDdnsHost('alice.recued.net')?.zone.label).toBe('net');
   });
 });

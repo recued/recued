@@ -639,6 +639,49 @@ export const buildConnectionApiBody = (
     return typeof raw === 'string' ? raw : String(raw);
   }
   const fields = extractDotPrefix(params, 'body');
+
+  // ⛔⛔ A WHOLE-OBJECT `body`, WHICH THIS ADAPTER USED TO READ WITH NOTHING.
+  //   76 operations across 20 packs declare `{ key: 'body', type: 'object' }`
+  //   with no dotted alternative, 43 of them pairing it with an
+  //   `editable_args` entry of `type: 'json'` — an owner-editable payload on the
+  //   approval card. Every one of those calls went out with NO BODY, because
+  //   this function read `body_raw` or `body.*` and returned `undefined`
+  //   otherwise. Eight shipped write recipes were posting empty (a Zuora
+  //   billing account, a Cal.com booking, HelpScout replies…).
+  //
+  //   🔑 It is not 76 authors making one mistake. A free-form payload is the
+  //   RIGHT model for the endpoints they wrap — a Zoho CRM record carries
+  //   per-tenant custom fields, so enumerating them as `body.*` is not possible
+  //   even in principle — and the declaration plus its json editor is coherent.
+  //   The runtime simply did not honour it.
+  //
+  // ⚠ REFUSES rather than picking a winner when it is combined with `body.*` or
+  //   with the decimal-integer spec, per this file's own rule: *"a silent
+  //   precedence rule is how a caller ships the wrong body and never learns."*
+  //   `body_raw` still wins above, which is documented and unchanged.
+  if (hasOwn(params, 'body') && own(params, 'body') != null) {
+    if (Object.keys(fields).length > 0) {
+      throw new IngredientError(
+        'BAD_INPUT',
+        'connection.api: `body` and `body.<k>` are exclusive — send the whole payload or its fields, not both',
+        {},
+      );
+    }
+    if (own(params, '__rc_json_decimal_integer_fields') !== undefined) {
+      throw new IngredientError(
+        'BAD_INPUT',
+        'connection.api: exact decimal-integer serialization names `body.<k>` fields and cannot apply to a whole-object `body`',
+        {},
+      );
+    }
+    const value = own(params, 'body');
+    // A string body is sent verbatim, matching `body_raw` and the `http`
+    // adapter's own `buildBody`; anything else is JSON.
+    if (typeof value === 'string') return value;
+    if (!hasContentTypeHeader(headers)) headers.set('Content-Type', 'application/json');
+    return JSON.stringify(value);
+  }
+
   if (Object.keys(fields).length === 0) return undefined;
   const contentType = headers.get('Content-Type')
     ?.split(';', 1)[0]

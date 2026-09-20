@@ -291,11 +291,76 @@ describe('D-145 PB2 — createSigningRecuedPlanStore wrapper', () => {
     const wrapped = createSigningRecuedPlanStore(makeBaseStore(), {
       getServerIdentity: () => server_identity,
     });
-    const plan = buildPlan(); // high_assurance: false
+    const plan = buildPlan(); // high_assurance: false, redact_user_request: false
     await wrapped.append(plan);
     const got = await wrapped.get(plan.plan_id);
     expect(got?.signature).toBeUndefined();
     expect(got?.signer_fingerprint).toBeUndefined();
+    // ⛔⛔ "UNCHANGED" IS NOW CHECKED, NOT JUST CLAIMED. This asserted only that
+    // the two signature fields were absent — so a wrapper that redacted
+    // REGARDLESS of policy passed it, and mutation confirmed that. The redaction
+    // is not a no-op on such a plan: `redactUserRequest` replaces `user_request`
+    // with the marker AND flips `audit_policy.redact_user_request` to true, so
+    // the owner's own "keep my request" setting is overwritten by the act of
+    // storing the plan, with nothing left to show what it was.
+    expect(got, 'a pass-through plan came back altered').toEqual(plan);
+  });
+
+  it('⛔⛔ a plan whose policy says DO NOT redact keeps its request — signed or not', async () => {
+    // ⚠ BOTH PATHS, because the redaction is applied at TWO layers: the wrapper
+    // redacts so unsigned plans persist redacted, and `signRecuedPlan` redacts
+    // again so a direct caller of the primitive cannot bypass it. Two layers
+    // agreeing is why one of them losing its policy check was invisible — the
+    // only fixture that can see it is a plan that opted OUT.
+    const server_identity = generateEd25519Keypair('server_identity_key');
+    const wrapped = createSigningRecuedPlanStore(makeBaseStore(), {
+      getServerIdentity: () => server_identity,
+    });
+    for (const high_assurance of [false, true]) {
+      const plan = buildPlan({
+        plan_id: `plan-keep-${String(high_assurance)}`,
+        user_request: 'please summarise my inbox',
+        audit_policy: {
+          retain_for_days: 90,
+          high_assurance,
+          redact_user_request: false,
+        },
+      });
+      await wrapped.append(plan);
+      const got = await wrapped.get(plan.plan_id);
+      expect(
+        got?.user_request,
+        `high_assurance=${String(high_assurance)}: the request was redacted against policy`,
+      ).toBe('please summarise my inbox');
+      expect(
+        got?.audit_policy.redact_user_request,
+        `high_assurance=${String(high_assurance)}: the policy flag was overwritten`,
+      ).toBe(false);
+    }
+  });
+
+  it('⚠ and a plan that OPTS IN is redacted on both paths', async () => {
+    // The complement, so the case above cannot pass under "nothing ever
+    // redacts". `redactUserRequest` sets the marker and flips the flag.
+    const server_identity = generateEd25519Keypair('server_identity_key');
+    const wrapped = createSigningRecuedPlanStore(makeBaseStore(), {
+      getServerIdentity: () => server_identity,
+    });
+    for (const high_assurance of [false, true]) {
+      const plan = buildPlan({
+        plan_id: `plan-redact-${String(high_assurance)}`,
+        user_request: 'please summarise my inbox',
+        audit_policy: {
+          retain_for_days: 90,
+          high_assurance,
+          redact_user_request: true,
+        },
+      });
+      await wrapped.append(plan);
+      const got = await wrapped.get(plan.plan_id);
+      expect(got?.user_request).toBe(REDACTED_USER_REQUEST_MARKER);
+      expect(got?.user_request).not.toContain('inbox');
+    }
   });
 
   it('signs high-assurance plans automatically at append time', async () => {
@@ -440,3 +505,27 @@ describe('D-145 PB2 — createSigningRecuedPlanStore wrapper', () => {
     expect(await wrapped.size()).toBe(0);
   });
 });
+
+/* ─── Mutation sweep of `recued-plan/signing.ts`, 2026-09-18 ────────────────
+ *  15 mutations; 13 caught. The redact-before-sign invariant is well pinned —
+ *  signing the unredacted plan, skipping redaction, and returning the raw
+ *  request beside a redacted signature all red immediately.
+ *
+ *  EQUIVALENT, both because the redaction is applied at TWO layers on purpose:
+ *
+ *  1. `signRecuedPlan`'s `user_request !== REDACTED_USER_REQUEST_MARKER`
+ *     guard. `redactUserRequest` is IDEMPOTENT — it sets the marker and flips
+ *     `audit_policy.redact_user_request` to true, so applying it twice gives
+ *     the same plan. The guard is a short-circuit, not a correctness property.
+ *
+ *  2. The wrapper passing `redacted` rather than `plan` into `signRecuedPlan`.
+ *     The primitive redacts internally for exactly this reason — the module
+ *     says a direct caller "must not be able to bypass it" — so handing it the
+ *     raw plan produces the same signed bytes. That is the defence-in-depth
+ *     working; keep both.
+ *
+ *  ⚠ AND THE TWO LAYERS ARE WHY THE REAL GAP HID. A plan that opts OUT of
+ *  redaction is the only fixture where one layer losing its policy check is
+ *  visible, because on an opt-IN plan the other layer covers for it.
+ * ────────────────────────────────────────────────────────────────────────── */
+

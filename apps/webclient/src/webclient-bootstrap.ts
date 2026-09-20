@@ -10120,6 +10120,13 @@ export const bootstrapWebclient = async (
           // exact artifact preview/download in recipe results. The result host
           // rechecks ref/hash/MIME/name/size before it opens returned bytes.
           fileReadCaller: (args) => rpcConn.call('data.file.read', args),
+          // D-274 — the SAME callers the chat route and Data Files use, so a
+          // `file_preview` block draws through one code path rather than a
+          // second implementation that could disagree about caps or integrity.
+          filePreviewCallers: {
+            preview: args => rpcConn.call('data.file.attachments.preview', args, { timeout: 150_000 }),
+            read: args => rpcConn.call('data.file.read', args, { timeout: 150_000 }),
+          },
           // D-195 optional workflow install: these lightweight public
           // projections prove the directly named BulkPackManifest carries all
           // current recipe_bundle members. Catalog failure keeps the CTA

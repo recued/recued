@@ -11,6 +11,7 @@
  * agent reader needs its own explicit grant and redaction design.
  */
 
+import { csvCell as sharedCsvCell } from '@recued/contracts';
 import {
   RpcError,
   FORM_RESPONSE_LIFECYCLE_STATES,
@@ -270,13 +271,16 @@ const exportQuery = (
       : {}),
 });
 
-const csvCell = (value: unknown): string => {
-  let text = typeof value === 'string' ? value : JSON.stringify(value ?? '');
-  // Neutralize spreadsheet formula execution while preserving the visible
-  // owner value. Quoting alone does not stop Excel/Sheets formula evaluation.
-  if (/^\s*[=+\-@]/.test(text)) text = `'${text}`;
-  return `"${text.replace(/"/g, '""')}"`;
-};
+/** ⚠ THE RULE THAT USED TO LIVE HERE IS NOW `csvCell` IN CONTRACTS, VERBATIM.
+ *  This surface got it right first — its cells carry text other people
+ *  submitted through a form — and three other CSV writers had missed it. The
+ *  reasoning moved with the code; see `packages/contracts/src/csv.ts`.
+ *  ⚠ `alwaysQuote` preserves this file's uniformly-quoted rows exactly. */
+const csvCell = (value: unknown): string =>
+  sharedCsvCell(
+    typeof value === 'string' ? value : JSON.stringify(value ?? ''),
+    { alwaysQuote: true },
+  );
 
 const exportCsv = (
   records: readonly FormResponse[],
