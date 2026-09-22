@@ -500,6 +500,9 @@ export const PACKS_DETAIL_BACK_ATTR = 'data-recued-packs-detail-back';
 // for pack-authored risk / approval defaults; Access remains the per-contract
 // reachability matrix.
 export const PACKS_DETAIL_TABS_ATTR = 'data-recued-packs-detail-tabs';
+/** D-282 slice C — the pin-to-drawer control. Value is the STATE
+ *  (`pinned` / `unpinned`) so a test pins the state rather than the label. */
+export const PACKS_DETAIL_PIN_ATTR = 'data-recued-packs-detail-pin';
 export const PACKS_DETAIL_TAB_ATTR = 'data-recued-packs-detail-tab';
 export const PACKS_DETAIL_TAB_GROUP_ATTR = 'data-recued-packs-detail-tab-group';
 export const PACKS_DETAIL_TAB_PANEL_ATTR = 'data-recued-packs-detail-tab-panel';
@@ -822,12 +825,31 @@ export interface MountPacksPanelOptions {
   /** Runtime-derived view requested by
    * `#packs/<slug>/use/<recipe-id>`. Applied only to `initialSlug`. */
   initialAppViewId?: string;
+  /** D-282 slice C — the packs this DEVICE has pinned to the navigation
+   *  drawer, and the writer for that list. Both or neither: a Pin control with
+   *  no writer is a button that reports nothing, and a list with no control is
+   *  a state the owner cannot reach.
+   *
+   *  ⛔ A GETTER, NOT A SNAPSHOT. The list lives in the bootstrap and moves the
+   *  moment the owner presses the control; a value captured at mount would
+   *  leave the button reading "Pin" on a pack that is already pinned until
+   *  something else happened to remount the panel. */
+  pinnedApps?: () => readonly string[];
+  onTogglePin?: (packSlug: string, pinned: boolean) => void;
+  /** D-282 B5 — the record a lookup address named
+   * (`#packs/<slug>/use/<lookup>/<target>`). Forwarded verbatim; whether it is
+   * honoured is the app view's decision, taken against the installed roster. */
+  initialAppViewTarget?: string;
   /** Reports generated-view navigation to the route-owned hierarchical History
-   * adapter. `replace` canonicalizes a stale deep link without adding history. */
+   * adapter. `replace` canonicalizes a stale deep link without adding history.
+   *
+   * `target` names the record an open LOOKUP is showing; absent / null is the
+   * browse view's own address. */
   onAppViewNavigate?: (
     packSlug: string,
     viewId: string | null,
     intent: 'auto' | 'replace',
+    target?: string | null,
   ) => void;
   /** Supervision feature (Slice 4) — `supervision.list` discovery caller. When
    *  present (with `runSupervisionSet`), the panel renders the pack-detail
@@ -1050,6 +1072,14 @@ const COPY = {
   detail_tabs_label: 'Pack sections',
   detail_use_tab_label: 'Use',
   detail_manage_tab_label: 'Manage',
+  // D-282 slice C. ⚠ "this device" is in the hint because the pref is stored
+  // per paired instance: the laptop and the counter tablet pin different
+  // things, and an owner who pinned on one and looked on the other would
+  // otherwise read it as a bug.
+  detail_pin_label: 'Pin',
+  detail_unpin_label: 'Unpin',
+  detail_pin_hint: 'Put this app in the navigation menu on this device',
+  detail_unpin_hint: 'Take this app out of the navigation menu on this device',
   detail_manage_tabs_label: 'Pack management sections',
   detail_tab_label: 'Detail',
   detail_permissions_tab_label: 'Permissions',
@@ -1062,6 +1092,17 @@ const COPY = {
    *  the two is stale. */
   detail_permission_preview_label: 'Before you install',
   detail_operation_defaults_empty: 'There is nothing to change here for this Pack.',
+  /** ⛔ THE IN-FLIGHT STATE NEEDS ITS OWN WORDS, because the empty one is a
+   *  CLAIM. `packs.list` no longer forwards `manifest` for ANY pack (it was
+   *  17.7 MB and the socket dropped it — see `PackListEntry.manifest`), so an
+   *  installed pack's detail now paints once before `ensureDetailResolved`
+   *  lands. Reusing "There is nothing to change here" for that window states
+   *  something FALSE about a pack that has plenty to change, and states it
+   *  confidently, which is the failure mode worth avoiding: a reader who
+   *  believes an empty answer stops looking, while a reader who sees "loading"
+   *  waits. The window is a local disk read, but the sentence outlives it in
+   *  whoever read it. */
+  detail_operation_defaults_loading: 'Loading this Pack’s operations…',
   detail_operation_defaults_unavailable: 'This server cannot show what it may do to start with.',
   recipes_label: 'recipes',
   body_grants_label: 'body content',
@@ -2352,7 +2393,9 @@ export const mountPacksPanel = (
     // `[]` means "this pack declares no connection" (→ no Connect section), NOT
     // "fall through to the seed". Only a MISSING field (a not-yet-migrated pack
     // like onedrive) defers to the interim compile-time seed.
-    const manifestReqs = findPackBySlug(slug)?.manifest?.connection_requirements;
+    // Projected on the row (see PackListEntry); reaching through `manifest`
+    // for a scalar is what kept the 36 KB field on every list entry.
+    const manifestReqs = findPackBySlug(slug)?.connection_requirements;
     return manifestReqs !== undefined
       ? manifestReqs[0]
       : getSeededConnectionRequirements(slug)[0];
@@ -2806,7 +2849,7 @@ export const mountPacksPanel = (
     // Only consulted when there is no requirement: a descriptor already provides
     // the Connect section, and a hint must never add adoption to it.
     const connectionHintSetup = connectionHintSetupSlug(
-      findPackBySlug(pack.slug)?.manifest?.connection_hints,
+      findPackBySlug(pack.slug)?.connection_hints,
       connectionRequirement !== undefined,
     );
     // D-247 D15 — resolve the recipe disclosure for THIS manifest. Idempotent;
@@ -3518,6 +3561,39 @@ export const mountPacksPanel = (
         'detail', COPY.detail_manage_tab_label, shownTab !== 'use',
         'primary', primaryTabs, pickPrimaryTab,
       ));
+      // D-282 slice C — pin this app to the navigation drawer.
+      //
+      // ⛔ ONLY WHERE THERE IS AN APP TO OPEN. The control lives inside the
+      // `showUse` branch, so a capability pack (`adyen-checkout`, `ripgrep` —
+      // ops for other recipes to call, nothing to open) never offers one. A
+      // pinned seat whose pack has no app surface would land the owner on a
+      // management page they did not ask for.
+      if (opts.onTogglePin !== undefined) {
+        const pinned = (opts.pinnedApps?.() ?? []).includes(pack.slug);
+        const pin = doc.createElement('button');
+        pin.setAttribute('type', 'button');
+        pin.setAttribute(PACKS_DETAIL_PIN_ATTR, pinned ? 'pinned' : 'unpinned');
+        pin.className = 'packs-detail-pin';
+        pin.textContent = pinned ? COPY.detail_unpin_label : COPY.detail_pin_label;
+        pin.setAttribute('aria-pressed', String(pinned));
+        pin.setAttribute(
+          'title',
+          pinned ? COPY.detail_unpin_hint : COPY.detail_pin_hint,
+        );
+        pin.addEventListener('click', () => {
+          opts.onTogglePin?.(pack.slug, !pinned);
+          // The writer updates its list synchronously (optimistic, then
+          // authoritative), so repainting here reads the new state back through
+          // the getter — no second copy of the pin list on this side.
+          //
+          // ⚠ NOT PROVEN BY A TEST, and said rather than implied: the panel
+          // repaints on several other signals, so removing this line leaves the
+          // suite green. It is here because the flip must not DEPEND on one of
+          // those happening to fire.
+          render();
+        });
+        topStrip.appendChild(pin);
+      }
       wrapper.appendChild(topStrip);
     }
 
@@ -3584,6 +3660,11 @@ export const mountPacksPanel = (
           && pack.slug === opts.initialSlug
           ? opts.initialAppViewId
           : undefined;
+        // The target rides the SAME one-shot gate as the view id — a record
+        // from the mounted address, never re-applied on a later repaint.
+        const requestedInitialTarget = requestedInitialView === undefined
+          ? undefined
+          : opts.initialAppViewTarget;
         if (requestedInitialView !== undefined) initialAppViewPending = false;
         appView = mountPackAppView({
           host: tabPanel,
@@ -3608,10 +3689,24 @@ export const mountPacksPanel = (
           ...(requestedInitialView !== undefined
             ? { initialViewId: requestedInitialView }
             : {}),
+          ...(requestedInitialTarget !== undefined
+            ? { initialTarget: requestedInitialTarget }
+            : {}),
           ...(opts.onAppViewNavigate !== undefined
             ? {
                 onSelectView: (viewId: string) => {
                   opts.onAppViewNavigate?.(pack.slug, viewId, 'auto');
+                },
+                // D-282 B5 — a detail is a place. Opening one pushes its own
+                // address; closing it puts the view's back, so Back means
+                // "return to the list" rather than "leave the pack".
+                onOpenLookup: (open) => {
+                  opts.onAppViewNavigate?.(
+                    pack.slug,
+                    open === null ? appView?.activeViewId() ?? null : open.recipe_id,
+                    'auto',
+                    open === null ? null : open.target,
+                  );
                 },
               }
             : {}),
@@ -3625,7 +3720,14 @@ export const mountPacksPanel = (
             appView.activeViewId(),
             'replace',
           );
-        } else if (appView.activeViewId() !== requestedInitialView) {
+        } else if (
+          // ⛔ A LOOKUP ADDRESS IS NEVER A TAB, so the plain "requested view is
+          // not what opened" test rewrites every one of them away before the
+          // record has even loaded. The mount reports whether it ACCEPTED the
+          // address; only a refusal — a stale bookmark — is canonicalized.
+          appView.hydratedLookup() === null
+          && appView.activeViewId() !== requestedInitialView
+        ) {
           opts.onAppViewNavigate?.(
             pack.slug,
             appView.activeViewId(),
@@ -3673,9 +3775,14 @@ export const mountPacksPanel = (
         } else {
           const note = doc.createElement('p');
           note.className = 'packs-detail-note';
-          note.textContent = ownerOperations.enabled
-            ? COPY.detail_operation_defaults_empty
-            : COPY.detail_operation_defaults_unavailable;
+          // Order matters: "this server cannot show it" is true whether or not
+          // the manifest has arrived, so it answers first; only a CAPABLE server
+          // with the manifest still in flight is a loading state.
+          note.textContent = !ownerOperations.enabled
+            ? COPY.detail_operation_defaults_unavailable
+            : pack.manifest === undefined
+              ? COPY.detail_operation_defaults_loading
+              : COPY.detail_operation_defaults_empty;
           defaults.appendChild(note);
         }
       }
@@ -3730,7 +3837,7 @@ export const mountPacksPanel = (
       about.appendChild(desc);
       // Unresolved Discover pack ⇒ no tags yet; `ensureDetailResolved` fills the
       // manifest in and the About section re-renders with them.
-      const tags = pack.manifest?.tags ?? [];
+      const tags = pack.tags ?? [];
       if (tags.length > 0) {
         const tagsP = doc.createElement('p');
         tagsP.className = 'packs-detail-tags';
@@ -4243,6 +4350,38 @@ export const PACKS_PANEL_STYLES = `
   gap: 4px;
   overflow-x: auto;
   border-bottom: 1px solid var(--border);
+}
+/* D-282 slice C — the pin control rides the tab strip's right edge. Not a tab:
+   it navigates nowhere and carries no tablist role, so it is pushed away from
+   the tabs rather than sitting among them. */
+[${PACKS_PANEL_ATTR}] .packs-detail-pin {
+  appearance: none;
+  box-sizing: border-box;
+  min-height: 36px;
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  align-self: center;
+  background: none;
+  color: var(--fg-muted);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+}
+[${PACKS_PANEL_ATTR}] .packs-detail-pin:hover {
+  border-color: var(--border-strong);
+  color: var(--fg);
+}
+[${PACKS_PANEL_ATTR}] .packs-detail-pin[aria-pressed="true"] {
+  border-color: var(--accent);
+  color: var(--fg);
+}
+[${PACKS_PANEL_ATTR}] .packs-detail-pin:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--accent-weak);
 }
 [${PACKS_PANEL_ATTR}] [${PACKS_DETAIL_TAB_ATTR}] {
   appearance: none;

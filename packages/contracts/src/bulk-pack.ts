@@ -1074,32 +1074,61 @@ export interface PackListEntry {
   /** `manifest.repo`, lifted — the detail's author-repo link, also shown for
    *  packs that are not installed. */
   repo?: string;
-  /** Forwarded manifest — the install dialog calls `packs.install` with this
-   *  value as the `manifest` argument, and the installed-pack management
-   *  surfaces (access controls, owner operations, grant overlap, collisions,
-   *  supervision) read it directly.
+  /** The pack's manifest — **CLIENT-FILLED, NEVER SERVER-SENT ON THIS LIST.**
    *
-   *  ⛔ **OPTIONAL, and only present when `installed` is true.** It used to be
-   *  unconditional, on a reason this comment stated outright: *"bundled-only
-   *  packs at v1 means the manifest is already on disk + small."* That was true
-   *  when it was written and is not true now. At **954** bundled packs a
-   *  `packs.list` carrying every manifest serializes to **44.6 MB** — for a list
-   *  whose own fields (slug / name / description / version / installed / requires
-   *  / counts) come to **~1 MB**. A 43× payload for a list view, pushed over the
-   *  pair WebSocket and parsed by the browser on every Packs route load.
+   *  ⛔⛔ `packs.list` DOES NOT POPULATE THIS FIELD, for any pack, in any install
+   *  state. It arrives `undefined` on every row and the client backfills it for
+   *  the ONE pack whose detail is open, via `ensureDetailResolved` →
+   *  `packs.resolveBySlug`. The field stays on the type because that backfill
+   *  writes it into the local roster, and the detail readers (access controls,
+   *  owner operations, grant overlap, collisions, supervision, permission
+   *  preview) read it from there synchronously, exactly as before.
    *
-   *  🔑 The split is by INSTALL STATE because that is exactly where the need
-   *  divides: the management surfaces only ever act on installed packs, so they
-   *  keep the manifest they already relied on. A Discover row renders from the
-   *  projected fields alone. The one consumer that needs an UNINSTALLED pack's
-   *  manifest is the install dialog — and it needs exactly one, at the moment
-   *  the user opens it, which is what `packs.manifest` serves.
+   *  🔑 THIS FIELD HAS NOW BEEN CUT TWICE, AND THE FIRST CUT IS WHY THE SECOND
+   *  WAS NEEDED. Originally unconditional, on a stated reason — *"bundled-only
+   *  packs at v1 means the manifest is already on disk + small"* — that was true
+   *  when written: at 954 packs it serialized to **44.6 MB**. The fix narrowed it
+   *  to installed packs, which was correct and worked. But it turned an
+   *  unconditional cost into one **proportional to the install count**, and
+   *  nothing bounds that count. At ~36 KB a manifest the response re-crosses the
+   *  16 MiB socket ceiling at ~110 installed packs. A realm with 466 produced a
+   *  **17,719,350-byte** frame that the transport terminated, leaving the Packs
+   *  panel hanging forever while the server logged `ok=true`.
    *
-   *  ⚠ Consumers must treat `undefined` as "not installed, fetch if you truly
-   *  need it", never as "empty manifest" — a `?? {}` here would silently make
-   *  every uninstalled pack look like it declares no recipes, no grants and no
-   *  operations. */
+   *  ⇒ **The lesson is the shape, not the threshold.** A per-row field whose size
+   *  is unbounded does not become safe by being made conditional; it becomes safe
+   *  by not being on a list. The list's own fields are 0.77 MB for all 1,052 packs
+   *  and do not grow with installs. See internal design notes.
+   *
+   *  ⚠ Consumers must treat `undefined` as "not fetched yet", never as "empty
+   *  manifest" — a `?? {}` here would silently make every pack look like it
+   *  declares no recipes, no grants and no operations. ⚠ The detail paints ONCE
+   *  before the resolve lands, so each section's `undefined` branch is a real
+   *  user-visible state, not a theoretical one: it must read as "not loaded yet"
+   *  and never as an answer. `detail_operation_defaults_loading` exists because
+   *  the branch it replaced said "There is nothing to change here for this Pack."
+   *
+   *  ⚠ The four scalars the LIST surfaces read (`tags`, `pack_kind`,
+   *  `connection_requirements`, `connection_hints`) are projected as their own
+   *  fields for exactly this reason — reaching through `manifest` for a scalar is
+   *  what kept a 36 KB object on a list row. Add the scalar, never the object. */
   manifest?: BulkPackManifest;
+
+  /** ⛔ SCALARS THE LIST SURFACES USED TO REACH THROUGH `manifest` FOR.
+   *  `packs-panel` reads `manifest?.connection_requirements` /
+   *  `connection_hints` / `tags` off a row, and `pack-discovery` reads
+   *  `manifest?.pack_kind` / `tags` — four values totalling **365 bytes a
+   *  pack**, pulled out of a field that is ~36 KB, 98% of it `contents`.
+   *
+   *  🔑 Projecting them is what lets the list stop carrying whole manifests.
+   *  Reaching through `manifest` for a scalar makes the heavy field look
+   *  load-bearing when only these were wanted, and that is how the response
+   *  reached 17.7 MB and stopped being deliverable at all.
+   *  See internal design notes. */
+  tags?: readonly string[];
+  pack_kind?: string;
+  connection_requirements?: ConnectionRequirement[];
+  connection_hints?: ConnectionHint[];
 }
 
 /** One installed pack's identity + version, read from the `installed_pack`

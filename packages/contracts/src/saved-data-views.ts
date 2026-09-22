@@ -3,7 +3,7 @@ import {
   BOOKING_LIFECYCLE_STATES, type BookingLifecycleState,
   WORK_ENTITY_KINDS, type WorkEntityKind,
 } from './work-entities.js';
-import type { RecordsPackRef } from './records.js';
+import type { RecordsChangeCursor, RecordsPackRef } from './records.js';
 import { parseRecordsViewSettings, type RecordsViewSettings } from './records-view.js';
 import { parseTaskViewFilters, type TaskViewFilters } from './task-data-view.js';
 
@@ -35,6 +35,8 @@ export interface SavedDataView {
   updated_at: number;
   /** Saved task/Records membership monitoring, even with no browser open. */
   alert?: SavedDataViewAlert;
+  /** P2/F2 — how far the owner has reviewed this Records view's changes. */
+  review?: SavedDataViewReview;
 }
 
 /** Records alerts need one concrete pack and kind, just like its saved query. */
@@ -53,6 +55,40 @@ export interface SavedDataViewAlert extends SavedDataViewAlertSettings {
   last_notified_at: number | null;
 }
 
+/** Review needs one concrete pack AND entity — STRICTLY NARROWER than alerts,
+ *  which also accept a task view. The change feed reads a pack's outbox, and a
+ *  task view has no pack to read. */
+export const savedDataViewSupportsReview = (definition: SavedDataViewDefinition): boolean =>
+  definition.tab === 'records' && definition.owner !== null && definition.entity !== null;
+
+export interface SavedDataViewReview {
+  /** The last change the owner has SEEN.
+   *
+   *  ⛔ THE CLIENT SUPPLIES THIS, AND THE SERVER NEVER STAMPS "NOW". The owner
+   *  reviewed what was on their screen; anything that landed between that render
+   *  and the click has NOT been seen. A server-side `Date.now()` here would mark
+   *  those changes reviewed and the owner would never learn they existed. */
+  reviewed_through: RecordsChangeCursor;
+  /** When the mark was made. ⚠ DISPLAY ONLY — never compared against event time.
+   *  It is a different clock from the one inside `reviewed_through`. */
+  reviewed_at: number;
+}
+
+/** Does a definition edit keep an existing review mark meaningful?
+ *
+ *  ⛔ SCOPE, NOT EQUALITY — deliberately not {@link sameSavedDataViewDefinition}.
+ *  The cursor is a position in ONE pack's event stream, so narrowing a filter or
+ *  flipping the sort leaves it perfectly valid, while changing pack or entity
+ *  makes it point into a stream it was never taken from. Comparing whole
+ *  definitions would throw away a good mark every time the owner adjusted a
+ *  filter; comparing nothing would keep a nonsense one. */
+export const sameSavedDataViewReviewScope = (
+  left: SavedDataViewDefinition, right: SavedDataViewDefinition,
+): boolean => left.tab === 'records' && right.tab === 'records'
+  && left.entity === right.entity
+  && left.owner?.publisher === right.owner?.publisher
+  && left.owner?.pack_slug === right.owner?.pack_slug;
+
 export interface SavedDataViewCreateRequest {
   name: string;
   definition: SavedDataViewDefinition;
@@ -67,6 +103,9 @@ export interface SavedDataViewRenameRequest extends SavedDataViewDeleteRequest {
 export interface SavedDataViewUpdateRequest extends SavedDataViewDeleteRequest {
   definition?: SavedDataViewDefinition;
   alert?: SavedDataViewAlertSettings;
+  /** P2/F2 — set the review mark to the cursor the reviewer actually saw, or
+   *  `null` to clear it and re-surface the whole history. */
+  review?: RecordsChangeCursor | null;
 }
 
 const isObject = (value: unknown): value is Record<string, unknown> =>
@@ -77,6 +116,19 @@ const locator = (value: unknown): value is string | null =>
   value === null || (boundedString(value, 512) && value.trim().length > 0);
 const keysAre = (value: Record<string, unknown>, keys: string[]): boolean =>
   Object.keys(value).length === keys.length && keys.every((key) => Object.hasOwn(value, key));
+
+/** ⚠ Lives here, not beside the type in `records.ts`, because the strict
+ *  object helpers this file already owns (`keysAre` rejects an unknown key
+ *  outright) are the decoding posture saved views use — a cursor that quietly
+ *  accepted an extra field would let a future shape round-trip through storage
+ *  unvalidated. */
+export const parseRecordsChangeCursor = (value: unknown): RecordsChangeCursor | null => {
+  if (!isObject(value) || !keysAre(value, ['at', 'event_id'])) return null;
+  const { at, event_id } = value;
+  if (!Number.isSafeInteger(at) || (at as number) < 0) return null;
+  if (!boundedString(event_id, 200) || event_id.length === 0) return null;
+  return { at: at as number, event_id };
+};
 
 export const parseSavedDataViewAlertSettings = (value: unknown): SavedDataViewAlertSettings | null => {
   if (!isObject(value) || !keysAre(value, ['enabled', 'time_zone'])

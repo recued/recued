@@ -118,7 +118,7 @@ export {
   type ThreadSignalsValue,
 } from './producers/thread-signals.js';
 export { summaryProducer } from './producers/summary.js';
-export { purposeProducer, PURPOSE_CATEGORIES, type PurposeCategory } from './producers/purpose.js';
+export { purposeProducer, PURPOSE_CATEGORIES, PURPOSE_CONTEXT, type PurposeCategory } from './producers/purpose.js';
 export {
   actionItemsProducer,
   MAX_ITEMS_PER_BODY,
@@ -397,7 +397,6 @@ export {
   CONFIDENCE_DRIFT_TOPIC,
   // D-136 P4 — closed-list helper exposed for unit tests of the
   // drift-as-input substrate.
-  sourceTopicAutoRecomputesOnDrift,
 } from './producers/confidence-drift-signal.js';
 export {
   workingGroupTask,
@@ -653,7 +652,6 @@ export {
 export type {
   HousekeepingLlmExecute,
   HousekeepingLlmExecuteWithMeta,
-  HousekeepingResolveModelId,
   HousekeepingEmbedExecute,
   HousekeepingTranscribe,
 } from './registry.js';

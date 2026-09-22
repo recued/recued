@@ -82,6 +82,8 @@ import type {
   FormResponseExportRpcResponse,
 } from '../form-response.js';
 import type {
+  RecordsChangeFeed,
+  RecordsChangeQuery,
   RecordsExportResponse,
   RecordsExportRequest,
   RecordsGlobalQuotaSetRequest,
@@ -1192,6 +1194,31 @@ export interface ServerApprovalSubscriptionEvent {
  *  upstream-version / last-checked timestamps (those are extension-side
  *  marketplace concerns). The sidebar's server-scope rendering only
  *  needs the recipe definition + identity + provenance. */
+/** A recipe as a LIST row: everything except the execution body.
+ *
+ *  ⛔ `steps` AND `prefetch_steps` ONLY. `metadata` (names), `trigger`
+ *  (automation matching), `variables` (Dishes config + the run-modal),
+ *  `output` (the reading-surface test) and `depends_on` (required packs) all
+ *  have list-side readers and stay. The body is 66.9% of the corpus on its
+ *  own, so this is nearly the whole win without touching a live reader.
+ *
+ *  ⚠ WHAT THE BODY USED TO ANSWER IS NOW PROJECTED, not dropped:
+ *  `provably_read_only` and `required_connections` are computed server-side
+ *  from the full definition. Anything else that needs a body fetches it with
+ *  `recipe.get`, which returns {@link ServerRecipeFullEntry}. */
+/** What `recipe.get` returns: a list entry with the execution body PUT BACK.
+ *
+ *  🔑 A DISTINCT TYPE, NOT THE LIST ROW. `recipe.get` exists so callers that
+ *  need a body can stop reading one off the list; if it returned
+ *  `ServerRecipeListEntry` the trim would strip the body from `get` as well
+ *  and the rpc would answer nothing useful. The two shapes diverge on purpose:
+ *  one row per recipe without a body, one body on request. */
+export type ServerRecipeFullEntry =
+  Omit<ServerRecipeListEntry, 'recipe'> & { recipe: RecipeDefinition };
+
+export type RecipeListRecipeView =
+  Omit<RecipeDefinition, 'steps' | 'prefetch_steps'>;
+
 export interface ServerRecipeListEntry {
   recipe_id: string;
   publisher_id: string;
@@ -1201,10 +1228,49 @@ export interface ServerRecipeListEntry {
   /** Hash of the recipe-as-stored. Lets the extension detect drift
    *  between its local mirror and the server's copy. */
   recipe_hash: string;
-  /** Full recipe definition — sidebar uses this for name/platform/
-   *  trigger rendering. Bigger than necessary on first paint, but
-   *  avoids a per-row `recipe.get` round-trip on scope switch. */
-  recipe: RecipeDefinition;
+  /** The recipe WITHOUT its execution body — see {@link RecipeListRecipeView}.
+   *
+   *  ⛔ IT USED TO BE THE WHOLE DEFINITION, on a stated trade: *"Bigger than
+   *  necessary on first paint, but avoids a per-row `recipe.get` round-trip on
+   *  scope switch."* That method did not exist, so the entire corpus rode every
+   *  list call — **9,855,263 B, 96.0%** of a 10.26 MB response on a
+   *  2,369-recipe realm, fetched **23 times** in one session, 236 MB of the
+   *  271 MB crossing that socket.
+   *
+   *  ⚠ A REAL FAILURE, NOT JUST WASTE. A 10.26 MB frame takes seconds to
+   *  drain; a 12.73 MB `chat.inbound_token.tool_catalog` landing on top of one
+   *  exceeded the 16 MiB per-socket cap and the socket was terminated while
+   *  the handler logged `ok=true`. Neither frame is over the cap alone.
+   *  See internal design notes. */
+  recipe: RecipeListRecipeView;
+  /** The connections this recipe needs, derived from its `{{connection.*}}`
+   *  refs. Projected because the walk reads step bodies this row no longer
+   *  carries — a client re-deriving it from the trimmed view would silently
+   *  UNDER-report, showing fewer connections than the recipe actually needs.
+   *  `undefined` from a server that does not project it. */
+  required_connections?: ReadonlyArray<{
+    /** `null` when a `read_connection_*` permission declared the need and no
+     *  typed `connection.<kind>.<name>` ref names the kind. ⚠ Not a string:
+     *  the first cut of this projection stringified it and shipped `"null"`. */
+    kind: ConnectionKind | null;
+    name: string;
+  }>;
+  /** Can this recipe be PROVEN to only read? Computed server-side against the
+   *  installed pack roster; `undefined` from a server that does not project it.
+   *
+   *  ⛔⛔ THE CLIENT MUST NOT RE-DERIVE THIS FROM A LIST ROW. The rule needs the
+   *  step bodies and a resolvable op roster, and the webclient has neither on a
+   *  list any more — `packs.list` stopped forwarding manifests, and this row's
+   *  own `recipe` is on its way to losing `steps`. Both absences answer wrongly
+   *  and in OPPOSITE directions: no manifests resolves nothing and fails CLOSED
+   *  (a genuine view shown as an operation); no steps passes every check
+   *  vacuously and fails OPEN (a recipe that deletes shown as a read-only
+   *  view). The second is the dangerous one, and it is the silent one.
+   *
+   *  `isProvablyReadOnly` therefore takes a body that still has `steps`, so the
+   *  compiler refuses a trimmed row, and this field is how a trimmed row
+   *  carries the answer instead. */
+  provably_read_only?: boolean;
   /** Provenance — bundled with the server binary, pushed by the paired
    *  extension, or sent inline through `execute`. */
   source: 'bundled' | 'pair-sync' | 'inline';
@@ -2187,6 +2253,34 @@ export type ServerRpcRegistry = {
   'recipe.list': RpcMethodSpec<
     void,
     { recipes: ServerRecipeListEntry[] }
+  >;
+
+  /** ONE recipe by id, in the same entry shape `recipe.list` returns — `null`
+   *  when no such recipe is installed, or when it is a kernel recipe (those are
+   *  invisible to every manage surface, so `get` hides them exactly as the list
+   *  does).
+   *
+   *  ⛔ THE ROUND-TRIP `ServerRecipeListEntry.recipe` SAYS IT IS AVOIDING.
+   *  That field's comment reads *"avoids a per-row `recipe.get` round-trip on
+   *  scope switch"* — written against a method that did not exist, so instead
+   *  the whole corpus rode every list call: measured at **9,855,263 B, 96.0%**
+   *  of a 10.26 MB `recipe.list` on a 2,369-recipe realm, fetched 23 times in
+   *  one session. A 12.73 MB `chat.inbound_token.tool_catalog` landing behind
+   *  one of those frames exceeded the 16 MiB socket cap and the connection was
+   *  terminated while the handler logged `ok=true`.
+   *
+   *  🔑 A PREREQUISITE, NOT THE FIX. The list body cannot come off until the
+   *  two callers that need a whole definition read it from here instead: the
+   *  Kitchen editor (`initialRecipe: entry.recipe`) and `pack-app-model`'s
+   *  `recipe.output`. Same precedence as the list — stored beats bundled —
+   *  because both doors share one entry builder rather than restating it.
+   *
+   *  ⚠ Local-UI only, deliberately absent from `MCP_TOOL_CATALOG`: a recipe
+   *  body discloses connection and capability topology, the same reason
+   *  `recipe.list` and `recipe.runnability` stay off the agent surface. */
+  'recipe.get': RpcMethodSpec<
+    { recipe_id: string },
+    { recipe: ServerRecipeFullEntry | null }
   >;
 
   /** R2 build step 4c.1 — derived recipe runnability (recipe-identity doc
@@ -4534,6 +4628,25 @@ export type ServerRpcRegistry = {
     { ok: true; effective: import('../enrichment-trust.js').EnrichmentTrustRow }
   >;
 
+  /** D-285 — read the PERSISTED drift signals, one row per source topic.
+   *
+   *  ⛔ Why this exists: the `enrichment_drift_detected` broadcast was the
+   *  ONLY way a client ever learned of drift, and a broadcast is a moment,
+   *  not a state. Measured on a live paired browser: the banner renders when
+   *  the producer fires with the panel open, and is GONE after a reload in
+   *  the same tab seconds later — with the row still stored and the task's
+   *  own last-run cell reading "5s ago". A verdict the owner's tokens paid
+   *  for was visible to whoever happened to be looking at that second.
+   *
+   *  Returns the full stored signal (windows + distributions), which is what
+   *  the drawer's drift section needs and what the narrow broadcast payload
+   *  could never carry — `housekeeping-panel-mount` fed that section a
+   *  hard-coded `{}` and said so in a comment naming this rpc's absence. */
+  'housekeeping.drift.read': RpcMethodSpec<
+    void,
+    { rows: ReadonlyArray<import('../psi.js').ConfidenceDriftSignal> }
+  >;
+
   /** D-136 §A.12 P7 — topic-reset rpc. Two-step dry-run-then-confirm
    *  pattern: caller invokes once without `confirmation_token` to
    *  receive an impact summary + freshly-minted token; second call
@@ -5361,6 +5474,12 @@ export type ServerRpcRegistry = {
   >;
   'records.export': RpcMethodSpec<RecordsExportRequest, RecordsExportResponse>;
   'records.outbox.list': RpcMethodSpec<RecordsOutboxListRequest, RecordsOutboxOverview>;
+  /** P2/F2 change review — a bounded keyset page of a pack's change history.
+   *  ⛔ NOT `records.outbox.list`, which is the DELIVERY diagnostic (ordered by
+   *  status priority, carries per-event delivery rows). This is chronological,
+   *  cursored, and status-agnostic: a record changed whether or not its
+   *  notification reached a subscriber. */
+  'records.changes.list': RpcMethodSpec<RecordsChangeQuery, RecordsChangeFeed>;
   'records.outbox.retire': RpcMethodSpec<RecordsOutboxRetireRequest, { retired: boolean }>;
   'records.purge': RpcMethodSpec<RecordsPurgeRequest, { rows_deleted: number; events_deleted: number }>;
   'records.accounting.audit': RpcMethodSpec<
@@ -7505,6 +7624,9 @@ export const SERVER_RPC_METHODS = [
   // gate; channel-isolation invariant intact.
   'bridge.capabilityProfile.push',
   'recipe.list',
+  // The by-id companion. Local-UI only, same posture as `recipe.list` — not in
+  // MCP_TOOL_CATALOG.
+  'recipe.get',
   // R2 build step 4c.1 — derived recipe runnability read surface. Per-pair /
   // local-UI only; NOT in MCP_TOOL_CATALOG (same posture as `recipe.list` —
   // runnability discloses connection/capability topology, which stays off the
@@ -7778,6 +7900,10 @@ export const SERVER_RPC_METHODS = [
   'housekeeping.trust.read',
   'housekeeping.trust.write',
   'housekeeping.trust.dismiss_promotion',
+  // D-285 — the persisted drift signals. The broadcast is a moment; this is
+  // the state behind it, so a client that was not connected when the cycle
+  // fired can still see the verdict.
+  'housekeeping.drift.read',
   // D-136 §A.12 P7 — topic-reset rpc (dry-run then confirm).
   'housekeeping.topic.reset',
   // D-136 §A.13.1 P7.G — Settings UI capstone: WS surface for the
@@ -7912,6 +8038,7 @@ export const SERVER_RPC_METHODS = [
   'records.retention.run',
   'records.export',
   'records.outbox.list',
+  'records.changes.list',
   'records.outbox.retire',
   'records.purge',
   'records.accounting.audit',

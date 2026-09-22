@@ -37,6 +37,7 @@ import type {
   RecipeRunnabilityEntry,
   ResolvedFilterDescriptor,
   ResolvedTableEditDescriptor,
+  ResolvedTableSelectDescriptor,
   ServerExecuteResponse,
   ServerRecipeListEntry,
   TableColumnControl,
@@ -62,6 +63,14 @@ import {
   tableEditCellAddress,
   tableEditStatus,
   type OutputTableEditState,
+  canSubmitTableSelect,
+  initialTableSelectState,
+  isResolvedTableSelectDescriptor,
+  isTableRowSelected,
+  tableSelectAllState,
+  tableSelectRowId,
+  tableSelectStatus,
+  type OutputTableSelectState,
   dedupeOutputRowsById,
   initialOutputFilterState,
   isResolvedFilterDescriptor,
@@ -423,6 +432,34 @@ ${REFERENCE_PROVENANCE_STYLES}
 [${RECIPE_RESULT_HOST_ATTR}] .recipes-result-grid-status[data-dirty="true"] {
   color: var(--fg);
   font-weight: 600;
+}
+/* D-282 B6 — the selectable table. The count is emphasised for the same reason
+   the grid emphasises "unsaved": it is the number the owner checks before
+   pressing a button that acts on all of them.
+   ⛔ NOTE THE [data-selected] PREFIX. A bare :not([data-selected="0"]) is TRUE when the
+   attribute is absent, so it would bold every editable grid's status line too —
+   a negation over an optional attribute matches the elements that do not have
+   it at all. */
+[${RECIPE_RESULT_HOST_ATTR}] .recipes-result-grid-status[data-selected]:not([data-selected="0"]) {
+  color: var(--fg);
+  font-weight: 600;
+}
+[${RECIPE_RESULT_HOST_ATTR}] .recipes-result-select {
+  display: grid;
+  gap: 10px;
+}
+[${RECIPE_RESULT_HOST_ATTR}] .recipes-result-select-cell {
+  width: 1%;
+  white-space: nowrap;
+  text-align: center;
+}
+[${RECIPE_RESULT_HOST_ATTR}] .recipes-result-select-cell input {
+  /* A 44px row target on a phone without widening the column on a desktop. */
+  width: 18px;
+  height: 18px;
+  margin: 4px;
+  accent-color: var(--accent);
+  cursor: pointer;
 }
 [${RECIPE_RESULT_HOST_ATTR}] .recipes-result-refused {
   margin: 0 0 12px;
@@ -869,6 +906,13 @@ export const RECIPES_ROUTE_RESULT_FILTER_BLOCKED_ATTR =
 export const RECIPES_ROUTE_RESULT_GRID_CELL_ATTR = 'data-recued-recipes-result-grid-cell';
 /** A row-scoped control (remove), value = the row index. */
 export const RECIPES_ROUTE_RESULT_GRID_ROW_ATTR = 'data-recued-recipes-result-grid-row';
+/** D-282 B6 — one selectable table, value = its section key. */
+export const RECIPES_ROUTE_RESULT_SELECT_ATTR = 'data-recued-recipes-result-select';
+/** The row id one checkbox submits. ⛔ The ID, not the row index: a re-render
+ *  can reorder rows (a `group_by` bucket, a filter), and an index that meant
+ *  row 3 before the repaint would tick a different record after it. */
+export const RECIPES_ROUTE_RESULT_SELECT_ROW_ATTR =
+  'data-recued-recipes-result-select-row';
 export const RECIPES_ROUTE_RESULT_FILTER_ERROR_ATTR =
   'data-recued-recipes-result-filter-error';
 export const RECIPES_ROUTE_ACTION_ATTR = 'data-recued-recipes-action';
@@ -1250,6 +1294,37 @@ export const findResultTableEdit = (
 ): ResultTableEdit | null =>
   resultTableEdits(result, recipeId).find((edit) => edit.key === key) ?? null;
 
+/** D-282 B6 — every selectable-table section in a result. Sibling of
+ *  `resultTableEdits`, and here for the same reason: the descriptor guard and
+ *  the key construction live in ONE place so Recipes, Packs and any later
+ *  result host cannot drift on what counts as a selectable table. */
+export interface ResultTableSelect {
+  key: string;
+  descriptor: ResolvedTableSelectDescriptor;
+  data: unknown;
+}
+
+export const resultTableSelects = (
+  result: ServerExecuteResponse,
+  recipeId = result.recipe_id,
+): ResultTableSelect[] => resultOutputSections(result).flatMap((section) => {
+  if (section.type !== 'table' || !isResolvedTableSelectDescriptor(section.table_select)) {
+    return [];
+  }
+  return [{
+    key: selectKey(recipeId, section.table_select),
+    descriptor: section.table_select,
+    data: section.data,
+  }];
+});
+
+export const findResultTableSelect = (
+  result: ServerExecuteResponse,
+  key: string,
+  recipeId = result.recipe_id,
+): ResultTableSelect | null =>
+  resultTableSelects(result, recipeId).find((entry) => entry.key === key) ?? null;
+
 const displayValue = (value: unknown): string => {
   if (value === null || value === undefined) return '';
   if (typeof value === 'string') return value;
@@ -1473,6 +1548,36 @@ const renderDisabledResultAction = (
   </span>
 `;
 
+/** One runnable action as its own button — the label visible, the variant applied. */
+const resultActionButton = (
+  action: RecipeOutputAction,
+  registry: ResultActionRegistry,
+): string => {
+  const id = registerResultAction(registry, action);
+  return `<button type="button" class="recipes-button${resultActionClass(action)}"
+        ${RECIPES_ROUTE_ACTION_ATTR}="run-result-action"
+        ${RECIPES_ROUTE_RESULT_ACTION_ATTR}="${e(id)}">${e(action.label)}</button>`;
+};
+
+/** How many runnable actions are drawn as buttons before the group collapses into a
+ *  picker.
+ *
+ *  ⛔⛔ D-282 B1 — TWO ACTIONS USED TO COLLAPSE INTO A `<select>` + a generic "Run".
+ *  One action rendered as a styled button honouring its `variant`; **two or more lost
+ *  their labels, their variants and the one-press affordance**, at every call site —
+ *  table cells, checklist items and the `button` block alike. It also contradicted the
+ *  ruling that refused a row-of-buttons primitive, which rests on *"both renderers
+ *  already lay it out horizontally (webclient flex row, shared renderer inline
+ *  spans)"*: the shared renderer does, this one did not, and the flex container was
+ *  already here (`.recipes-result-actions`).
+ *
+ *  🔑 THREE IS MEASURED, NOT CHOSEN. Across `community/recipes` there are 89 groups of
+ *  one, 7 of two, 7 of three, and 4 larger (one 4, two 5, one 6). Three inline buttons
+ *  fit a table cell; five do not, and the widest groups live in `button` blocks and
+ *  table cells alike, so the picker stays for them rather than a per-caller threshold
+ *  nobody can see from the recipe. */
+const INLINE_RESULT_ACTION_LIMIT = 3;
+
 const renderSingleResultAction = (
   validation: ResultActionValidation,
   registry: ResultActionRegistry,
@@ -1480,12 +1585,9 @@ const renderSingleResultAction = (
   if (!validation.ok) {
     return renderDisabledResultAction(validation.label, validation.reason);
   }
-  const id = registerResultAction(registry, validation.action);
   return `
     <span class="recipes-result-actions">
-      <button type="button" class="recipes-button${resultActionClass(validation.action)}"
-        ${RECIPES_ROUTE_ACTION_ATTR}="run-result-action"
-        ${RECIPES_ROUTE_RESULT_ACTION_ATTR}="${e(id)}">${e(validation.action.label)}</button>
+      ${resultActionButton(validation.action, registry)}
     </span>
   `;
 };
@@ -1502,21 +1604,33 @@ const renderResultActionControls = (
   if (validations.length === 1) {
     return renderSingleResultAction(validations[0]!, registry);
   }
-  const groupId = `result-action-group-${registry.nextGroupId}`;
-  registry.nextGroupId += 1;
-  const options = validations
-    .filter((validation): validation is { ok: true; action: RecipeOutputAction } => validation.ok)
-    .map((validation) => {
-      const id = registerResultAction(registry, validation.action);
-      return `<option value="${e(id)}">${e(validation.action.label)}</option>`;
-    });
-  const disabled = validations
+  const runnable = validations
+    .filter((validation): validation is { ok: true; action: RecipeOutputAction } => validation.ok);
+  const refused = validations
     .filter((validation): validation is { ok: false; label: string; reason: string } => !validation.ok)
     .map((validation) =>
       `<span class="recipes-result-action-disabled">${e(validation.label)}: ${e(validation.reason)}</span>`)
     .join('');
+  // ⚠ The REFUSED ones still show their reason either way — a group that is partly
+  // invalid must say which half and why, not silently render the runnable remainder.
+  if (runnable.length > 0 && runnable.length <= INLINE_RESULT_ACTION_LIMIT) {
+    return `
+    <span class="recipes-result-actions">
+      ${runnable.map((validation) => resultActionButton(validation.action, registry)).join('\n      ')}
+      ${refused}
+    </span>
+  `;
+  }
+  const groupId = `result-action-group-${registry.nextGroupId}`;
+  registry.nextGroupId += 1;
+  const options = runnable.map((validation) => {
+    const id = registerResultAction(registry, validation.action);
+    return `<option value="${e(id)}">${e(validation.action.label)}</option>`;
+  });
+  // ⚠ Every action refused: no control to draw, only the reasons. Reached when the
+  // group is wider than the inline threshold OR nothing in it is runnable at all.
   if (options.length === 0) {
-    return `<span class="recipes-result-actions">${disabled}</span>`;
+    return `<span class="recipes-result-actions">${refused}</span>`;
   }
   return `
     <span class="recipes-result-actions">
@@ -1528,7 +1642,7 @@ const renderResultActionControls = (
       <button type="button" class="recipes-button"
         ${RECIPES_ROUTE_ACTION_ATTR}="run-selected-result-action"
         ${RECIPES_ROUTE_RESULT_ACTION_SELECT_ATTR}="${e(groupId)}">Run</button>
-      ${disabled}
+      ${refused}
     </span>
   `;
 };
@@ -1836,6 +1950,12 @@ const renderSummaryResultSection = (
 export const gridKey = (recipeId: string, d: { section_index: number }): string =>
   `${recipeId}#grid-${String(d.section_index)}`;
 
+/** D-282 B6. A DIFFERENT prefix from `gridKey` on purpose: the two are mutually
+ *  exclusive per section today (`table_select_with_edit`), and one shared key
+ *  space would make a future relaxation collide silently. */
+export const selectKey = (recipeId: string, d: { section_index: number }): string =>
+  `${recipeId}#select-${String(d.section_index)}`;
+
 /** Stable picker id shared by the pure renderer and the DOM host adapter. */
 export const gridRefPickerId = (
   recipeId: string,
@@ -1888,6 +2008,13 @@ const renderTableResultSection = (
    *  options object it has wanted since the sixth. Deferred deliberately; noted
    *  here so the next reader knows this is the cheap half, not the design. */
   suppressActions = false,
+  /** D-282 B6 — per-section selection, keyed by `selectKey`.
+   *
+   *  ⚠ THE EIGHTH POSITIONAL PARAMETER, which makes the note above's case and
+   *  does not act on it: the options-object refactor is a change to three
+   *  signatures and their callers, and doing it inside a feature slice would
+   *  bury the feature in it. Recorded, not excused. */
+  selectStates: ReadonlyMap<string, OutputTableSelectState> = new Map(),
 ): string => {
   const data = asRecord(section.data);
   // The editable grid — cells become inputs and the rows submit as ONE
@@ -1995,6 +2122,18 @@ const renderTableResultSection = (
   const editState = editDescriptor === null ? null
     : gridStates.get(gridKey(recipeId, editDescriptor))
       ?? initialTableEditState(editDescriptor, rawRows);
+  // D-282 B6 — pick rows, then act on the set.
+  const selectDescriptor = isResolvedTableSelectDescriptor(section.table_select)
+    ? section.table_select : null;
+  const selectState = selectDescriptor === null ? null
+    : selectStates.get(selectKey(recipeId, selectDescriptor))
+      ?? initialTableSelectState(selectDescriptor, rawRows);
+  // ⛔ The checkbox column exists only when the identity RESOLVED. An
+  // unresolved descriptor draws the table read-only plus the reason — a
+  // selectable-looking table that submits nothing is worse than a plain one.
+  const selectable = selectDescriptor !== null
+    && selectDescriptor.unresolved === undefined
+    && selectState !== null;
   const displayRows = editDescriptor?.rows === 'add_remove' && editState !== null
     ? editState.rows : rows;
   const canCompose = editDescriptor?.rows === 'add_remove' && editState !== null;
@@ -2045,8 +2184,24 @@ const renderTableResultSection = (
     }
     return out;
   })();
-  if (columns.length === 0 || (displayRows.length === 0 && !canCompose)) {
-    return '<p class="recipes-detail-note">No rows returned.</p>';
+  // ⛔⛔ D-282 B3 — TWO SITUATIONS, ONE SENTENCE. "No rows returned." was returned both
+  // for a table that could not be DRAWN (no columns anywhere) and for one that simply had
+  // no rows, and a reader could not tell which they were looking at. The composing grid
+  // forty lines below has always said the right thing — "No rows yet. Add a row to get
+  // started." — so the good phrasing was already in this file, applied to one case.
+  if (columns.length === 0) {
+    return '<p class="recipes-detail-note">This table has no columns to draw:'
+      + ' the recipe declared none and no entity schema supplied any.</p>';
+  }
+  if (displayRows.length === 0 && !canCompose) {
+    // ⚠ The entity is NOT pluralised — `company` → "companys" and `person` → "persons"
+    // are wrong, and the keys belong to the pack author. "records" is the plural.
+    const entity = isResolvedRecordColumnsDescriptor(section.record_columns)
+      ? section.record_columns.entity.replace(/[._]/g, ' ').trim()
+      : '';
+    return `<p class="recipes-detail-note">${
+      entity === '' ? 'Nothing here yet.' : `No ${e(entity)} records yet.`
+    }</p>`;
   }
   const gridControls = editDescriptor === null || editState === null ? '' : `
     <div class="recipes-result-grid-footer">
@@ -2074,8 +2229,16 @@ const renderTableResultSection = (
     <div class="recipes-result-table-wrap" data-recued-scroll-rail>
       <table class="recipes-result-table">
         <thead>
-          <tr>${columns.map((column) =>
-            `<th${column.numeric ? ' class="is-numeric"' : ''}>${e(column.label)}</th>`).join('')}${
+          <tr>${selectable ? `<th class="recipes-result-select-cell"><input type="checkbox"
+            ${RECIPES_ROUTE_ACTION_ATTR}="result-select-toggle"
+            ${RECIPES_ROUTE_RESULT_SELECT_ATTR}="${e(selectKey(recipeId, selectDescriptor!))}"
+            ${RECIPES_ROUTE_RESULT_SELECT_ROW_ATTR}="*"
+            aria-label="Select every row"${
+    tableSelectAllState(selectState!) === 'all' ? ' checked' : ''}${
+    tableSelectAllState(selectState!) === 'some' ? ' data-indeterminate="true"' : ''}${
+    selectState!.busy || selectState!.selectable.length === 0 ? ' disabled' : ''} /></th>` : ''}${
+    columns.map((column) =>
+      `<th${column.numeric ? ' class="is-numeric"' : ''}>${e(column.label)}</th>`).join('')}${
     canCompose ? '<th class="recipes-result-grid-row-actions">Row</th>' : ''}</tr>
         </thead>
         <tbody>
@@ -2085,10 +2248,26 @@ const renderTableResultSection = (
       </td></tr>`
     : bodyEntries.map(({ row, rowIndex, groupLabel, groupCount }) => groupLabel !== undefined
       ? `<tr class="recipes-result-group-row"><th scope="rowgroup" colspan="${
-        String(columns.length + (canCompose ? 1 : 0))}">${e(groupLabel)} <span
+        String(columns.length + (canCompose ? 1 : 0) + (selectable ? 1 : 0))}">${
+        e(groupLabel)} <span
         class="recipes-result-group-count">${String(groupCount ?? 0)}</span></th></tr>`
       : `
             <tr ${RECIPES_ROUTE_RESULT_GRID_ROW_ATTR}="${String(rowIndex)}">
+              ${!selectable ? '' : (() => {
+        // ⛔ A ROW WITH NO ID GETS NO CHECKBOX — not a disabled one and not an
+        // unchecked one. Either would read as "you may pick this", and what it
+        // would submit is a blank the receiving `foreach` writes against
+        // nothing while the run reports success.
+        const id = tableSelectRowId(selectDescriptor!, row);
+        if (id === null) return '<td class="recipes-result-select-cell"></td>';
+        return `<td class="recipes-result-select-cell"><input type="checkbox"
+                ${RECIPES_ROUTE_ACTION_ATTR}="result-select-toggle"
+                ${RECIPES_ROUTE_RESULT_SELECT_ATTR}="${e(selectKey(recipeId, selectDescriptor!))}"
+                ${RECIPES_ROUTE_RESULT_SELECT_ROW_ATTR}="${e(id)}"
+                aria-label="Select ${e(id)}"${
+          isTableRowSelected(selectState!, id) ? ' checked' : ''}${
+          selectState!.busy ? ' disabled' : ''} /></td>`;
+      })()}
               ${columns.map((column) => {
                 const cell = getPathValue(row, column.field);
                 if (editState !== null && editable.has(column.field)) {
@@ -2202,6 +2381,43 @@ const renderTableResultSection = (
       </table>
     </div>
   `;
+  // D-282 B6 — the action bar under a selectable table. The COUNT is in the
+  // status line because the count is what an owner checks before pressing a
+  // button that acts on all of them.
+  if (selectDescriptor !== null) {
+    if (selectDescriptor.unresolved !== undefined) {
+      // ⛔ Named, not generic. "This table cannot be selected" would send
+      // someone to reinstall a pack that is already installed; the cause is a
+      // schema with no single identity column, which the AUTHOR fixes with
+      // `select.id_field`.
+      return `${table}
+    <p class="recipes-detail-note">Rows here cannot be selected: this table's entity declares
+     no single id column, so nothing says which record a tick means. The recipe can name one
+     with <code>select.id_field</code>.</p>`;
+    }
+    const key = e(selectKey(recipeId, selectDescriptor));
+    return `<div class="recipes-result-select" ${RECIPES_ROUTE_RESULT_SELECT_ATTR}="${key}">
+    ${table}
+    <div class="recipes-result-grid-footer">
+      <span class="recipes-result-grid-status" aria-live="polite"
+        data-selected="${String(selectState!.selected.length)}">${
+      e(tableSelectStatus(selectState!))}</span>
+      <div class="recipes-result-actions">
+        <button type="button" class="recipes-button recipes-button--primary"
+          ${RECIPES_ROUTE_ACTION_ATTR}="result-select-submit"
+          ${RECIPES_ROUTE_RESULT_SELECT_ATTR}="${key}"${
+      canSubmitTableSelect(selectState!)
+        ? ''
+        : selectState!.busy
+          ? ' aria-disabled="true" aria-busy="true"'
+          : ' aria-disabled="true" tabindex="-1"'}>${e(
+      selectState!.busy ? 'Working…' : selectDescriptor.submit)}</button>
+      </div>
+    </div>
+    ${selectState!.error === null ? '' : `<p role="alert" class="recipes-result-file-error">${
+      e(selectState!.error)}</p>`}
+  </div>`;
+  }
   if (editDescriptor === null || editState === null) return table;
   return `<div class="recipes-result-grid"
     ${RECIPES_ROUTE_RESULT_GRID_ATTR}="${e(gridKey(recipeId, editDescriptor))}">
@@ -2366,6 +2582,7 @@ export const renderRecipeResultSection = (
   recordRefPickers = false,
   /** D-display-mode P3 — see `renderTableResultSection`'s note. */
   suppressActions = false,
+  selectStates: ReadonlyMap<string, OutputTableSelectState> = new Map(),
 ): string => {
   const body =
     section.type === 'summary'
@@ -2379,6 +2596,7 @@ export const renderRecipeResultSection = (
             gridStates,
             recordRefPickers,
             suppressActions,
+            selectStates,
           )
         : section.type === 'checklist'
           ? renderChecklistResultSection(section, registry)
@@ -2468,6 +2686,7 @@ export const renderRecipeResultPanel = (
   gridStates: ReadonlyMap<string, OutputTableEditState> = new Map(),
   recordRefPickers = false,
   presentation: RecipeResultPanelPresentation = {},
+  selectStates: ReadonlyMap<string, OutputTableSelectState> = new Map(),
 ): string => {
   const renderName = panel === null
     ? ''
@@ -2541,6 +2760,7 @@ export const renderRecipeResultPanel = (
               gridsDirty,
               recordRefPickers,
               presentation.display_mode === true,
+              selectStates,
             )).join('')
           : '<p class="recipes-detail-note">The run completed without renderable output.</p>';
   // ⛔⛔ Per-item failures inside a `foreach`. A foreach is continue-on-error, so

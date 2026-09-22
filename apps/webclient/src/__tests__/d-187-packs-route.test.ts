@@ -40,7 +40,7 @@ import {
   resolvePackInput,
 } from '../packs/bootstrap-packs-route.js';
 import type { PackAppExecuteCaller } from '../packs/pack-app-view.js';
-import { PACKS_DETAIL_TAB_ATTR } from '../settings/packs-panel.js';
+import { PACKS_DETAIL_PIN_ATTR, PACKS_DETAIL_TAB_ATTR } from '../settings/packs-panel.js';
 import {
   SETTINGS_ROUTE_SECTION_ATTR,
   bootstrapSettingsRoute,
@@ -211,6 +211,16 @@ const collectByTag = (root: FakeEl, tag: string, out: FakeEl[] = []): FakeEl[] =
 
 const collectText = (root: FakeEl): string =>
   `${root.textContent}${root.children.map(collectText).join('')}`;
+
+/** First element carrying `attr` at all, whatever its value. */
+const findByAttr = (root: FakeEl, attr: string): FakeEl | null => {
+  if (root.getAttribute(attr) !== null) return root;
+  for (const child of root.children) {
+    const hit = findByAttr(child, attr);
+    if (hit !== null) return hit;
+  }
+  return null;
+};
 
 const findByAttrValue = (
   root: FakeEl,
@@ -698,6 +708,161 @@ describe('Packs R22 — route list→detail wiring', () => {
     expect(calls.at(-1)).toBe('replace #packs/app-pack');
     findByAttrValue(root, PACKS_DETAIL_TAB_ATTR, 'use')!.click();
     expect(calls.at(-1)).toBe('replace #packs/app-pack/use/view-a');
+    route.dispose();
+  });
+
+  /** D-282 B5 — the WHOLE thread, at the composition root.
+   *
+   *  ⛔⛔ EVERY LINK IN THIS CHAIN IS UNIT-TESTED SOMEWHERE ELSE, and that is
+   *  exactly why this test exists: `parsePacksAddress` → `initialPackViewTarget`
+   *  → `initialAppViewTarget` → `initialTarget` → `runLookup`, plus the
+   *  canonicalizer that would otherwise rewrite the address away before the
+   *  record loaded. A hand-wired harness for any one link cannot see a wrong
+   *  option name in the next. */
+  it('hydrates a bookmarked lookup address and does not canonicalize it away', async () => {
+    const calls: string[] = [];
+    const doc = makeFakeDocument() as FakeDoc & {
+      defaultView?: {
+        history: {
+          replaceState: (s: unknown, t: string, url: string) => void;
+          pushState: (s: unknown, t: string, url: string) => void;
+        };
+      };
+    };
+    doc.defaultView = {
+      history: {
+        replaceState: (_s, _t, url) => { calls.push(`replace ${url}`); },
+        pushState: (_s, _t, url) => { calls.push(`push ${url}`); },
+      },
+    };
+    const root = doc.createElement('div');
+    const execute = vi.fn<PackAppExecuteCaller>(async ({ recipe_id }) => ({
+      recipe_id,
+      recipe_hash: `run-${recipe_id}`,
+      success: true,
+      duration_ms: 1,
+      steps: [],
+      errors: [],
+      output: { render: [{ type: 'table', data: { rows: [] } }], sidebar: [] },
+    }));
+    // A reading surface + one required variable + no ops ⇒ a LOOKUP.
+    const detailRecipe = {
+      ...viewRecipe('detail-a'),
+      recipe: {
+        ...viewRecipe('detail-a').recipe,
+        variables: { id: { label: 'The record', type: 'string' } },
+      },
+    } as unknown as ServerRecipeListEntry;
+    const route = bootstrapPacksRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      packsListCaller: vi.fn(async () => ({
+        packs: [baseEntry({
+          installed: true,
+          manifest: baseManifest({
+            slug: 'app-pack',
+            name: 'App Pack',
+            recipes: [{ slug: 'view-a', version: 1 }, { slug: 'detail-a', version: 1 }],
+          }),
+        })],
+      })),
+      recipesListCaller: vi.fn(async () => ({
+        recipes: [viewRecipe('view-a'), detailRecipe],
+      })),
+      recipeExecuteCaller: execute,
+      initialPackSlug: 'app-pack',
+      initialPackViewId: 'detail-a',
+      initialPackViewTarget: 'rec_7',
+    });
+    await route.packsPanel()!.whenLoaded();
+    await tick(20);
+
+    expect(execute.mock.calls.map((call) => call[0]!.recipe_id))
+      .toEqual(['view-a', 'detail-a']);
+    expect(execute.mock.calls[1]![0]).toEqual({
+      recipe_id: 'detail-a',
+      config: { id: 'rec_7' },
+    });
+    // The browse tab stays the one underneath — a lookup is never a tab.
+    expect(route.packsPanel()!.getActiveViewId()).toBe('view-a');
+    // ⛔ AND THE ADDRESS SURVIVES. The stale-tail canonicalizer below rewrites
+    // any requested id that is not the open tab; a lookup id never is, so
+    // without the `hydratedLookup()` gate it would replace this deep link with
+    // `#packs/app-pack/use/view-a` before the record had finished loading.
+    expect(calls, 'a hydrated lookup address must not be canonicalized')
+      .not.toContain('replace #packs/app-pack/use/view-a');
+    route.dispose();
+  });
+
+  /** D-282 slice C — the pin control, where an app actually is.
+   *
+   *  ⛔ IT LIVES INSIDE THE `showUse` BRANCH ON PURPOSE. A capability pack —
+   *  `adyen-checkout`, `ripgrep`: ops for other recipes to call, nothing to
+   *  open — has no Use tab, and a pinned seat for one would land the owner on a
+   *  management page they did not ask for. */
+  it('offers a pin on a pack with an app surface, and reports the toggle', async () => {
+    const onTogglePin = vi.fn();
+    let pins: readonly string[] = [];
+    const doc = makeFakeDocument();
+    const root = doc.createElement('div');
+    const route = bootstrapPacksRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      packsListCaller: vi.fn(async () => ({ packs: [appPack()] })),
+      recipesListCaller: vi.fn(async () => ({ recipes: [viewRecipe('view-a')] })),
+      recipeExecuteCaller: vi.fn(async ({ recipe_id }) => ({
+        recipe_id, recipe_hash: `run-${recipe_id}`, success: true,
+        steps: [], errors: [], output: { render: [] },
+      } as never)),
+      initialPackSlug: 'app-pack',
+      pinnedApps: () => pins,
+      onTogglePin: (slug: string, pinned: boolean) => {
+        onTogglePin(slug, pinned);
+        // The real writer updates its list synchronously, then reconciles with
+        // the server. The panel repaints straight after and reads it back
+        // through the getter — that is what makes the label flip without the
+        // panel keeping a second copy of the pin list.
+        pins = pinned ? [...pins, slug] : pins.filter((entry) => entry !== slug);
+      },
+    });
+    await route.packsPanel()!.whenLoaded();
+    await tick(20);
+
+    const pin = findByAttr(root, PACKS_DETAIL_PIN_ATTR)!;
+    expect(pin, 'a pack with a Use tab offers a pin').toBeTruthy();
+    expect(pin.getAttribute(PACKS_DETAIL_PIN_ATTR)).toBe('unpinned');
+
+    pin.click();
+    await tick(20);
+    expect(onTogglePin).toHaveBeenCalledWith('app-pack', true);
+    expect(findByAttr(root, PACKS_DETAIL_PIN_ATTR)!.getAttribute(PACKS_DETAIL_PIN_ATTR))
+      .toBe('pinned');
+
+    findByAttr(root, PACKS_DETAIL_PIN_ATTR)!.click();
+    await tick(20);
+    expect(onTogglePin).toHaveBeenLastCalledWith('app-pack', false);
+    expect(findByAttr(root, PACKS_DETAIL_PIN_ATTR)!.getAttribute(PACKS_DETAIL_PIN_ATTR))
+      .toBe('unpinned');
+    route.dispose();
+  });
+
+  it('offers no pin on a pack with nothing to open', async () => {
+    const doc = makeFakeDocument();
+    const root = doc.createElement('div');
+    const route = bootstrapPacksRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      packsListCaller: vi.fn(async () => ({ packs: [appPack()] })),
+      // No installed recipes ⇒ no app surface ⇒ no Use tab.
+      recipesListCaller: vi.fn(async () => ({ recipes: [] })),
+      initialPackSlug: 'app-pack',
+      pinnedApps: () => [],
+      onTogglePin: vi.fn(),
+    });
+    await route.packsPanel()!.whenLoaded();
+    await tick(20);
+
+    expect(findByAttr(root, PACKS_DETAIL_PIN_ATTR)).toBeNull();
     route.dispose();
   });
 

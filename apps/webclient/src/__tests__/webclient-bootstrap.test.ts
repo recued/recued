@@ -164,6 +164,7 @@ import {
   WEBCLIENT_SHELL_DRAWER_ACTION_ATTR,
   WEBCLIENT_SHELL_DRAWER_ACTIVE_ATTR,
   WEBCLIENT_SHELL_DRAWER_BACKDROP_ATTR,
+  WEBCLIENT_SHELL_DRAWER_APP_ATTR,
   WEBCLIENT_SHELL_DRAWER_LINK_ATTR,
   WEBCLIENT_SHELL_DRAWER_OPEN_ATTR,
   WEBCLIENT_SHELL_DRAWER_STUB_ATTR,
@@ -176,6 +177,7 @@ import {
   parseRouteFromHash,
   type WebclientHashSource,
 } from '../webclient-bootstrap.js';
+import { PACKS_DETAIL_PIN_ATTR } from '../settings/packs-panel.js';
 import { WEBCLIENT_POLISH_STYLES } from '../shell/webclient-polish-styles.js';
 import {
   RECOVERY_INTENT_ANNOUNCER_ATTR,
@@ -1568,6 +1570,224 @@ describe('D-148 § A.4 — bootstrapWebclient: route discriminator', () => {
     await handle.dispose();
     expect(findChildByAttr(fixture.root, GLOBAL_RUN_PALETTE_TRIGGER_ATTR))
       .toBeNull();
+  });
+
+  /** D-282 slice C — the owner's pinned apps.
+   *
+   *  ⛔⛔ THE EMPTY CASE IS THE ONE THAT MATTERS MOST, and the seat-order
+   *  ratchet below already asserts it: with nothing pinned the drawer is
+   *  EXACTLY the locked list. That is what "reversible" has to mean — unpin
+   *  everything and there is no trace, not a labelled empty region and not a
+   *  stray divider under Chats. */
+  it('asks for prefs but NOT the roster when nothing is pinned', async () => {
+    const fixture = buildOpts();
+    const handle = await bootstrapWebclient(fixture.opts);
+    // The pin read is dispatched after the first route mounts, on a microtask.
+    for (let i = 0; i < 4; i += 1) await flush();
+    const prefs = findRpcCall(fixture.transportControls, 'prefs.get');
+    expect(prefs, 'the drawer reads the pin list at boot').toBeDefined();
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: prefs!.request_id,
+      result: { prefs: { 'ui.pinned_apps': [] } },
+    });
+    for (let i = 0; i < 6; i += 1) await flush();
+
+    // ⛔ `packs.list` returns every installed pack WITH ITS MANIFEST. Paying
+    // that at every boot to label a section most owners never populate is the
+    // cost this gate exists to avoid — and a second caller of a shared rpc is
+    // a change to every reader that assumed it had only one, which is how two
+    // unrelated tests in this file first failed.
+    expect(findRpcCall(fixture.transportControls, 'packs.list')).toBeUndefined();
+    expect(
+      findChildrenByAttr(fixture.root, WEBCLIENT_SHELL_DRAWER_APP_ATTR),
+    ).toEqual([]);
+    await handle.dispose();
+  });
+
+  it('draws a seat per pinned app, named and addressed by its pack', async () => {
+    const fixture = buildOpts();
+    const handle = await bootstrapWebclient(fixture.opts);
+    for (let i = 0; i < 4; i += 1) await flush();
+    const prefs = findRpcCall(fixture.transportControls, 'prefs.get')!;
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: prefs.request_id,
+      result: { prefs: { 'ui.pinned_apps': ['rental-book', 'fleet-money'] } },
+    });
+    for (let i = 0; i < 6; i += 1) await flush();
+
+    const roster = findRpcCall(fixture.transportControls, 'packs.list')!;
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: roster.request_id,
+      result: {
+        packs: [
+          { slug: 'rental-book', name: 'Rental Book', installed: true },
+          { slug: 'fleet-money', name: 'Fleet Money', installed: true },
+          { slug: 'never-pinned', name: 'Something Else', installed: true },
+        ],
+      },
+    });
+    for (let i = 0; i < 6; i += 1) await flush();
+
+    const seats = findChildrenByAttr(fixture.root, WEBCLIENT_SHELL_DRAWER_APP_ATTR);
+    expect(seats.map((seat) => seat.getAttribute(WEBCLIENT_SHELL_DRAWER_APP_ATTR)))
+      .toEqual(['rental-book', 'fleet-money']);
+    // The pack's NAME, not its slug: a seat reading "fleet-money" in a menu
+    // where everything else is a name is the reason the roster is read at all.
+    expect(seats[0]!.childList[0]!.textContent).toBe('Rental Book');
+    expect(seats[0]!.getAttribute('href')).toBe('#packs/rental-book');
+    await handle.dispose();
+  });
+
+  /** ⛔ A PIN OUTLIVES AN UNINSTALL — the pref is per DEVICE and the pack is per
+   *  SERVER. The seat is dropped rather than the pin: reinstall the pack and it
+   *  returns, which is what an owner who removed something for an afternoon
+   *  expects. Drawing it would open a pack detail for something this server
+   *  does not have. */
+  it('draws no seat for a pinned pack this server does not have', async () => {
+    const fixture = buildOpts();
+    const handle = await bootstrapWebclient(fixture.opts);
+    for (let i = 0; i < 4; i += 1) await flush();
+    const prefs = findRpcCall(fixture.transportControls, 'prefs.get')!;
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: prefs.request_id,
+      result: { prefs: { 'ui.pinned_apps': ['rental-book', 'gone-away'] } },
+    });
+    for (let i = 0; i < 6; i += 1) await flush();
+    const roster = findRpcCall(fixture.transportControls, 'packs.list')!;
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: roster.request_id,
+      result: {
+        packs: [
+          { slug: 'rental-book', name: 'Rental Book', installed: true },
+          // Present in the catalogue but NOT installed here.
+          { slug: 'gone-away', name: 'Gone Away', installed: false },
+        ],
+      },
+    });
+    for (let i = 0; i < 6; i += 1) await flush();
+
+    expect(
+      findChildrenByAttr(fixture.root, WEBCLIENT_SHELL_DRAWER_APP_ATTR)
+        .map((seat) => seat.getAttribute(WEBCLIENT_SHELL_DRAWER_APP_ATTR)),
+    ).toEqual(['rental-book']);
+    await handle.dispose();
+  });
+
+  /** ⛔⛔ THE FIRST PIN IS NOT COVERED HERE, AND THAT IS STATED RATHER THAN
+   *  IMPLIED. `loadPinnedApps` skips the roster whenever the pin list is EMPTY
+   *  — which it is, by definition, the first time anyone pins anything — so the
+   *  name map was empty, the brand-new pin was filtered out for lack of a
+   *  label, and the seat did not appear until a reload. Every test in this file
+   *  passed: they all answer `prefs.get` with pins ALREADY present.
+   *
+   *  A LIVE DRIVE found it (press Pin, watch nothing happen, reload, watch the
+   *  seat appear), and a live drive also caught the first FIX being wrong — it
+   *  called `loadPinnedApps`, whose prefs read returned the old empty list and
+   *  overwrote the pin just made. Only the roster is missing at that moment, so
+   *  `loadPinnedAppNames` is what runs.
+   *
+   *  ⚠ I tried to pin it here and could not: this harness never issues
+   *  `recipes.list`, so the pack gets no app surface, so no Use tab and no Pin
+   *  control to press. Covering it needs the route harness to grow that seam.
+   *  The procedure that DOES catch it is in
+   *  D-282 — a booted server, a
+   *  rebuilt bundle, a paired browser. */
+
+  /** ⛔⛔ THE FIRST PIN HAD NO NAME TO DRAW, AND IT REACHED A BROWSER.
+   *
+   *  `loadPinnedApps` skips the roster whenever the pin list is EMPTY — which
+   *  it is, by definition, the first time anyone pins anything. So the name map
+   *  was empty, the brand-new pin was filtered out for lack of a label, and the
+   *  seat appeared only after a reload happened to re-enter the loader with a
+   *  non-empty list. Unpinning looked fine, which made it read like nothing was
+   *  wrong.
+   *
+   *  ⚠ EVERY OTHER TEST HERE ANSWERS `prefs.get` WITH PINS ALREADY PRESENT —
+   *  never the first-pin path, which is the only state the bug lives in and a
+   *  state every owner passes through exactly once. */
+  it('fetches the roster on a first pin, when no name is known yet', async () => {
+    const fixture = buildOpts();
+    fixture.hashSource.setHash('#packs/app-pack');
+    const handle = await bootstrapWebclient({
+      ...fixture.opts, ...PACK_APP_TEST_OPTIONS,
+    });
+    await openPackDetail(fixture, {
+      slug: 'app-pack',
+      pinnedApps: [],
+      recipes: [{
+        recipe_id: 'view-a', version: 1, ttl: 0,
+        metadata: {
+          name: 'View A', description: '', author: 'recued-core',
+          supported_platforms: [],
+        },
+        variables: {}, prefetch_steps: [], steps: [], requires: [],
+        output: { render: [{ type: 'table', source: 'step.rows' }] },
+      }],
+    });
+
+    const pin = findChildByAttr(fixture.root, PACKS_DETAIL_PIN_ATTR);
+    expect(pin, 'the seam must reach a pack that has something to open').not.toBeNull();
+    expect(pin!.getAttribute(PACKS_DETAIL_PIN_ATTR)).toBe('unpinned');
+
+    const rosterReads = (): number => fixture.transportControls.sendCalls().filter(
+      (c) => (c as { method?: unknown })?.method === 'packs.list').length;
+    const before = rosterReads();
+    pin!.click();
+    for (let i = 0; i < 8; i += 1) await flush();
+
+    // ⛔ THE ASSERTION. Without the fix the pin updates the slug list and stops,
+    // leaving the seat undrawable for want of a label until a reload.
+    expect(rosterReads(), 'a first pin must go and get the name')
+      .toBeGreaterThan(before);
+    await handle.dispose();
+  });
+
+  /** ⛔⛔ THE SEAT MUST STAY LIT ONCE PRESSED. Its address is `#packs/<slug>`
+   *  and the packs route immediately canonicalizes to `#packs/<slug>/use/<view>`
+   *  — three segments, which the exact-tail matcher does not match. Without
+   *  prefix matching the seat un-highlights the instant you use it and the
+   *  marker jumps to `Packs`. */
+  it('keeps the app seat current once the packs route canonicalizes the hash', async () => {
+    const fixture = buildOpts();
+    const handle = await bootstrapWebclient(fixture.opts);
+    for (let i = 0; i < 4; i += 1) await flush();
+    const prefs = findRpcCall(fixture.transportControls, 'prefs.get')!;
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: prefs.request_id,
+      result: { prefs: { 'ui.pinned_apps': ['rental-book'] } },
+    });
+    for (let i = 0; i < 6; i += 1) await flush();
+    const roster = findRpcCall(fixture.transportControls, 'packs.list')!;
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: roster.request_id,
+      result: { packs: [{ slug: 'rental-book', name: 'Rental Book', installed: true }] },
+    });
+    for (let i = 0; i < 6; i += 1) await flush();
+
+    const seat = findChildrenByAttr(fixture.root, WEBCLIENT_SHELL_DRAWER_APP_ATTR)[0]!;
+    const packsSeat = findChildByAttrValue(
+      fixture.root, WEBCLIENT_SHELL_DRAWER_LINK_ATTR, 'packs',
+    )!;
+
+    fixture.hashSource.setHash('#packs/rental-book/use/list-buildings');
+    await flush();
+    expect(seat.attrs.has(WEBCLIENT_SHELL_DRAWER_ACTIVE_ATTR)).toBe(true);
+    expect(packsSeat.attrs.has(WEBCLIENT_SHELL_DRAWER_ACTIVE_ATTR)).toBe(false);
+
+    // …and a different pack still falls back to `Packs`, which is what says the
+    // prefix match is scoped to the seat's own subtree.
+    fixture.hashSource.setHash('#packs/some-other-pack');
+    await flush();
+    expect(seat.attrs.has(WEBCLIENT_SHELL_DRAWER_ACTIVE_ATTR)).toBe(false);
+    expect(packsSeat.attrs.has(WEBCLIENT_SHELL_DRAWER_ACTIVE_ATTR)).toBe(true);
+    await handle.dispose();
   });
 
   it('mounts one persistent §D.L2 drawer in the locked order and tracks the active route on content swaps', async () => {
@@ -5303,6 +5523,125 @@ const REVOCABLE_HOME_PROFILE: WebclientServerProfile = {
     server_handle_at_pair: 'home',
     instance_id: 'instance-home',
   },
+};
+
+/** Answer EVERY still-unanswered call of `method`.
+ *
+ *  ⛔ `findRpcCall` TAKES THE FIRST ONE, AND THAT IS A TRAP HERE. A pack deep
+ *  link issues `packs.list` TWICE — the browse roster and the panel's own list
+ *  — so answering "the" call leaves the other pending and the panel never
+ *  reaches `renderReady`. */
+const answerAllRpc = (
+  controls: FakeTransportControls,
+  method: string,
+  result: unknown,
+  answered: Set<string>,
+): void => {
+  for (const call of controls.sendCalls()) {
+    if (call === null || typeof call !== 'object') continue;
+    const row = call as { type?: unknown; method?: unknown; request_id?: unknown };
+    if (row.type !== 'rpc' || row.method !== method) continue;
+    if (typeof row.request_id !== 'string' || answered.has(row.request_id)) continue;
+    answered.add(row.request_id);
+    controls.fireMessage({ type: 'rpc_result', request_id: row.request_id, result });
+  }
+};
+
+/** Bootstrap options a pack-app test wants: the packs panel ON, and the panels
+ *  that merely share its load OFF.
+ *
+ *  ⛔⛔ THE PANEL'S LOAD IS A SIX-WAY `Promise.all` — `runList` plus supervision,
+ *  connections readiness, pack access, owner overrides and install audiences.
+ *  Leave ONE unanswered and it sits at `state=loading` forever behind a
+ *  mounted-but-empty detail host; answer one with a guessed shape and it lands
+ *  at `state=error`, naming the next missing key one test run at a time. That is
+ *  why this harness had no way to reach a Use tab at all.
+ *
+ *  Four of the five siblings have their own flag. The two that do NOT —
+ *  supervision and owner overrides — are gated on `enablePacksPanel`, the very
+ *  flag that must stay ON, so they are ANSWERED below instead. */
+const PACK_APP_TEST_OPTIONS = {
+  enableContractsPanel: false,        // pack access (needs all 3 of its callers)
+  enableSellerPage: false,            // the seller half of install audiences
+  enableConnectionsEnrollPanel: false, // connections readiness
+  enableCliReachability: false,       // the localTools contracts fallback
+} as const;
+
+/** Open a pack's detail far enough that its Use tab has resolved. */
+const openPackDetail = async (
+  fixture: ReturnType<typeof buildOpts>,
+  spec: {
+    readonly slug: string;
+    readonly recipes: ReadonlyArray<Record<string, unknown>>;
+    readonly pinnedApps?: readonly string[];
+  },
+): Promise<void> => {
+  const answered = new Set<string>();
+  const shaped: Record<string, unknown> = {
+    // ⚠ THE SHAPE `d-187-packs-route.test.ts` ALREADY PROVES MOUNTS A USE TAB —
+    // a v1 manifest with a top-level `recipes[]`, plus every DERIVED field the
+    // panel iterates. Hand-rolling it produced a queue of "X is not iterable"
+    // errors, one per test run (`recipe_refs`, then `grants`), which is the
+    // slowest possible way to discover a fixture contract.
+    'packs.list': {
+      packs: [(() => {
+        const manifest = {
+          manifest_version: 1,
+          slug: spec.slug,
+          publisher: 'recued-core',
+          name: 'App Pack',
+          description: 'A pack for testing.',
+          version: 1,
+          recipes: spec.recipes.map((r) => ({ slug: r.recipe_id as string, version: 1 })),
+          requires: ['install_bulk_pack'],
+          tags: ['test'],
+        };
+        return {
+          slug: manifest.slug,
+          publisher: manifest.publisher,
+          name: manifest.name,
+          description: manifest.description,
+          version: manifest.version,
+          pre_install: false,
+          installed: true,
+          requires: [...manifest.requires],
+          recipe_count: manifest.recipes.length,
+          recipe_refs: manifest.recipes.map((r) => ({ slug: r.slug, version: r.version })),
+          body_visibility_grant_keys: [],
+          body_visibility_grant_count: 0,
+          manifest,
+        };
+      })()],
+    },
+    'prefs.get': { prefs: { 'ui.pinned_apps': spec.pinnedApps ?? [] } },
+    // ⚠ , SINGULAR — the rpc the bootstrap actually calls. Keyed
+    // as 'recipes.list' it was never answered and the panel sat on "Loading
+    // what this Pack can do…" forever, looking like the call was never made.
+    'recipe.list': {
+      recipes: spec.recipes.map((recipe) => ({
+        recipe_id: recipe.recipe_id, publisher_id: 'recued-core', version: 1,
+        recipe_hash: `hash-${String(recipe.recipe_id)}`, source: 'bundled',
+        installed_at: 0, recipe,
+      })),
+    },
+    // ⚠ THE TWO WITH NO FLAG. Shapes taken from their readers, not guessed:
+    // supervision reads `res.daemons`; the owner-operation controller reads
+    // `catalog.ingredients` and `listed.overrides` — and `ingredients` is
+    // exactly the key whose absence produced "ingredients is not iterable".
+    'supervision.list': { daemons: [] },
+    'collection.operation.listOperations': { ingredients: [] },
+    'collection.operation.listOwnerOverrides': { overrides: [] },
+  };
+  // ⚠ Loops until the app surface settles rather than a fixed count: the recipe
+  // read is only issued once the DETAIL has rendered, which is itself two rpc
+  // rounds deep. A fixed 10 rounds left the panel on "Loading what this Pack
+  // can do…" with the call not yet made.
+  for (let round = 0; round < 30; round += 1) {
+    for (const [method, result] of Object.entries(shaped)) {
+      answerAllRpc(fixture.transportControls, method, result, answered);
+    }
+    for (let i = 0; i < 4; i += 1) await flush();
+  }
 };
 
 const findRpcCall = (

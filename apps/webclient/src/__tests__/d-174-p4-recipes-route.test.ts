@@ -530,6 +530,13 @@ const shellHtml = (root: FakeEl): string => root.children[0]!.innerHTML;
 
 const RESULT_ACTION_SELECT_ATTR = 'data-recued-recipes-result-action-select';
 
+/** D-282 B1 — a group of three or fewer runnable actions renders as BUTTONS, each with
+ *  its own label, variant and action id. Only a wider group collapses into the picker
+ *  that `resultActionSelection` reads. */
+const inlineResultActionIds = (html: string): string[] =>
+  [...html.matchAll(new RegExp(`${RECIPES_ROUTE_RESULT_ACTION_ATTR}="([^"]+)"`, 'g'))]
+    .map((m) => m[1]!);
+
 const resultActionSelection = (
   html: string,
 ): { groupId: string | undefined; actionIds: string[] } => ({
@@ -3873,7 +3880,10 @@ describe('R24 — Recipes route: run + schedule modal', () => {
     expect(html).toContain('Approve');
     expect(html).toContain('Send nudge');
     expect(html).toContain('Close watch');
-    expect(html).toContain('data-recued-recipes-result-action-select="result-action-group-');
+    // ⚠ D-282 B1 — two actions are two BUTTONS now, not a picker. Their labels are
+    // asserted above; what changed is that each is independently pressable.
+    expect(html).not.toContain('data-recued-recipes-result-action-select="result-action-group-');
+    expect(inlineResultActionIds(html).length).toBeGreaterThanOrEqual(4);
     expect(html).toContain('Recipe &quot;missing-action&quot; is not installed.');
 
     rig.route.dispose();
@@ -4095,14 +4105,14 @@ describe('R24 — Recipes route: run + schedule modal', () => {
     rig.route.closeRunModal();
 
     const html = shellHtml(rig.root);
-    const { groupId, actionIds } = resultActionSelection(html);
-    expect(groupId).toBe('result-action-group-0');
+    // ⚠ D-282 B1 — two runnable actions are two buttons; the SECOND is pressed
+    // directly rather than chosen from a picker and then run.
+    const actionIds = inlineResultActionIds(html);
     expect(actionIds).toEqual(['result-action-0', 'result-action-1']);
+    expect(html).not.toContain(`${RESULT_ACTION_SELECT_ATTR}="`);
 
-    appendSelectedResultAction(rig.doc, rig.root.children[0]!, groupId!, actionIds[1]!);
-
-    clickRecipeAction(rig.root, 'run-selected-result-action', '', {
-      [RESULT_ACTION_SELECT_ATTR]: groupId!,
+    clickRecipeAction(rig.root, 'run-result-action', '', {
+      [RECIPES_ROUTE_RESULT_ACTION_ATTR]: actionIds[1]!,
     });
 
     expect(rig.route.runModal()?.recipe_id).toBe('close-action');
@@ -4121,6 +4131,84 @@ describe('R24 — Recipes route: run + schedule modal', () => {
     expect(rig.route.resultPanel()?.route_recipe_id).toBe('daily-brief');
     expect(rig.route.resultPanel()?.render_recipe_id).toBe('close-action');
     expect(shellHtml(rig.root)).toContain('result for close-action');
+
+    rig.route.dispose();
+  });
+
+  /** D-282 B1 — the OTHER side of the threshold. Three or fewer runnable actions render
+   *  as buttons; a wider group still collapses into the picker, because four buttons do
+   *  not fit a table cell and the widest groups in the corpus (one 4, two 5, one 6) live
+   *  in cells as well as in `button` blocks. This is the only cover the picker has left,
+   *  so it asserts the whole path: the control exists, and pressing Run opens the action
+   *  the select is pointing at. */
+  it('keeps the picker for a group wider than three, and runs the chosen one', async () => {
+    const execute = vi.fn<RecipeExecuteCaller>(async (args) => {
+      if (args.recipe_id === 'daily-brief') {
+        return executeResponse({
+          output: {
+            render: [{
+              type: 'table',
+              data: {
+                columns: [
+                  { field: 'name', label: 'Name' },
+                  { field: 'action', label: 'Action', type: 'action' },
+                ],
+                rows: [{
+                  name: 'Acme',
+                  action: [
+                    { kind: 'recipe.run', label: 'One', recipe_id: 'reply-action' },
+                    { kind: 'recipe.run', label: 'Two', recipe_id: 'close-action' },
+                    { kind: 'recipe.run', label: 'Three', recipe_id: 'reply-action' },
+                    {
+                      kind: 'recipe.run',
+                      label: 'Four',
+                      recipe_id: 'close-action',
+                      config: { status: 'closed' },
+                    },
+                  ],
+                }],
+              },
+            }],
+          } as unknown as ServerExecuteResponse['output'],
+        });
+      }
+      return executeResponse({
+        output: {
+          render: [{ type: 'text', data: `result for ${args.recipe_id}` }],
+        } as unknown as ServerExecuteResponse['output'],
+      });
+    });
+    const rig = mountRoute({
+      initialRecipeId: 'daily-brief',
+      recipeExecuteCaller: execute,
+      recipesListCaller: vi.fn<RecipesListCaller>(async () => ({
+        recipes: [
+          recipeEntry('daily-brief'),
+          targetRecipeWithEntityContext('reply-action', 'Reply action'),
+          targetRecipeWithEntityContext('close-action', 'Close action'),
+        ],
+      })),
+    });
+    await rig.route.whenLoaded();
+
+    rig.route.openRunModal('daily-brief');
+    await rig.route.confirmRun();
+    rig.route.closeRunModal();
+
+    const html = shellHtml(rig.root);
+    const { groupId, actionIds } = resultActionSelection(html);
+    expect(groupId).toBe('result-action-group-0');
+    expect(actionIds).toHaveLength(4);
+    // ⛔ Four is past the threshold, so NO standalone action buttons were drawn.
+    expect(html).not.toContain('="run-result-action"');
+
+    appendSelectedResultAction(rig.doc, rig.root.children[0]!, groupId!, actionIds[3]!);
+    clickRecipeAction(rig.root, 'run-selected-result-action', '', {
+      [RESULT_ACTION_SELECT_ATTR]: groupId!,
+    });
+
+    expect(rig.route.runModal()?.recipe_id).toBe('close-action');
+    expect(rig.route.runModal()?.config_text).toContain('"status": "closed"');
 
     rig.route.dispose();
   });
@@ -4190,14 +4278,14 @@ describe('R24 — Recipes route: run + schedule modal', () => {
     expect(html).toContain('Acme');
     expect(html).toContain('Draft reply');
     expect(html).toContain('Close watch');
-    const { groupId, actionIds } = resultActionSelection(html);
-    expect(groupId).toBe('result-action-group-0');
+    // ⚠ D-282 B1 — two runnable actions are two buttons; the SECOND is pressed
+    // directly rather than chosen from a picker and then run.
+    const actionIds = inlineResultActionIds(html);
     expect(actionIds).toEqual(['result-action-0', 'result-action-1']);
+    expect(html).not.toContain(`${RESULT_ACTION_SELECT_ATTR}="`);
 
-    appendSelectedResultAction(rig.doc, rig.root.children[0]!, groupId!, actionIds[1]!);
-
-    clickRecipeAction(rig.root, 'run-selected-result-action', '', {
-      [RESULT_ACTION_SELECT_ATTR]: groupId!,
+    clickRecipeAction(rig.root, 'run-result-action', '', {
+      [RECIPES_ROUTE_RESULT_ACTION_ATTR]: actionIds[1]!,
     });
 
     expect(rig.route.runModal()?.recipe_id).toBe('close-action');
@@ -4390,7 +4478,11 @@ describe('R24 — Recipes route: run + schedule modal', () => {
     expect(html).toContain('You cannot use the name Recued keeps for itself: &quot;caller&quot;.');
     expect(html).toContain('That Recipe cannot run. It needs a provider you do not have.');
     expect(html).toContain('That Recipe needs a Pack you have not installed.');
-    expect(html).toContain('<option value="result-action-0">Author context</option>');
+    // ⚠ D-282 B1 — the ONE runnable action in this group is a button with its label,
+    // and the four refusals above still show their own reasons. A group that is partly
+    // invalid must say which half and why, not render the runnable remainder silently.
+    expect(html).toContain('>Author context</button>');
+    expect(html).toContain(`${RECIPES_ROUTE_RESULT_ACTION_ATTR}="result-action-0"`);
     expect(html).not.toContain('is not a visible target for this recipe');
 
     rig.route.dispose();

@@ -130,7 +130,6 @@ describe('D-192 E2b — commitment_tracker standalone task', () => {
           model_id: 'groq:llama-3-70b',
         };
       }),
-      resolveLLMModelId: vi.fn(async () => 'groq:llama-3-70b'),
       resolveContactEngagements,
       ...over,
     }) as unknown as HousekeepingContext;

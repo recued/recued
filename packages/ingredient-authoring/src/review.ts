@@ -204,13 +204,18 @@ const compileCompositionForReview = (body: unknown): CompositionReviewView => {
 };
 
 const compilePackForReview = (body: unknown): CompositionReviewView => {
-  const result = validatePack(body);
+  // ⚠ `warnUnboundedPatterns` is passed HERE and not on the install paths. Review
+  //   is where an author can still act on it; an installer cannot fix a pack they
+  //   did not write. See the option's own note in `validators.ts`.
+  const result = validatePack(body, { warnUnboundedPatterns: true });
   const packDecomposition = isPackDecomposition(result.decomposed) ? result.decomposed : undefined;
   const contents = packDecomposition?.contents ?? [];
   const projections = contents
     .filter(isCompositionRef)
     .map((content) => {
-      const compositionResult = validateComposition(content.composition);
+      const compositionResult = validateComposition(content.composition, {
+        warnUnboundedPatterns: true,
+      });
       const decomposed = isDecomposedArtifacts(compositionResult.decomposed)
         ? compositionResult.decomposed
         : undefined;

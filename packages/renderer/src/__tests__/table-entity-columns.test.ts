@@ -1,3 +1,7 @@
+/** D-282 B2 — the header assertions below read `'>Label</th>'` where they once read
+ *  `'>Label '`. That trailing space was the separator before an empty
+ *  `<span class="sort-arrow">`, which nothing styled and nothing bound; removing the dead
+ *  affordance removed the space with it. */
 /** A `table` whose columns come from the entity schema.
  *
  *  The point is that a pack names its fields ONCE. Before this the same list
@@ -21,8 +25,8 @@ const rows = [{ label: 'Flat 1', active: true }, { label: 'Flat 2', active: fals
 describe('entity-derived table columns', () => {
   it('draws the resolved columns, with their schema labels', () => {
     const html = renderTableBlock({ rows }, undefined, UNIT);
-    expect(html).toContain('>Label ');
-    expect(html).toContain('>Active ');
+    expect(html).toContain('>Label</th>');
+    expect(html).toContain('>Active</th>');
     expect(html).toContain('Flat 1');
     expect(html).toContain('Flat 2');
   });
@@ -54,10 +58,10 @@ describe('entity-derived table columns', () => {
     }, undefined, UNIT);
 
     // the derived label wins over the hand-written one for a data column…
-    expect(html).toContain('>Label ');
+    expect(html).toContain('>Label</th>');
     expect(html).not.toContain('HAND-WRITTEN');
     // …and the action column is still there, rendered as an action.
-    expect(html).toContain('>Do ');
+    expect(html).toContain('>Do</th>');
     expect(html).toContain('action-recipe-run');
     expect(html).toContain('Open');
   });
@@ -71,14 +75,14 @@ describe('entity-derived table columns', () => {
       undefined,
       { entity: 'unit', columns: [], unresolved: 'no_schema' },
     );
-    expect(html).toContain('>Authored ');
+    expect(html).toContain('>Authored</th>');
     expect(html).toContain('Flat 1');
   });
 
   it('is unchanged for a table that named no entity', () => {
     const html = renderTableBlock({ columns: [{ field: 'label', label: 'Authored' }], rows });
-    expect(html).toContain('>Authored ');
-    expect(html).not.toContain('>Label ');
+    expect(html).toContain('>Authored</th>');
+    expect(html).not.toContain('>Label</th>');
   });
 });
 

@@ -722,7 +722,7 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
     "ttl": 60,
     "metadata": {
       "name": "Extract commitments from mail",
-      "description": "Use “Extract commitments from mail” in Recued. Extract commitments from an inbound email into Recued's commitment tracker — who promised what to whom, with optional deadline and monetary amount. Thread-aware: a reply like 'yes, please send that by Friday' binds to the prior message, not the reply.",
+      "description": "Use “Extract commitments from mail” in Recued. Extract commitments from an inbound email into Recued's commitment tracker — who promised what to whom, with optional deadline and monetary amount. Thread-aware: a reply like ‘yes, please send that by Friday’ binds to the prior message. Records one only when someone actually promised something.",
       "author": "recued-core",
       "supported_platforms": [],
       "tags": [
@@ -737,13 +737,7 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
       ],
       "budget_ms": 30000
     },
-    "variables": {
-      "confidence_threshold": {
-        "label": "Minimum extraction confidence (0..1) to create a commitment row",
-        "type": "number",
-        "default": 0.7
-      }
-    },
+    "variables": {},
     "requires": [],
     "event_triggers": [
       {
@@ -890,8 +884,37 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
         ]
       },
       {
-        "id": "extract",
+        "id": "classify",
         "skip_when": "{{step.skip_empty}} equal true",
+        "op": "core.ai.classify",
+        "args": {
+          "llm.data": "Subject: {{step.protect.aliased.subject}}\n\n{{step.protect.aliased.body}}",
+          "llm.categories": [
+            "commitment_made",
+            "no_commitment"
+          ],
+          "llm.context": "Does this message contain a COMMITMENT — someone stating they will do a specific thing, by them or by a named party? A request asking the reader to do something is NOT a commitment. Newsletters, receipts and social messages are not commitments.",
+          "llm.model_hint": "fast"
+        }
+      },
+      {
+        "id": "not_commitment",
+        "transform": "compare",
+        "left": "{{step.classify.category}}",
+        "operator": "not_equal",
+        "right": "commitment_made"
+      },
+      {
+        "id": "skip_extract",
+        "transform": "any",
+        "values": [
+          "{{step.skip_empty}}",
+          "{{step.not_commitment}}"
+        ]
+      },
+      {
+        "id": "extract",
+        "skip_when": "{{step.skip_extract}} equal true",
         "op": "core.ai.extract",
         "args": {
           "llm.data": "Subject: {{step.protect.aliased.subject}}\n\n{{step.protect.aliased.body}}",
@@ -901,8 +924,7 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
             "promised_for_at_iso",
             "counterparty_email",
             "monetary_amount",
-            "monetary_currency",
-            "derivation_confidence"
+            "monetary_currency"
           ],
           "llm.model_hint": "fast"
         }
@@ -924,10 +946,6 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
           "extracted_direction": {
             "value": "{{step.restore.restored.direction}}",
             "fallback": "inbound"
-          },
-          "extracted_confidence": {
-            "value": "{{step.restore.restored.derivation_confidence}}",
-            "fallback": 0
           },
           "extracted_counterparty_email": {
             "value": "{{step.restore.restored.counterparty_email}}",
@@ -979,13 +997,6 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
         ]
       },
       {
-        "id": "below_threshold",
-        "transform": "compare",
-        "left": "{{step.extracted_confidence}}",
-        "operator": "less",
-        "right": "{{config.confidence_threshold}}"
-      },
-      {
         "id": "missing_statement",
         "transform": "compare",
         "left": "{{step.extracted_statement}}",
@@ -996,7 +1007,7 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
         "transform": "any",
         "values": [
           "{{step.skip_empty}}",
-          "{{step.below_threshold}}",
+          "{{step.not_commitment}}",
           "{{step.missing_statement}}"
         ]
       },
@@ -1018,7 +1029,6 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
           "derivation": "mail_extracted",
           "promised_for_at": "{{step.promised_for_at}}",
           "expiry_policy": "escalate_overdue",
-          "derivation_confidence": "{{step.extracted_confidence}}",
           "monetary_value": "{{step.monetary_value}}",
           "counterparty_contact_id": "{{step.resolve_counterparty.contact.email}}",
           "derived_from_mail_thread_id": "{{step.thread_id}}"
@@ -1045,8 +1055,8 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
             "value": "{{step.extracted_direction}}"
           },
           {
-            "label": "Confidence",
-            "value": "{{step.extracted_confidence:number}}"
+            "label": "Classification",
+            "value": "{{step.classify.category}}"
           },
           {
             "label": "Counterparty email",
@@ -1091,7 +1101,7 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
     "ttl": 60,
     "metadata": {
       "name": "Extract tasks from mail",
-      "description": "Use “Extract tasks from mail” in Recued. Extract action items from an inbound email into Recued's task tracker — title, due date, and priority (low / medium / high). Thread-aware; fires automatically on each inbound message; records only extractions above the confidence floor (default 0.7).",
+      "description": "Use “Extract tasks from mail” in Recued. Extract action items from an inbound email into Recued's task tracker — title, due date, and priority (low / medium / high). Thread-aware; fires on each inbound message, and records a task only when the message actually asks the reader to do something.",
       "author": "recued-core",
       "supported_platforms": [],
       "tags": [
@@ -1107,11 +1117,6 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
       "budget_ms": 30000
     },
     "variables": {
-      "confidence_threshold": {
-        "label": "Minimum extraction confidence (0..1) to create a task row",
-        "type": "number",
-        "default": 0.7
-      },
       "container_names": {
         "label": "Destination container",
         "type": "object",
@@ -1266,8 +1271,38 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
         ]
       },
       {
-        "id": "extract",
+        "id": "classify",
         "skip_when": "{{step.skip_empty}} equal true",
+        "op": "core.ai.classify",
+        "args": {
+          "llm.data": "Subject: {{step.protect.aliased.subject}}\n\n{{step.protect.aliased.body}}",
+          "llm.categories": [
+            "actionable_task",
+            "informational",
+            "no_task"
+          ],
+          "llm.context": "Decide whether this message asks the READER to do something specific. \"actionable_task\": it requests a concrete action from the reader or from a named person. \"informational\": a discussion or update the reader may want to know, with no request. \"no_task\": newsletters, marketing, receipts, automated notifications, and purely social messages.",
+          "llm.model_hint": "fast"
+        }
+      },
+      {
+        "id": "not_actionable",
+        "transform": "compare",
+        "left": "{{step.classify.category}}",
+        "operator": "not_equal",
+        "right": "actionable_task"
+      },
+      {
+        "id": "skip_extract",
+        "transform": "any",
+        "values": [
+          "{{step.skip_empty}}",
+          "{{step.not_actionable}}"
+        ]
+      },
+      {
+        "id": "extract",
+        "skip_when": "{{step.skip_extract}} equal true",
         "op": "core.ai.extract",
         "args": {
           "llm.data": "Subject: {{step.protect.aliased.subject}}\n\n{{step.protect.aliased.body}}\n\n[Field guidance] delegated_assignee_email: the email address of a specific named person this message EXPLICITLY delegates the task to. Return null if the task is directed at the reader/recipient, is a general request, or names no third-party owner — and never use the sender's own signature address.",
@@ -1275,8 +1310,7 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
             "title",
             "due_at_iso",
             "priority",
-            "delegated_assignee_email",
-            "extraction_confidence"
+            "delegated_assignee_email"
           ],
           "llm.model_hint": "fast"
         }
@@ -1299,10 +1333,6 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
             "value": "{{step.restore.restored.priority}}",
             "fallback": "medium"
           },
-          "extracted_confidence": {
-            "value": "{{step.restore.restored.extraction_confidence}}",
-            "fallback": 0
-          },
           "extracted_assignee_email": {
             "value": "{{step.restore.restored.delegated_assignee_email}}",
             "fallback": ""
@@ -1320,13 +1350,6 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
         "input": "{{step.restore.restored.due_at_iso}}"
       },
       {
-        "id": "below_threshold",
-        "transform": "compare",
-        "left": "{{step.extracted_confidence}}",
-        "operator": "less",
-        "right": "{{config.confidence_threshold}}"
-      },
-      {
         "id": "missing_title",
         "transform": "compare",
         "left": "{{step.extracted_title}}",
@@ -1337,7 +1360,7 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
         "transform": "any",
         "values": [
           "{{step.skip_empty}}",
-          "{{step.below_threshold}}",
+          "{{step.not_actionable}}",
           "{{step.missing_title}}"
         ]
       },
@@ -1383,8 +1406,8 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
             "value": "{{step.extracted_priority}}"
           },
           {
-            "label": "Confidence",
-            "value": "{{step.extracted_confidence:number}}"
+            "label": "Classification",
+            "value": "{{step.classify.category}}"
           },
           {
             "label": "Assignee email",

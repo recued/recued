@@ -40,7 +40,10 @@ import type {
 import { NOTIFICATION_CHANNEL_NAMES } from '@recued/contracts';
 import { DEFAULT_INSTANCE_PREFS, getPref } from '@recued/contracts';
 import type { InstancePrefs } from '@recued/contracts';
-import type { ResolvedTableEditDescriptor } from '@recued/contracts';
+import type {
+  ResolvedTableEditDescriptor,
+  ResolvedTableSelectDescriptor,
+} from '@recued/contracts';
 import { openPreapprovalActivation } from '../approvals/preapproval-activation.js';
 import { preapprovalHref } from '../approvals/preapproval-route.js';
 import {
@@ -71,6 +74,16 @@ import {
   removeRow as gridRemoveRow,
   setCell as gridSetCell,
   type OutputTableEditState,
+  beginTableSelectSubmit,
+  canSubmitTableSelect,
+  failTableSelectSubmit,
+  initialTableSelectState,
+  outputTableSelectConfig,
+  outputTableSelectInvocation,
+  setAllTableSelection,
+  tableSelectAllState,
+  toggleTableSelection,
+  type OutputTableSelectState,
   RefPicker,
   dedupeOutputRowsById,
   initialOutputFilterState,
@@ -113,7 +126,7 @@ import { serializeShellRoute } from '../shell/route.js';
 import {
   recipeRequiredConnections,
   type RequiredConnection,
-} from './required-connections.js';
+} from '@recued/contracts';
 import {
   packSlugLabel,
   recipeIsStandalone,
@@ -127,7 +140,7 @@ import {
   type RecordsEffect,
   type RecordsEntityUsage,
   type RecordsUsagePack,
-} from './recipe-records-usage.js';
+} from '@recued/contracts';
 import { humanizeRpcError } from '../shell/rpc-error-copy.js';
 import { fetchPackRecipeRefs } from '../discover/catalog-client.js';
 import type {
@@ -157,6 +170,8 @@ import {
   RECIPES_ROUTE_RESULT_FILTER_PAGE_ATTR,
   RECIPES_ROUTE_RESULT_GRID_ATTR,
   RECIPES_ROUTE_RESULT_GRID_ROW_ATTR,
+  RECIPES_ROUTE_RESULT_SELECT_ATTR,
+  RECIPES_ROUTE_RESULT_SELECT_ROW_ATTR,
   RECIPE_RESULT_PANEL_STYLES,
   copyRecipeResultValue,
   RECIPE_RESULT_HOST_ATTR,
@@ -166,6 +181,7 @@ import {
   resultFilterRunConfig,
   triggerResultFileOpen,
   findResultTableEdit,
+  findResultTableSelect,
   renderRecipeResultPanel,
   RECIPES_FILE_PREVIEW_MOUNT_ATTR,
   RECIPES_FILE_PREVIEW_NAME_ATTR,
@@ -1537,7 +1553,13 @@ const recipeGrantSummary = (
     : '';
   const needs = requires.length > 0 ? requires.join(', ') : 'This Recipe asks for no permissions.';
   const connectionsLine = renderConnectionsNeed(
-    recipeRequiredConnections(entry.recipe),
+    // ⛔ THE SERVER'S PROJECTION, NOT A LOCAL WALK. Deriving this needs the
+    // step bodies, and a list row no longer carries them — re-walking the
+    // trimmed view would silently UNDER-report, showing fewer connections
+    // than the recipe needs. The local walk remains only for a server that
+    // does not project it.
+    (entry.required_connections as RequiredConnection[] | undefined)
+      ?? recipeRequiredConnections(entry.recipe as never),
     enrolledConnections,
   );
   return `
@@ -2314,6 +2336,15 @@ const renderRecipeDetail = (
   // either should convert to an options object rather than push the count again.
   // `undefined` = the host wired no prefs rpc, so no control is offered.
   displayMode: boolean | undefined = undefined,
+  /** D-282 B6 — per-table selection, keyed by `selectKey`.
+   *
+   *  ⚠ THE EIGHTEENTH, and the note above asked for an options object instead.
+   *  Added here anyway, with the reason that note's own bug does not reach it:
+   *  that bug was a boolean inserted among booleans, which the compiler could
+   *  not object to. This is a `ReadonlyMap`, so a shifted position is a type
+   *  error rather than a silent swap. The refactor is still owed; doing it
+   *  inside a feature slice would bury the feature in it. */
+  selectStates: ReadonlyMap<string, OutputTableSelectState> = new Map(),
 ): string => {
   const name = recipeDisplayName(entry);
   const triggerKind = deriveTriggerKind(entry);
@@ -2435,6 +2466,7 @@ const renderRecipeDetail = (
         resultGridStates,
         recordRefPickers,
         { display_mode: displayMode },
+        selectStates,
       )}
       ${renderRelatedRecipesSection(
         entry,
@@ -2606,6 +2638,9 @@ export const bootstrapRecipesRoute = (
   let displayMode = getPref(DEFAULT_INSTANCE_PREFS, 'ui.result_display_mode') === true;
   let displayRefreshBusy = false;
   let resultGridStates = new Map<string, OutputTableEditState>();
+  /** D-282 B6. ⚠ NOT part of the dirty/discard discipline beside it — a
+   *  selection costs three clicks to rebuild, typed cells do not. */
+  let resultSelectStates = new Map<string, OutputTableSelectState>();
   let resultGridRefPickers: RefPicker.RefPickerHandle[] = [];
   let resultFilterStates = new Map<string, RecipesResultFilterState>();
   let defaultRunBusy = false;
@@ -2903,6 +2938,7 @@ export const bootstrapRecipesRoute = (
         // `undefined` when the host wired no prefs rpc — no control is offered
         // at all, rather than a dead one.
         opts.displayPrefsSetCaller === undefined ? undefined : displayMode,
+        resultSelectStates,
       );
       mountFilePreviews();
       resultActions = resultActionRegistry.actions;
@@ -3643,6 +3679,7 @@ export const bootstrapRecipesRoute = (
       // resets — it is deliberately untested, because a test for it would only
       // observe the nulled panel and pass for the wrong reason.
       resultGridStates = new Map();
+      resultSelectStates = new Map();
       defaultRunBusy = false;
       defaultRunError = null;
       defaultRunMissingPacks = null;
@@ -3696,6 +3733,7 @@ export const bootstrapRecipesRoute = (
     resultPanel = null;
     resetResultFilterStates(null);
     resultGridStates = new Map();
+    resultSelectStates = new Map();
     defaultRunBusy = false;
     defaultRunError = null;
     defaultRunMissingPacks = null;
@@ -3752,6 +3790,7 @@ export const bootstrapRecipesRoute = (
       };
       resetResultFilterStates(result);
     resultGridStates = new Map();
+    resultSelectStates = new Map();
       resultFileBusy = new Set();
       resultFileErrors = new Map();
       resultFileVerified = new Set();
@@ -3875,6 +3914,7 @@ export const bootstrapRecipesRoute = (
           };
           resetResultFilterStates(result);
     resultGridStates = new Map();
+    resultSelectStates = new Map();
           resultFileBusy = new Set();
           resultFileErrors = new Map();
           resultFileVerified = new Set();
@@ -4126,6 +4166,74 @@ export const bootstrapRecipesRoute = (
   /** Submit the grid: ONE key, the variable its section declared, plus the
    *  invocation the server checks against the installed recipe. Mirrors
    *  `submitResultFilter` — same panel-swap discipline, same staleness guard. */
+  /** D-282 B6 — the picked rows behind one selectable table. */
+  const findSelectDescriptor = (
+    key: string,
+  ): { descriptor: ResolvedTableSelectDescriptor; data: unknown } | null => {
+    const panel = resultPanel;
+    if (panel === null) return null;
+    return findResultTableSelect(panel.result, key, panel.render_recipe_id);
+  };
+
+  const mutateResultSelection = (
+    key: string,
+    update: (state: OutputTableSelectState) => OutputTableSelectState,
+  ): void => {
+    const found = findSelectDescriptor(key);
+    if (found === null) return;
+    const state = resultSelectStates.get(key)
+      ?? initialTableSelectState(found.descriptor, found.data);
+    const next = update(state);
+    if (next === state) return;
+    resultSelectStates = new Map(resultSelectStates).set(key, next);
+    render();
+  };
+
+  /** Act on the picked rows: ONE run, one array, one audit anchor. See the
+   *  pack app view's twin for why this is not N runs. */
+  const submitResultSelection = async (key: string): Promise<void> => {
+    const execute = opts.recipeExecuteCaller;
+    const panelAtDispatch = resultPanel;
+    const found = findSelectDescriptor(key);
+    if (execute === undefined || panelAtDispatch === null || found === null) return;
+    const state = resultSelectStates.get(key)
+      ?? initialTableSelectState(found.descriptor, found.data);
+    // An empty selection has nothing to act on. The button is disabled too, but
+    // the dispatch seam owns the same rule so a scripted click cannot turn
+    // "nothing picked" into a run over the recipe's default.
+    if (!canSubmitTableSelect(state)) return;
+
+    resultSelectStates = new Map(resultSelectStates).set(key, beginTableSelectSubmit(state));
+    render();
+    try {
+      const result = await execute({
+        recipe_id: panelAtDispatch.render_recipe_id,
+        config: outputTableSelectConfig(found.descriptor, state),
+        invocation: outputTableSelectInvocation(found.descriptor),
+      });
+      if (resultPanel !== panelAtDispatch) return;
+      resultPanel = {
+        route_recipe_id: panelAtDispatch.route_recipe_id,
+        source_recipe_id: panelAtDispatch.render_recipe_id,
+        render_recipe_id: result.recipe_id,
+        origin: 'result-filter',
+        result,
+      };
+      resetResultFilterStates(result);
+      resultGridStates = new Map();
+      resultSelectStates = new Map();
+      render();
+    } catch (error) {
+      if (resultPanel !== panelAtDispatch) return;
+      // The selection SURVIVES a failure — read the reason, press again.
+      resultSelectStates = new Map(resultSelectStates).set(
+        key,
+        failTableSelectSubmit(state, errMessage(error)),
+      );
+      render();
+    }
+  };
+
   const submitResultGrid = async (key: string): Promise<void> => {
     const execute = opts.recipeExecuteCaller;
     const panelAtDispatch = resultPanel;
@@ -4159,6 +4267,7 @@ export const bootstrapRecipesRoute = (
       };
       resetResultFilterStates(result);
       resultGridStates = new Map();
+      resultSelectStates = new Map();
       render();
     } catch (error) {
       if (resultPanel !== panelAtDispatch) return;
@@ -4237,6 +4346,7 @@ export const bootstrapRecipesRoute = (
       };
       resetResultFilterStates(result);
     resultGridStates = new Map();
+    resultSelectStates = new Map();
       resultFileBusy = new Set();
       resultFileErrors = new Map();
       resultFileVerified = new Set();
@@ -4521,6 +4631,24 @@ export const bootstrapRecipesRoute = (
     if (action === 'result-grid-submit') {
       const key = target.getAttribute(RECIPES_ROUTE_RESULT_GRID_ATTR);
       if (key !== null) void submitResultGrid(key);
+      return;
+    }
+    if (action === 'result-select-submit') {
+      const key = target.getAttribute(RECIPES_ROUTE_RESULT_SELECT_ATTR);
+      if (key !== null) void submitResultSelection(key);
+      return;
+    }
+    if (action === 'result-select-toggle') {
+      const key = target.getAttribute(RECIPES_ROUTE_RESULT_SELECT_ATTR);
+      const row = target.getAttribute(RECIPES_ROUTE_RESULT_SELECT_ROW_ATTR);
+      // ⛔ Derived from STATE, never from `input.checked` — `onClick` calls
+      // `preventDefault()` on every dispatched action, which reverts the tick
+      // the browser had already applied. See the pack app view's twin.
+      if (key !== null && row !== null) {
+        mutateResultSelection(key, (state) => (row === '*'
+          ? setAllTableSelection(state, tableSelectAllState(state) !== 'all')
+          : toggleTableSelection(state, row)));
+      }
       return;
     }
     if (action === 'result-filter-search') {

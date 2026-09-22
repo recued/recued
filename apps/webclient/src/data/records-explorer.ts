@@ -1,4 +1,6 @@
 import type {
+  RecordsChangeFeed,
+  RecordsEventPointer,
   RecordsFriendlyRecord,
   RecordsGlobalQuotaSnapshot,
   RecordsKindSummary,
@@ -6,6 +8,7 @@ import type {
   RecordsOutboxOverview,
   RecordsOwnerRecordDiagnostics,
   RecordsRetentionPolicy,
+  SavedDataViewReview,
 } from '@recued/contracts';
 // One byte formatter for the whole product — B / KB / MB / GB / TB. These
 // numbers are quota ceilings (`1_000_000`) and payload totals, and both read as
@@ -31,6 +34,9 @@ export const RECORDS_REFRESH_OUTBOX_ACTION = 'records-refresh-outbox';
 export const RECORDS_RETIRE_EVENT_ACTION = 'records-retire-event';
 export const RECORDS_CONFIRM_RETIRE_EVENT_ACTION = 'records-confirm-retire-event';
 export const RECORDS_CANCEL_RETIRE_EVENT_ACTION = 'records-cancel-retire-event';
+export const RECORDS_TOGGLE_CHANGES_ACTION = 'records-toggle-changes';
+export const RECORDS_REFRESH_CHANGES_ACTION = 'records-refresh-changes';
+export const RECORDS_MARK_REVIEWED_ACTION = 'records-mark-reviewed';
 export const RECORDS_PURGE_ACTION = 'records-purge';
 export const RECORDS_CONFIRM_PURGE_ACTION = 'records-confirm-purge';
 export const RECORDS_CANCEL_PURGE_ACTION = 'records-cancel-purge';
@@ -59,6 +65,16 @@ export interface RecordsExplorerState extends RecordsBrowseState {
   outbox: RecordsOutboxOverview | null;
   outboxOpen: boolean;
   outboxRefreshing: boolean;
+  /** P2/F2 — changes since the bound saved view's review mark, or the most
+   *  recent page when nothing is marked yet. `null` before the first read. */
+  changes: RecordsChangeFeed | null;
+  changesOpen: boolean;
+  changesRefreshing: boolean;
+  /** The bound saved view's mark. `null` when no Records view is bound, which
+   *  is also when {@link canMarkReviewed} is false — the mark has nowhere to live. */
+  reviewMark: SavedDataViewReview | null;
+  canMarkReviewed: boolean;
+  markingReviewed: boolean;
   retention: Readonly<Record<string, RecordsRetentionPolicy>>;
   loading: boolean;
   loadingNamespaceKey: string | null;
@@ -289,6 +305,56 @@ const renderAge = (milliseconds: number | undefined): string => {
   return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
 };
 
+const changeVerb = (type: RecordsEventPointer['type']): string =>
+  type === 'record.created' ? 'Created' : type === 'record.deleted' ? 'Deleted' : 'Changed';
+
+/** P2/F2 — what changed since the owner last said they had looked.
+ *
+ *  ⛔ THE COUNT DISCLOSES WHEN IT IS CLIPPED. The feed is one bounded page, so
+ *  `changes.length` is a page size, not a total. Rendering it bare would report
+ *  "100 changes" over a backlog of five thousand — the reviewer would believe
+ *  they had seen everything. `has_more` turns it into "100+". */
+const renderChanges = (state: RecordsExplorerState): string => {
+  const feed = state.changes;
+  if (feed === null) return '';
+  const count = feed.changes.length;
+  const locked = recordsControlsLocked(state);
+  const busy = state.changesRefreshing || state.markingReviewed;
+  const plural = count === 1 ? '' : 's';
+  // ⚠ SAY WHICH END. The feed walks FORWARD from the mark, so an unmarked view
+  // is showing the OLDEST page of the pack's history, not its most recent
+  // changes — and "What changed" reads as "lately" unless it says otherwise.
+  const headline = count === 0
+    ? (state.reviewMark === null ? 'No changes recorded' : 'Nothing new since you last reviewed')
+    : `${count.toLocaleString()}${feed.has_more ? '+' : ''} change${plural}`
+      + (state.reviewMark === null ? ', oldest first' : ' since you last reviewed');
+  // ⛔ `changesOpen` ALONE. The outbox forces itself open on dead letters —
+  // an exceptional state. Having changes is the ORDINARY state here, so the
+  // same trick made the panel impossible to collapse: every re-render put the
+  // `open` attribute back the moment the owner clicked it shut.
+  return `<details class="records-changes" ${state.changesOpen ? 'open' : ''}>
+    <summary data-action="${RECORDS_TOGGLE_CHANGES_ACTION}" ${locked ? 'aria-disabled="true"' : ''}>What changed · ${e(headline)}</summary>
+    <div class="records-changes-summary">
+      ${state.reviewMark === null
+        ? `<span>${state.canMarkReviewed
+            ? 'Not reviewed yet.'
+            : 'Open this pack through a saved view to keep a review mark.'}</span>`
+        : `<span>Last reviewed ${e(renderAge(Date.now() - state.reviewMark.reviewed_at))} ago</span>`}
+      <button type="button" data-action="${RECORDS_REFRESH_CHANGES_ACTION}" ${locked || busy ? 'aria-disabled="true"' : ''} ${state.changesRefreshing ? 'aria-busy="true"' : ''}>${state.changesRefreshing ? 'Refreshing…' : 'Check again'}</button>
+      ${state.canMarkReviewed
+        ? `<button type="button" data-action="${RECORDS_MARK_REVIEWED_ACTION}" ${locked || busy || feed.next === undefined ? 'aria-disabled="true"' : ''} ${state.markingReviewed ? 'aria-busy="true"' : ''}>${state.markingReviewed ? 'Marking…' : 'Mark reviewed'}</button>`
+        : ''}
+    </div>
+    ${count === 0 ? '' : `<ol class="records-change-events">${feed.changes.map((change) => `<li>
+      <div class="records-change-heading"><strong>${e(changeVerb(change.type))}</strong>
+        <span><span aria-hidden="true">·</span> ${renderReference(`${change.entity}/${encodeURIComponent(change.id)}`, locked)}</span></div>
+      ${change.changed_fields.length === 0 ? '' : `<small>${e(change.changed_fields.join(', '))}</small>`}
+      <small>${e(renderAge(Date.now() - change.created_at))} ago</small>
+    </li>`).join('')}</ol>`}
+    ${feed.has_more ? '<p class="records-help">More changes than fit one page. Mark reviewed to work through them.</p>' : ''}
+  </details>`;
+};
+
 const renderOutbox = (state: RecordsExplorerState): string => {
   const outbox = state.outbox;
   if (outbox === null) return '';
@@ -369,6 +435,7 @@ export const renderRecordsExplorer = (state: RecordsExplorerState): string => {
     ${state.loading ? '<p aria-live="polite">Loading Records…</p>' : ''}
     <div class="records-layout">${renderNamespaceNav(state)}
       <section class="records-content" aria-label="Record contents">${namespace === null ? '' : `<section class="records-pack-summary"><div><h3>${e(namespace.owner.pack_slug)}</h3><p>${e(namespace.owner.publisher)} · ${e(stateLabel(namespace))}</p>${renderPurge(state, namespace)}</div>${renderQuota(namespace)}</section>
+        ${renderChanges(state)}
         ${renderOutbox(state)}
         ${renderKindNav(state)}
         ${state.selectedKind === null
@@ -401,6 +468,6 @@ export const RECORDS_EXPLORER_STYLES = `
   .records-pack-summary{display:flex;justify-content:space-between;gap:16px;align-items:start;min-width:0}.records-pack-summary>*{min-width:0}.records-pack-summary h3{margin:0}.records-pack-summary p{margin:4px 0}.records-pack-summary h3,.records-pack-summary p{overflow-wrap:anywhere}.records-quota{display:flex;gap:14px;margin:0;flex-wrap:wrap}.records-quota div{display:grid}.records-quota dt,.records-quota small{color:var(--muted,#667085);font-size:12px}.records-quota dd{margin:0}
   .records-kind-nav{display:flex;gap:6px;flex-wrap:wrap;margin:16px 0}.records-kind-nav button{max-width:100%;min-width:0;overflow-wrap:anywhere}.records-kind-nav button[aria-selected=true]{border-color:var(--accent,#315efb)}.records-kind-nav span{opacity:.7}.records-kind-toolbar{display:flex;justify-content:space-between;align-items:center;gap:12px;min-width:0;margin:8px 0}.records-kind-toolbar>*{min-width:0}.records-kind-toolbar>span{overflow-wrap:anywhere}.records-export-actions{display:flex;gap:6px;flex-wrap:wrap;min-width:0}.records-explorer .records-ref-link,.records-explorer .records-ref-link:hover:not([aria-disabled=true]){border:0;padding:0;max-width:100%;min-width:0;background:transparent;color:var(--accent,#315efb);text-decoration:underline;overflow-wrap:anywhere;cursor:pointer;text-align:left}.records-danger{color:#b42318;border-color:#fda29b}
   .records-table-scroll{max-width:100%;min-width:0;overflow:auto}.records-table{width:100%;border-collapse:collapse}.records-table th,.records-table td{text-align:left;padding:9px;border-bottom:1px solid var(--border,#e4e7ec);vertical-align:top;max-width:240px}.records-table th small{display:block;font-weight:400}.records-table tbody tr{cursor:pointer}.records-table tbody tr:hover{background:var(--surface-subtle,#f7f8fa)}.records-row-open{margin-left:8px}.records-pii-tag{display:inline-block;margin-left:5px;padding:1px 4px;border-radius:4px;background:#fff0cc;color:#7a4c00;font-size:10px}.records-empty{color:var(--muted,#667085)}
-  .records-explorer button[aria-disabled=true]{cursor:wait;opacity:.7}.records-detail{display:grid;gap:14px;min-width:0}.records-detail>*{min-width:0}.records-detail header{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;min-width:0}.records-detail header>div{min-width:0}.records-detail header>button{flex:0 0 auto}.records-detail header small,.records-detail h3{overflow-wrap:anywhere}.records-detail h3{margin:2px 0}.records-detail dl{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,210px),1fr));gap:8px;min-width:0}.records-detail dl div{min-width:0;padding:10px;border:1px solid var(--border,#e4e7ec);border-radius:7px}.records-detail dt{font-weight:600}.records-detail dt,.records-detail dl div>small{overflow-wrap:anywhere}.records-detail dd{margin:5px 0;white-space:pre-wrap;overflow-wrap:anywhere}.records-detail-meta{color:var(--muted,#667085);font-size:13px;overflow-wrap:anywhere}.records-detail details{min-width:0}.records-detail pre{box-sizing:border-box;max-width:100%;min-width:0;overflow:auto;max-height:340px}.records-delete-confirm{min-width:0;border:1px solid #d92d20;padding:12px;border-radius:8px;overflow-wrap:anywhere}.records-delete-confirm button+button{margin-left:8px}.records-relationship-impact li,.records-relationship-impact code{overflow-wrap:anywhere}.records-relationship-impact ul,.records-outbox-events{margin:6px 0;padding-left:22px}.records-outbox{min-width:0;margin:14px 0;padding:10px;border:1px solid var(--border,#e4e7ec);border-radius:8px}.records-outbox>*{min-width:0}.records-outbox summary{overflow-wrap:anywhere}.records-outbox-summary{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:10px}.records-outbox-events{display:grid;gap:8px;min-width:0}.records-outbox-events>li{min-width:0;padding:8px;border-bottom:1px solid var(--border,#e4e7ec);overflow-wrap:anywhere}.records-outbox-events>li>*{min-width:0}.records-outbox-events>li>div:first-child{display:grid;gap:3px}.records-outbox-event-heading{display:flex;align-items:baseline;gap:4px;flex-wrap:wrap;min-width:0}.records-outbox-event-heading>*{min-width:0}.records-outbox-event-heading>span{display:inline-flex;align-items:baseline;gap:4px;max-width:100%}.records-outbox-events details{min-width:0}.records-outbox-events small,.records-help{color:var(--muted,#667085)}.records-outbox-events strong,.records-outbox-events small,.records-outbox-events p,.records-outbox-events code{overflow-wrap:anywhere}.records-purge-confirm{margin-top:10px}.records-purge-confirm label{display:grid;gap:4px;margin:8px 0}.records-purge-confirm input{width:100%;max-width:360px;min-width:0}
+  .records-explorer button[aria-disabled=true]{cursor:wait;opacity:.7}.records-detail{display:grid;gap:14px;min-width:0}.records-detail>*{min-width:0}.records-detail header{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;min-width:0}.records-detail header>div{min-width:0}.records-detail header>button{flex:0 0 auto}.records-detail header small,.records-detail h3{overflow-wrap:anywhere}.records-detail h3{margin:2px 0}.records-detail dl{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,210px),1fr));gap:8px;min-width:0}.records-detail dl div{min-width:0;padding:10px;border:1px solid var(--border,#e4e7ec);border-radius:7px}.records-detail dt{font-weight:600}.records-detail dt,.records-detail dl div>small{overflow-wrap:anywhere}.records-detail dd{margin:5px 0;white-space:pre-wrap;overflow-wrap:anywhere}.records-detail-meta{color:var(--muted,#667085);font-size:13px;overflow-wrap:anywhere}.records-detail details{min-width:0}.records-detail pre{box-sizing:border-box;max-width:100%;min-width:0;overflow:auto;max-height:340px}.records-delete-confirm{min-width:0;border:1px solid #d92d20;padding:12px;border-radius:8px;overflow-wrap:anywhere}.records-delete-confirm button+button{margin-left:8px}.records-relationship-impact li,.records-relationship-impact code{overflow-wrap:anywhere}.records-relationship-impact ul,.records-outbox-events{margin:6px 0;padding-left:22px}.records-changes,.records-outbox{min-width:0;margin:14px 0;padding:10px;border:1px solid var(--border,#e4e7ec);border-radius:8px}.records-changes>*{min-width:0}.records-changes summary{overflow-wrap:anywhere}.records-changes-summary{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:10px}.records-change-events{display:grid;gap:8px;min-width:0;margin:6px 0;padding-left:22px}.records-change-events>li{min-width:0;padding:8px;border-bottom:1px solid var(--border,#e4e7ec);overflow-wrap:anywhere;display:grid;gap:3px}.records-change-heading{display:flex;align-items:baseline;gap:4px;flex-wrap:wrap;min-width:0}.records-change-events small{color:var(--muted,#667085);overflow-wrap:anywhere}.records-outbox>*{min-width:0}.records-outbox summary{overflow-wrap:anywhere}.records-outbox-summary{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:10px}.records-outbox-events{display:grid;gap:8px;min-width:0}.records-outbox-events>li{min-width:0;padding:8px;border-bottom:1px solid var(--border,#e4e7ec);overflow-wrap:anywhere}.records-outbox-events>li>*{min-width:0}.records-outbox-events>li>div:first-child{display:grid;gap:3px}.records-outbox-event-heading{display:flex;align-items:baseline;gap:4px;flex-wrap:wrap;min-width:0}.records-outbox-event-heading>*{min-width:0}.records-outbox-event-heading>span{display:inline-flex;align-items:baseline;gap:4px;max-width:100%}.records-outbox-events details{min-width:0}.records-outbox-events small,.records-help{color:var(--muted,#667085)}.records-outbox-events strong,.records-outbox-events small,.records-outbox-events p,.records-outbox-events code{overflow-wrap:anywhere}.records-purge-confirm{margin-top:10px}.records-purge-confirm label{display:grid;gap:4px;margin:8px 0}.records-purge-confirm input{width:100%;max-width:360px;min-width:0}
   @media(max-width:760px){.records-layout{grid-template-columns:1fr}.records-heading,.records-pack-summary{display:grid}.records-quota{display:grid}}
 `;

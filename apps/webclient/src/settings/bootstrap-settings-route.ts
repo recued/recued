@@ -262,6 +262,7 @@ import {
   type HousekeepingConfigWriteCaller,
   type HousekeepingDismissPromotionCaller,
   type HousekeepingPanelMount,
+  type HousekeepingDriftReadCaller,
   type HousekeepingRegistryDescribeCaller,
   type HousekeepingRunNowCaller,
   type HousekeepingStatusReadCaller,
@@ -830,6 +831,9 @@ export interface BootstrapSettingsRouteOptions {
   housekeepingPanelConfigWriteCaller?: HousekeepingConfigWriteCaller;
   housekeepingPanelStatusReadCaller?: HousekeepingStatusReadCaller;
   housekeepingPanelTrustReadCaller?: HousekeepingTrustReadCaller;
+  /** D-285 — `housekeeping.drift.read`. Omitted on a server that predates it;
+   *  the panel then falls back to bus-only drift (lost on reload). */
+  housekeepingPanelDriftReadCaller?: HousekeepingDriftReadCaller;
   housekeepingPanelRunNowCaller?: HousekeepingRunNowCaller;
   /** `server.getStatus` — the per-surface storage read-out rendered on
    *  Server ▸ Maintenance. Optional; omitted → no Storage section. */
@@ -2082,6 +2086,9 @@ export const bootstrapSettingsRoute = (
         : {}),
       ...(opts.housekeepingPanelRegistryDescribeCaller !== undefined
         ? { runRegistryDescribe: opts.housekeepingPanelRegistryDescribeCaller }
+        : {}),
+      ...(opts.housekeepingPanelDriftReadCaller !== undefined
+        ? { runDriftRead: opts.housekeepingPanelDriftReadCaller }
         : {}),
       ...(opts.housekeepingPanelTopicResetCaller !== undefined
         ? { runTopicReset: opts.housekeepingPanelTopicResetCaller }

@@ -44,6 +44,7 @@ import {
   createHierarchicalHistory,
 } from '../shell/hierarchical-navigation.js';
 import {
+  packAppLookupAddress,
   packAppViewAddress,
   packDetailAddress,
   packsListAddress,
@@ -317,7 +318,14 @@ export interface BootstrapPacksRouteOptions {
   initialPackSlug?: string;
   /** Runtime-generated read view selected by
    * `#packs/<slug>/use/<recipe-id>`. Ignored without `initialPackSlug`. */
+  /** D-282 slice C — the drawer pins, and the writer. Forwarded straight to
+   *  the panel; this route owns no pin state of its own. */
+  pinnedApps?: () => readonly string[];
+  onTogglePin?: (packSlug: string, pinned: boolean) => void;
   initialPackViewId?: string;
+  /** D-282 B5 — the fourth segment of `#packs/<slug>/use/<lookup>/<target>`.
+   *  Meaningless without `initialPackViewId`, which the parser also enforces. */
+  initialPackViewTarget?: string;
   /** Called after a successful in-page history write. The shell uses it to keep
    *  its cached address aligned because pushState/replaceState emit no
    *  hashchange. */
@@ -378,6 +386,42 @@ export const resolvePackInput = (
   if (trimmed.includes('.')) return { url: `https://${trimmed}` };
   // Single short token → slug.
   return { slug: trimmed };
+};
+
+/** What the open Use tab looks like to the refresh decision. */
+export interface OpenPackViewState {
+  selected_slug: string | null;
+  /** Publisher of the open pack, when the roster knows it. */
+  publisher: string | null;
+  /** The Use tab holds editable rows the owner has not saved. */
+  unsaved: boolean;
+  /** A pack mutation or result lifecycle still owns the detail. */
+  in_flight: boolean;
+}
+
+/** D-282 B4 — should a `records` broadcast redraw the open pack view?
+ *
+ *  ⛔ NEVER OVER WORK IN PROGRESS. A refresh RE-RUNS the view recipe and replaces the
+ *  rendered result, so refreshing while the owner has a half-typed grid open would
+ *  discard it — data loss caused by somebody ELSE'S write, which is worse than a
+ *  stale page. `anyTableEditDirty` is what `hasUnsavedChanges()` already answers.
+ *
+ *  ⛔ AND SLUG ALONE IS NOT IDENTITY. Two publishers may ship the same slug, so a
+ *  write to one would redraw a view of the other's data. The publisher is compared
+ *  whenever the roster knows it; when it does not, the slug match stands rather than
+ *  refusing — a missing roster entry is not evidence of a different pack.
+ *
+ *  ⚠ PACK-LEVEL, NOT ENTITY-LEVEL, and deliberately. A view may join several
+ *  entities, and nothing on the event says which entities a given recipe reads — so
+ *  filtering finer would silently skip refreshes that were due. */
+export const shouldRefreshOpenPackView = (
+  event: { publisher: string; pack_slug: string },
+  state: OpenPackViewState | null,
+): boolean => {
+  if (state === null) return false;
+  if (state.selected_slug === null || state.selected_slug !== event.pack_slug) return false;
+  if (state.publisher !== null && state.publisher !== event.publisher) return false;
+  return !state.unsaved && !state.in_flight;
 };
 
 export const bootstrapPacksRoute = (
@@ -497,7 +541,13 @@ export const bootstrapPacksRoute = (
       ? packsListAddress()
       : opts.initialPackViewId === undefined
         ? packDetailAddress(opts.initialPackSlug)
-        : packAppViewAddress(opts.initialPackSlug, opts.initialPackViewId);
+        : opts.initialPackViewTarget === undefined
+          ? packAppViewAddress(opts.initialPackSlug, opts.initialPackViewId)
+          : packAppLookupAddress(
+            opts.initialPackSlug,
+            opts.initialPackViewId,
+            opts.initialPackViewTarget,
+          );
     /** The shared writer is seeded from the mounted deep link, so hydrating a
      * pack never adds a duplicate entry. Opening from the list pushes; changing
      * or closing the selection replaces and never remounts this live surface. */
@@ -513,11 +563,16 @@ export const bootstrapPacksRoute = (
       packSlug: string,
       viewId: string | null,
       intent: 'auto' | 'replace',
+      target?: string | null,
     ): void => {
       packHistory.navigate(
         viewId === null
           ? packDetailAddress(packSlug)
-          : packAppViewAddress(packSlug, viewId),
+          : target === undefined || target === null || target.trim().length === 0
+            // D-282 B5 — a lookup's address carries the record it is showing.
+            // The view address is what a detail returns to when it closes.
+            ? packAppViewAddress(packSlug, viewId)
+            : packAppLookupAddress(packSlug, viewId, target),
         { intent },
       );
     };
@@ -556,7 +611,12 @@ export const bootstrapPacksRoute = (
           ...(opts.initialPackViewId !== undefined
             ? { initialAppViewId: opts.initialPackViewId }
             : {}),
+          ...(opts.initialPackViewTarget !== undefined
+            ? { initialAppViewTarget: opts.initialPackViewTarget }
+            : {}),
           onAppViewNavigate: syncPackView,
+          ...(opts.pinnedApps !== undefined ? { pinnedApps: opts.pinnedApps } : {}),
+          ...(opts.onTogglePin !== undefined ? { onTogglePin: opts.onTogglePin } : {}),
           ...(runInstallWithGrant !== undefined
             ? { runInstall: runInstallWithGrant }
             : {}),
@@ -673,6 +733,44 @@ export const bootstrapPacksRoute = (
   // per-contract view lives on `#contracts`.
   opts.root.appendChild(routeRoot);
 
+  // ── D-282 B4: the open view redraws when its pack's data moves ──────────
+  //
+  // ⛔⛔ `refreshAppView()` HAS EXISTED, IMPLEMENTED, SINCE THE USE TAB SHIPPED AND
+  // NOTHING EVER CALLED IT. `refresh()`'s own doc comment anticipated this — *"use
+  // after a known pack mutation happened elsewhere (e.g. a future broadcast
+  // subscription lands)"* — and until now no such subscription existed, so a write by
+  // a schedule, a webhook, the AI, a peer or the owner's other device left the page
+  // showing yesterday's rows until its tab was re-selected.
+  //
+  // ⚠ A KIND THE CLIENT DOES NOT NAME NEVER ARRIVES. `records` is in
+  // `WEBCLIENT_DEFAULT_SUBSCRIPTIONS` for this listener; without that entry the server
+  // fans nothing here and the handler below is dead on the wire, which is exactly how
+  // `chat.data_diagnosis_resolved` sat handled-but-unsubscribed for two and a half
+  // weeks.
+  let refreshTimer: ReturnType<typeof setTimeout> | undefined;
+  const panelState = (): OpenPackViewState | null => packs === null ? null : {
+    selected_slug: packs.getSelectedSlug(),
+    publisher: packs.getPacks().find((pack) => pack.slug === packs?.getSelectedSlug())?.publisher
+      ?? null,
+    unsaved: packs.hasUnsavedChanges(),
+    in_flight: packs.hasInFlightWork(),
+  };
+  const unsubscribeRecords = opts.subscribe?.('records', (event) => {
+    if (disposed || !shouldRefreshOpenPackView(event, panelState())) return;
+    // ⚠ COALESCE. One `foreach` writing fifty rows emits fifty events, and a view is
+    // a RECIPE RUN — fifty of them would be a self-inflicted load test. The trailing
+    // edge is the right one: redraw once the burst settles.
+    if (refreshTimer !== undefined) clearTimeout(refreshTimer);
+    refreshTimer = setTimeout(() => {
+      refreshTimer = undefined;
+      // ⛔ RE-CHECK ON THE TRAILING EDGE. The owner may have started typing into a
+      // grid during the 400ms the burst was settling, and the decision that opened
+      // this timer is by then stale.
+      if (disposed || !shouldRefreshOpenPackView(event, panelState())) return;
+      packs?.refreshAppView();
+    }, 400);
+  });
+
   let disposed = false;
   return {
     packsPanel: () => packs,
@@ -704,6 +802,8 @@ export const bootstrapPacksRoute = (
       // Reverse of construction: Packs surface → cli grant dialog. The surface
       // owns BOTH the browse list + the detail panel, so disposing it tears both
       // down (don't also dispose `packs` — double-dispose).
+      if (refreshTimer !== undefined) clearTimeout(refreshTimer);
+      unsubscribeRecords?.();
       if (packsSurface !== null) packsSurface.dispose();
       if (cliGrantDialog !== null) cliGrantDialog.dispose();
       try {

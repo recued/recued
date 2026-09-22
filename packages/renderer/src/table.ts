@@ -4,12 +4,26 @@
  *  `number`, `date`, `relative`); the cell value for that column runs
  *  through `formatValue(cell, column.format)`. Columns resolve cell
  *  values by `field` key on each row object; rows that aren't objects
- *  render as empty cells. Columns with `data-sort-field` enable the
- *  sidebar's JS sort binding — callers wire the actual sort. */
+ *  render as empty cells.
+ *
+ *  ⛔⛔ D-282 B2 — EVERY HEADER USED TO CARRY `data-sort-field`, `class="sortable-th"`
+ *  and an empty `<span class="sort-arrow">`, above a `<table data-sortable>`. The header
+ *  said *"callers wire the actual sort"*. **No caller ever did**: nothing in `apps/` or
+ *  `packages/` bound the attribute, and no stylesheet anywhere defined `.sortable-th`,
+ *  `.sort-arrow` or `[data-sortable]`. Dead since it was written.
+ *
+ *  ⚠ AND IT COULD NEVER HAVE WORKED HERE. This renderer serves non-browser channels and
+ *  the D-149 reception surface, whose CSP is `script-src 'none'` — the same reason a Copy
+ *  button is refused there. An affordance that cannot be honoured on the surface drawing
+ *  it is the failure this file's own `RenderContext.interactive` note describes.
+ *
+ *  🔑 Sorting belongs where it can reach the STORE: a `sort` carrier on the owner
+ *  panel's `filter`, ordered by the records store's own rule. See
+ *  internal design notes. */
 
 import { e } from './escape.js';
 import { formatValue } from './format.js';
-import { renderBlockEmpty, renderBlockError } from './block-error.js';
+import { renderBlockError, renderEmptyCollection } from './block-error.js';
 import { renderBlockLabel } from './label.js';
 import { renderActionGroupInline } from './action.js';
 import type { TableData } from './types.js';
@@ -99,7 +113,15 @@ export const renderTableBlock = (
       : undefined;
   const columns = derived ?? authored;
   const rows = tableRows(data);
-  if (columns.length === 0 || rows.length === 0) return renderBlockEmpty('table');
+  // ⛔ TWO DIFFERENT SITUATIONS, TWO DIFFERENT SENTENCES. No COLUMNS is a block that
+  // cannot be drawn — the author declared none and the entity resolved none. No ROWS is
+  // a list that is empty, which for a business app is a first-run moment. Both used to
+  // read "No table data."
+  if (columns.length === 0) {
+    return renderBlockError('table', 'no columns to draw — the block declared none and'
+      + ' no entity schema supplied any');
+  }
+  if (rows.length === 0) return renderEmptyCollection(resolvedColumns?.entity);
 
   const renderRow = (row: unknown): string => `
               <tr>
@@ -136,12 +158,12 @@ export const renderTableBlock = (
     <div class="block table-block"${groupBy === undefined ? '' : ` data-group-by="${e(groupBy)}"`}>
       ${renderBlockLabel(label)}
       <div class="table-wrap">
-        <table class="data-table" data-sortable>
+        <table class="data-table">
           <thead>
             <tr>
               ${columns
-                .map((c) => `<th data-sort-field="${e(c.field)}" class="sortable-th${
-                  (c as { numeric?: boolean }).numeric === true ? ' is-numeric' : ''}">${e(String(c.label ?? c.field ?? ''))} <span class="sort-arrow"></span></th>`)
+                .map((c) => `<th${
+                  (c as { numeric?: boolean }).numeric === true ? ' class="is-numeric"' : ''}>${e(String(c.label ?? c.field ?? ''))}</th>`)
                 .join('')}
             </tr>
           </thead>

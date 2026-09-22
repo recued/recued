@@ -295,6 +295,22 @@ export interface TableOutputSection extends OutputSectionBase {
    *
    *  An entity is a CONVENIENCE, not a requirement — see `TableEditSpec`. */
   edit?: TableEditSpec;
+  /** D-282 B6 — pick rows, then act on the set. "Select five → Mark paid".
+   *
+   *  ⛔ A FACET OF `table`, NOT A `selection` BLOCK. Selection has no meaning
+   *  apart from the rows it selects: a block would have to name the table it
+   *  belongs to, and two sections that must agree about row identity is how one
+   *  of them comes to disagree. Same reasoning that keeps `group_by` and `edit`
+   *  here.
+   *
+   *  ⛔ REFUSED ALONGSIDE `edit` (`table_select_with_edit`) — and for a DIFFERENT
+   *  reason than `group_by` is. Two submit buttons over one row set is ambiguous
+   *  on its face, and with `rows: 'add_remove'` an added row has no id to select
+   *  by. ⚠ `group_by` and `select` DO coexist: grouping reorders rows and
+   *  selection creates none, so neither breaks the other's meaning. Copying the
+   *  `edit` refusal across by analogy would remove the combination this is most
+   *  useful in — a board where you tick three cards in one lane. */
+  select?: TableSelectSpec;
 }
 
 /** A column the author writes out in full — the jsf shape: build on the
@@ -441,6 +457,47 @@ export interface TableEditSpec {
   scopes?: Readonly<Record<string, Readonly<Record<string, string>>>>;
 }
 
+/** D-282 B6 — the selectable half of a `table`.
+ *
+ *  Deliberately the SAME SHAPE as `TableEditSpec` minus everything about
+ *  typing: one declared variable the chosen set submits to, one button label,
+ *  and the run-level carriers. What differs is the cardinality of the value —
+ *  `edit` submits an array of OBJECTS (what each row should become), `select`
+ *  submits an array of STRINGS (which rows the owner picked). The receiving
+ *  recipe loops with `foreach`. */
+export interface TableSelectSpec {
+  /** Variable the chosen row ids submit as — an array of strings. The recipe
+   *  must DECLARE it, because that declaration is the argument boundary: the
+   *  server admits this key and no other from the selection.
+   *
+   *  ⚠ Declare it as an `array` with a `default: []`, not a required slot. A
+   *  bulk action is one of several things a list can do, and a required
+   *  variable makes the LIST itself un-runnable until something supplies it —
+   *  which is `needsAnArgument`, so the view stops being a tab. */
+  into: string;
+  /** Action-button label: "Mark paid", "Advance stage", "Archive". */
+  submit: string;
+  /** Row field carrying the id that submits.
+   *
+   *  ⛔ REQUIRED WITHOUT AN `entity` — with one, the identity column the schema
+   *  declares (`kind: 'id'`) is used. Without a schema nothing else says which
+   *  field IS the row, and guessing would submit whichever column happened to
+   *  look id-shaped: the exact foreign-key-as-identity failure that shipped
+   *  Open controls pointing at the wrong record.
+   *
+   *  ⚠ It need not be a SHOWN column. The checkbox is bound to a row the owner
+   *  is looking at, so they can see what they picked; the id is the machine
+   *  handle, not the thing being checked. */
+  id_field?: string;
+  /** Declared variables whose EFFECTIVE VALUES ride back with the selection.
+   *
+   *  Exactly `TableEditSpec.hidden`, for exactly its reason: a submit is a
+   *  fresh run of the whole recipe with only what the control sends, so without
+   *  this a `limit` the owner narrowed to 10 silently reverts to its default
+   *  and the re-render lists rows the selection never covered. */
+  hidden?: string[];
+}
+
 /** D-222 — authored owner filter. Field presentation comes exclusively from
  *  the named variable declarations; the block deliberately has no per-field
  *  label/type/default vocabulary of its own. */
@@ -564,6 +621,40 @@ export interface ResolvedTableEditDescriptor {
   hidden: Readonly<Record<string, unknown>>;
 }
 
+/** Host-derived state for a selectable `table`. Present only when the section
+ *  declares `select`; the renderer draws exactly this. */
+export interface ResolvedTableSelectDescriptor {
+  section_index: number;
+  recipe_hash: string;
+  /** The variable the chosen ids submit as. */
+  into: string;
+  submit: string;
+  /** The row field the id comes from — RESOLVED, always present.
+   *
+   *  ⛔ Resolved host-side rather than left to the renderer, so every surface
+   *  reads the same field. With an entity it is the schema's `kind: 'id'`
+   *  column; without one it is the author's `id_field`. A consumer that had to
+   *  re-derive it would be a second copy of the identity rule, and the two
+   *  disagreeing means a selection that submits the wrong records — silently,
+   *  because every id is a plausible string. */
+  id_field: string;
+  /** Effective values for the section's `hidden` variables, cloned from the
+   *  executed run's effective config exactly as `table_edit`'s are. A key with
+   *  no effective value is OMITTED rather than sent as undefined. */
+  hidden: Readonly<Record<string, unknown>>;
+  /** Why the descriptor resolved unusable, when it did. Present ⇒ the renderer
+   *  draws NO checkboxes and says why.
+   *
+   *  ⛔ A selectable table whose identity could not be resolved must not render
+   *  as selectable-but-broken. `no_identity` = an entity was named and its
+   *  schema declares no single `kind: 'id'` column (and the author named no
+   *  `id_field`), which is not the same as "the pack is not installed" —
+   *  `record_columns.unresolved` reports that one. Two causes, two names; a
+   *  surface that collapsed them would tell the owner to install something
+   *  they already have. */
+  unresolved?: 'no_identity';
+}
+
 export interface ResolvedRecordColumnsDescriptor {
   entity: string;
   columns: ResolvedRecordColumn[];
@@ -619,6 +710,8 @@ export type ResolvedOutputSection = {
   record_columns?: ResolvedRecordColumnsDescriptor;
   /** Present only on a `table` that declared `edit`. */
   table_edit?: ResolvedTableEditDescriptor;
+  /** Present only on a `table` that declared `select`. */
+  table_select?: ResolvedTableSelectDescriptor;
 } & Record<string, unknown>;
 
 /** D-222 host control-plane provenance. It is not recipe-readable and never
@@ -638,7 +731,20 @@ export interface OutputTableEditInvocation {
   section_index: number;
 }
 
-export type RecipeInvocation = OutputFilterInvocation | OutputTableEditInvocation;
+/** D-282 B6's sibling for a selectable table. Third member of the same family,
+ *  through the same gate: the config came from a section the INSTALLED recipe
+ *  declares, at a section index whose hash still matches, so the server can
+ *  bound which keys it admits. */
+export interface OutputTableSelectInvocation {
+  kind: 'output.table_select';
+  recipe_hash: string;
+  section_index: number;
+}
+
+export type RecipeInvocation =
+  | OutputFilterInvocation
+  | OutputTableEditInvocation
+  | OutputTableSelectInvocation;
 
 export const FILTER_CONFIG_KEY_NOT_ALLOWED = 'filter_config_key_not_allowed' as const;
 export const FILTER_INVOCATION_STALE = 'filter_invocation_stale' as const;

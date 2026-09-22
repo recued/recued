@@ -8,6 +8,7 @@
  */
 
 import { isPinnedCasFileRef, isTempFileRef } from './ingredient-catalog.js';
+import { testDeclaredPattern } from './declared-pattern.js';
 
 const ROOT_KEYS = new Set(['type', 'additionalProperties', 'required', 'properties']);
 const PROPERTY_KEYS = new Set([
@@ -552,7 +553,10 @@ const propertyViolation = (
     if (typeof property.maxLength === 'number' && value.length > property.maxLength) {
       return `argument '${path}' is longer than ${property.maxLength}`;
     }
-    if (typeof property.pattern === 'string' && !(new RegExp(property.pattern)).test(value)) {
+    // `testDeclaredPattern` is `new RegExp(pattern).test(value)` with the head of
+    // the corpus routed to linear implementations of the same languages, and the
+    // tail cached instead of recompiled per dispatch. See `declared-pattern.ts`.
+    if (typeof property.pattern === 'string' && !testDeclaredPattern(property.pattern, value)) {
       return `argument '${path}' does not match its required pattern`;
     }
   }
@@ -656,6 +660,89 @@ const REDOS_SHAPE_FUEL: ReadonlyArray<readonly [string, (n: number) => string]> 
 const REDOS_CHAR_LENGTHS: ReadonlyArray<number> = [10, 16, 22, 26, 30];
 const REDOS_SHAPE_SIZES: ReadonlyArray<number> = [6, 10, 14, 18, 22];
 
+/** ⛔⛔ PHASE TWO — LONG INPUT, AND IT RUNS ONLY AFTER THE SHORT LADDER IS CLEAN.
+ *  The ladder above tops out near 44 characters, which is enough for an
+ *  EXPONENTIAL pattern and blind to a QUADRATIC one that only bites in the
+ *  thousands. A MongoDB pattern costing 3.3s at the 65,536 `maxLength` its
+ *  generator handed it passed this gate and reached 21 shipped operations.
+ *
+ *  ⚠ THE ORDER IS LOAD-BEARING, NOT A CONVENIENCE. Small ADDITIVE rungs must run
+ *  first because an exponential pattern doubles per character: a x4 jump goes
+ *  from 40ms to hours in one step, and the early stop cannot help because it is
+ *  only consulted AFTER a measurement returns. A draft of this escalated x4 from
+ *  16 and had to be killed after ten minutes on `^(a+)+$`. Reaching here means
+ *  the pattern is not exponential, so each geometric rung costs a predictable
+ *  multiple and the stop lands inside one. */
+const REDOS_LONG_SIZES: ReadonlyArray<number> = [64, 256, 1_024, 4_096, 16_384, 65_536];
+
+/** The length probed when a property declares no `maxLength`: unbounded in the
+ *  schema means unbounded at the gateway. */
+export const REDOS_UNBOUNDED_PROBE = 65_536;
+
+/** ⚠⚠ SHAPES DERIVED FROM THE SHIPPED CORPUS, because the thirteen above reach
+ *  less of it than they look. Measured over `community/packs`: the char+shape
+ *  tables reach 122 of 255 distinct patterns — 133 rejected every string at
+ *  character 0, so the probe timed them failing instantly and admitted them on
+ *  the strength of it. The dark set was legible once looked at: JSON arrays
+ *  (there was a `{…}` shape and no `[…]`), UUID frames, `AC`+32-hex vendor ids,
+ *  `#rrggbb` colours, ISO timestamps, comma/semicolon/query separators.
+ *
+ *  🔑 A SHAPE EARNS ITS PLACE BY EXERCISING SOMETHING. A bank of fourteen
+ *  textbook "catastrophic" regexes (email, URL, path, CSV, semver, base64…) was
+ *  driven against this probe: four were caught and ten are BENIGN in V8 —
+ *  unambiguous per iteration, so admitting them was correct and their "misses"
+ *  were not gaps. Folklore is not evidence.
+ *
+ *  ⛔ MIRRORED IN `scripts/lib/pattern-cost.mjs`, which a `generate-*-packs.mjs`
+ *  uses because it runs under raw node and cannot import contracts — the same
+ *  reason `scripts/lib/closed-schema-shape.mjs` exists. Two tables holding one
+ *  rule is the shape that already went wrong here once, so
+ *  `pattern-cost-parity.test.ts` drives BOTH over the shipped corpus and reds
+ *  from either side. */
+const REDOS_CORPUS_FUEL: ReadonlyArray<readonly [string, (n: number) => string]> = [
+  ['json object', (n) => `{${' '.repeat(n)}}`],
+  ['json array', (n) => `[${' '.repeat(n)}]`],
+  ['bracket open only', (n) => '['.repeat(n) + ' '.repeat(n)],
+  ['dashed hex runs', (n) => `${'0123abcd-'.repeat(n)}!`],
+  ['uuid-ish', (n) => `${'0123abcd'.repeat(n)}-0000-0000-0000-${'0'.repeat(n)}`],
+  ['vendor sid', (n) => `AC${'0a'.repeat(n)}!`],
+  ['hex colour', (n) => `#${'aF0'.repeat(n)}!`],
+  ['email dotted domain', (n) => `${'a'.repeat(n)}@${'b.'.repeat(n)}com`],
+  ['commas', (n) => `${'a,'.repeat(n)}!`],
+  ['query pairs', (n) => `${'a=b&'.repeat(n)}!`],
+  ['semicolons', (n) => `${'a;'.repeat(n)}!`],
+  ['snake ids', (n) => `${'a_'.repeat(n)}!`],
+  ['mixed case', (n) => `${'aA'.repeat(n)}!`],
+  ['word alternation', (n) => `${'majority'.repeat(n)}!`],
+  ['iso timestamps', (n) => `${'2020-01-01T00:00:00Z'.repeat(n)}!`],
+  ['decimals', (n) => `${'0'.repeat(n)}.${'0'.repeat(n)}!`],
+  ['scheme literal', (n) => `https://${'a'.repeat(n)}`],
+  ['prefixed id', (n) => `ab_${'a'.repeat(n)}!`],
+  ['sort spec', (n) => `${'ab:asc,'.repeat(n)}!`],
+  ['url-encoded', (n) => `%2F${'0a'.repeat(n)}!`],
+];
+
+/** ⛔ FUEL THAT CANNOT BE ENUMERATED MUST BE DERIVED. A pattern anchored on a
+ *  vendor's literal token — `^ctm_[a-z0-9]+$`, `^pfl_.+$`,
+ *  `^(txn_[a-z0-9]+)(,…)*$` — rejects every generic string at character 0, and
+ *  the prefixes are one per vendor per resource with no end to them. Reading the
+ *  leading literal OFF THE PATTERN turns an unenumerable class into a derived
+ *  one; it moved corpus coverage from 138 to 198 of 255 on its own.
+ *
+ *  ⚠ Only the LEADING run, and only one paren in (the corpus writes comma-joined
+ *  enums as `^(ctm_[a-z0-9]+)(,…)*$`). Anything deeper is parsing a regex with a
+ *  regex, which is how an earlier sweep matched `hex` inside `digest('hex')` and
+ *  hid 131 operations. A misread prefix costs one wasted fuel string; an
+ *  invented one could mask a finding. */
+const REDOS_LITERAL_PREFIX = /^\^\(?(?:\?:)?((?:[A-Za-z0-9_-]|\\[.$*+?^{}()|[\]\\/-]){2,16})/;
+
+const redosDerivedPrefix = (source: string): string | undefined => {
+  const hit = REDOS_LITERAL_PREFIX.exec(source);
+  if (hit === null) return undefined;
+  const literal = hit[1]!.replace(/\\(.)/g, '$1');
+  return literal.length >= 2 ? literal : undefined;
+};
+
 export interface RedosProbeOptions {
   /** A single measurement above this is superlinear.
    *
@@ -670,6 +757,13 @@ export interface RedosProbeOptions {
   readonly per_probe_ms?: number;
   /** Whole-schema deadline. Default 3000. */
   readonly budget_ms?: number;
+  /** The property's declared `maxLength` — how far a value can actually go.
+   *  Absent means unbounded, probed to {@link REDOS_UNBOUNDED_PROBE}.
+   *
+   *  ⛔ THIS IS THE QUESTION, NOT A TUNING KNOB. `^-?[0-9]+$` at `maxLength: 20`
+   *  needs no long probing; the same pattern unbounded is worth minutes. Asking
+   *  "is this slow" without the bound asks something nobody needs answered. */
+  readonly max_length?: number;
   /** Injectable clock + timer for deterministic tests. */
   readonly now?: () => number;
 }
@@ -694,9 +788,44 @@ const nowMs = (): number => Date.now();
  *  of a legitimate pack is worse than a missed probe: a scheduling hiccup does
  *  not repeat on demand, a catastrophic regex does. One retry turns the flake
  *  into a retry and leaves the real signal untouched. */
+/** ⚠ VERDICTS ARE CACHED, because the corpus repeats 255 distinct patterns
+ *  ~70x each and install re-probes every occurrence. Measured over
+ *  `community/packs`: 18.4s uncached for 24,157 schemas, with one pack at
+ *  1,181ms — a cost paid on the OWNER'S machine, at install, for an answer
+ *  already computed.
+ *
+ *  ⛔ Only a CONFIRMED verdict is stored. `suspect()` re-measures before it
+ *  reports, so what lands here has survived the flake check; caching before
+ *  that would freeze a scheduling hiccup into a permanent false refusal. The
+ *  key carries the bound because the same pattern is free at 20 and ruinous
+ *  unbounded. Bounded so a hostile manifest cannot grow it without limit. */
+const REDOS_VERDICT_CACHE_MAX = 4_096;
+const redosVerdicts = new Map<string, RedosFinding | null>();
+
 export const probePatternForBacktracking = (
   source: string,
   options: RedosProbeOptions = {},
+): RedosFinding | null => {
+  // An injected clock means a deterministic test, never a real measurement —
+  // such a call must not read or write the shared verdict cache.
+  const cacheable = options.now === undefined
+    && options.per_probe_ms === undefined
+    && options.budget_ms === undefined;
+  const cacheKey = `${source}\u0000${options.max_length ?? 'none'}`;
+  if (cacheable) {
+    const hit = redosVerdicts.get(cacheKey);
+    if (hit !== undefined) return hit;
+  }
+  const verdict = probePatternForBacktrackingUncached(source, options);
+  if (cacheable && redosVerdicts.size < REDOS_VERDICT_CACHE_MAX) {
+    redosVerdicts.set(cacheKey, verdict);
+  }
+  return verdict;
+};
+
+const probePatternForBacktrackingUncached = (
+  source: string,
+  options: RedosProbeOptions,
 ): RedosFinding | null => {
   const perProbe = options.per_probe_ms ?? 50;
   const budget = options.budget_ms ?? 3_000;
@@ -745,19 +874,99 @@ export const probePatternForBacktracking = (
       if (hit) return hit;
     }
   }
+  // ── Phase two — long input, bounded by what the property admits ────────────
+  // Reaching here means the short ladder found nothing, so the pattern is not
+  // exponential and geometric escalation is safe. See REDOS_LONG_SIZES.
+  const bound = Math.min(
+    typeof options.max_length === 'number'
+      && Number.isFinite(options.max_length)
+      && options.max_length > 0
+      ? options.max_length
+      : REDOS_UNBOUNDED_PROBE,
+    REDOS_UNBOUNDED_PROBE,
+  );
+  const prefix = redosDerivedPrefix(source);
+  for (const size of REDOS_LONG_SIZES) {
+    if (size > bound) break;
+    // ⛔ THE CHAR FUEL BELONGS HERE TOO, AND LEAVING IT OUT COST A KNOWN
+    //   POSITIVE. `[\s\S]*\S[\s\S]*` only blows up on input with NO
+    //   non-space in it — every structured shape carries one, so the match
+    //   succeeds instantly and the pattern reads clean. A single repeated
+    //   character is not a lesser case of a structured shape; it is the case
+    //   that some patterns need. Found by `pattern-cost-parity.test.ts`.
+    for (const fuel of REDOS_CHAR_FUEL) {
+      for (const tail of REDOS_TAILS) {
+        if (clock() - startedAt > budget) {
+          return { pattern: source, fuel: 'budget exhausted', input_length: size, ms: clock() - startedAt };
+        }
+        const hit = suspect(fuel.repeat(size) + tail, JSON.stringify(fuel + tail));
+        if (hit) return hit;
+      }
+    }
+    for (const [label, make] of [...REDOS_SHAPE_FUEL, ...REDOS_CORPUS_FUEL]) {
+      if (clock() - startedAt > budget) {
+        return { pattern: source, fuel: 'budget exhausted', input_length: size, ms: clock() - startedAt };
+      }
+      const hit = suspect(make(Math.max(1, size >> 1)), label);
+      if (hit) return hit;
+    }
+    if (prefix !== undefined) {
+      const room = Math.max(1, size - prefix.length);
+      for (const body of ['a', '0', 'aA', 'a-', 'a_']) {
+        if (clock() - startedAt > budget) {
+          return { pattern: source, fuel: 'budget exhausted', input_length: size, ms: clock() - startedAt };
+        }
+        const filled = prefix + body.repeat(Math.ceil(room / body.length)).slice(0, room);
+        const hit = suspect(filled, `derived prefix ${JSON.stringify(prefix)}`)
+          ?? suspect(`${filled}!`, `derived prefix ${JSON.stringify(prefix)}+!`);
+        if (hit) return hit;
+      }
+    }
+  }
   return null;
 };
 
-/** Every `pattern` in a closed request schema, in declaration order. */
-const schemaPatterns = (schema: unknown): Array<{ path: string; source: string }> => {
-  const out: Array<{ path: string; source: string }> = [];
+/** Every `pattern` in a closed request schema, in declaration order, WITH the
+ *  bound its own property declares.
+ *
+ *  ⛔ IT USED TO WALK TOP-LEVEL `properties` ONLY, AND TO DISCARD `maxLength`.
+ *  Both were holes. 322 pattern occurrences across 57 distinct patterns sit
+ *  BELOW the top level in the shipped corpus — inside `items`, inside a nested
+ *  object, inside a union branch — and the probe never saw one of them. And the
+ *  bound was sitting in the same object it read the pattern out of, which is the
+ *  one number that says how far to probe. */
+const schemaPatterns = (
+  schema: unknown,
+): Array<{ path: string; source: string; maxLength?: number }> => {
+  const out: Array<{ path: string; source: string; maxLength?: number }> = [];
   if (!isClosedRequestSchema(schema)) return out;
+  const visit = (node: unknown, path: string, depth: number): void => {
+    if (depth > 12 || node === null || typeof node !== 'object') return;
+    const record = node as Record<string, unknown>;
+    const pattern = record.pattern;
+    if (typeof pattern === 'string' && pattern.length > 0) {
+      const max = record.maxLength;
+      out.push({
+        path,
+        source: pattern,
+        ...(typeof max === 'number' ? { maxLength: max } : {}),
+      });
+    }
+    if (record.properties !== null && typeof record.properties === 'object') {
+      for (const [key, child] of Object.entries(record.properties as Record<string, unknown>)) {
+        visit(child, path.length === 0 ? key : `${path}.${key}`, depth + 1);
+      }
+    }
+    if (record.items !== undefined) visit(record.items, `${path}[]`, depth + 1);
+    for (const branch of ['anyOf', 'oneOf', 'allOf'] as const) {
+      const list = record[branch];
+      if (Array.isArray(list)) {
+        list.forEach((child, i) => visit(child, `${path}.${branch}[${i}]`, depth + 1));
+      }
+    }
+  };
   const properties = (schema as { properties?: Record<string, unknown> }).properties ?? {};
-  for (const [key, raw] of Object.entries(properties)) {
-    if (raw === null || typeof raw !== 'object') continue;
-    const pattern = (raw as { pattern?: unknown }).pattern;
-    if (typeof pattern === 'string' && pattern.length > 0) out.push({ path: key, source: pattern });
-  }
+  for (const [key, raw] of Object.entries(properties)) visit(raw, key, 1);
   return out;
 };
 
@@ -774,7 +983,7 @@ export const closedRequestSchemaBacktrackingIssues = (
   const clock = options.now ?? nowMs;
   const budget = options.budget_ms ?? 3_000;
   const startedAt = clock();
-  for (const { path, source } of schemaPatterns(schema)) {
+  for (const { path, source, maxLength } of schemaPatterns(schema)) {
     const remaining = budget - (clock() - startedAt);
     if (remaining <= 0) {
       issues.push(
@@ -783,7 +992,11 @@ export const closedRequestSchemaBacktrackingIssues = (
       );
       break;
     }
-    const finding = probePatternForBacktracking(source, { ...options, budget_ms: remaining });
+    const finding = probePatternForBacktracking(source, {
+      ...options,
+      budget_ms: remaining,
+      ...(maxLength === undefined ? {} : { max_length: maxLength }),
+    });
     if (finding === null) continue;
     issues.push(
       `property '${path}' pattern backtracks catastrophically `

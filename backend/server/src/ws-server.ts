@@ -541,6 +541,15 @@ export type BoundedWsJsonSendResult =
       ok: false;
       reason: 'closed' | 'serialization_error' | 'backpressure' | 'transport_error';
       detail?: string;
+      /** Serialized size of the frame that was refused, when it got that far.
+       *  ⛔ WITHOUT THIS THE LOG CANNOT SAY WHICH FAILURE IT IS. `backpressure`
+       *  covers two different problems — ONE pathologically large frame, and a
+       *  peer that has stopped draining — and they have opposite remedies:
+       *  shrink the response, versus look at the client. Reporting the reason
+       *  without the numbers hands the reader a word and no diagnosis. */
+      bytes?: number;
+      /** Bytes already queued on the socket when the frame was refused. */
+      buffered?: number;
     };
 
 /** Serialize + enqueue one JSON frame under a hard per-socket pressure cap.
@@ -588,7 +597,7 @@ export const sendBoundedWsJson = (
     : 0;
   if (bytes > WS_JSON_MAX_BUFFERED_BYTES || buffered > WS_JSON_MAX_BUFFERED_BYTES - bytes) {
     terminate();
-    return { ok: false, reason: 'backpressure' };
+    return { ok: false, reason: 'backpressure', bytes, buffered };
   }
 
   try {
@@ -3362,9 +3371,9 @@ const buildWsBinding = (
                 : { ...client, instance_id: gatedInstanceId };
             const result = await dispatchRpc(method, args, gatedClient);
             if (result.ok) {
-              send(client.ws, { type: 'rpc_result', request_id: requestId, result: result.body });
+              send(client.ws, { type: 'rpc_result', request_id: requestId, result: result.body }, `rpc ${method}`);
             } else {
-              send(client.ws, { type: 'rpc_result', request_id: requestId, error: result.error });
+              send(client.ws, { type: 'rpc_result', request_id: requestId, error: result.error }, `rpc ${method}`);
             }
           } catch (e) {
             send(client.ws, {
@@ -3388,8 +3397,46 @@ const buildWsBinding = (
     }
   };
 
-  const send = (ws: any, data: unknown): void => {
-    sendBoundedWsJson(ws, data, WS_OPEN);
+  /** ⛔⛔ THE RESULT USED TO BE DISCARDED, AND THAT IS HOW A 17.7 MB RESPONSE
+   *  BECAME A HANG. `sendBoundedWsJson` did its job — refused the frame,
+   *  terminated the socket, returned `{ ok: false, reason: 'backpressure' }` —
+   *  and this wrapper threw the answer away and returned `void`. The server
+   *  logged nothing, reported success to itself, and the client waited
+   *  forever. Measured on `packs.list` against a realm with 466 installed
+   *  packs: handler 1.2s, 17,719,350 bytes serialized, `send()` back in 93ms,
+   *  client received 0 bytes of it. See internal design notes.
+   *
+   *  🔑 THE SAME LESSON IS ALREADY WRITTEN TWENTY LINES INTO THIS FILE — the
+   *  `WebSocketServer`-missing stub "destroyed every upgrade without a word,
+   *  so the failure presented as 'the server ignores me' — the single hardest
+   *  shape to diagnose, and it cost a full production release." A dropped
+   *  frame presents identically, and for the same reason: nobody said so.
+   *
+   *  ⚠ CONTEXT IS PART OF THE FIX, NOT DECORATION. "a frame was dropped" sends
+   *  the reader hunting; "packs.list, 17.7 MB, over the 16 MiB cap" names the
+   *  response to shrink. The payload is never logged — only its size, the
+   *  reason, and the caller's own label. */
+  const send = (ws: any, data: unknown, context?: string): void => {
+    const sent = sendBoundedWsJson(ws, data, WS_OPEN);
+    if (sent.ok) return;
+    // A peer that closed mid-flight is ordinary and not worth a line.
+    if (sent.reason === 'closed') return;
+    const where = context === undefined ? '' : ` for ${context}`;
+    const size = sent.bytes === undefined ? '' : ` frame=${sent.bytes}B`;
+    const queued = sent.buffered === undefined || sent.buffered === 0
+      ? ''
+      : ` alreadyQueued=${sent.buffered}B`;
+    const oversize = sent.bytes !== undefined && sent.bytes > WS_JSON_MAX_BUFFERED_BYTES;
+    const because = sent.reason === 'backpressure' && oversize
+      ? `ONE RESPONSE EXCEEDS THE ${WS_JSON_MAX_BUFFERED_BYTES}B PER-SOCKET CAP — shrink the response, `
+        + 'raising the cap only moves the wall'
+      : sent.reason === 'backpressure'
+        ? 'the peer has stopped draining this socket'
+        : (sent.detail ?? sent.reason);
+    console.error(
+      `[ws] FRAME NOT DELIVERED${where}: ${sent.reason}.${size}${queued} `
+      + `${because}. The socket was terminated; the caller will never receive a reply.`,
+    );
   };
 
   handle = {

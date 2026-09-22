@@ -2453,17 +2453,20 @@ const handleExecuteInner = async (
         403,
       );
     }
-    // Two interactive kinds share this gate, deliberately rather than by
-    // copy: an editable `table` submits its rows the same way a `filter`
-    // submits its values, and the proof is identical — the config came from a
-    // section the INSTALLED recipe declares, at a section index whose hash
-    // still matches. Duplicating the block is how one of them silently stops
-    // checking something the other gained.
+    // THREE interactive kinds share this gate, deliberately rather than by
+    // copy: an editable `table` submits its rows and a selectable one submits
+    // its chosen ids the same way a `filter` submits its values, and the proof
+    // is identical — the config came from a section the INSTALLED recipe
+    // declares, at a section index whose hash still matches. Duplicating the
+    // block is how one of them silently stops checking something the others
+    // gained, and D-282 B6 added the third by widening this rather than by
+    // writing a fourth copy of the same four checks.
     const kind = invocation?.kind;
     const isTableEdit = kind === 'output.table_edit';
+    const isTableSelect = kind === 'output.table_select';
     if (
       invocation === null
-      || (kind !== 'output.filter' && !isTableEdit)
+      || (kind !== 'output.filter' && !isTableEdit && !isTableSelect)
       || typeof invocation.recipe_hash !== 'string'
       || !Number.isInteger(invocation.section_index)
       || (invocation.section_index as number) < 0
@@ -2492,6 +2495,20 @@ const handleExecuteInner = async (
         );
       }
       allowed = new Set([section.edit.into, ...(section.edit.hidden ?? [])]);
+    } else if (isTableSelect) {
+      // ⛔ Read off the INSTALLED section, exactly as the grid's is. A section
+      // that LOST its `select` between render and submit admits nothing at all,
+      // so a bulk action cannot outlive the authoring that offered it — which
+      // matters more here than for a grid, because what a selection submits is
+      // a set of records something is about to be done TO.
+      if (section === undefined || section.type !== 'table' || section.select === undefined) {
+        throw new RpcError(
+          FILTER_INVOCATION_STALE,
+          'This selectable table no longer exists at the rendered section index. Refresh the result and try again.',
+          409,
+        );
+      }
+      allowed = new Set([section.select.into, ...(section.select.hidden ?? [])]);
     } else {
       if (section === undefined || section.type !== 'filter') {
         throw new RpcError(

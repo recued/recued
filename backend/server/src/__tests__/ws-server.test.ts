@@ -137,7 +137,39 @@ describe('WebSocket server', () => {
       terminate: () => { terminated = true; },
     }, { type: 'rpc_result', result: 'too much queued output' }, WebSocket.OPEN);
 
-    expect(result).toEqual({ ok: false, reason: 'backpressure' });
+    // ⛔ THE NUMBERS ARE PART OF THE CONTRACT, not decoration. `backpressure`
+    //   covers two failures with opposite remedies — a stalled peer (this
+    //   test) and ONE oversized frame (the next) — and a caller that logs the
+    //   reason without them tells the reader nothing actionable.
+    expect(result).toMatchObject({ ok: false, reason: 'backpressure' });
+    expect((result as { buffered?: number }).buffered).toBe(WS_JSON_MAX_BUFFERED_BYTES - 1);
+    expect((result as { bytes?: number }).bytes).toBeLessThan(WS_JSON_MAX_BUFFERED_BYTES);
+    expect(sent).toBe(false);
+    expect(terminated).toBe(true);
+  });
+
+  /** ⛔⛔ THE VARIANT THAT SHIPPED A HANG, AND IT WAS UNTESTED. The case above
+   *  is a peer that stopped draining. This is the other one: an EMPTY queue and
+   *  a single response bigger than the cap. `packs.list` produced 17,719,350
+   *  bytes against a realm with 466 installed packs — over the 16 MiB ceiling —
+   *  so the socket was terminated, the rpc caller's `send()` discarded the
+   *  result, and the client waited forever against a server that logged
+   *  nothing. See internal design notes. */
+  it('refuses ONE oversized frame on an idle socket, and says how big it was', () => {
+    let sent = false;
+    let terminated = false;
+    const huge = 'x'.repeat(WS_JSON_MAX_BUFFERED_BYTES + 1);
+    const result = sendBoundedWsJson({
+      readyState: WebSocket.OPEN,
+      bufferedAmount: 0, // nothing queued — the peer is perfectly healthy
+      send: () => { sent = true; },
+      terminate: () => { terminated = true; },
+    }, { type: 'rpc_result', result: huge }, WebSocket.OPEN);
+
+    expect(result).toMatchObject({ ok: false, reason: 'backpressure' });
+    // The discriminator: bytes over the cap with NOTHING queued behind it.
+    expect((result as { bytes?: number }).bytes).toBeGreaterThan(WS_JSON_MAX_BUFFERED_BYTES);
+    expect((result as { buffered?: number }).buffered).toBe(0);
     expect(sent).toBe(false);
     expect(terminated).toBe(true);
   });

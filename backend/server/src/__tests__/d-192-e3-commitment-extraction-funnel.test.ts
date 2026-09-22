@@ -397,7 +397,6 @@ describe('D-192 E3 — commitment_tracker task funnel hook', () => {
         result: { commitments: [{ index: 0, actor: SUBJECT, text: 'Send the SOW by Friday' }] },
         model_id: 'groq:llama-3-70b',
       })),
-      resolveLLMModelId: vi.fn(async () => 'groq:llama-3-70b'),
       resolveContactEngagements: (_args: EngagementsResolverArgs): EngagementsResolverResult => ({
         engagements: [engagementRow()],
         coverage: EMPTY_COVERAGE,

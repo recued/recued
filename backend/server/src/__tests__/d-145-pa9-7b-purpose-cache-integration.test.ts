@@ -18,6 +18,7 @@ import type { CollectionRecord, IngredientManifest } from '@recued/contracts';
 import {
   purposeProducer,
   PURPOSE_CATEGORIES,
+  PURPOSE_CONTEXT,
 } from '../housekeeping/producers/purpose.js';
 import { ensureHousekeepingSchema } from '../housekeeping/schema.js';
 import {
@@ -36,9 +37,11 @@ import type {
 import type { SourceRecord } from '../housekeeping/source-walkers.js';
 import type { BlobStore } from '../storage/blob-store.js';
 
-const PURPOSE_CONTEXT =
-  'Pick the most specific business-context category when one applies; ' +
-  'fall back to a generic intent category otherwise; use "other" only as a last resort.';
+// ⚠ D-278 — this file used to carry its OWN copy of PURPOSE_CONTEXT while
+// IMPORTING PURPOSE_CATEGORIES from the producer. The cache key hashes the
+// whole LLM input, so the moment the producer's context changed the duplicate
+// went stale and every hash assertion here failed. Imported now: one string,
+// one source.
 
 const NOW = 1_700_000_000_000;
 

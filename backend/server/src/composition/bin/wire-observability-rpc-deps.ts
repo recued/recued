@@ -54,6 +54,7 @@
  *  independent (e.g. `recipe.list` works in a dbless harness even
  *  though `audit.export.*` is `not_configured`). */
 
+import { loadBundledPackManifests } from '../../bundled-pack-source.js';
 import type Database from 'better-sqlite3';
 import type { LaneStatus } from '@recued/contracts';
 import type { AuditLogStore, CheckpointStore, CommitStore } from '@recued/storage';
@@ -79,6 +80,10 @@ export interface ComposeObservabilityRpcDepsInput {
   recipeStore: RecipeStore;
   /** In-memory approval store — required (always populated at boot). */
   approvalStore: ApprovalStore;
+  /** Override for the bundled pack directory, forwarded to the
+   *  `provably_read_only` projection's roster. Undefined uses the bundled
+   *  location, exactly as every other reader of that roster does. */
+  packDir?: string;
   /** D-121 broadcast bus — required (always populated at boot). */
   eventBus: EventBus;
   /** Epoch ms at server boot. Surfaces as the fallback `installed_at`
@@ -154,6 +159,7 @@ export const composeObservabilityRpcDeps = (
   const {
     recipeStore,
     approvalStore,
+    packDir,
     eventBus,
     serverStartedAt,
     db,
@@ -171,6 +177,18 @@ export const composeObservabilityRpcDeps = (
   const recipeListDeps: RecipeListHandlerDeps = {
     store: recipeStore,
     serverStartedAt,
+    /** ⛔ A THUNK, NOT A VALUE. Read per call so a pack installed since boot is
+     *  in the roster; the loader caches per unchanged tree, so re-reading is a
+     *  stat sweep rather than a re-parse. The roster is deliberately every
+     *  BUNDLED pack, not just the installed ones — a pack's recipes routinely
+     *  call ops from dependency packs, and an op that does not resolve makes
+     *  the read-only rule fail closed on a recipe that is genuinely fine. */
+    packRoster: () => loadBundledPackManifests(packDir).map((manifest) => ({
+      slug: manifest.slug,
+      publisher: manifest.publisher,
+      name: manifest.name,
+      manifest,
+    })),
   };
 
   const approvalDeps: ApprovalHandlerDeps = {

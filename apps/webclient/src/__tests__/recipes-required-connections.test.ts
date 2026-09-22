@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { RecipeDefinition } from '@recued/contracts';
 
-import { recipeRequiredConnections } from '../recipes/required-connections.js';
+import { recipeRequiredConnections } from '@recued/contracts';
 
 const recipe = (partial: Partial<RecipeDefinition>): RecipeDefinition =>
   ({

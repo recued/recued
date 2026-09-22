@@ -1762,6 +1762,11 @@ const KNOWN_TABLE_SECTION_KEYS: ReadonlySet<string> = new Set([
   'entity',
   'fields',
   'edit',
+  // D-282 B6 — pick rows, then act on the set. ⛔ The fence is the REASON a new
+  // facet has to be added in two places: the block's own rules are useless if
+  // the key never reaches them, and a section key that nothing reads is
+  // silently ignored rather than refused.
+  'select',
   /** The field whose value buckets the rows. NOT a layout directive and not a
    *  new output kind: `OUTPUT_TYPES` members say what the data IS, and "board"
    *  or "kanban" say how it looks. A grouped list is still a list, so this is a
@@ -2129,6 +2134,103 @@ const validateTableOutputSection = (
         if (['into', 'submit', 'rows', 'columns', 'hidden', 'scopes'].includes(key)) continue;
         add('error', 'table_edit_shape', `${path}.edit.${key}`,
           `table.edit has no field '${key}' — nothing reads it`);
+      }
+    }
+  }
+
+  // D-282 B6 — the selectable table. `into` names the variable the chosen row
+  // IDS submit to, and gets exactly the rule `edit.into` gets, for exactly its
+  // reason: the declaration IS the argument boundary the server bounds the
+  // submission against.
+  if (section.select !== undefined) {
+    const select = section.select as Record<string, unknown> | null;
+    if (select === null || typeof select !== 'object' || Array.isArray(select)) {
+      add('error', 'table_select_shape', `${path}.select`, 'table.select must be an object');
+    } else {
+      // ⛔⛔ REFUSED WITH `edit`, AND NOT FOR `group_by`'s REASON. Two submit
+      // buttons over one row set is ambiguous on its face, and an `add_remove`
+      // grid's new row has no id to be selected by — so "the rows I ticked" and
+      // "the rows I typed into" would be two different sets under one control.
+      // ⚠ `group_by` is deliberately NOT refused here: grouping reorders rows
+      // and selection creates none.
+      if (section.edit !== undefined) {
+        add('error', 'table_select_with_edit', `${path}.select`,
+          'table.select cannot be combined with table.edit — one row set cannot carry two '
+          + 'submissions, and a row added to an editable grid has no id to be selected by');
+      }
+      if (typeof select.into !== 'string' || select.into.trim().length === 0) {
+        add('error', 'table_select_shape', `${path}.select.into`,
+          'table.select.into must name the variable the chosen row ids submit as');
+      } else if (!Object.prototype.hasOwnProperty.call(variables, select.into)) {
+        add('error', 'table_select_into_undeclared', `${path}.select.into`,
+          `table.select.into names '${select.into}', which this recipe does not declare — `
+          + 'the variable IS the argument boundary the submission is bounded by');
+      } else {
+        // ⛔ A SELECTION IS ALWAYS AN ARRAY, even of one. A variable declared
+        // `string` receives `["job_1"]` and the recipe reads it as a value it
+        // can interpolate — which resolves to something, so the run SUCCEEDS
+        // having acted on a stringified list. Only flagged when the declaration
+        // states a type: a shorthand value is its own default and says nothing
+        // about shape.
+        const declared = (variables as Record<string, unknown>)[select.into];
+        const declaredType = declared !== null
+          && typeof declared === 'object'
+          && !Array.isArray(declared)
+          ? (declared as Record<string, unknown>).type
+          : undefined;
+        if (typeof declaredType === 'string' && declaredType !== 'array') {
+          add('error', 'table_select_into_not_array', `${path}.select.into`,
+            `table.select.into names '${select.into}', declared as '${declaredType}' — a `
+            + "selection submits an ARRAY of ids, so the variable must be type 'array'");
+        }
+      }
+      if (typeof select.submit !== 'string' || select.submit.trim().length === 0) {
+        add('error', 'table_select_shape', `${path}.select.submit`,
+          'table.select.submit must be a non-empty action label ("Mark paid")');
+      }
+      if (select.id_field !== undefined
+        && (typeof select.id_field !== 'string' || select.id_field.trim().length === 0)) {
+        add('error', 'table_select_shape', `${path}.select.id_field`,
+          'table.select.id_field must name the row field carrying the id');
+      }
+      // ⛔ Without an entity nothing resolves which field IS the row. Guessing
+      // would submit whichever column looked id-shaped — the foreign-key-as-
+      // identity failure that shipped Open controls pointing at another record.
+      if (!hasEntity
+        && (typeof select.id_field !== 'string' || select.id_field.trim().length === 0)) {
+        add('error', 'table_select_id_field_required', `${path}.select.id_field`,
+          'a table.select without table.entity must name its id_field — with no schema to '
+          + 'resolve the identity column, nothing else says which field IS the row');
+      }
+      if (select.hidden !== undefined) {
+        if (!Array.isArray(select.hidden)
+          || select.hidden.some((entry) => typeof entry !== 'string' || entry.trim() === '')) {
+          add('error', 'table_select_shape', `${path}.select.hidden`,
+            'table.select.hidden must be an array of declared variable names');
+        } else {
+          const seen = new Set<string>();
+          for (const key of select.hidden as string[]) {
+            if (!Object.prototype.hasOwnProperty.call(variables, key)) {
+              add('error', 'table_select_hidden_undeclared', `${path}.select.hidden`,
+                `table.select.hidden names '${key}', which this recipe does not declare — `
+                + 'the variable IS the argument boundary the submission is bounded by');
+            }
+            if (key === select.into) {
+              add('error', 'table_select_shape', `${path}.select.hidden`,
+                `table.select.hidden names '${key}', which is already the selection variable`);
+            }
+            if (seen.has(key)) {
+              add('error', 'table_select_shape', `${path}.select.hidden`,
+                `table.select.hidden lists '${key}' twice`);
+            }
+            seen.add(key);
+          }
+        }
+      }
+      for (const key of Object.keys(select)) {
+        if (['into', 'submit', 'id_field', 'hidden'].includes(key)) continue;
+        add('error', 'table_select_shape', `${path}.select.${key}`,
+          `table.select has no field '${key}' — nothing reads it`);
       }
     }
   }

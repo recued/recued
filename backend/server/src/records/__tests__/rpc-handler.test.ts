@@ -47,7 +47,7 @@ describe('D-221 Records owner rpc', () => {
     // read method leaves the fifteen that matter most resting on a convention.
     const db = new Database(':memory:');
     const slice = makeRecordsRpcHandlers({ store: createRecordsStore(db) })!;
-    expect(slice.methods).toHaveLength(16);
+    expect(slice.methods).toHaveLength(17);
     for (const method of slice.methods) {
       await expect(
         (slice.handlers[method] as (args: unknown, client: WsClient) => Promise<unknown>)(
@@ -108,6 +108,56 @@ describe('D-221 Records owner rpc', () => {
     expect((await handlers['records.search'](query(), paired)).records.map(row => row.id)).toEqual(['job-8', 'job-6']);
     expect(views.get(saved.id)).toEqual(saved);
     expect(saved.definition).not.toHaveProperty('cursor');
+  });
+
+  it('serves the change feed and round-trips its cursor over the wire', async () => {
+    const db = new Database(':memory:'); dbs.push(db);
+    let clock = 1_000;
+    const store = createRecordsStore(db, { now: () => clock });
+    store.installNamespace({ owner, version: 1, storage_schema_hash: 'a'.repeat(64),
+      declaration_hash: 'b'.repeat(64), artifact_digest: 'artifact-changes',
+      schema, bindings: { create: binding('create') } });
+    const create = (id: number) => store.execute({ binding: binding('create'), principal: 'user_self',
+      args: { id: `job-${id}`, values: { title: `Job ${id}`, status: 'open' } } });
+    clock = 1_000; create(1);
+    clock = 2_000; create(2);
+
+    const handlers = makeRecordsRpcHandlers({ store })!.handlers;
+    const first = await handlers['records.changes.list']({ owner, limit: 1 }, paired);
+    expect(first.changes.map((c) => c.id)).toEqual(['job-1']);
+    expect(first.has_more).toBe(true);
+
+    const second = await handlers['records.changes.list'](
+      { owner, after: first.next, limit: 1 }, paired,
+    );
+    expect(second.changes.map((c) => c.id)).toEqual(['job-2']);
+    expect(second.has_more).toBe(false);
+  });
+
+  /** ⛔ THE HANDLER CASTS ITS ARGS, so these shapes reach the store exactly as
+   *  the wire sent them. Before the store guarded it, `after: null` read
+   *  `null.at` and surfaced a raw TypeError — a 500 for what is a 400. */
+  it('answers malformed wire input with a contract error, never a crash', async () => {
+    const db = new Database(':memory:'); dbs.push(db);
+    const store = createRecordsStore(db);
+    store.installNamespace({ owner, version: 1, storage_schema_hash: 'a'.repeat(64),
+      declaration_hash: 'b'.repeat(64), artifact_digest: 'artifact-bad',
+      schema, bindings: { create: binding('create') } });
+    const handlers = makeRecordsRpcHandlers({ store })!.handlers;
+
+    for (const bad of [
+      { owner, after: null },
+      { owner, after: {} },
+      { owner, after: { at: 1 } },
+      { owner, entity: {} },
+      { owner, limit: 0 },
+      { owner, limit: 501 },
+    ]) {
+      await expect(
+        handlers['records.changes.list'](bad as never, paired),
+        JSON.stringify(bad),
+      ).rejects.toMatchObject({ code: expect.stringMatching(/^records_invalid$/) });
+    }
   });
 
   it('is registered-pair only and lists full-ref namespaces without a data.* resolver', async () => {

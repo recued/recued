@@ -37,8 +37,11 @@ import {
   ENRICHMENT_REGISTRY,
   computeConfidenceHistogram,
   computeHousekeepingMetaTags,
+  compareLowConfidenceRates,
   computePSI,
   confidenceEmittingEnrichmentTopics,
+  proportionDriftSeverity,
+  shiftIsMeasurable,
   psiSeverity,
   type ConfidenceDriftSignal,
   type DriftSeverity,
@@ -59,14 +62,51 @@ import type {
 
 /** Minimum sample count in the recent window for PSI to be computed.
  *  Below this, the producer skips the topic + leaves the prior row
- *  intact. PSI on small samples is unreliable; 30 is the rule-of-
- *  thumb floor in mining literature. */
-export const MIN_SAMPLE_COUNT_RECENT = 30;
+ *  intact.
+ *
+ *  ⛔⛔ D-280 — RAISED 30 → 100, AND THE OLD VALUE WAS NOT CONSERVATIVE,
+ *  IT WAS NOISE. "30 is the rule-of-thumb floor in mining literature"
+ *  was the stated reason and it is a floor for a DIFFERENT
+ *  measurement: a sample size for estimating one proportion, not for a
+ *  10-bin histogram compared against another 10-bin histogram. At
+ *  n=30 that is ~3 samples per bin, and PSI on sparse bins is decided
+ *  by which bins happen to land empty and take the 1e-4 smoothing.
+ *
+ *  🔑 SIMULATED AGAINST THE SHIPPED IMPLEMENTATION — same binning,
+ *  same epsilon, same 0.10/0.25 thresholds, both windows drawn from
+ *  the SAME distribution so every fire is false:
+ *
+ *      baseline recent   false moderate   false significant
+ *           100     30       14.2-26.5%           2.4-12.6%
+ *           100    100         3.1-4.0%            0.1-0.8%
+ *           300    100         0.8-1.5%            0.0-0.4%
+ *
+ *  (ranges span a 15%-zero and a 5%-zero confidence distribution; the
+ *  rarer the second mode, the worse the old floor behaved.) It runs
+ *  DAILY and fires on state transitions, so 14% per evaluation is a
+ *  spurious fire most weeks, per topic — and D-136 P4 turns a
+ *  `'significant'` one into a recompute of every row of the topic.
+ *
+ *  ⚠ Power is retained for shifts worth acting on: a refusal rate
+ *  moving 15% → 30% still fires `'moderate'` 66% of the time and
+ *  15% → 45% fires `'significant'` 94%. What was given up is
+ *  sensitivity to shifts too small to separate from noise anyway.
+ *
+ *  ⚠ THE COST IS AVAILABILITY: a topic needs 100 rows in the 7-day
+ *  recent window before drift is evaluated at all. That is the right
+ *  trade — below it the statistic cannot tell drift from resampling,
+ *  so the honest output is silence, which is what the floors already
+ *  express. */
+export const MIN_SAMPLE_COUNT_RECENT = 100;
 
 /** Minimum sample count in the baseline window. Larger floor than
  *  recent — the baseline anchors the comparison and noise on it
- *  contaminates every future computation. */
-export const MIN_SAMPLE_COUNT_BASELINE = 100;
+ *  contaminates every future computation.
+ *
+ *  D-280 — raised 100 → 300 alongside the recent floor; the table
+ *  above shows the baseline carrying roughly a further 4x reduction
+ *  in false moderates on top of what the recent floor buys. */
+export const MIN_SAMPLE_COUNT_BASELINE = 300;
 
 /** Recent window — last 7 days. */
 export const RECENT_WINDOW_MS = 7 * 24 * 60 * 60_000;
@@ -91,6 +131,9 @@ export const CONFIDENCE_DRIFT_TOPIC: EnrichmentTopic = 'confidence_drift_signal'
 interface SampleRow {
   confidence: number;
   authored_at: number;
+  /** The model that produced the row. `''` for a row whose `model_id`
+   *  column is NULL — a real bucket, not a missing one. */
+  model_id: string;
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -117,35 +160,37 @@ export const driftTransitionFires = (
   return null;
 };
 
-/** D-136 P4 — does this source topic auto-recompute on a `'significant'`
- *  drift fire? Closed list today: every topic registered with
- *  `temporal_class: 'stable_truth' + lifecycle_policy:
- *  'recompute_on_drift'`. Original D-136 P4 close cleared the bar with
- *  3 confidence-emitting AI surfaces (`purpose` / `summary` /
- *  `action_items`) plus `embedding` (qualifies structurally but is
- *  never visited because it doesn't emit confidence). D-145 PA9
- *  widened to 16 by registering 12 more work-entity + engine /
- *  reliability producers carrying the same classification triple. The
- *  exact list is pinned by the ratchet test in
- *  `d-136-phase-4-drift-as-input.test.ts`.
+/** ⛔⛔ D-284 — `sourceTopicAutoRecomputesOnDrift` WAS HERE AND IS GONE,
+ *  along with the action it gated.
  *
- *  When this returns true, the drift producer enqueues
- *  `lifecycle_action_pending = 'recompute'` for the source topic AND
- *  suppresses the banner-firing realtime event: the system handles
- *  the drift automatically so the user doesn't need the banner.
+ *  🔑 THE INVARIANT IT VIOLATED: a stored AI result is invalidated by a
+ *  change to the QUESTION — the input content, or the prompt/producer
+ *  asking it — or by the user saying so. Never by a change in who
+ *  answered, or in how they have been answering lately. D-275 applied
+ *  that to the dedup key (a model swap stopped invalidating the cache);
+ *  D-279 applied it to the comparison (PSI withholds across a model
+ *  change); drift-triggered recompute was the last place it did not
+ *  hold — a statement about the PRODUCER'S behaviour overwriting rows
+ *  whose content nobody touched.
  *
- *  Exported so tests can drive the closed-list lookup independently of
- *  the producer's database side-effects. */
-export const sourceTopicAutoRecomputesOnDrift = (
-  source_topic: EnrichmentTopic,
-): boolean => {
-  const def = ENRICHMENT_REGISTRY[source_topic];
-  if (!def) return false;
-  return (
-    def.temporal_class === 'stable_truth' &&
-    def.lifecycle_policy === 'recompute_on_drift'
-  );
-};
+ *  ⚠ AND CONTENT-CHANGE ALREADY COVERS THE CASE THAT MATTERS.
+ *  `purpose` composes its fingerprint as `per_record_source_hash` —
+ *  "the hash IS `source_record_hash`" — so an edited body misses the
+ *  dedup probe and the next idle cycle recomputes that row by itself.
+ *  A producer or prompt revision moves `producer_version_hash` and does
+ *  the same corpus-wide. A user quality-vote maps to `'recompute'`
+ *  through `recomputeOrDiscardForTopic`. Drift added exactly one case
+ *  on top: re-ask an UNCHANGED input.
+ *
+ *  🏁 MEASURED, on that one case — 20 real bodies, three consecutive
+ *  runs of the shipped prompt: **0/20 category changes**, every
+ *  difference confidence jitter inside the top mode (1 ↔ 0.95 ↔ 0.9),
+ *  disagreement 3 → 4 across runs, i.e. NOT converging. The recompute
+ *  rewrote the detector's own input and nothing a consumer reads.
+ *
+ *  ⏭ Detection is unaffected: the banner fires (D-283). What went is
+ *  the action, which is what D-133 and D-136 both specified at launch —
+ *  now with a measurement behind it rather than an appeal to them. */
 
 /** Derive the baseline + recent windows for a topic given the topic's
  *  earliest row timestamp and the current time. Returns null when
@@ -194,22 +239,38 @@ const queryConfidenceSamples = (
   const rows = ctx.db
     .prepare(
       `SELECT json_extract(value, '$.confidence') AS confidence,
-              authored_at
+              authored_at,
+              model_id
          FROM data_enrichment
         WHERE topic = ?
           AND authored_at >= ?
           AND authored_at <  ?
           AND json_extract(value, '$.confidence') IS NOT NULL`,
     )
-    .all(topic, start_at, end_at) as Array<{ confidence: number | null; authored_at: number }>;
+    .all(topic, start_at, end_at) as Array<{
+      confidence: number | null; authored_at: number; model_id: string | null;
+    }>;
   const out: SampleRow[] = [];
   for (const r of rows) {
     if (typeof r.confidence === 'number' && Number.isFinite(r.confidence)) {
-      out.push({ confidence: r.confidence, authored_at: r.authored_at });
+      out.push({
+        confidence: r.confidence,
+        authored_at: r.authored_at,
+        model_id: r.model_id ?? '',
+      });
     }
   }
   return out;
 };
+
+/** Sorted distinct `model_id`s in a window. A NULL column reads as `''`
+ *  — one real bucket meaning "row written before the model was stamped",
+ *  which must not silently merge with a named model. */
+const distinctModels = (rows: readonly SampleRow[]): string[] =>
+  [...new Set(rows.map((r) => r.model_id))].sort();
+
+const sameModelSet = (a: readonly string[], b: readonly string[]): boolean =>
+  a.length === b.length && a.every((m, i) => m === b[i]);
 
 const readPriorDriftSignal = (
   ctx: HousekeepingContext,
@@ -273,6 +334,28 @@ export const processOneTopic = (
     return { processed: false, fired: null };
   }
 
+  // ⛔⛔ D-279 — WITHHOLD ACROSS A MODEL CHANGE, the same way the sample
+  // floors above withhold on a thin window.
+  //
+  // PSI asks whether one distribution moved relative to another. That is
+  // only a question about the WORLD while the producer is held fixed;
+  // swap the model underneath and the two windows are samples from two
+  // different instruments, so a large PSI says "the config changed",
+  // which the user already knows. Worse, D-136 P4 turns a `'significant'`
+  // fire into a recompute of every row of the topic — so reading a model
+  // swap as drift spends the user's tokens on news they made themselves.
+  //
+  // 🔑 Withholding, rather than correcting for it. Rescaling across two
+  // models would need a mapping between their confidence scales, and
+  // there is none: D-278 measured the same prompt shape produce
+  // [0.85, 0.9, 0.95] on one wording and [0, 0.9] on another. A
+  // comparison that cannot be made honestly is not made.
+  const baselineModels = distinctModels(baselineSamples);
+  const recentModels = distinctModels(recentSamples);
+  if (!sameModelSet(baselineModels, recentModels)) {
+    return { processed: false, fired: null };
+  }
+
   const baselineDistribution = computeConfidenceHistogram(
     baselineSamples.map((r) => r.confidence),
   );
@@ -280,7 +363,37 @@ export const processOneTopic = (
     recentSamples.map((r) => r.confidence),
   );
   const psi = computePSI(baselineDistribution, recentDistribution);
-  const severity = psiSeverity(psi);
+
+  // ⛔⛔ D-281 — THE DECIDING STATISTIC IS THE PROPORTION TEST, NOT PSI.
+  // PSI answers "did the shape of a 10-bin histogram move", which is a
+  // question nobody asked and cannot be read off the number. The rate
+  // answers "are we declining more often than we were", which is the
+  // thing a reader acts on and can be stated in a sentence with its own
+  // sample size and p-value.
+  //
+  // Measured on the shipped implementation at these floors, both windows
+  // drawn from ONE population so every fire is false:
+  //
+  //             false moderate   false significant   power 15%→30%
+  //   PSI          0.7 / 1.3%          0.0 / 0.4%           11.9%
+  //   rate test    1.0 / 0.0%          0.0 / 0.0%           48.3%
+  //
+  // Same safety, four times the power on a doubling of the refusal rate.
+  // `psi` is still computed and stored as a second view of the same
+  // windows; it gates nothing.
+  const shift = compareLowConfidenceRates(
+    baselineSamples.map((r) => r.confidence),
+    recentSamples.map((r) => r.confidence),
+  );
+  // ⚠ …and PSI covers the case the rate test cannot see. When every
+  // sample in both windows falls the same side of the cut, the
+  // proportion test has no variance to work with — that is the normal
+  // shape for the deterministic `sample_count / 100` producers, and a
+  // slide from 0.85 to 0.55 is a real change that refused nothing
+  // either time. Each statistic decides where it has power.
+  const severity = shiftIsMeasurable(shift)
+    ? proportionDriftSeverity(shift)
+    : psiSeverity(psi);
 
   const prior = readPriorDriftSignal(ctx, source_topic);
   const priorSeverity = prior?.severity ?? null;
@@ -314,6 +427,9 @@ export const processOneTopic = (
     baseline_distribution: baselineDistribution,
     recent_distribution: recentDistribution,
     computed_at: now,
+    shift,
+    ...(shiftIsMeasurable(shift) ? { low_confidence_delta: shift.delta } : {}),
+    model_ids: recentModels,
     ...(dismissed_at !== undefined ? { dismissed_at } : {}),
   };
 
@@ -343,37 +459,45 @@ export const processOneTopic = (
   // `'significant'`, `driftTransitionFires` would return `null` on the
   // next cycle, and the rows would never enqueue while the banner stays
   // suppressed — silent loss of recompute coverage.
-  const autoRecomputes = sourceTopicAutoRecomputesOnDrift(source_topic);
-  // Round-12 audit fix (T1 § 8.1) — consult the cascade budget governor
-  // BEFORE the transaction. The engine's two other topic-wide writers
-  // reserve against the real fan-out and skip all-or-nothing over
-  // `cascade_queue_depth_max_per_topic`; this third writer enqueued bare.
-  // Declined ⇒ skip BOTH writes: the atomicity comment below is exactly why —
-  // advancing the persisted severity without the enqueue is the silent loss
-  // of recompute coverage the transaction exists to prevent, so a declined
-  // topic leaves the prior severity in place and the next daily cycle sees
-  // the same transition and re-asks under fresh headroom. Absent hook
-  // (tests / dbless harnesses) ⇒ ungated, the ctx's standing optional-gate
-  // semantic.
-  if (fires === 'significant' && autoRecomputes && ctx.cascadeTopicAdmission) {
-    const admission = ctx.cascadeTopicAdmission(source_topic);
-    if (!admission.admitted) {
-      return { processed: true, fired: null, governor_declined: { dropped: admission.dropped } };
-    }
-  }
-  ctx.db.transaction(() => {
-    upsertDriftSignal(ctx, signal);
-    if (fires === 'significant' && autoRecomputes) {
-      ctx.enrichmentStore.enqueueLifecycleActionForTopic(source_topic, 'recompute');
-    }
-  })();
+  // ⚠ The round-12 governor call (`cascadeTopicAdmission`) went with the
+  // enqueue: it existed to reserve queue depth for a topic-wide fan-out
+  // that no longer happens. The ctx hook stays for the cascade engine's
+  // own two writers.
+  upsertDriftSignal(ctx, signal);
 
-  if (fires !== null && !autoRecomputes) {
+  // ⛔⛔ D-283 — THE BANNER FIRES AGAIN, INCLUDING WHERE THE SYSTEM ACTS.
+  // This read `fires !== null && !autoRecomputes`, and D-136 P4's reason
+  // for the suppression was that "the system handles auto-recompute on
+  // significant" so the banner would be noise. Two things were wrong with
+  // that, neither visible at the time:
+  //
+  //  1. IT HID A SPEND. A `'significant'` fire enqueues a recompute of
+  //     every row of the topic. Suppressing the banner meant the user's
+  //     tokens went on a verdict they were never shown.
+  //  2. IT DISABLED ITS OWN PROMOTION PATH. Audit § 26 Q3 closed the
+  //     drift-action question as "ship UI banner only; banner
+  //     click-through rate auto-promotes to auto-recompute per topic —
+  //     defaults preserve user control." P4 assumed a mix, writing
+  //     "future non-recompute AI-surface topics retain the existing
+  //     D-133 banner". There is no mix: all five PSI-eligible topics are
+  //     `recompute_on_drift`, so NO topic banners, so no click-through
+  //     is collectable, so the telemetry meant to EARN auto-recompute
+  //     can never accrue. The automation switched off the evidence for
+  //     itself.
+  //
+  // ⇒ The banner fires on every transition. Where a recompute was also
+  // enqueued the event says so and the copy tells the reader the work is
+  // already running, which is the honest version of "you don't need to
+  // act" — and leaves the click-through the promotion path needs.
+  if (fires !== null) {
     try {
       ctx.eventBus?.emit({
         kind: 'enrichment_drift_detected',
         source_topic,
         psi,
+        // Only when the proportion test is what decided — otherwise the
+        // banner would quote a number that did not produce the verdict.
+        ...(shiftIsMeasurable(shift) ? { low_confidence_delta: shift.delta } : {}),
         severity: fires,
         computed_at: now,
       });

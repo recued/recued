@@ -68,14 +68,76 @@ describe('D-133 P5 — drift banner visibility filter', () => {
 });
 
 describe('D-133 P5 — drift banner content', () => {
-  it('renders the source topic + PSI to two decimals', () => {
+  /** ⛔⛔ THIS ASSERTED `PSI=0.31` AND WAS FLIPPED, NOT DELETED. D-281 moved
+   *  the deciding statistic to a two-proportion test on the low-confidence
+   *  rate; PSI decides only in the fallback case where the cut partitions
+   *  nothing. A banner printing PSI beside a severity it did not produce
+   *  tells the reader the wrong story, so it now shows the number that
+   *  DECIDED — or, when that number is absent, no number at all. */
+  it('leads with the low-confidence shift, in points, not PSI', () => {
+    const html = renderHousekeepingDriftBanner({
+      signals: {
+        purpose: drift({
+          psi: 0.314159,
+          shift: {
+            baseline_rate: 0.15, recent_rate: 0.31, delta: 0.16,
+            p_value: 0.0002, baseline_n: 300, recent_n: 100,
+          },
+        }),
+      },
+      writing: {},
+      writeError: {},
+    });
+    expect(html).toMatch(/<code>purpose<\/code>/);
+    expect(html).toMatch(/low-confidence answers up 16 points/);
+    expect(html).not.toMatch(/PSI=/);
+  });
+
+  it('a FALLING rate reads as falling — drift is signed', () => {
+    const html = renderHousekeepingDriftBanner({
+      signals: {
+        purpose: drift({
+          shift: {
+            baseline_rate: 0.40, recent_rate: 0.18, delta: -0.22,
+            p_value: 0.0001, baseline_n: 300, recent_n: 100,
+          },
+        }),
+      },
+      writing: {},
+      writeError: {},
+    });
+    expect(html).toMatch(/low-confidence answers down 22 points/);
+  });
+
+  /** 🏁 D-283 restored this banner; D-284 removed the recompute it used to
+   *  announce. A "Recued is recomputing this topic now" test lived here and
+   *  is gone with the behaviour, not flipped — there is no longer a second
+   *  thing for the banner to say. Detection is the whole surface now. */
+  it('renders the delta from an EVENT-derived signal, which carries no shift', () => {
+    // ⛔ The banner previously read `shift.delta`. A banner raised from
+    // the realtime broadcast holds a synthesised signal with no `shift`
+    // at all, so the number never rendered on the path it actually
+    // takes — the reason `low_confidence_delta` exists separately.
+    const html = renderHousekeepingDriftBanner({
+      signals: { purpose: drift({ low_confidence_delta: -0.22, shift: undefined }) },
+      writing: {},
+      writeError: {},
+    });
+    expect(html).toMatch(/low-confidence answers down 22 points/);
+  });
+
+  it('shows NO number when PSI decided — a bare severity beats a wrong figure', () => {
+    // `shift` absent: either a pre-D-281 row, or the cut partitioned nothing
+    // and PSI was the decider. Either way there is no rate to quote.
     const html = renderHousekeepingDriftBanner({
       signals: { purpose: drift({ psi: 0.314159 }) },
       writing: {},
       writeError: {},
     });
     expect(html).toMatch(/<code>purpose<\/code>/);
-    expect(html).toMatch(/PSI=0\.31/);
+    expect(html).toMatch(/has drifted/);
+    expect(html).not.toMatch(/PSI=/);
+    expect(html).not.toMatch(/points/);
   });
 
   it('renders different copy for moderate vs significant', () => {

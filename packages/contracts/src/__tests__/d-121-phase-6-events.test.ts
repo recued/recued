@@ -136,6 +136,11 @@ describe('D-121 Phase 6 — broadcast event constants', () => {
       'reception_inbox',
       // R2 build step 4c.4 — derived recipe runnability snapshot fan.
       'recipe_runnability_changed',
+      // D-282 B4 — a row in a PACK'S OWN Records store changed. Distinct from
+      // `warehouse`, which carries the personal collections; no broadcast reached
+      // pack data at all before this, so an open pack view went stale until its
+      // tab was re-selected.
+      'records',
       'remerge_prompt',
       'schedule',
       'service',

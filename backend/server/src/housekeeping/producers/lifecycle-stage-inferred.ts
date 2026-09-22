@@ -153,7 +153,13 @@ const LIFECYCLE_CLASSIFY_CONTEXT =
   'opportunity: high-cadence two-way activity sustained over weeks. ' +
   'customer: recurring business engagement (weekly+ meetings or sustained 30d activity). ' +
   'evangelist: customer with explicit referral / promotion signals (weighted toward role:executive or signal of advocacy). ' +
-  'When in doubt between adjacent stages, pick the lower one and lower the confidence.';
+  'When in doubt between adjacent stages, pick the lower one and lower the confidence. ' +
+  // D-278 zero-anchor. "Lower the confidence" above names a case without a
+  // VALUE, which measured as no instruction at all; this names the observable
+  // condition the model already commits to — defaulting to the bottom stage
+  // because there is nothing to infer from.
+  'Use a confidence of 0 when the contact shows no observed activity at all and you are '
+  + 'defaulting to subscriber rather than inferring a stage.';
 
 // ────────────────────────────────────────────────────────────────
 // Pure helpers

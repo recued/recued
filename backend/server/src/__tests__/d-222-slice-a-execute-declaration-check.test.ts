@@ -162,6 +162,58 @@ const editInvocation = () => ({
   section_index: 1,
 });
 
+
+const SELECT_RECIPE_ID = 'd-282-table-select-admission';
+const buildSelectRecipe = (hidden?: string[]): RecipeDefinition => ({
+  recipe_id: SELECT_RECIPE_ID,
+  version: 1,
+  ttl: 0,
+  metadata: {
+    name: 'Selectable table admission',
+    description: 'Stored table.select admission fixture.',
+    author: 'test',
+    supported_platforms: [],
+  },
+  variables: {
+    picked: { label: 'Picked', type: 'array', default: [] } as never,
+    other: { label: 'Other', type: 'text', default: '' },
+  },
+  prefetch_steps: [],
+  steps: [{ id: 'rows', transform: 'coalesce', values: [{ rows: [] }] }],
+  output: {
+    render: [
+      { type: 'summary', source: 'step.rows' },
+      {
+        type: 'table',
+        source: 'step.rows',
+        select: {
+          into: 'picked',
+          submit: 'Act on selected',
+          id_field: 'id',
+          ...(hidden === undefined ? {} : { hidden }),
+        },
+      } as never,
+    ],
+  },
+});
+
+const makeSelectDeps = (recipe = buildSelectRecipe()): ExecuteHandlerDeps => {
+  const recipeStore = createRecipeStore('/nonexistent');
+  recipeStore.register(recipe);
+  return {
+    recipeStore,
+    executorConfig: { manifests: createManifestRegistry('/nonexistent') },
+    baseVault: {},
+    instanceId: 'd-282-table-select-test',
+  };
+};
+
+const selectInvocation = (recipe = buildSelectRecipe()) => ({
+  kind: 'output.table_select' as const,
+  recipe_hash: hashRecipe(recipe),
+  section_index: 1,
+});
+
 const makeFilterDeps = (): ExecuteHandlerDeps => {
   const recipeStore = createRecipeStore('/nonexistent');
   recipeStore.register(buildFilterRecipe());
@@ -700,6 +752,111 @@ describe('an editable table submits through the same gate as a filter', () => {
       invocation: editInvocation(),
       execution_source: { ...OWNER_SOURCE, channel: 'mcp' } as never,
     })).rejects.toMatchObject({ status: 403 });
+    expect(executeRecipeMock).not.toHaveBeenCalled();
+  });
+});
+
+
+/** D-282 B6 — the THIRD kind through the same gate.
+ *
+ *  ⛔⛔ THE POINT OF WIDENING THE EXISTING BLOCK RATHER THAN WRITING A FOURTH
+ *  COPY: the four checks a submission passes (owner-only, no inline recipe,
+ *  hash still matches, section still declares the control) are identical for a
+ *  filter, a grid and a selection. Three copies is three chances for one of
+ *  them to stop checking something the others gained. These tests re-ask every
+ *  one of them for the new kind rather than assuming the shared block covers
+ *  it — a shared block only covers what actually routes through it. */
+describe('a selectable table submits through the same gate as a filter', () => {
+  it('admits the ids under the variable the section declared', async () => {
+    let captured: ExecutionContext | undefined;
+    executeRecipeMock.mockImplementationOnce(async (ctx: ExecutionContext) => {
+      captured = ctx;
+      return successResult();
+    });
+    await handleExecute(makeSelectDeps(), {
+      recipe_id: SELECT_RECIPE_ID,
+      config: { picked: ['doc_1', 'doc_2'] },
+      invocation: selectInvocation(),
+      execution_source: OWNER_SOURCE,
+    } as never);
+    const config = (captured as unknown as { stores?: { config?: Record<string, unknown> } })
+      .stores?.config;
+    expect(config).toMatchObject({ picked: ['doc_1', 'doc_2'] });
+  });
+
+  it('admits a variable the section named hidden, and only that one', async () => {
+    const recipe = buildSelectRecipe(['other']);
+    let captured: ExecutionContext | undefined;
+    executeRecipeMock.mockImplementationOnce(async (ctx: ExecutionContext) => {
+      captured = ctx;
+      return successResult();
+    });
+    await handleExecute(makeSelectDeps(recipe), {
+      recipe_id: SELECT_RECIPE_ID,
+      config: { picked: ['doc_1'], other: 'carried' },
+      invocation: selectInvocation(recipe),
+      execution_source: OWNER_SOURCE,
+    } as never);
+    const config = (captured as unknown as { stores?: { config?: Record<string, unknown> } })
+      .stores?.config;
+    expect(config).toMatchObject({ picked: ['doc_1'], other: 'carried' });
+  });
+
+  it('refuses a DECLARED variable the selection did not name', async () => {
+    // The bound is the SECTION's `into` (+ `hidden`), not the recipe's variable
+    // list — the same rule the grid gets, for the same reason.
+    await expect(handleExecute(makeSelectDeps(), {
+      recipe_id: SELECT_RECIPE_ID,
+      config: { other: 'smuggled' },
+      invocation: selectInvocation(),
+      execution_source: OWNER_SOURCE,
+    })).rejects.toMatchObject({
+      code: FILTER_CONFIG_KEY_NOT_ALLOWED,
+      status: 400,
+      details: { rejected: ['other'], allowed: ['picked'] },
+    });
+    expect(executeRecipeMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['stale hash', { ...selectInvocation(), recipe_hash: 'stale' }],
+    ['missing section', { ...selectInvocation(), section_index: 99 }],
+    ['a section that is not a table', { ...selectInvocation(), section_index: 0 }],
+  ])('refuses %s before dispatch', async (_name, invocation) => {
+    await expect(handleExecute(makeSelectDeps(), {
+      recipe_id: SELECT_RECIPE_ID,
+      config: { picked: [] },
+      invocation,
+      execution_source: OWNER_SOURCE,
+    })).rejects.toMatchObject({ code: FILTER_INVOCATION_STALE, status: 409 });
+    expect(executeRecipeMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses a table_select invocation aimed at a table that declares no select', async () => {
+    // ⛔ The one a shared gate gets wrong by being generous: the section IS a
+    // table, so a type check alone passes. Without `select` there is no
+    // declared target, and admitting it would let a bulk action be invented
+    // over ANY table in the recipe — including a read-only board.
+    await expect(handleExecute(makeEditDeps(), {
+      recipe_id: EDIT_RECIPE_ID,
+      config: { lines: [] },
+      invocation: {
+        kind: 'output.table_select' as const,
+        recipe_hash: hashRecipe(buildEditRecipe()),
+        section_index: 1,
+      },
+      execution_source: OWNER_SOURCE,
+    })).rejects.toMatchObject({ code: FILTER_INVOCATION_STALE, status: 409 });
+    expect(executeRecipeMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses a selection submitted by anyone but the unrestricted local owner', async () => {
+    await expect(handleExecute(makeSelectDeps(), {
+      recipe_id: SELECT_RECIPE_ID,
+      config: { picked: ['doc_1'] },
+      invocation: selectInvocation(),
+      execution_source: { ...OWNER_SOURCE, channel: 'mcp' },
+    } as never)).rejects.toMatchObject({ code: FILTER_INVOCATION_FORBIDDEN, status: 403 });
     expect(executeRecipeMock).not.toHaveBeenCalled();
   });
 });

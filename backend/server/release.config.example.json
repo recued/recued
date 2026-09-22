@@ -11,7 +11,7 @@
   "base_url": "https://releases.recued.com",
   "channels": {
     "stable": {
-      "version": "26.9.20",
+      "version": "26.9.21",
       "released_at": "2026-07-06T00:00:00Z",
       "min_supported": "26.6.0",
       "migration": false,
@@ -19,7 +19,7 @@
       "notes_url": "https://recued.com/releases/26.8.31"
     },
     "edge": {
-      "version": "26.9.20",
+      "version": "26.9.21",
       "released_at": "2026-07-06T00:00:00Z",
       "min_supported": "26.6.0",
       "migration": false,

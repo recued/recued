@@ -153,6 +153,10 @@ describe('composeRpcContext', () => {
       expect(context.observabilityBundle.recipeListDeps).toEqual({
         store: storageContext.recipeStore,
         serverStartedAt: 1_700_000_333_000,
+        // Same bundle object the observability composer builds; what the
+        // roster returns is pinned in `wire-observability-rpc-deps.test.ts`.
+        // Exact shape kept deliberately — see the note there.
+        packRoster: expect.any(Function),
       });
       expect(context.observabilityBundle.approvalDeps.store).toBe(
         storageContext.approvalStore,

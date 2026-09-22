@@ -10,6 +10,7 @@ import {
   type HandlerSlice,
   type RecordsExportRequest,
   type RecordsGlobalQuotaSetRequest,
+  type RecordsChangeQuery,
   type RecordsOutboxListRequest,
   type RecordsOutboxRetireRequest,
   type RecordsOwnerDeleteRequest,
@@ -98,6 +99,7 @@ type RecordsRpcMethods =
   | 'records.retention.run'
   | 'records.export'
   | 'records.outbox.list'
+  | 'records.changes.list'
   | 'records.outbox.retire'
   | 'records.purge'
   | 'records.accounting.audit'
@@ -116,6 +118,7 @@ const METHODS: readonly RecordsRpcMethods[] = [
   'records.retention.run',
   'records.export',
   'records.outbox.list',
+  'records.changes.list',
   'records.outbox.retire',
   'records.purge',
   'records.accounting.audit',
@@ -244,6 +247,20 @@ export const makeRecordsRpcHandlers = (
           raw.status,
           raw.limit,
         ));
+      },
+      /** P2/F2 — the owner's change-review feed. Read-only; the store owns
+       *  every bound check (see its note on why the cast above makes it the
+       *  only validator). Fields are named one by one rather than spread, so a
+       *  key the wire invents cannot reach the query. */
+      'records.changes.list': async (args, client) => {
+        requireRegisteredClient(client);
+        const raw = requireObject(args, 'records.changes.list') as unknown as RecordsChangeQuery;
+        return fromStore(() => deps.store.listChanges({
+          owner: requireOwner(raw.owner, 'records.changes.list'),
+          ...(raw.after === undefined ? {} : { after: raw.after }),
+          ...(raw.entity === undefined ? {} : { entity: raw.entity }),
+          ...(raw.limit === undefined ? {} : { limit: raw.limit }),
+        }));
       },
       'records.outbox.retire': async (args, client) => {
         requireRegisteredClient(client);

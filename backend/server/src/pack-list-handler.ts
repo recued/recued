@@ -49,7 +49,12 @@ import {
 } from '@recued/contracts';
 
 import { loadBundledPackManifests } from './bundled-pack-source.js';
-import { getInstalledPack, isPackInstalledAtVersion, listInstalledPacks } from './pack-inventory.js';
+import {
+  installedPackFromRow,
+  isPackInstalledAtVersionFromRow,
+  listInstalledPacks,
+  scanInstalledPackRowsBySegment,
+} from './pack-inventory.js';
 import { reviewOwnerOperationsForPackUpdate } from './owner-operation-update-review.js';
 import {
   prepareRecordsUpdateReview,
@@ -57,9 +62,9 @@ import {
 } from './pack-install-handler.js';
 import type { RecordsMigrationArtifact } from './records/install-coordinator.js';
 import type { RecipeStore } from './recipe-store.js';
-import type { ContractStore } from './storage/contract-store.js';
+import type { ContractRow, ContractStore } from './storage/contract-store.js';
 import type { WsClient } from './ws-server.js';
-import type { RecordsStore } from './records/store.js';
+import type { RecordsNamespaceSummary, RecordsStore } from './records/store.js';
 
 export interface PackListRpcDeps {
   /** Per-pair recipe store. Required — the recipe-bearing `installed`
@@ -103,8 +108,9 @@ export const listInstalledPackManifests = (
   packDir?: string,
 ): BulkPackManifest[] => {
   if (!contractStore) return [];
+  const rows = scanInstalledPackRowsBySegment(contractStore);
   return loadBundledPackManifests(packDir).filter((m) =>
-    isPackInstalledAtVersion(contractStore, m.slug, m.version),
+    isPackInstalledAtVersionFromRow(rows.get(m.slug) ?? null, m.version),
   );
 };
 
@@ -163,16 +169,53 @@ export const listInstalledPackManifests = (
  *  The inventory check is a conjunction, never a registry-OR-recipe-check
  *  union, so it cannot double-count and mark BOTH twins installed. An absent
  *  inventory row preserves the legacy recipe-only result. */
+/** The two per-pack reads the roster loops make, answered from ONE scan each.
+ *
+ *  ⛔ WHY THIS EXISTS, AND HONESTLY WHAT IT IS WORTH. Every roster loop walked
+ *  the full bundled corpus calling `getInstalledPack` + `getNamespace` once per
+ *  pack — 2,104 point reads for 1,052 packs. Measured on that realm they cost
+ *  **69ms of a ~2,250ms `packs.list`**, so this is a tidy-up, not the fix for
+ *  a slow list: the roster parse it sits next to was ~660ms and is cached now.
+ *  Recorded because the next reader will otherwise re-derive the same estimate
+ *  and expect more from it.
+ *
+ *  🔑 The `installed_pack` row is handed over RAW. Three functions read it and
+ *  read it differently (see `scanInstalledPackRowsBySegment`), so normalizing
+ *  here would silently pick one reading for all of them. */
+interface PackRosterLookups {
+  installedRow: (pack_slug: string) => ContractRow | null;
+  namespace: (publisher: string, pack_slug: string) => RecordsNamespaceSummary | null;
+}
+
+const nsKey = (publisher: string, pack_slug: string): string => `${publisher}\u0000${pack_slug}`;
+
+const buildPackRosterLookups = (
+  contractStore: ContractStore | undefined,
+  recordsStore: RecordsStore | undefined,
+): PackRosterLookups => {
+  const rows = contractStore === undefined
+    ? new Map<string, ContractRow>()
+    : scanInstalledPackRowsBySegment(contractStore);
+  // `listNamespaces()` maps the SAME `summary()` over every row that
+  // `getNamespace()` applies to one, so keying it is equivalent by
+  // construction rather than by resemblance.
+  const namespaces = new Map<string, RecordsNamespaceSummary>();
+  for (const summary of recordsStore?.listNamespaces() ?? []) {
+    namespaces.set(nsKey(summary.owner.publisher, summary.owner.pack_slug), summary);
+  }
+  return {
+    installedRow: (pack_slug) => rows.get(pack_slug) ?? null,
+    namespace: (publisher, pack_slug) => namespaces.get(nsKey(publisher, pack_slug)) ?? null,
+  };
+};
+
 const projectManifest = (
   manifest: BulkPackManifest,
   recipeStore: RecipeStore,
   contractStore: ContractStore | undefined,
-  recordsStore?: RecordsStore,
+  lookups: PackRosterLookups,
 ): PackListEntry => {
-  const recordsNamespace = recordsStore?.getNamespace({
-    publisher: manifest.publisher,
-    pack_slug: manifest.slug,
-  }) ?? null;
+  const recordsNamespace = lookups.namespace(manifest.publisher, manifest.slug);
   if (recordsNamespace !== null) {
     const active = recordsNamespace.state.state === 'ready';
     const ownsRetainedNamespace = active || recordsNamespace.state.state === 'orphaned';
@@ -205,13 +248,22 @@ const projectManifest = (
       body_visibility_grant_keys: [...(manifest.mcp_body_visibility_grants ?? [])],
       ...(typeof manifest.service_kind === 'string' ? { service_kind: manifest.service_kind } : {}),
       ...(typeof manifest.repo === 'string' ? { repo: manifest.repo } : {}),
-      // Installed only — see the twin below and `PackListEntry.manifest`.
-      ...(installed || ownsRetainedNamespace ? { manifest } : {}),
+      // The four scalars the list surfaces read — 365 bytes a pack, against
+      // the ~36 KB `manifest` they used to reach through to get them.
+      ...(Array.isArray(manifest.tags) ? { tags: [...manifest.tags] } : {}),
+      ...(typeof manifest.pack_kind === 'string' ? { pack_kind: manifest.pack_kind } : {}),
+      ...(manifest.connection_requirements !== undefined
+        ? { connection_requirements: manifest.connection_requirements }
+        : {}),
+      ...(manifest.connection_hints !== undefined
+        ? { connection_hints: manifest.connection_hints }
+        : {}),
+      // ⛔ NO `manifest` — see the twin below and `PackListEntry.manifest`.
     };
   }
   const installedPack = contractStore === undefined
     ? null
-    : getInstalledPack(contractStore, manifest.slug);
+    : installedPackFromRow(lookups.installedRow(manifest.slug));
   const recipesInstalled = manifest.recipes.length > 0
     && manifest.recipes.every((ref) => {
       const stored = recipeStore.getStored(ref.slug);
@@ -282,18 +334,38 @@ const projectManifest = (
     body_visibility_grant_keys: [...(manifest.mcp_body_visibility_grants ?? [])],
       ...(typeof manifest.service_kind === 'string' ? { service_kind: manifest.service_kind } : {}),
       ...(typeof manifest.repo === 'string' ? { repo: manifest.repo } : {}),
-    // ⛔ INSTALLED ONLY. Forwarding every manifest made this response 44.6 MB
-    // across 954 bundled packs, for a list whose own fields total ~1 MB — the
-    // Packs route's minutes-long load. The installed-pack management surfaces
-    // still get the manifest they read; a Discover row renders from the
-    // projected fields, and the install dialog resolves the one manifest it
-    // needs through `packs.resolveBySlug` (bundled-first, added with this
-    // change). See `PackListEntry.manifest`.
+      // The four scalars the list surfaces read — 365 bytes a pack, against
+      // the ~36 KB `manifest` they used to reach through to get them.
+      ...(Array.isArray(manifest.tags) ? { tags: [...manifest.tags] } : {}),
+      ...(typeof manifest.pack_kind === 'string' ? { pack_kind: manifest.pack_kind } : {}),
+      ...(manifest.connection_requirements !== undefined
+        ? { connection_requirements: manifest.connection_requirements }
+        : {}),
+      ...(manifest.connection_hints !== undefined
+        ? { connection_hints: manifest.connection_hints }
+        : {}),
+    // ⛔⛔ NO `manifest` ON A LIST RESPONSE, AT ALL. The previous cut here kept it
+    // for installed packs, which took the response from 44.6 MB to 17 MB but left
+    // the cost PROPORTIONAL TO THE INSTALL COUNT — and nothing bounds that count.
+    // At ~36 KB a manifest it re-crosses the 16 MiB socket ceiling at ~110
+    // installed packs; a demo realm with 466 produced a 17,719,350-byte frame that
+    // `sendBoundedWsJson` terminated, so the Packs panel hung forever against a
+    // server whose own log said `ok=true`. The list's own fields are 0.77 MB for
+    // all 1,052 packs and do not grow with installs. See
+    // internal design notes.
     //
-    // ⚠ `installedAnyVersion` is included deliberately: an ORPHANED records
-    // pack is not `installed`, but the management surfaces still act on it, so
-    // withholding its manifest would break them rather than slim them.
-    ...(installed || installedAnyVersion ? { manifest } : {}),
+    // 🔑 NOTHING LOST A READER: every manifest this list could ever carry is a
+    // BUNDLED one (`packs[]` is built from `loadBundledPackManifests`; a
+    // marketplace install appears only in `installed_versions`) and is therefore
+    // resolvable from disk by `packs.resolveBySlug`, which already refuses
+    // nothing here — that loader filters core-feature packs out of the roster, and
+    // they are the only slug resolve rejects. The client's `ensureDetailResolved`
+    // already fetches exactly this on detail open and backfills the row in place,
+    // which is why the detail readers need no change.
+    //
+    // ⚠ This includes the ORPHANED records pack the old comment kept the field
+    // for: it is orphaned in the INVENTORY, while its manifest is still on disk,
+    // so resolve serves it like any other.
   };
 };
 
@@ -311,14 +383,13 @@ export const listVersionExactInstalledPackManifests = (
 ): BulkPackManifest[] => {
   const contractStore = deps.contractStore;
   if (contractStore === undefined) return [];
+  const lookups = buildPackRosterLookups(contractStore, deps.recordsStore);
+  const rows = scanInstalledPackRowsBySegment(contractStore);
   return loadBundledPackManifests(deps.packDir).filter((manifest) =>
-    projectManifest(manifest, deps.recipeStore, contractStore, deps.recordsStore).installed
+    projectManifest(manifest, deps.recipeStore, contractStore, lookups).installed
     && (
-      deps.recordsStore?.getNamespace({
-        publisher: manifest.publisher,
-        pack_slug: manifest.slug,
-      })?.state.state === 'ready'
-      || isPackInstalledAtVersion(contractStore, manifest.slug, manifest.version)
+      lookups.namespace(manifest.publisher, manifest.slug)?.state.state === 'ready'
+      || isPackInstalledAtVersionFromRow(rows.get(manifest.slug) ?? null, manifest.version)
     ));
 };
 
@@ -330,12 +401,14 @@ export const handlePacksList = async (
   // The panel can re-group visually (installed / foundation / rest) on
   // top of a stable sort without a second-pass server query.
   manifests.sort((a, b) => a.slug.localeCompare(b.slug));
+  // One scan each, before the loop — not one point read per pack.
+  const lookups = buildPackRosterLookups(deps.contractStore, deps.recordsStore);
   const packs = await Promise.all(manifests.map(async (manifest) => {
     const base = projectManifest(
       manifest,
       deps.recipeStore,
       deps.contractStore,
-      deps.recordsStore,
+      lookups,
     );
     if (deps.recordsStore === undefined || base.installed) return base;
     try {

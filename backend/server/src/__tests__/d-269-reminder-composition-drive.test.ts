@@ -87,7 +87,7 @@ const compose = async (over: { quiet?: { from: number; to: number }; zone?: stri
     auditLog: undefined,
     now: () => NOW,
     llmCallables: {
-      llm: () => {}, llmWithMeta: () => {}, resolveLLMModelId: () => {},
+      llm: () => {}, llmWithMeta: () => {},
       embed: () => {}, probeAiPath: () => {},
     },
     workEntityStore,

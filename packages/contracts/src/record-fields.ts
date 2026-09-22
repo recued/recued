@@ -246,6 +246,37 @@ export const resolveRecordFields = (
  *  and right-aligning them separates the column from its heading for no gain. */
 export const NUMERIC_FIELD_KINDS: ReadonlySet<string> = new Set(['number', 'decimal']);
 
+/** Field kinds the Records store will ORDER BY, and the two system timestamps it
+ *  admits beside them.
+ *
+ *  ⛔⛔ D-282 B2 — A STRING FIELD CANNOT BE SORTED, and the store is where that is
+ *  decided: `records/store.ts` refuses any other kind with
+ *  `sort field '<name>' is not ordered`. So "sort by Name" is not a control anyone can
+ *  offer — it is a run that fails. A surface that draws a sort affordance on a column
+ *  the store will refuse has made a promise the next press breaks.
+ *
+ *  🔑 IT LIVES HERE SO THERE IS ONE COPY. The store had this list inline and any UI that
+ *  wanted to know which columns are clickable would have had to restate it — the exact
+ *  drift `OUTPUT_TYPES`' own header warns about, where a second hand-written copy of a
+ *  closed vocabulary typechecks fine and is quietly wrong. The store imports this.
+ *
+ *  ⚠ `id` and the two `_record.*` stamps are admitted by NAME, not by kind: they are not
+ *  entity fields, so a kind lookup finds nothing for them. */
+export const ORDERED_FIELD_KINDS: ReadonlySet<string> = new Set([
+  'number', 'decimal', 'date', 'datetime', 'boolean',
+]);
+
+export const ORDERED_RECORD_KEYS: ReadonlySet<string> = new Set([
+  'id', '_record.created_at', '_record.updated_at',
+]);
+
+/** Can the store order by this column? `kind` is the DECLARED kind — the same one the
+ *  renderer aligns on — never the runtime value. */
+export const isOrderedRecordColumn = (
+  column: { field: string; kind?: string },
+): boolean => ORDERED_RECORD_KEYS.has(column.field)
+  || (column.kind !== undefined && ORDERED_FIELD_KINDS.has(column.kind));
+
 /** Column definitions for a `table` block, derived from the same entity schema
  *  `record_fields` reads. The rows come from the data; only the COLUMNS are
  *  resolved here, which is the half a recipe otherwise hand-writes.

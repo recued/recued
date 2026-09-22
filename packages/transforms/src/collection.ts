@@ -207,8 +207,18 @@ export const project: TransformFn = (p) => {
  *  like `"{{item.a}} - {{item.b}}"` is untouched. And it can only turn a passthrough into a
  *  resolution: at the time of the change ZERO shipped recipes used a hyphenated `item` ref,
  *  so no existing behaviour changes. Plain `{{step.x.a-b}}` refs already resolved — only
- *  these six item-scoped patterns were narrow. */
-const ITEM_REF_RE = /\{\{\s*item\.([a-zA-Z_][\w.-]*)\s*\}\}/g;
+ *  these six item-scoped patterns were narrow.
+ *
+ *  ⛔⛔ AND THEY WERE NARROW IN A SECOND WAY, FOUND THE SAME WAY: the first path
+ *  character required a LETTER, so `{{item.0}}` matched nothing and shipped as
+ *  literal text. `getField` has always indexed an array by a numeric segment
+ *  (`if (!Number.isNaN(n) && Array.isArray(acc)) return acc[n]`) — only the
+ *  regex disagreed. `track-flight-opensky` reads OpenSky state vectors, which
+ *  ARE positional arrays, and rendered `{{item.0}}` for every one of twelve
+ *  fields while reporting success. Twice now this comment's own list has been
+ *  the thing that was wrong; the corpus check beside these tests is what will
+ *  notice the third time. */
+const ITEM_REF_RE = /\{\{\s*item(?:\.([\w][\w.-]*))?\s*\}\}/g;
 
 /** Hint-aware variant for the interpolation case: `{{item.path:currency}}`.
  *  The optional `:hint` group mirrors the engine value system — a hint
@@ -216,26 +226,26 @@ const ITEM_REF_RE = /\{\{\s*item\.([a-zA-Z_][\w.-]*)\s*\}\}/g;
  *  ignores it and preserves type (Case 1). The math case stays hint-blind
  *  on the plain regex: a formatted string inside arithmetic is authoring
  *  nonsense, and degrading it to interpolation keeps the output readable. */
-const ITEM_REF_HINT_RE = /\{\{\s*item\.([a-zA-Z_][\w.-]*)(?::([a-zA-Z_]+))?\s*\}\}/g;
+const ITEM_REF_HINT_RE = /\{\{\s*item(?:\.([\w][\w.-]*))?(?::([a-zA-Z_]+))?\s*\}\}/g;
 
 /** Single `{{item.path | number}}` numeric-coercion form. The `| number` filter
  *  sits INSIDE the braces, so this is deliberately invisible to `ITEM_REF_RE`
  *  (which requires `}}` straight after the path) — a coercion expression is never
  *  mistaken for a plain ref by the math / interpolation cases. See
  *  `resolveExpression` Case 1.5. */
-const ITEM_NUMERIC_COERCE_RE = /^\{\{\s*item\.([a-zA-Z_][\w.-]*)\s*\|\s*number\s*\}\}$/;
+const ITEM_NUMERIC_COERCE_RE = /^\{\{\s*item(?:\.([\w][\w.-]*))?\s*\|\s*number\s*\}\}$/;
 
 /** Single `{{item.path | date_ms}}` date-coercion form (G2 datetime unify) — the
  *  sibling of `| number` for canonical `datetime` (`date_ms`) fields. Same
  *  inside-the-braces shape, so it is equally invisible to the plain-ref / math /
  *  interpolation regexes. See `resolveExpression` Case 1.6. */
-const ITEM_DATE_COERCE_RE = /^\{\{\s*item\.([a-zA-Z_][\w.-]*)\s*\|\s*date_ms\s*\}\}$/;
+const ITEM_DATE_COERCE_RE = /^\{\{\s*item(?:\.([\w][\w.-]*))?\s*\|\s*date_ms\s*\}\}$/;
 
 /** D-190 — email local-part projection hint (`{{item.path | local_part}}`): the
  *  substring before the FIRST '@' of the resolved value. Same inside-the-braces
  *  shape as the number / date_ms coercions, invisible to the plain-ref / math /
  *  interpolation regexes. See `resolveExpression` Case 1.7. */
-const ITEM_LOCAL_PART_RE = /^\{\{\s*item\.([a-zA-Z_][\w.-]*)\s*\|\s*local_part\s*\}\}$/;
+const ITEM_LOCAL_PART_RE = /^\{\{\s*item(?:\.([\w][\w.-]*))?\s*\|\s*local_part\s*\}\}$/;
 
 /** Boolean coercion for the `$ternary` condition. A vendor flag arrives as a real
  *  boolean (Salesforce `IsClosed`) OR a "true"/"false" STRING (HubSpot returns all
@@ -244,6 +254,28 @@ const ITEM_LOCAL_PART_RE = /^\{\{\s*item\.([a-zA-Z_][\w.-]*)\s*\|\s*local_part\s
  *  silent bug. */
 const coerceBool = (v: unknown): boolean =>
   v === true || (typeof v === 'string' && v.toLowerCase() === 'true');
+
+/** One item-scoped field read, where an ABSENT path means the element ITSELF.
+ *
+ *  ⛔⛔ `{{item}}` USED TO SHIP AS LITERAL TEXT. Every item regex below required
+ *  `item.<path>`, so a bare reference matched none of them and fell to
+ *  `resolveExpression`'s last case — "Anything else: returned as-is". Six
+ *  shipped recipes mapped a STRING array (urls, terms, claim lines, checklist
+ *  labels) into objects, which is precisely the shape where there IS no path to
+ *  write, and every one of them rendered the characters `{{item}}` while
+ *  reporting success. `open-document-request` wrote them into Records as
+ *  document labels, where the matcher then classified against them.
+ *
+ *  🔑 IT WAS ALREADY THE RULE EVERYWHERE ELSE. `resolveRef` ends
+ *  `return path ? walkPath(store, path) : store` — a bare `{{item}}` under a
+ *  `foreach` has always resolved to the element, which is why 97 of the corpus's
+ *  103 bare references work and why authors keep reaching for it here. This
+ *  makes `map` agree with its own sibling rather than inventing a meaning.
+ *
+ *  ⚠ In a `map` nested under a `foreach`, the MAP's element wins — the innermost
+ *  binding, which is what `{{item.<path>}}` already does. */
+const itemField = (item: unknown, path: string | undefined): unknown =>
+  (path === undefined || path === '' ? item : getField(item, path));
 
 /** Evaluate a map expression in the context of a single array item.
  *
@@ -262,8 +294,8 @@ function resolveExpression(expr: unknown, item: unknown): unknown {
     // Case 1: single ref, entire string is {{item.path}} (an optional
     // `:hint` is accepted and IGNORED — the value-system rule: pure refs
     // preserve type, hints only format string interpolation).
-    const singleMatch = /^\{\{\s*item\.([a-zA-Z_][\w.-]*)(?::[a-zA-Z_]+)?\s*\}\}$/.exec(expr);
-    if (singleMatch) return getField(item, singleMatch[1]);
+    const singleMatch = /^\{\{\s*item(?:\.([\w][\w.-]*))?(?::[a-zA-Z_]+)?\s*\}\}$/.exec(expr);
+    if (singleMatch) return itemField(item, singleMatch[1]);
 
     // Case 1.5: numeric coercion — `{{item.path | number}}`. Coerce the field to a
     // real number via Number() (so a numeric STRING like "30000" or an exponent
@@ -274,7 +306,7 @@ function resolveExpression(expr: unknown, item: unknown): unknown {
     // DIRECTLY (no math-text re-parse) is what keeps exponents + nulls correct.
     const coerceMatch = ITEM_NUMERIC_COERCE_RE.exec(expr);
     if (coerceMatch) {
-      const raw = getField(item, coerceMatch[1]);
+      const raw = itemField(item, coerceMatch[1]);
       if (raw === null || raw === undefined || raw === '') return null;
       const n = Number(raw);
       return Number.isFinite(n) ? n : null;
@@ -300,7 +332,7 @@ function resolveExpression(expr: unknown, item: unknown): unknown {
     // discipline.
     const dateMatch = ITEM_DATE_COERCE_RE.exec(expr);
     if (dateMatch) {
-      const raw = getField(item, dateMatch[1]);
+      const raw = itemField(item, dateMatch[1]);
       if (raw === null || raw === undefined) return null;
       const trimmed = typeof raw === 'string' ? raw.trim() : raw;
       if (trimmed === '') return null;
@@ -318,7 +350,7 @@ function resolveExpression(expr: unknown, item: unknown): unknown {
     // `$concat` fallback drops it to null. Mirrors Cases 1.5 / 1.6's null discipline.
     const localMatch = ITEM_LOCAL_PART_RE.exec(expr);
     if (localMatch) {
-      const raw = getField(item, localMatch[1]);
+      const raw = itemField(item, localMatch[1]);
       if (raw === null || raw === undefined) return null;
       const trimmed = String(raw).trim();
       if (trimmed === '') return null;
@@ -358,7 +390,7 @@ function resolveExpression(expr: unknown, item: unknown): unknown {
     if (ITEM_REF_RE.test(expr) && /[+\-*/%()]/.test(expr) && looksArithmetic) {
       ITEM_REF_RE.lastIndex = 0; // reset after .test()
       const substituted = expr.replace(ITEM_REF_RE, (_, path) => {
-        const v = getField(item, path);
+        const v = itemField(item, path);
         const n = Number(v);
         return Number.isFinite(n) ? String(n) : '0';
       });
@@ -380,7 +412,7 @@ function resolveExpression(expr: unknown, item: unknown): unknown {
     if (ITEM_REF_HINT_RE.test(expr)) {
       ITEM_REF_HINT_RE.lastIndex = 0;
       return expr.replace(ITEM_REF_HINT_RE, (_, path: string, hint?: string) => {
-        const value = getField(item, path);
+        const value = itemField(item, path);
         return hint
           ? formatHint(value, hint as Parameters<typeof formatHint>[1])
           : interpolationText(value);

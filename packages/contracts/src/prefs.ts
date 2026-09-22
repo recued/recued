@@ -26,6 +26,7 @@ import {
   TRANSPARENCY_REDACTION_TIERS,
 } from './transparency-stream/redaction.js';
 import { CHAT_HISTORY_SOURCES, CHAT_HISTORY_VENDORS } from './chat-history-filters.js';
+import { SLUG_RE } from './bulk-pack.js';
 
 /** D-262 slice 4 — how a reply gets spoken.
  *
@@ -53,6 +54,31 @@ export type InstancePrefSpec =
       type: 'string';
       default: string;
       allowed: readonly string[];
+      description: string;
+    }
+  | {
+      /** D-282 C — an OPEN list of short identifiers (pack slugs). The third
+       *  kind, and the first whose vocabulary is not closed: what an owner may
+       *  pin is whatever they have installed, which no registry can enumerate.
+       *
+       *  ⛔⛔ `typeof []` IS `'object'`, so this variant CANNOT be validated by
+       *  the `typeof value !== spec.type` line the other two share. It gets an
+       *  explicit branch in `isValidPrefValue`, and the discriminant here is a
+       *  NAME rather than a `typeof` result — writing `type: 'object'` to keep
+       *  the shared line working would have admitted every object shape.
+       *
+       *  The bound is what makes an open vocabulary safe to store: each item
+       *  must match `item_pattern`, the list must fit `max_items`, and it must
+       *  hold no duplicates. A blob that fails any of those falls back to the
+       *  default exactly as a bad boolean does. */
+      type: 'string_list';
+      default: readonly string[];
+      /** Hard ceiling. A corrupted or hostile blob must not be able to render
+       *  ten thousand rows into a navigation drawer. */
+      max_items: number;
+      /** Every item must match. Kept as a `RegExp` so the rule is the one the
+       *  rest of the contract already uses, not a second spelling of it. */
+      item_pattern: RegExp;
       description: string;
     };
 
@@ -93,6 +119,32 @@ export const INSTANCE_PREFS = {
     description:
       'Keep the result on this device up to date on its own, for a screen '
       + 'left showing a board. Other devices are unaffected.',
+  },
+  /** D-282 slice C — the apps the owner put in the navigation drawer.
+   *
+   *  🔑 THE OWNER CHOOSES, AND THAT IS THE DESIGN, NOT A LIMITATION. Every
+   *  automatic rule was measured and none survives: 208 of the 1052 corpus
+   *  packs have an app surface, so "every installed app pack" is unbounded in
+   *  a drawer whose own header records it as a LOCKED flat list; and there is
+   *  no `installed_at` on `PackListEntry` and no usage signal, so a capped
+   *  list would be capped ALPHABETICALLY — which of your apps you get would be
+   *  an accident of naming. Which app is your daily home is a fact only you
+   *  hold.
+   *
+   *  ⚠ PER DEVICE, like every pref here. The laptop and the counter tablet
+   *  pin different things, which is right: the tablet's home is the board.
+   *
+   *  ⚠ Slugs, not `(publisher, slug)` pairs, because `#packs/<slug>` is
+   *  already addressed by slug alone — storing a richer key than the route can
+   *  express would be a second identity to keep in step. */
+  'ui.pinned_apps': {
+    type: 'string_list',
+    default: [],
+    max_items: 12,
+    item_pattern: SLUG_RE,
+    description:
+      'Packs pinned to the navigation drawer on this device, in the order '
+      + 'they appear. Each opens straight onto the pack.',
   },
   'ui.notifications.pressure': {
     type: 'boolean',
@@ -272,13 +324,21 @@ export type InstancePrefKey = keyof typeof INSTANCE_PREFS;
  *  `InstancePrefValue<InstancePrefKey>` is the union of every per-key
  *  value type rather than collapsing to `boolean`. */
 export type InstancePrefValue<K extends InstancePrefKey> = K extends InstancePrefKey
-  ? (typeof INSTANCE_PREFS)[K] extends { readonly type: 'string' }
-    ? (typeof INSTANCE_PREFS)[K] extends {
-        readonly allowed: readonly (infer A extends string)[];
-      }
-      ? A
-      : string
-    : boolean
+  // ⛔⛔ THE LIST BRANCH GOES FIRST, AND ITS ABSENCE TYPECHECKED CLEAN. This
+  // conditional ends in `: boolean`, so a spec kind it does not name falls
+  // THROUGH to boolean rather than failing — `ui.pinned_apps` typed as
+  // `boolean` for one edit, and `DEFAULT_INSTANCE_PREFS` casts through
+  // `Record<string, unknown>` on the way in, so nothing objected. A trailing
+  // `else` over a registry that grows is a default that lies about new members.
+  ? (typeof INSTANCE_PREFS)[K] extends { readonly type: 'string_list' }
+    ? readonly string[]
+    : (typeof INSTANCE_PREFS)[K] extends { readonly type: 'string' }
+      ? (typeof INSTANCE_PREFS)[K] extends {
+          readonly allowed: readonly (infer A extends string)[];
+        }
+        ? A
+        : string
+      : boolean
   : never;
 
 /** Full concrete preference set. Every key is required; use
@@ -306,6 +366,22 @@ const hasOwnPref = (
  *  sit inside the `allowed` list — an out-of-enum string from wire /
  *  storage falls back to the default rather than reaching consumers. */
 const isValidPrefValue = (spec: InstancePrefSpec, value: unknown): boolean => {
+  // ⛔ BRANCHED BEFORE THE SHARED `typeof` LINE, because `typeof []` is
+  // `'object'` and would fail it — and naming the spec kind `'object'` to slip
+  // through would have admitted every object shape there is.
+  if (spec.type === 'string_list') {
+    if (!Array.isArray(value)) return false;
+    if (value.length > spec.max_items) return false;
+    const seen = new Set<string>();
+    for (const item of value) {
+      if (typeof item !== 'string' || !spec.item_pattern.test(item)) return false;
+      // A repeated entry would render the same seat twice. Refused rather than
+      // deduped on read: one rule in one place, and the writer dedupes.
+      if (seen.has(item)) return false;
+      seen.add(item);
+    }
+    return true;
+  }
   if (typeof value !== spec.type) return false;
   if (spec.type === 'string') {
     return (spec.allowed as readonly string[]).includes(value as string);

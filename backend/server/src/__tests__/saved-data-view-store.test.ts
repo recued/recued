@@ -139,3 +139,92 @@ describe('saved Data view persistence', () => {
     expect(parseSavedDataViewDefinition(value)).toBeNull();
   });
 });
+
+describe('P2/F2 review mark', () => {
+  const recordsView: SavedDataViewDefinition = {
+    tab: 'records', owner: { publisher: 'vendor', pack_slug: 'shop' }, entity: 'order',
+  };
+  const cursor = { at: 1_700_000_000_000, event_id: 'evt-1' };
+  const setup = () => {
+    const store = createSavedDataViewStore(open());
+    const view = store.create({ name: 'Orders', definition: recordsView });
+    return { store, view };
+  };
+
+  it('stores the cursor the reviewer supplied and clears on null', () => {
+    const { store, view } = setup();
+    const marked = store.update({ id: view.id, expected_revision: view.revision, review: cursor });
+    expect(marked.review?.reviewed_through).toEqual(cursor);
+    expect(marked.review?.reviewed_at).toBeGreaterThan(0);
+
+    const cleared = store.update({ id: view.id, expected_revision: marked.revision, review: null });
+    expect(cleared.review).toBeUndefined();
+  });
+
+  it('accepts a review mark as the only change', () => {
+    const { store, view } = setup();
+    // The guard used to demand definition-or-alert; a mark is neither.
+    expect(() => store.update({ id: view.id, expected_revision: view.revision, review: cursor }))
+      .not.toThrow();
+    expect(() => store.update({ id: view.id, expected_revision: view.revision + 1 }))
+      .toThrow(/Provide saved view settings/);
+  });
+
+  /** ⛔ REVIEW IS NARROWER THAN ALERTS. A task view supports alerts and has no
+   *  pack, so there is no outbox to hold a cursor. Reusing
+   *  `savedDataViewSupportsAlerts` here would accept this and store a mark that
+   *  addresses nothing. */
+  it('refuses a task view, which alerts would have accepted', () => {
+    const store = createSavedDataViewStore(open());
+    const task = store.create({ name: 'Calls',
+      definition: { tab: 'task', query: 'call', source_id: null, booking_lifecycle: 'all' } });
+    expect(() => store.update({ id: task.id, expected_revision: task.revision, review: cursor }))
+      .toThrow(/Records view with a pack and kind/);
+  });
+
+  /** ⛔ THE SCOPE-NOT-EQUALITY TEST. Both halves matter and they pull opposite
+   *  ways: comparing whole definitions would discard a good mark on every
+   *  filter tweak, and comparing nothing would keep a cursor pointing into
+   *  another pack's stream — which does not merely mislead, it makes the feed
+   *  skip everything before that position. */
+  it('survives a filter edit and is dropped when the pack or entity moves', () => {
+    const { store, view } = setup();
+    const marked = store.update({ id: view.id, expected_revision: view.revision, review: cursor });
+
+    const filtered = store.update({
+      id: view.id, expected_revision: marked.revision,
+      definition: { ...recordsView, filters: { status: { op: 'eq', value: 'open' } } },
+    });
+    expect(filtered.review?.reviewed_through).toEqual(cursor);
+
+    const reentitied = store.update({
+      id: view.id, expected_revision: filtered.revision,
+      definition: { ...recordsView, entity: 'invoice' },
+    });
+    expect(reentitied.review).toBeUndefined();
+  });
+
+  it('drops the mark when the view stops being a Records view at all', () => {
+    const { store, view } = setup();
+    const marked = store.update({ id: view.id, expected_revision: view.revision, review: cursor });
+    const retabbed = store.update({
+      id: view.id, expected_revision: marked.revision,
+      definition: { tab: 'memory', origin: 'user_self' },
+    });
+    expect(retabbed.review).toBeUndefined();
+  });
+
+  // ⚠ `null` is deliberately ABSENT — it is the documented CLEAR, covered above.
+  // Listing it here with an early `return` would have been a permanently green
+  // arm asserting nothing.
+  it.each([
+    {}, { at: 1 }, { event_id: 'e' }, { at: -1, event_id: 'e' },
+    { at: 1.5, event_id: 'e' }, { at: 1, event_id: '' },
+    { at: 1, event_id: 'e', extra: true },
+  ])('refuses a malformed cursor: %j', (bad) => {
+    const { store, view } = setup();
+    expect(() => store.update({
+      id: view.id, expected_revision: view.revision, review: bad as never,
+    })).toThrow(/Invalid review mark/);
+  });
+});

@@ -54,7 +54,7 @@ import { OWNER_OPERATION_SCOPE } from '@recued/contracts';
 import type { CatalogKind, IngredientManifest, PackContentRef } from '@recued/contracts';
 import type { PackOpBinding, PackOpResolution } from '@recued/recipes';
 
-import type { ContractStore } from './storage/contract-store.js';
+import type { ContractRow, ContractStore } from './storage/contract-store.js';
 
 /** The `installed_ingredient` / `installed_pack` contract scopes. Named
  *  here so the writer + the uninstall remover agree on the strings the
@@ -464,14 +464,53 @@ export const packIngredientIds = (
  *  of the recipe check's `stored.version === ref.version`. Recipe-BEARING packs
  *  keep that recipe-ownership check (it also models twin packs sharing recipe
  *  slugs, which a slug-keyed registry row cannot). */
+/** Every `installed_pack` row in ONE scan, keyed exactly as `get` keys them.
+ *
+ *  🔑 RAW ROWS, DELIBERATELY. Three functions read this same row and read it
+ *  DIFFERENTLY: {@link getInstalledPack} parses `version` and keeps the row
+ *  when it does not parse, {@link listInstalledPacks} parses it and DROPS the
+ *  row when it does not, and {@link isPackInstalledAtVersion} compares the
+ *  stored STRING (`row.value.version === String(v)`) and never parses at all.
+ *  Handing back a normalized shape would quietly pick one of those three for
+ *  every caller, so this returns what is stored and lets each reader keep its
+ *  own reading.
+ *
+ *  ⛔ KEYED ON `segments[0]`, NOT `value.pack_slug`. `getInstalledPack(store,
+ *  slug)` resolves through `store.get(INSTALLED_PACK_SCOPE, [slug])`, which
+ *  matches the SEGMENT. `listInstalledPacks` reports `value.pack_slug`, which
+ *  is a different field that merely usually agrees. A map keyed on the value
+ *  would answer a question no existing caller asks.
+ *
+ *  For the roster loops (`packs.list` and the two installed-manifest views),
+ *  which called `getInstalledPack` / `isPackInstalledAtVersion` once per
+ *  bundled pack — 1,052 point reads where one scan does. */
+export const scanInstalledPackRowsBySegment = (
+  store: ContractStore,
+): Map<string, ContractRow> => {
+  const out = new Map<string, ContractRow>();
+  for (const row of store.scan(INSTALLED_PACK_SCOPE)) {
+    const segment = row.segments[0];
+    if (typeof segment !== 'string' || segment.length === 0) continue;
+    out.set(segment, row);
+  }
+  return out;
+};
+
+/** {@link isPackInstalledAtVersion}'s reading of one row, as a pure function.
+ *  ⚠ Compares the STORED STRING and never parses — unlike the two readers
+ *  above. Extracted for the same no-drift reason. */
+export const isPackInstalledAtVersionFromRow = (
+  row: ContractRow | null,
+  pack_version: number,
+): boolean =>
+  row !== null && isRecord(row.value) && row.value.version === String(pack_version);
+
 export const isPackInstalledAtVersion = (
   store: ContractStore,
   pack_slug: string,
   pack_version: number,
-): boolean => {
-  const row = store.get(INSTALLED_PACK_SCOPE, [pack_slug]);
-  return row !== null && isRecord(row.value) && row.value.version === String(pack_version);
-};
+): boolean =>
+  isPackInstalledAtVersionFromRow(store.get(INSTALLED_PACK_SCOPE, [pack_slug]), pack_version);
 
 /** One enumerated `installed_pack` row — the minimal identity + version the
  *  Discover install-state join needs. `version` is parsed from the row's stored
@@ -569,11 +608,16 @@ export const findInstalledPackByAuthoredSlug = (
  *  this is LENIENT on version: a corrupt-version row still EXISTS and must
  *  stay removable, so `version` is left `undefined` rather than dropping the
  *  whole row. `null` = no inventory row (the pack isn't installed). */
-export const getInstalledPack = (
-  store: ContractStore,
-  pack_slug: string,
+/** {@link getInstalledPack}'s reading of one row, as a pure function.
+ *
+ *  🔑 EXTRACTED SO THE POINT READ AND THE BATCH CANNOT DRIFT. The roster loops
+ *  resolve their rows from {@link scanInstalledPackRowsBySegment} instead of a
+ *  `get` per pack; if that path re-implemented this parse, the two would answer
+ *  differently the first time either was edited, and the difference would show
+ *  up as a pack that is installed on one surface and not on another. */
+export const installedPackFromRow = (
+  row: ContractRow | null,
 ): { pack_slug: string; version?: number; publisher?: string } | null => {
-  const row = store.get(INSTALLED_PACK_SCOPE, [pack_slug]);
   if (row === null || !isRecord(row.value)) return null;
   const slug = row.value.pack_slug;
   if (typeof slug !== 'string' || slug.length === 0) return null;
@@ -585,6 +629,12 @@ export const getInstalledPack = (
     ...(publisher !== undefined ? { publisher } : {}),
   };
 };
+
+export const getInstalledPack = (
+  store: ContractStore,
+  pack_slug: string,
+): { pack_slug: string; version?: number; publisher?: string } | null =>
+  installedPackFromRow(store.get(INSTALLED_PACK_SCOPE, [pack_slug]));
 
 // ════════════════════════════════════════════════════════════════
 // D-170 — standalone (1×1, no-pack) ingredient inventory

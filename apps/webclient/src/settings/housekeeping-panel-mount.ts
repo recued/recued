@@ -111,6 +111,13 @@ export type HousekeepingDismissPromotionCaller = (args: {
 }) => Promise<{ ok: true; effective: EnrichmentTrustRow }>;
 export type HousekeepingRegistryDescribeCaller =
   () => Promise<RegistryDescribeRpcOutput>;
+/** D-285 — the PERSISTED drift signals. The `enrichment_drift_detected`
+ *  broadcast announces a transition the instant it happens; this reads the
+ *  state behind it, so a client that was not connected at that instant — or
+ *  merely reloaded afterwards — can still see the verdict. */
+export type HousekeepingDriftReadCaller = () => Promise<{
+  rows: ReadonlyArray<ConfidenceDriftSignal>;
+}>;
 
 /** `housekeeping.topic.reset` response — dry-run mints a token + impact;
  *  confirm (token supplied) applies + returns actuals. Mirrors the rpc
@@ -158,6 +165,10 @@ export interface MountHousekeepingPanelOptions {
   /** `housekeeping.trust.read` — fired on mount; seeds the per-topic
    *  trust rows the drawer radios reflect. */
   runTrustRead: HousekeepingTrustReadCaller;
+  /** D-285 — optional: an older server has no `housekeeping.drift.read`, and
+   *  the panel degrades to the pre-D-285 behaviour (bus-only, lost on
+   *  reload) rather than erroring. */
+  runDriftRead?: HousekeepingDriftReadCaller;
   /** `housekeeping.task.run_now`. Optional — omitted → the Run-now
    *  confirm is unreachable (the open click is a no-op). */
   runRunNow?: HousekeepingRunNowCaller;
@@ -362,14 +373,13 @@ export const mountHousekeepingPanel = (
           trustWriting: state.trustWriting,
           trustWriteError: state.trustWriteError,
           scopeRead: state.scopeRead,
-          // Drift detail in the drawer needs the full persisted signal
-          // (windows + distributions) — there is no read rpc for it
-          // yet, only the narrow `enrichment_drift_detected` broadcast.
-          // So the top-level drift banner is the drift surface; the
-          // drawer's per-topic drift section stays unfed (showing the
-          // broadcast's zeroed windows would be misleading). Review on
-          // the banner expands this drawer for the trust controls.
-          driftSignals: {},
+          // D-285 — the drawer now gets the signals that carry windows +
+          // distributions, which `housekeeping.drift.read` supplies. Event
+          // placeholders are filtered out for the reason the old comment
+          // here gave: rendering the broadcast's zeroed windows would be
+          // misleading. They upgrade to the stored row one round-trip after
+          // the fire, so the section fills in rather than staying dark.
+          driftSignals: fullDriftSignalsOnly(state.driftSignals),
           coverageEntries: state.coverageEntries,
           // Reset is destructive — only surface the drawer section when
           // the confirm/dry-run rpc is actually wired (no dead button).
@@ -551,6 +561,26 @@ export const mountHousekeepingPanel = (
     } catch (err) {
       if (disposed || captured !== loadGeneration) return;
       setState({ loading: false, error: messageOf(err) });
+    }
+  };
+
+  // D-285 — non-fatal drift load. Same shape as the coverage load below: a
+  // failure leaves whatever the bus delivered rather than blanking the page.
+  const doLoadDrift = async (): Promise<void> => {
+    if (disposed) return;
+    if (!opts.runDriftRead) return;
+    const captured = loadGeneration;
+    try {
+      const res = await opts.runDriftRead();
+      if (disposed || captured !== loadGeneration) return;
+      const driftSignals: Record<string, ConfidenceDriftSignal> = { ...state.driftSignals };
+      for (const row of res.rows) {
+        driftSignals[row.source_topic] = mergeDriftSignal(driftSignals[row.source_topic], row);
+      }
+      setState({ driftSignals });
+    } catch {
+      // Drift is a secondary surface — a failed read keeps the bus-delivered
+      // signals, never a page-level error.
     }
   };
 
@@ -1104,6 +1134,7 @@ export const mountHousekeepingPanel = (
   const loadAll = (): Promise<void> => {
     const p = doLoad();
     void doLoadMcpMeta();
+    void doLoadDrift();
     return p;
   };
 
@@ -1144,6 +1175,10 @@ export const mountHousekeepingPanel = (
             [event.source_topic]: driftSignalFromEvent(event),
           },
         });
+        // D-285 — paint from the event immediately (it is the whole point of
+        // a broadcast), then pull the stored row so the placeholder's zeroed
+        // windows are replaced by the real ones and the drawer can render.
+        void doLoadDrift();
       }),
     );
   }
@@ -1190,8 +1225,9 @@ const messageOf = (err: unknown): string =>
   humanizeRpcError(err);
 
 /** Build a `ConfidenceDriftSignal` from the narrow
- *  `enrichment_drift_detected` broadcast. The banner reads only
- *  `source_topic` / `psi` / `severity` / `dismissed_at`; the window +
+ *  `enrichment_drift_detected` broadcast. The banner reads
+ *  `source_topic` / `severity` / `dismissed_at` plus D-283's
+ *  `low_confidence_delta`; the window +
  *  distribution fields are placeholders the banner never renders (and
  *  the drawer drift section is deliberately left unfed — see the
  *  producer-section feed comment). They exist solely to satisfy the
@@ -1201,6 +1237,7 @@ const driftSignalFromEvent = (event: {
   psi: number;
   severity: 'moderate' | 'significant';
   computed_at: number;
+  low_confidence_delta?: number;
 }): ConfidenceDriftSignal => {
   const window = {
     start_at: event.computed_at,
@@ -1216,7 +1253,70 @@ const driftSignalFromEvent = (event: {
     baseline_distribution: [],
     recent_distribution: [],
     computed_at: event.computed_at,
+    // ⛔ D-283 — carried through, NOT synthesised. A `ProportionShift` is
+    // deliberately absent here: this path has no rates, no n and no
+    // p-value, and inventing them to fill the shape would put fabricated
+    // statistics on a signal. These two are the only facts the event
+    // actually holds, and they are the two the banner renders.
+    ...(event.low_confidence_delta !== undefined
+      ? { low_confidence_delta: event.low_confidence_delta }
+      : {}),
   };
+};
+
+/** A stored signal always carries its PSI bins; an event placeholder is built
+ *  with `baseline_distribution: []` because the broadcast has no bins to
+ *  carry. That is the honest discriminator between the two — not a flag
+ *  somebody has to remember to set. */
+const hasDistributions = (s: ConfidenceDriftSignal): boolean =>
+  s.baseline_distribution.length > 0;
+
+/** D-285 — reconcile a stored row against whatever is already in hand.
+ *
+ *  Newer computation wins. On a TIE — the normal case, since the read is
+ *  kicked off by the very broadcast that announced the same computation —
+ *  the row with distributions wins, because it is the same verdict with the
+ *  analysis attached.
+ *
+ *  ⛔ A local dismissal is carried across, but ONLY within one computation.
+ *  Dismissal is client-side state (nothing persists it yet), so without this
+ *  the next read would hand back the same verdict undismissed and re-raise a
+ *  banner the owner had just closed — the read would have made the surface
+ *  NAGGIER than the bug it fixes. A newer `computed_at` deliberately drops
+ *  the dismissal: that is the "re-arms on the next transition" rule the
+ *  banner already documents. */
+const mergeDriftSignal = (
+  prev: ConfidenceDriftSignal | undefined,
+  next: ConfidenceDriftSignal,
+): ConfidenceDriftSignal => {
+  if (prev === undefined) return next;
+  const chosen =
+    next.computed_at > prev.computed_at
+      ? next
+      : next.computed_at < prev.computed_at
+        ? prev
+        : hasDistributions(next)
+          ? next
+          : prev;
+  if (
+    prev.dismissed_at !== undefined
+    && chosen.dismissed_at === undefined
+    && chosen.computed_at === prev.computed_at
+  ) {
+    return { ...chosen, dismissed_at: prev.dismissed_at };
+  }
+  return chosen;
+};
+
+/** The subset the drawer can render — see the feed comment at its call site. */
+const fullDriftSignalsOnly = (
+  signals: Record<string, ConfidenceDriftSignal>,
+): Record<string, ConfidenceDriftSignal> => {
+  const out: Record<string, ConfidenceDriftSignal> = {};
+  for (const [topic, signal] of Object.entries(signals)) {
+    if (hasDistributions(signal)) out[topic] = signal;
+  }
+  return out;
 };
 
 const omitKey = <T>(

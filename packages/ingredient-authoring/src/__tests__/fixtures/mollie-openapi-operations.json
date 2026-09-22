@@ -195,7 +195,7 @@
       ],
       "normalized_operations_sha256": "fa53e09fe7333a924745e99a91c56cb9109122f78b44a19e0452d0eb5f2c3c68",
       "entities_sha256": "3fcfe6163b6236000575bc145a94a6cbcd23f1629ed9f6f5a0d9b8b6d26a464f",
-      "recipe_contents_sha256": "f002d2a99e8ebf27f841578f9b7a57bd863e1138855e0f3fc70b845a9e59eebb",
+      "recipe_contents_sha256": "a1af6fc10ffe94e899f7166b391ead10e8aebb05b477f59e903ae3704ef50897",
       "recipes_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
     },
     "root_source_pin": {

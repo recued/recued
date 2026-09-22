@@ -14,6 +14,7 @@ export { MIN_TTL } from './vault.js';
 export { isRef, hasInterpolation, parseCondition, stepType } from './values.js';
 export { resolveRef, resolveValue, resolveDeep, formatHint, interpolationText, collectRefs, walkPath } from './resolve.js';
 export { escapeSoqlStringLiteral, soqlQuotedLiteral, soqlLikeOperand } from './soql.js';
+export { testDeclaredPattern, DECLARED_PATTERN_FAST_PATHS } from './declared-pattern.js';
 export {
   isClosedRequestSchema,
   closedRequestSchemaDefinitionIssues,
@@ -84,6 +85,7 @@ export type {
   RecordFieldsOutputSection, ResolvedRecordField, ResolvedRecordFieldsDescriptor,
   TableOutputSection, ResolvedRecordColumn, ResolvedRecordColumnsDescriptor,
   TableEditSpec, ResolvedTableEditDescriptor, OutputTableEditInvocation,
+  TableSelectSpec, ResolvedTableSelectDescriptor, OutputTableSelectInvocation,
   TableAppendedColumn, TableColumnControl,
   OutputSection, OutputType, RecipeOutput, RecipeExchangeOutput, ResolvedFilterDescriptor,
   ResolvedOutputSection, OutputFilterInvocation, RecipeInvocation,
@@ -116,6 +118,9 @@ export {
   resolveRecordFields,
   resolveRecordColumns,
   NUMERIC_FIELD_KINDS,
+  ORDERED_FIELD_KINDS,
+  ORDERED_RECORD_KEYS,
+  isOrderedRecordColumn,
 } from './record-fields.js';
 export type { EntityFieldDeclaration } from './record-fields.js';
 
@@ -632,6 +637,7 @@ export {
   HOUSEKEEPING_AUTO_RETRY_AFTER_MS,
   HOUSEKEEPING_DEFAULT_PRESET,
   HOUSEKEEPING_PRESET_DEFAULTS,
+  isAiSurfaceEnrichment,
 } from './housekeeping.js';
 export type {
   HousekeepingPreset,
@@ -669,7 +675,9 @@ export type {
   HousekeepingErrorEntry,
 } from './enrichment-trust.js';
 
-// D-133 — Confidence drift detection (PSI on AI-surface producers).
+// D-133 — Confidence drift detection. ⛔ D-281 moved the DECIDING
+// statistic from PSI to a two-proportion test on the low-confidence
+// rate; the PSI exports remain as a stored diagnostic.
 export {
   PSI_BIN_COUNT,
   PSI_THRESHOLD_MODERATE,
@@ -679,11 +687,21 @@ export {
   computeConfidenceHistogram,
   computePSI,
   psiSeverity,
+  LOW_CONFIDENCE_CUT,
+  DRIFT_SIGNIFICANT_P,
+  DRIFT_SIGNIFICANT_DELTA,
+  DRIFT_MODERATE_P,
+  DRIFT_MODERATE_DELTA,
+  lowConfidenceRate,
+  compareLowConfidenceRates,
+  proportionDriftSeverity,
+  shiftIsMeasurable,
 } from './psi.js';
 export type {
   DriftSeverity,
   DriftWindow,
   ConfidenceDriftSignal,
+  ProportionShift,
 } from './psi.js';
 
 // D-122 Phase 4 — bulk-install pack manifest.
@@ -986,6 +1004,8 @@ export type {
   OpenApiAbsentReason, OpenApiAbsentDeclaration,
 } from './ingredient-catalog.js';
 export {
+  // D-210 — the approval-card edit length ceiling (a DoS bound, not a field meaning).
+  ARG_EDIT_STRING_MAX,
   isCatalogForm, resolveCatalogOperationPolicy, resolveCliReachabilityPolicy, isRiskTierAtMost,
   // Capture-arm narrowing. Both validators and the executor discriminate
   // through these helpers rather than sniffing keys.
@@ -5036,6 +5056,8 @@ export type {
   RecipeRunFacts,
   ServerExecuteResponse,
   ServerMigrationResult,
+  RecipeListRecipeView,
+  ServerRecipeFullEntry,
   ServerRecipeListEntry,
   ServerPendingApproval,
   ServerApprovalResolveResult,
@@ -6651,3 +6673,45 @@ export * from './chat-delivery.js';
 export * from './chat-history-filters.js';
 
 export { csvCell, type CsvCellOptions } from './csv.js';
+
+/** Records-usage + op-resolution analysis over a recipe — shared by the
+ *  webclient's pack-app classification and the server's `provably_read_only`
+ *  projection.
+ *
+ *  ⛔ IT LIVES IN CONTRACTS BECAUSE THE WEBCLIENT MAY NOT IMPORT THE ENGINE.
+ *  `@recued/recipes` is in `WEBCLIENT_FORBIDDEN_IMPORT_PREFIXES` (D-148 P4 —
+ *  the client is display + HID), so `packages/recipes` cannot host a module
+ *  both sides need. This one imports nothing but contracts, so it sits here
+ *  without adding a dependency.
+ *
+ *  🔑 ONE IMPLEMENTATION ON PURPOSE. The server projects `provably_read_only`
+ *  so the list can eventually stop shipping step bodies; a second copy of the
+ *  rule would let the projection and the UI disagree about what is read-only,
+ *  which is a permissions answer, not a cosmetic one. */
+export {
+  RECORDS_ACTION_EFFECT,
+  buildPackOperationIndex,
+  isProvablyReadOnly,
+  recipeDeclaredOps,
+  recipeOpIds,
+  recipeRecordsUsage,
+  stepsAreAnalysable,
+} from './records-usage.js';
+export type {
+  PackOperationIndex,
+  RecipeDeclaredOps,
+  RecipeRecordsUsage,
+  RecordsEffect,
+  RecordsEntityUsage,
+  RecordsUsagePack,
+  RecordsUsageRecipe,
+  ResolvedOp,
+} from './records-usage.js';
+
+/** Which connections a recipe needs, derived from its `{{connection.*}}` refs.
+ *  Lives here for the same reason as `records-usage`: the server projects it
+ *  onto `recipe.list` rows (the walk needs step bodies the list no longer
+ *  ships) and the webclient renders it, and the client may not import the
+ *  engine. */
+export { recipeRequiredConnections } from './required-connections.js';
+export type { RequiredConnection } from './required-connections.js';

@@ -16,7 +16,14 @@ import type { HousekeepingEnrichmentInfo } from '@recued/contracts';
 export interface HousekeepingCostPreview {
   /** Estimated total tokens for one full producer sweep — per-record
    *  estimate × current source-collection size. */
-  estimated_tokens: number;
+  estimated_tokens?: number;
+  /** ⛔ ABSENT when the total cannot be computed: an AI producer whose
+   *  `source_collection_count` is unknown (a standalone task declares no
+   *  source scope). Optional ON PURPOSE — a boolean "count_known" flag can be
+   *  forgotten at a render site, and forgetting it prints `0 tokens` for a run
+   *  that spends them. Making the NUMBER absent turns every such site into a
+   *  compile error instead. Always present on the deterministic path, where
+   *  the total is a real zero rather than an unknown one. */
   /** True when the producer is deterministic (per-record estimate
    *  is 0) — the dialog renders the "no token cost — pure SQL
    *  aggregation" inline copy and omits the dollar estimate. */
@@ -60,8 +67,11 @@ export const computeHousekeepingCostPreview = (
 ): HousekeepingCostPreview => {
   const perRecord = input.enrichment.token_estimate_per_record;
   const count = input.enrichment.source_collection_count;
-  const tokens = Math.max(0, Math.floor(perRecord * count));
-  const deterministic = perRecord === 0;
+  // Prefer the stated fact; fall back to the old derivation when it is absent
+  // so a payload without the field keeps the meaning it always had.
+  const deterministic = input.enrichment.is_ai_surface !== undefined
+    ? !input.enrichment.is_ai_surface
+    : perRecord === 0;
   if (deterministic) {
     return {
       estimated_tokens: 0,
@@ -69,6 +79,22 @@ export const computeHousekeepingCostPreview = (
       ai_required: false,
     };
   }
+  // ⛔ No count ⇒ no total. The previous line multiplied by it unconditionally,
+  // so an absent count read as 0 and the dialog offered "~0 tokens" for an AI
+  // run. An unknown cost has to LOOK unknown.
+  if (count === undefined || perRecord === undefined) {
+    return {
+      deterministic: false,
+      ai_required: true,
+      ...(input.enrichment.ai_path_available !== undefined
+        ? { ai_path_available: input.enrichment.ai_path_available }
+        : {}),
+      ...(input.enrichment.ai_path_reason !== undefined
+        ? { ai_path_reason: input.enrichment.ai_path_reason }
+        : {}),
+    };
+  }
+  const tokens = Math.max(0, Math.floor(perRecord * count));
   const aiPassthrough = {
     ai_required: true,
     ...(input.enrichment.ai_path_available !== undefined

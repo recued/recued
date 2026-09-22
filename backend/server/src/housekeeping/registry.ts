@@ -96,21 +96,6 @@ export type HousekeepingLlmExecuteWithMeta = (
   input: Record<string, unknown>,
 ) => Promise<{ result: unknown; model_id: string }>;
 
-/** D-136 P3 — pre-call probe for the resolved provider model id.
- *  Producer wrappers (`runAIProducer`) call this BEFORE the dedup
- *  probe so the dedup key includes the would-be model identity —
- *  cross-pool changes (free-pool ↔ BYOK) invalidate cached rows
- *  authored by a different model.
- *
- *  Returns `'<provider>:<model>'` (`'openai:gpt-4o-mini'`) when a
- *  match resolves; empty string when no match path resolves
- *  (probe is best-effort — the actual `executeLLM` call throws
- *  `AI_LLM_UNAVAILABLE` in that case). No round-robin advancement,
- *  no rate-limit accounting, no reject-set side effects. */
-export type HousekeepingResolveModelId = (
-  manifest: IngredientManifest,
-  input: Record<string, unknown>,
-) => Promise<string>;
 
 /** D-131 A.3 — embeddings sibling to `HousekeepingLlmExecute`. Wraps
  *  `executeEmbedding` with the same shared `LLMConfig` + adapters +
@@ -231,11 +216,6 @@ export interface HousekeepingContext {
    *  the static ingredient slug. Optional — deterministic producers +
    *  tests leave it unwired; production wires it through `bin.ts`. */
   llmWithMeta?: HousekeepingLlmExecuteWithMeta;
-  /** D-136 P3 — pre-call probe for the resolved provider model id.
-   *  Producer wrappers fold the result into their dedup key so
-   *  cross-pool changes invalidate cached rows authored by a different
-   *  model. See `HousekeepingResolveModelId` for the contract. */
-  resolveLLMModelId?: HousekeepingResolveModelId;
   /** D-131 A.3 — embeddings executor for producers whose output is a
    *  vector (today: `embedding`; future: `semantic_cluster`). Wired
    *  through `executeEmbedding` from `bin.ts`; `undefined` for tests

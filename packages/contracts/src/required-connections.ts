@@ -13,8 +13,9 @@
  *  Pure — same recipe → same list (sorted by name for stable rendering).
  */
 
-import { collectRefs, type ConnectionKind } from '@recued/contracts';
-import type { RecipeDefinition } from '@recued/contracts';
+import { collectRefs } from './index.js';
+import type { ConnectionKind } from './index.js';
+import type { RecipeDefinition } from './index.js';
 
 export interface RequiredConnection {
   /** `'api' | 'mcp' | 'notification'` when a `connection.*` ref names the

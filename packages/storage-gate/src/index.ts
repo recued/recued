@@ -9,6 +9,7 @@ export { createStorageGate } from './gate.js';
 export type { CreateGateOptions } from './gate.js';
 
 export {
+  MAX_RESERVE_FRACTION,
   MIN_RESERVE_BYTES,
 } from './types.js';
 

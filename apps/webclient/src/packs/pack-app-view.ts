@@ -63,6 +63,7 @@ import type {
   PackListEntry,
   RecipeInvocation,
   ResolvedTableEditDescriptor,
+  ResolvedTableSelectDescriptor,
   ServerExecuteResponse,
   ServerRecipeListEntry,
 } from '@recued/contracts';
@@ -79,12 +80,15 @@ import {
   RECIPES_ROUTE_RESULT_FILTER_ATTR,
   RECIPES_ROUTE_RESULT_GRID_ATTR,
   RECIPES_ROUTE_RESULT_GRID_ROW_ATTR,
+  RECIPES_ROUTE_RESULT_SELECT_ATTR,
+  RECIPES_ROUTE_RESULT_SELECT_ROW_ATTR,
   RECIPE_RESULT_HOST_ATTR,
   copyRecipeResultValue,
   createResultActionRegistry,
   exactResultFileReadError,
   findRecipeResultCopyTarget,
   findResultTableEdit,
+  findResultTableSelect,
   openResultPreviewWindow,
   renderRecipeResultPanel,
   resolvedFilterDescriptor,
@@ -117,6 +121,16 @@ import {
   setCell as gridSetCell,
   setOutputFilterDraftValue,
   type OutputTableEditState,
+  beginTableSelectSubmit,
+  canSubmitTableSelect,
+  failTableSelectSubmit,
+  initialTableSelectState,
+  outputTableSelectConfig,
+  outputTableSelectInvocation,
+  setAllTableSelection,
+  tableSelectAllState,
+  toggleTableSelection,
+  type OutputTableSelectState,
 } from '@recued/ui-shared';
 import {
   captureResultFilterActionFocus,
@@ -128,6 +142,7 @@ import {
   wireResultTableEditRefPickers,
 } from '../recipes/result-table-edit-host.js';
 
+import { lookupTargetVariable } from './pack-app-model.js';
 import type { PackAppRecipe, PackAppSurface } from './pack-app-model.js';
 import { projectPackAppNavigation } from './pack-app-navigation.js';
 import { serializeShellRoute } from '../shell/route.js';
@@ -215,13 +230,43 @@ export interface MountPackAppViewOptions {
   recordRefSearchCaller?: PackAppRecordRefSearchCaller;
   /** Which view to open on mount. Defaults to the first. */
   initialViewId?: string;
+  /** D-282 B5 — the record a bookmarked LOOKUP address named
+   *  (`#packs/<slug>/use/<lookup>/<target>`). Honoured only when
+   *  `initialViewId` is a member of `surface.lookups` RIGHT NOW and that lookup
+   *  binds a single variable; otherwise ignored entirely, leaving the first view
+   *  open.
+   *
+   *  ⛔⛔ THE URL IS EVIDENCE OF INTENT, NEVER OF SAFETY. A pack version bump
+   *  can move a recipe from lookup to operation, and a stale bookmark must not
+   *  be able to run the operation it became. Membership in `surface.lookups` IS
+   *  the re-derivation — the same two axes (`rendersReadingSurface` +
+   *  `isProvablyReadOnly`) that decide whether a recipe may auto-run as a tab —
+   *  so a hydrated address can never do more than a tab already does. */
+  initialTarget?: string;
   /** Fired when the open view changes, so the host can reflect it in the hash. */
   onSelectView?: (recipe_id: string) => void;
+  /** Fired when a lookup detail opens over the current view, and again with
+   *  `null` when it closes. The host mirrors it in the hash, which is what makes
+   *  a detail page a place rather than a transient result.
+   *
+   *  ⚠ LOOKUPS ONLY. An operation's result is never reported here: a URL that
+   *  can replay a write is a URL that acts, and this is the boundary that keeps
+   *  the address bar out of that business. */
+  onOpenLookup?: (open: { readonly recipe_id: string; readonly target: string } | null) => void;
 }
 
 export interface PackAppViewMount {
   /** The open view's recipe id, or null when the pack has no views. */
   activeViewId(): string | null;
+  /** D-282 B5 — the lookup address this mount ACCEPTED, or null.
+   *
+   *  🔑 THE HOST NEEDS THIS TO KNOW WHETHER TO CANONICALIZE. A deep link whose
+   *  view id is not a tab is normally rewritten to the first view — correct for
+   *  a stale tail, and fatal for a lookup address, which is never a tab by
+   *  construction. Null here means the address was NOT honoured (gone, now an
+   *  operation, or not expressible in one segment) and the host should rewrite
+   *  it; non-null means the address is live and must be left alone. */
+  hydratedLookup(): { readonly recipe_id: string; readonly target: string } | null;
   /** True while a run, result action, grid save, or file read still owns this
    *  view. Hosts use this to keep navigation from silently disposing it. */
   hasInFlightWork(): boolean;
@@ -287,6 +332,9 @@ export const mountPackAppView = (
   root.setAttribute(PACK_APP_ATTR, opts.pack.slug);
 
   let activeViewId: string | null = navigation.activeViewId;
+  /** D-282 B5 — a one-shot, set only at mount: the bookmarked lookup to open
+   *  once the browse view behind it has finished loading. */
+  let pendingHydration: (() => void) | null = null;
   let pendingViewTabFocus: string | null = null;
   /** Monotonic run token. A view switch during an in-flight run must not let
    *  the slower answer paint over the newer one — the classic stale-response
@@ -328,6 +376,12 @@ export const mountPackAppView = (
   // ── Filter + editable-table state ─────────────────────────────────
   let filterStates: ReadonlyMap<string, RecipesResultFilterState> = new Map();
   let gridStates: ReadonlyMap<string, OutputTableEditState> = new Map();
+  /** D-282 B6 — per-table selection.
+   *
+   *  ⚠ Deliberately NOT part of the discard discipline beside it. A selection
+   *  is three clicks to rebuild; typed cells are not. Gating navigation on it
+   *  would put a confirm in front of every click that leaves a list. */
+  let selectStates: ReadonlyMap<string, OutputTableSelectState> = new Map();
   let gridRefPickers: RefPicker.RefPickerHandle[] = [];
   const scrollRoot = opts.scrollRoot ?? opts.host;
   type ReturnFocus =
@@ -449,7 +503,13 @@ export const mountPackAppView = (
     busy
     || fileBusy.size > 0
     || [...filterStates.values()].some((state) => state.busy)
-    || [...gridStates.values()].some((state) => state.busy);
+    || [...gridStates.values()].some((state) => state.busy)
+    // ⛔ A bulk action IS in-flight work, even though a selection is not
+    // "unsaved changes". Those are different questions: the first keeps the
+    // host from disposing a view mid-write, the second asks whether discarding
+    // costs the owner anything. A selection answers no to the second and YES
+    // to the first while its run is out.
+    || [...selectStates.values()].some((state) => state.busy);
 
   const currentResult = (): ServerExecuteResponse | null =>
     resultPanel?.result ?? null;
@@ -474,6 +534,7 @@ export const mountPackAppView = (
     }
     filterStates = states;
     gridStates = new Map();
+    selectStates = new Map();
     fileBusy = new Set();
     fileErrors = new Map();
     fileVerified = new Set();
@@ -521,6 +582,21 @@ export const mountPackAppView = (
       data: found.data,
       state: gridStates.get(key)
         ?? initialTableEditState(found.descriptor, found.data),
+    };
+  };
+
+  /** The descriptor + live state behind one rendered selectable table. */
+  const activeSelect = (key: string): {
+    descriptor: ResolvedTableSelectDescriptor;
+    state: OutputTableSelectState;
+  } | null => {
+    const result = currentResult();
+    if (result === null) return null;
+    const found = findResultTableSelect(result, key, result.recipe_id);
+    if (found === null) return null;
+    return {
+      descriptor: found.descriptor,
+      state: selectStates.get(key) ?? initialTableSelectState(found.descriptor, found.data),
     };
   };
 
@@ -573,6 +649,13 @@ export const mountPackAppView = (
         busy = false;
         busyOwner = null;
         paint();
+        // The browse view is loaded; a bookmarked detail may now stack on it.
+        // Consumed in `finally` rather than `then` so a FAILED view still opens
+        // the record the address asked for — the detail is the thing the person
+        // followed a link to see.
+        const hydrate = pendingHydration;
+        pendingHydration = null;
+        hydrate?.();
       });
   };
 
@@ -728,6 +811,67 @@ export const mountPackAppView = (
       gridStates = new Map(gridStates).set(
         key,
         failTableEditSubmit(active.state, errMessage(err)),
+      );
+      paint();
+    }
+  };
+
+  /** D-282 B6 — act on the picked rows. One run, one array, one audit anchor.
+   *
+   *  ⛔ NOT N RUNS. Fanning out one execution per selected row from a UI
+   *  control would produce N anchors, N approval asks and no transaction — and
+   *  a partial failure would leave the owner reading a list of outcomes with no
+   *  run to point at. The ids go up as ONE value under the declared variable
+   *  and the recipe loops with `foreach`, which is the same shape the editable
+   *  grid uses for the same reason.
+   *
+   *  ⚠ A `foreach` is continue-on-error, so a bulk action over a destructive op
+   *  still asks the owner PER ITEM, and a per-item refusal never fails the run.
+   *  That is the engine's rule, unchanged by selecting the rows in a table. */
+  const submitSelection = async (key: string): Promise<void> => {
+    const execute = opts.execute;
+    const active = activeSelect(key);
+    const panelAtDispatch = resultPanel;
+    if (
+      execute === undefined
+      || active === null
+      || panelAtDispatch === null
+      || !canSubmitTableSelect(active.state)
+    ) return;
+
+    runToken += 1;
+    const token = runToken;
+    selectStates = new Map(selectStates).set(key, beginTableSelectSubmit(active.state));
+    paint();
+    try {
+      const nextResult = await execute({
+        recipe_id: panelAtDispatch.render_recipe_id,
+        config: outputTableSelectConfig(active.descriptor, active.state),
+        invocation: outputTableSelectInvocation(active.descriptor),
+      });
+      if (disposed || token !== runToken || resultPanel !== panelAtDispatch) return;
+      const nextPanel: RecipesResultPanelSnapshot = {
+        route_recipe_id: panelAtDispatch.route_recipe_id,
+        source_recipe_id: panelAtDispatch.render_recipe_id,
+        render_recipe_id: nextResult.recipe_id,
+        origin: 'result-filter',
+        result: nextResult,
+        ...(panelAtDispatch.previous !== undefined
+          ? { previous: panelAtDispatch.previous }
+          : {}),
+      };
+      resultPanel = nextPanel;
+      carryReturnFrame(panelAtDispatch, nextPanel);
+      resetResultScopedState(nextResult);
+      paint();
+    } catch (err) {
+      if (disposed || token !== runToken || resultPanel !== panelAtDispatch) return;
+      // ⛔ The SELECTION SURVIVES a failure. The owner should read the reason
+      // and press again, not re-tick five rows to find out whether the second
+      // attempt behaves differently.
+      selectStates = new Map(selectStates).set(
+        key,
+        failTableSelectSubmit(active.state, errMessage(err)),
       );
       paint();
     }
@@ -922,6 +1066,7 @@ export const mountPackAppView = (
           show_run_metrics: false,
           return_label: 'back',
         },
+        selectStates,
       );
       return `<div ${RECIPE_RESULT_HOST_ATTR} ${PACK_APP_RESULT_ATTR}="${escapeHtml(resultPanel.render_recipe_id)}">${html}</div>`;
     }
@@ -1116,6 +1261,109 @@ export const mountPackAppView = (
     }
   };
 
+  /** D-282 B5 — is this recipe a lookup that one URL segment can express?
+   *
+   *  TWO INDEPENDENT QUESTIONS, and both must be asked EVERY time:
+   *   1. MAY it run from an address — membership in `surface.lookups`, which is
+   *      derived from the roster installed right now. This is the safety half.
+   *   2. CAN one segment say which record — `lookupTargetVariable`. This is the
+   *      expressiveness half, and it is NOT a permission of any kind.
+   *
+   *  ⛔ Deriving the first from the second (or from the URL) is the whole hazard:
+   *  a pack version bump can turn a lookup into an operation, and the bookmark
+   *  will not have changed. */
+  const lookupBinding = (
+    recipeId: string,
+  ): { entry: ServerRecipeListEntry; variable: string } | null => {
+    const lookup = surface.lookups.find((item) => item.recipe_id === recipeId);
+    if (lookup === undefined) return null;
+    const variable = lookupTargetVariable(lookup.entry.recipe);
+    if (variable === null) return null;
+    return { entry: lookup.entry, variable };
+  };
+
+  /** Open a bound lookup on one record, WITHOUT the run modal.
+   *
+   *  🔑 WHY NOT THE MODAL. A lookup is read-only by exactly the two axes that
+   *  let a view auto-run as a tab, so asking the person to confirm a JSON form
+   *  before showing them a record is a gate that protects nothing — and it is
+   *  also what made the address dishonest: the modal can be edited, so a URL
+   *  written from what the row ASKED for could describe a record the screen is
+   *  not showing. Running it here means the address and the result come from the
+   *  same value. Operations still go through the modal; that is the point of the
+   *  split.
+   *
+   *  ⚠ The panel is stacked over the browse result exactly as a modal-returned
+   *  one is (`origin: 'result-action'`, `previous`, the return frame), so Back
+   *  to the list, focus restoration and scroll all behave identically. */
+  const runLookup = (
+    entry: ServerRecipeListEntry,
+    variable: string,
+    target: string,
+    opener?: HTMLElement | null,
+  ): void => {
+    const execute = opts.execute;
+    if (execute === undefined) {
+      error = 'This page cannot open a record on this server.';
+      paint();
+      return;
+    }
+    if ([...gridStates.values()].some((state) => state.busy)) {
+      error = 'A table is still saving. Wait for it to finish, then try again.';
+      paint();
+      return;
+    }
+    if (!mayDiscardGridEdits()) return;
+    const originPanel = resultPanel;
+    const returnFrame = originPanel === null
+      ? null
+      : {
+          previous: originPanel,
+          filters: new Map(filterStates),
+          focus: returnFocusFrom(opener ?? doc.activeElement as HTMLElement | null),
+          scroll: readListScroll(scrollRoot),
+        } satisfies ReturnUiFrame;
+    runToken += 1;
+    const token = runToken;
+    busy = true;
+    busyOwner = null;
+    error = null;
+    missingPacks = null;
+    paint();
+    void execute({ recipe_id: entry.recipe_id, config: { [variable]: target } })
+      .then((res) => {
+        if (disposed || token !== runToken) return;
+        const previous = withoutRenderedRecipe(originPanel ?? undefined, res.recipe_id);
+        const nextPanel: RecipesResultPanelSnapshot = {
+          route_recipe_id: activeViewId ?? entry.recipe_id,
+          source_recipe_id: originPanel?.render_recipe_id ?? null,
+          render_recipe_id: res.recipe_id,
+          origin: 'result-action',
+          result: res,
+          ...(previous !== undefined ? { previous } : {}),
+        };
+        resultPanel = nextPanel;
+        if (returnFrame !== null && previous === returnFrame.previous) {
+          returnUiFrames.set(nextPanel, returnFrame);
+        }
+        resetResultScopedState(res);
+        // Reported only on the way OUT of a successful run: an address that
+        // names a record nothing could load is a bookmark that fails twice.
+        opts.onOpenLookup?.({ recipe_id: entry.recipe_id, target });
+      })
+      .catch((err: unknown) => {
+        if (disposed || token !== runToken) return;
+        missingPacks = missingPacksFromError(err);
+        error = errMessage(err);
+      })
+      .finally(() => {
+        if (disposed || token !== runToken) return;
+        busy = false;
+        busyOwner = null;
+        paint();
+      });
+  };
+
   const openPackRecipe = (
     entry: ServerRecipeListEntry,
     prefill?: { config?: Record<string, unknown>; context?: Record<string, unknown> },
@@ -1201,6 +1449,13 @@ export const mountPackAppView = (
       && previous.render_recipe_id === activeViewId
       && previous.previous === undefined
       && previous.origin !== 'result-action';
+    // D-282 B5 — the address follows what is on screen. Leaving a lookup puts
+    // the view's own hash back, so Back out of a bookmarked detail lands
+    // somewhere that describes what the person is now looking at. Reported
+    // BEFORE the branch below, because both of its arms leave the detail.
+    if (lookupBinding(currentPanel!.render_recipe_id) !== null) {
+      opts.onOpenLookup?.(null);
+    }
     const returnFrame = currentPanel === null
       ? undefined
       : returnUiFrames.get(currentPanel);
@@ -1253,8 +1508,27 @@ export const mountPackAppView = (
         return;
       }
     }
+    // A bound lookup opens in place — see `runLookup`. Everything else (an
+    // operation, a lookup with several arguments, an action carrying page
+    // context) still goes through the modal, which is where an argument this
+    // address cannot express gets collected.
+    const binding = lookupBinding(action.recipe_id);
+    const config = action.config ?? {};
+    const keys = Object.keys(config);
+    const value = binding === null ? undefined : config[binding.variable];
+    if (
+      binding !== null
+      && keys.length === 1
+      && keys[0] === binding.variable
+      && typeof value === 'string'
+      && value.trim().length > 0
+      && Object.keys(action.context ?? {}).length === 0
+    ) {
+      runLookup(binding.entry, binding.variable, value, opener);
+      return;
+    }
     openPackRecipe(entry, {
-      config: action.config ?? {},
+      config,
       context: action.context ?? {},
     }, resultPanel?.render_recipe_id ?? null, opener);
   };
@@ -1338,6 +1612,46 @@ export const mountPackAppView = (
     if (gridSubmit !== null) {
       const key = gridSubmit.getAttribute(RECIPES_ROUTE_RESULT_GRID_ATTR);
       if (key !== null) void submitGrid(key);
+      return;
+    }
+    // D-282 B6. ⛔ The BUTTON is matched before the checkbox below, because the
+    // action bar's control carries the same section attribute as every tick
+    // box — matching the generic one first would swallow the press.
+    const selectSubmit = target.closest(
+      `[${RECIPES_ROUTE_ACTION_ATTR}="result-select-submit"]`,
+    ) as HTMLElement | null;
+    if (selectSubmit !== null) {
+      const key = selectSubmit.getAttribute(RECIPES_ROUTE_RESULT_SELECT_ATTR);
+      if (key !== null) void submitSelection(key);
+      return;
+    }
+    const selectBox = target.closest(
+      `[${RECIPES_ROUTE_ACTION_ATTR}="result-select-toggle"]`,
+    ) as HTMLElement | null;
+    if (selectBox !== null) {
+      const key = selectBox.getAttribute(RECIPES_ROUTE_RESULT_SELECT_ATTR);
+      const row = selectBox.getAttribute(RECIPES_ROUTE_RESULT_SELECT_ROW_ATTR);
+      if (key !== null && row !== null) {
+        const active = activeSelect(key);
+        if (active !== null) {
+          // ⛔ THE INTENT COMES FROM STATE, NOT FROM `input.checked`. Both hosts
+          // repaint the panel wholesale from state, and one of them calls
+          // `preventDefault()` on every dispatched action — which REVERTS a
+          // checkbox the browser had already ticked. Reading the control would
+          // make the two surfaces disagree about what a click meant; deriving
+          // it means the box is purely a rendering of the selection.
+          selectStates = new Map(selectStates).set(
+            key,
+            row === '*'
+              ? setAllTableSelection(
+                active.state,
+                tableSelectAllState(active.state) !== 'all',
+              )
+              : toggleTableSelection(active.state, row),
+          );
+          paint();
+        }
+      }
       return;
     }
     const search = target.closest(
@@ -1467,13 +1781,45 @@ export const mountPackAppView = (
   root.addEventListener('keydown', onKeyDown);
   root.addEventListener('input', onInput);
   root.addEventListener('change', onInput);
+  // D-282 B5 — resolve the bookmarked address against the roster installed NOW.
+  // A miss (the recipe is gone, became an operation, or takes an argument no
+  // single segment can express) silently leaves the first view open, which is
+  // the same place an unknown tail has always landed.
+  const requestedLookup = opts.initialTarget === undefined
+    || opts.initialTarget.trim().length === 0
+    || opts.initialViewId === undefined
+    ? null
+    : lookupBinding(opts.initialViewId);
+  if (requestedLookup !== null) {
+    const target = opts.initialTarget!;
+    pendingHydration = () => {
+      runLookup(requestedLookup.entry, requestedLookup.variable, target);
+    };
+  }
+
   opts.host.appendChild(root);
   paint();
   // Open on the first view already loaded — the app-not-launcher promise.
-  runActiveView();
+  //
+  // D-282 B5 — a bookmarked detail runs AFTER the browse view, not instead of
+  // it. Chaining is what puts the list behind the record: it is the panel the
+  // detail stacks on, so "Back to the list" exists on a cold load exactly as it
+  // does when a row was pressed. Both runs happen either way — the first view
+  // is unconditional — so the chain costs order, not work.
+  if (pendingHydration !== null && activeViewId !== null && opts.execute !== undefined) {
+    runActiveView();
+  } else {
+    runActiveView();
+    const hydrate = pendingHydration;
+    pendingHydration = null;
+    hydrate?.();
+  }
 
   return {
     activeViewId: () => activeViewId,
+    hydratedLookup: () => (requestedLookup === null || opts.initialTarget === undefined
+      ? null
+      : { recipe_id: requestedLookup.entry.recipe_id, target: opts.initialTarget }),
     hasInFlightWork,
     hasUnsavedChanges: () => anyTableEditDirty(gridStates),
     refresh: () => {

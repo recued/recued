@@ -19,8 +19,31 @@ export type StorageState =
 
 /** Absolute minimum reserve carveout, in bytes. Keeps small-quota
  *  surfaces from computing a trivial reserve when `reservePct` alone
- *  rounds to a handful of kilobytes. */
+ *  rounds to a handful of kilobytes.
+ *
+ *  ⚠ A FLOOR, AND A FLOOR CAN EXCEED WHAT IT IS FLOORING — see
+ *  {@link MAX_RESERVE_FRACTION}. */
 export const MIN_RESERVE_BYTES = 10 * 1024 * 1024;
+
+/** The most of a surface's quota the reserve may ever take.
+ *
+ *  ⛔⛔ WITHOUT THIS, A SMALL-QUOTA SURFACE IS DEAD FROM BOOT. The reserve is
+ *  `max(MIN_RESERVE_BYTES, quota × pct)` and `blockedAt = quota − reserve`, so
+ *  any quota at or below the 10 MB floor computed `blockedAt = 0` — and the
+ *  gate blocks on `used >= blockedAt`, which at zero is every write, forever,
+ *  on a completely empty surface.
+ *
+ *  ⚠ IT WAS NOT HYPOTHETICAL. `schedules` shipped at a 5 MB quota and
+ *  `account_store` at exactly 10 MB, so BOTH were permanently `writes_blocked`
+ *  on every server: `schedules.create` could not succeed anywhere. Found by
+ *  seeding a demo, because nothing else had called it in a long time and no
+ *  test asserted a configured surface is writable at boot.
+ *
+ *  🔑 Clamping rather than raising the quotas is what stops it recurring: the
+ *  next surface added under the floor is capped here instead of arriving
+ *  silently dead. Healthy surfaces are unaffected — at any quota above
+ *  2 × MIN_RESERVE the floor is already the smaller number. */
+export const MAX_RESERVE_FRACTION = 0.5;
 
 export interface GateConfig {
   /** Total quota for this gated surface, in bytes. */

@@ -294,7 +294,6 @@ const wrapCtxWithForceLayer = (
 ): HousekeepingContext => {
   const baseLlm = base.llm;
   const baseLlmWithMeta = base.llmWithMeta;
-  const baseResolveModelId = base.resolveLLMModelId;
   const baseEmbed = base.embed;
   const baseTranscribe = base.transcribe;
   return {
@@ -310,12 +309,6 @@ const wrapCtxWithForceLayer = (
       ? {
           llmWithMeta: (manifest, input) =>
             baseLlmWithMeta(manifest, { 'llm.force_layer': layer, ...input }),
-        }
-      : {}),
-    ...(baseResolveModelId
-      ? {
-          resolveLLMModelId: (manifest, input) =>
-            baseResolveModelId(manifest, { 'llm.force_layer': layer, ...input }),
         }
       : {}),
     ...(baseEmbed

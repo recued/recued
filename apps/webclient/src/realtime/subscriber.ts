@@ -298,6 +298,10 @@ export const WEBCLIENT_DEFAULT_SUBSCRIPTIONS: ReadonlyArray<BroadcastEventKind> 
   // #data route's listener: it re-fetches the current list (warehouse) + any open
   // timeline (memory), debounced, so the explorer reflects background AI /
   // housekeeping writes instead of going stale until a manual refresh.
+  // D-282 B4 — a row in a PACK'S OWN Records store changed. The packs route re-runs
+  // the open Use-tab view off this; without the entry the server fans nothing and that
+  // listener is dead on the wire.
+  'records',
   'warehouse',
   'memory',
 ] as const;

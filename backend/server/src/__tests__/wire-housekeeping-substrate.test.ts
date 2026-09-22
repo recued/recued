@@ -139,7 +139,6 @@ const resetMockDefaults = () => {
   llmCallables = {
     llm: vi.fn(),
     llmWithMeta: vi.fn(),
-    resolveLLMModelId: vi.fn(),
     embed: vi.fn(),
   };
   schedulerStart = vi.fn();

@@ -153,6 +153,32 @@ export interface RunYield {
    *  items_total > 0` is the all-refused run that reports `success: true`,
    *  because a `foreach` is continue-on-error by design. */
   items_failed: number;
+  /** D-276 — WHICH steps skipped, not just how many.
+   *
+   *  🔑 `steps_skipped` above is a COUNT, and a count cannot answer the
+   *  question a gate poses. Every branching recipe skips steps on every
+   *  run by design (the `thread` arm or the `single_body` arm, never
+   *  both), so the aggregate is noise with one real signal buried in it.
+   *  With the ids, the skip rate of ONE step across runs is a query, and
+   *  a gate that never fires — or always fires — becomes visible without
+   *  recipes declaring anything or the substrate guessing which step is
+   *  a gate.
+   *
+   *  ⛔⛔ ABSENT IS NOT EMPTY. A row written before D-276 has no field at
+   *  all, which is "we did not record this", NOT "nothing skipped".
+   *  Counting those rows in a denominator makes a gate that never fires
+   *  look like one that sometimes does — the exact reading the field
+   *  exists to prevent. Every consumer must filter on presence first;
+   *  `gate-rates.ts` does it in SQL and `[]` is a real, different answer
+   *  meaning "recorded, and nothing skipped".
+   *
+   *  ⚠ EMITTED EVEN WHEN EMPTY, for the same reason its three siblings
+   *  are emitted at zero. An omitted-when-empty field cannot distinguish
+   *  "recorded, nothing skipped" from "never recorded", which would put
+   *  the ambiguity back into the one field added to remove it. `[]` is
+   *  therefore a real answer and `undefined` means only "row written
+   *  before D-276". The cost of the honest form is 24 bytes a row. */
+  skipped_step_ids?: readonly string[];
 }
 
 /** D-237 P2 — derive the run yield from the per-step logs.
@@ -161,6 +187,7 @@ export interface RunYield {
  *  which would invert this package's dependency direction. */
 export const deriveRunYield = (
   steps: ReadonlyArray<{
+    id?: string;
     skipped?: boolean;
     foreach?: { items: number; failed: number };
   }>,
@@ -169,9 +196,16 @@ export const deriveRunYield = (
   let steps_skipped = 0;
   let items_total = 0;
   let items_failed = 0;
+  const skipped_step_ids: string[] = [];
   for (const s of steps) {
-    if (s.skipped === true) steps_skipped += 1;
-    else steps_run += 1;
+    if (s.skipped === true) {
+      steps_skipped += 1;
+      // ⚠ An id-less step still counts in `steps_skipped` but cannot be
+      // named. Dropping it from the id list rather than inventing a
+      // placeholder keeps the list joinable; the two therefore need not
+      // agree in length, and no consumer may assume they do.
+      if (typeof s.id === 'string' && s.id !== '') skipped_step_ids.push(s.id);
+    } else steps_run += 1;
     // ⚠ Malformed tallies are SKIPPED, never coerced — a `NaN` total renders a
     // confident, meaningless yield, which is worse than an absent one. Same
     // policy the agent-projection tally already applies.
@@ -181,7 +215,7 @@ export const deriveRunYield = (
       items_failed += f.failed;
     }
   }
-  return { steps_run, steps_skipped, items_total, items_failed };
+  return { steps_run, steps_skipped, items_total, items_failed, skipped_step_ids };
 };
 
 /** True iff the yield PROVES the run produced nothing — every `foreach` item it

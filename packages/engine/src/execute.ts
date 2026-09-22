@@ -999,6 +999,45 @@ const resolveOutputRender = (
           ),
         }
       : undefined;
+    // D-282 B6 — the selectable table. Same two host-derived facts as its
+    // editable sibling (the section's immutable identity, and the run-level
+    // values that must ride back), plus the ONE thing a selection needs that an
+    // edit does not: which row field IS the id.
+    //
+    // ⛔ THE IDENTITY IS RESOLVED HERE, ONCE. With an entity it is the schema's
+    // single `kind: 'id'` column; without one the author names it. Leaving it
+    // to each renderer would put a second copy of the identity rule in every
+    // surface, and two copies that disagree submit the WRONG records — silently,
+    // because one id is as plausible a string as another.
+    //
+    // ⚠ Unresolvable is REPORTED, never guessed. A table whose entity declares
+    // no single id column renders with no checkboxes and a reason, which is the
+    // same discipline `record_columns.unresolved` already follows.
+    const table_select = section.type === 'table' && section.select !== undefined
+      ? (() => {
+          const authored = section.select.id_field;
+          const declared = authored !== undefined && authored.trim().length > 0
+            ? authored
+            : (() => {
+              const ids = (record_columns?.columns ?? [])
+                .filter((column) => column.kind === 'id');
+              return ids.length === 1 ? ids[0]!.field : null;
+            })();
+          return {
+            section_index: sectionIndex,
+            recipe_hash: outputRecipeHash,
+            into: section.select.into,
+            submit: section.select.submit,
+            id_field: declared ?? '',
+            hidden: resolveTableEditHidden(
+              section.select,
+              requireRecipe(ctx).variables,
+              ctx.stores.config as Record<string, unknown>,
+            ),
+            ...(declared === null ? { unresolved: 'no_identity' as const } : {}),
+          };
+        })()
+      : undefined;
     return {
       type: section.type,
       data: restored,
@@ -1016,6 +1055,7 @@ const resolveOutputRender = (
       ...(record_fields !== undefined ? { record_fields } : {}),
       ...(record_columns !== undefined ? { record_columns } : {}),
       ...(table_edit !== undefined ? { table_edit } : {}),
+      ...(table_select !== undefined ? { table_select } : {}),
     };
   });
 
@@ -1100,12 +1140,12 @@ const resolveTableEditScopes = (
 };
 
 const resolveTableEditHidden = (
-  edit: TableEditSpec,
+  spec: { hidden?: string[] },
   variables: Record<string, VariableDefault>,
   config: Record<string, unknown>,
 ): Record<string, unknown> => {
   const values: Record<string, unknown> = {};
-  for (const key of edit.hidden ?? []) {
+  for (const key of spec.hidden ?? []) {
     // ⛔ Undeclared keys are dropped here AND refused at install by the
     // validator. The server admits only declared ones, so passing one through
     // would build a submission the server then rejects wholesale — the grid

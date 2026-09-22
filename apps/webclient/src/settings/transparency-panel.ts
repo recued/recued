@@ -200,10 +200,19 @@ export const mountTransparencyPanel = (
     control?.focus?.();
   };
 
-  const renderedValue = (key: InstancePrefKey): boolean | string =>
-    state.saving === key && pendingValue !== null
+  /** ⛔ THIS PANEL RENDERS SCALAR PREFS ONLY, and D-282 slice C is what made
+   *  that worth saying: `ui.pinned_apps` is a `string_list`, so `getPref` can
+   *  now return `readonly string[]` for SOME key and the compiler said so here
+   *  — correctly. The narrowing is deliberate rather than a cast: this panel
+   *  draws toggles and a tier picker, a list pref has no control here, and the
+   *  keys it actually passes are all scalar. A cast would have silenced the one
+   *  place that noticed. */
+  const renderedValue = (key: InstancePrefKey): boolean | string => {
+    const value = state.saving === key && pendingValue !== null
       ? pendingValue
       : getPref(state.prefs ?? undefined, key);
+    return Array.isArray(value) ? '' : value as boolean | string;
+  };
 
   const setState = (patch: Partial<TransparencyPanelState>): void => {
     if (disposed) return;

@@ -87,6 +87,17 @@ export type RecipeValidator = (input: unknown) => { issues: readonly ValidationI
 
 export interface CompositionValidationOptions {
   recipeValidator?: RecipeValidator;
+  /** WARN when a `request_schema` property declares a `pattern` and no
+   *  `maxLength`. AUTHORING-ONLY — `review.ts` and the build-time callers pass
+   *  it; the two install callers deliberately do not.
+   *
+   *  ⛔ WHY IT IS OPT-IN RATHER THAN ALWAYS ON. `validatePack` is the same
+   *  function on the authoring path and on both install paths
+   *  (`pack-install-handler.ts`, `install-composition.ts`). Turning this on
+   *  unconditionally would put a new finding in front of somebody installing a
+   *  pack they did not write and cannot fix. The author sees it once; the
+   *  installer never does. */
+  warnUnboundedPatterns?: boolean;
 }
 
 const OPERATION_APPROVALS: ReadonlySet<OperationApproval> = new Set(['never', 'ask', 'always']);
@@ -1177,6 +1188,69 @@ const validateOperationArgs = (raw: unknown, path: string, add: AddIssue): void 
   });
 };
 
+/** WARN — a `pattern` with no `maxLength` is an unbounded regex at the gateway.
+ *
+ *  ⛔ A `pattern` is the only unbounded computation a request schema admits. It
+ *  is compiled and run per dispatch against a CALLER-supplied value, on Node's
+ *  single thread, where a synchronous regex cannot be interrupted. Cost is
+ *  exponential in INPUT LENGTH, so `maxLength` is what bounds it — measured on
+ *  this tree, `^(a+)+$` blocks for over a second on 29 bytes.
+ *
+ *  🔑 CLOSED SCHEMAS ALREADY REQUIRE THIS, which is why the warning is small.
+ *  `closedRequestSchemaDefinitionIssues` refuses a string property with neither
+ *  `maxLength` nor `enum`, so every closed schema is bounded by construction.
+ *  This covers the complement — the OPEN schemas, where nothing did. 10 distinct
+ *  patterns / 36 occurrences in the shipped corpus when the rule was written.
+ *
+ *  ⚠ `enum` exempts, exactly as the closed rule exempts it: a closed value set
+ *  bounds the input without a length.
+ *
+ *  ⛔ `response_schema` IS DELIBERATELY NOT WALKED. Those patterns are never
+ *  executed — nothing runs them against a value — and warning on them would
+ *  mean 3,478 occurrences of advice nobody can act on, which is how a warning
+ *  becomes noise and then becomes ignored. */
+const walkPatternBounds = (
+  node: unknown,
+  path: string,
+  add: AddIssue,
+  depth: number,
+): void => {
+  if (depth > 12 || !isPlainObject(node)) return;
+  if (typeof node.pattern === 'string'
+    && node.pattern.length > 0
+    && typeof node.maxLength !== 'number'
+    && node.enum === undefined) {
+    add(
+      'warn',
+      'request_schema_pattern_without_max_length',
+      path,
+      'declares a `pattern` and no `maxLength`: the regex runs per dispatch against a '
+      + 'caller-supplied value on a thread nothing can interrupt, and its cost grows with '
+      + 'input length. Declare a `maxLength` the field actually needs.',
+    );
+  }
+  if (isPlainObject(node.properties)) {
+    for (const [key, child] of Object.entries(node.properties)) {
+      walkPatternBounds(child, `${path}.properties.${key}`, add, depth + 1);
+    }
+  }
+  if (node.items !== undefined) walkPatternBounds(node.items, `${path}.items`, add, depth + 1);
+  for (const branch of ['anyOf', 'oneOf', 'allOf'] as const) {
+    const list = node[branch];
+    if (Array.isArray(list)) {
+      list.forEach((child, i) => walkPatternBounds(child, `${path}.${branch}[${i}]`, add, depth + 1));
+    }
+  }
+};
+
+const validateRequestSchemaPatternBounds = (body: unknown, add: AddIssue): void => {
+  if (!isPlainObject(body) || !Array.isArray(body.operations)) return;
+  body.operations.forEach((row, i) => {
+    if (!isPlainObject(row) || row.request_schema === undefined) return;
+    walkPatternBounds(row.request_schema, `operations[${i}].request_schema`, add, 0);
+  });
+};
+
 /**
  * A closed schema is the runtime wire allowlist, while `args[]` is the
  * authoring declaration. Require those two views to agree so a schema-only key
@@ -2079,6 +2153,9 @@ export const validateComposition = (
   opts: CompositionValidationOptions = {},
 ): CompositionValidationResult => {
   const issues = validateCompositionStructure(body);
+  if (opts.warnUnboundedPatterns === true) {
+    validateRequestSchemaPatternBounds(body, (...args) => addIssue(issues, ...args));
+  }
   const schemaVersion = isPlainObject(body) ? body.schema_version : undefined;
   const decompose = typeof schemaVersion === 'number' ? decomposeComposition[schemaVersion] : undefined;
   if (decompose === undefined) {

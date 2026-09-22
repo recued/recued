@@ -19,9 +19,26 @@ import {
 // never depended on either registry.
 
 describe('INSTANCE_PREFS registry', () => {
+  /** ⛔⛔ `typeof` IS NOT THE DISCRIMINANT ANY MORE, and this ratchet is what
+   *  said so. D-282 slice C added `string_list` — whose `typeof` is `'object'`,
+   *  not its spec name — and the whole point of naming the kind rather than
+   *  reusing a `typeof` result is that `'object'` would admit every object
+   *  shape there is. The registry's invariant is unchanged (a default must be
+   *  the kind it declares); only the way to ASK has to follow. */
   it('every registered key has a default that matches its declared type', () => {
     for (const [key, spec] of Object.entries(INSTANCE_PREFS)) {
-      expect(typeof spec.default).toBe(spec.type);
+      if (spec.type === 'string_list') {
+        expect(Array.isArray(spec.default), key).toBe(true);
+        // Every seeded item must satisfy the spec's own rule — a default that
+        // the validator would reject falls back to itself forever.
+        for (const item of spec.default) {
+          expect(typeof item, key).toBe('string');
+          expect(spec.item_pattern.test(item), `${key}: ${item}`).toBe(true);
+        }
+        expect(spec.default.length, key).toBeLessThanOrEqual(spec.max_items);
+      } else {
+        expect(typeof spec.default).toBe(spec.type);
+      }
       expect(DEFAULT_INSTANCE_PREFS[key as keyof typeof INSTANCE_PREFS])
         .toBe(spec.default);
     }

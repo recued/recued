@@ -178,11 +178,20 @@ const formatWindow = (window: { start_at: number; end_at: number; sample_count: 
 
 const renderDriftSignalSection = (signal: ConfidenceDriftSignal): string => {
   const psi = signal.psi.toFixed(3);
+  // ⛔ D-281 — lead with what DECIDED. `shift` is absent on pre-D-281 rows
+  // and on rows where the cut partitioned nothing and PSI decided, so the
+  // PSI figure stays — labelled as the diagnostic it is.
+  const s = signal.shift;
+  const headline = s === undefined
+    ? `PSI=${e(psi)}`
+    : `low confidence ${e((s.baseline_rate * 100).toFixed(0))}% → `
+      + `${e((s.recent_rate * 100).toFixed(0))}% `
+      + `(n=${e(String(s.recent_n))}, p=${e(s.p_value < 0.001 ? '<0.001' : s.p_value.toFixed(3))})`;
   const label = DRIFT_SEVERITY_LABELS[signal.severity];
   return `
     <div class="housekeeping-drawer-drift" data-source-topic="${e(signal.source_topic)}" data-severity="${e(signal.severity)}">
       <div class="housekeeping-drawer-drift-headline">
-        <span class="housekeeping-drawer-drift-psi">PSI=${e(psi)}</span>
+        <span class="housekeeping-drawer-drift-psi">${headline}</span>
         <span class="housekeeping-drawer-drift-severity-badge" data-severity="${e(signal.severity)}">${e(label)}</span>
       </div>
       <dl class="housekeeping-drawer-drift-windows">

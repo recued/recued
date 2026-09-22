@@ -593,6 +593,47 @@ export interface RecordsEventPointer {
   created_at: number;
 }
 
+/** A keyset position in the record change feed (P2/F2 change review).
+ *
+ *  ⛔ THE PAIR, NEVER THE TIMESTAMP ALONE. `created_at` is a millisecond clock
+ *  and a single transaction can emit several events, so a watermark of
+ *  `created_at` by itself is wrong in BOTH directions: `> at` silently drops
+ *  every event that tied with the last one read, and `>= at` replays them on
+ *  every poll forever. `(created_at, event_id)` is total, and it is exactly the
+ *  order `core_record_outbox_history_idx` is built on. */
+export interface RecordsChangeCursor {
+  at: number;
+  event_id: string;
+}
+
+/** One page request against a pack's change history.
+ *
+ *  ⚠ EVERY STATUS IS INCLUDED, deliberately. `status` on the outbox row records
+ *  whether the NOTIFICATION was delivered to subscribers; the record changed
+ *  either way. A history that showed only `delivered` would hide real changes
+ *  whenever a watcher was failing — the moment the owner most needs to see them. */
+export interface RecordsChangeQuery {
+  owner: RecordsPackRef;
+  /** Exclusive keyset lower bound — the reviewer's stored watermark. Omitted
+   *  reads from the oldest retained event. */
+  after?: RecordsChangeCursor;
+  /** Restrict to one entity. */
+  entity?: string;
+  /** 1..500; defaults to 100. */
+  limit?: number;
+}
+
+export interface RecordsChangeFeed {
+  changes: RecordsEventPointer[];
+  /** Where to resume. ⚠ ABSENT ON AN EMPTY PAGE, and the caller must then KEEP
+   *  its existing watermark — treating absent as "reset" would re-show the
+   *  whole history the next time anything changed. */
+  next?: RecordsChangeCursor;
+  /** The limit truncated this page; call again with `next`. Derived by reading
+   *  one row past the limit, so it is exact rather than "the page came back full". */
+  has_more: boolean;
+}
+
 export interface RecordsExecutionCall {
   binding: RecordsExecutionBinding;
   args: Record<string, unknown>;

@@ -56,7 +56,6 @@ describe('composeHousekeepingLlmCallables serve boundary', () => {
     const bundle = {
       llm: vi.fn(),
       llmWithMeta: vi.fn(),
-      resolveLLMModelId: vi.fn(),
       embed: vi.fn(),
       transcribe: vi.fn(),
     };

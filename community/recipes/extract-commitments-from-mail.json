@@ -5,22 +5,27 @@
   "ttl": 60,
   "metadata": {
     "name": "Extract commitments from mail",
-    "description": "Use “Extract commitments from mail” in Recued. Extract commitments from an inbound email into Recued's commitment tracker — who promised what to whom, with optional deadline and monetary amount. Thread-aware: a reply like 'yes, please send that by Friday' binds to the prior message, not the reply.",
+    "description": "Use “Extract commitments from mail” in Recued. Extract commitments from an inbound email into Recued's commitment tracker — who promised what to whom, with optional deadline and monetary amount. Thread-aware: a reply like ‘yes, please send that by Friday’ binds to the prior message. Records one only when someone actually promised something.",
     "author": "recued-core",
     "supported_platforms": [],
-    "tags": ["email", "mail", "commitment", "work-entity", "reactive", "silent-producer", "pack:personal-organizer", "ai_surface"],
+    "tags": [
+      "email",
+      "mail",
+      "commitment",
+      "work-entity",
+      "reactive",
+      "silent-producer",
+      "pack:personal-organizer",
+      "ai_surface"
+    ],
     "budget_ms": 30000
   },
-  "variables": {
-    "confidence_threshold": {
-      "label": "Minimum extraction confidence (0..1) to create a commitment row",
-      "type": "number",
-      "default": 0.7
-    }
-  },
+  "variables": {},
   "requires": [],
   "event_triggers": [
-    { "event": "data.mail.**.created" }
+    {
+      "event": "data.mail.**.created"
+    }
   ],
   "prefetch_steps": [
     {
@@ -162,8 +167,37 @@
       ]
     },
     {
-      "id": "extract",
+      "id": "classify",
       "skip_when": "{{step.skip_empty}} equal true",
+      "op": "core.ai.classify",
+      "args": {
+        "llm.data": "Subject: {{step.protect.aliased.subject}}\n\n{{step.protect.aliased.body}}",
+        "llm.categories": [
+          "commitment_made",
+          "no_commitment"
+        ],
+        "llm.context": "Does this message contain a COMMITMENT — someone stating they will do a specific thing, by them or by a named party? A request asking the reader to do something is NOT a commitment. Newsletters, receipts and social messages are not commitments.",
+        "llm.model_hint": "fast"
+      }
+    },
+    {
+      "id": "not_commitment",
+      "transform": "compare",
+      "left": "{{step.classify.category}}",
+      "operator": "not_equal",
+      "right": "commitment_made"
+    },
+    {
+      "id": "skip_extract",
+      "transform": "any",
+      "values": [
+        "{{step.skip_empty}}",
+        "{{step.not_commitment}}"
+      ]
+    },
+    {
+      "id": "extract",
+      "skip_when": "{{step.skip_extract}} equal true",
       "op": "core.ai.extract",
       "args": {
         "llm.data": "Subject: {{step.protect.aliased.subject}}\n\n{{step.protect.aliased.body}}",
@@ -173,8 +207,7 @@
           "promised_for_at_iso",
           "counterparty_email",
           "monetary_amount",
-          "monetary_currency",
-          "derivation_confidence"
+          "monetary_currency"
         ],
         "llm.model_hint": "fast"
       }
@@ -196,10 +229,6 @@
         "extracted_direction": {
           "value": "{{step.restore.restored.direction}}",
           "fallback": "inbound"
-        },
-        "extracted_confidence": {
-          "value": "{{step.restore.restored.derivation_confidence}}",
-          "fallback": 0
         },
         "extracted_counterparty_email": {
           "value": "{{step.restore.restored.counterparty_email}}",
@@ -251,13 +280,6 @@
       ]
     },
     {
-      "id": "below_threshold",
-      "transform": "compare",
-      "left": "{{step.extracted_confidence}}",
-      "operator": "less",
-      "right": "{{config.confidence_threshold}}"
-    },
-    {
       "id": "missing_statement",
       "transform": "compare",
       "left": "{{step.extracted_statement}}",
@@ -268,7 +290,7 @@
       "transform": "any",
       "values": [
         "{{step.skip_empty}}",
-        "{{step.below_threshold}}",
+        "{{step.not_commitment}}",
         "{{step.missing_statement}}"
       ]
     },
@@ -290,7 +312,6 @@
         "derivation": "mail_extracted",
         "promised_for_at": "{{step.promised_for_at}}",
         "expiry_policy": "escalate_overdue",
-        "derivation_confidence": "{{step.extracted_confidence}}",
         "monetary_value": "{{step.monetary_value}}",
         "counterparty_contact_id": "{{step.resolve_counterparty.contact.email}}",
         "derived_from_mail_thread_id": "{{step.thread_id}}"
@@ -317,8 +338,8 @@
           "value": "{{step.extracted_direction}}"
         },
         {
-          "label": "Confidence",
-          "value": "{{step.extracted_confidence:number}}"
+          "label": "Classification",
+          "value": "{{step.classify.category}}"
         },
         {
           "label": "Counterparty email",
@@ -349,7 +370,10 @@
   ],
   "output": {
     "render": [
-      { "type": "summary", "source": "step.card" }
+      {
+        "type": "summary",
+        "source": "step.card"
+      }
     ]
   }
 }

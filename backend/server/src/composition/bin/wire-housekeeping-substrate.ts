@@ -79,6 +79,7 @@ import {
   createHousekeepingScheduler,
   createEngineBusySignal,
   registerHousekeepingTask,
+  getHousekeepingTask,
   listHousekeepingTasks,
   buildEnrichmentProducerTask,
   createLlmResultCacheStore,
@@ -104,7 +105,10 @@ import { createUpdateAutoApplyTask } from '../../update/auto-apply-task.js';
 import { updateAutoApplyRegistry } from '../../update/auto-apply-registry.js';
 import { createEnrichmentPiiTagSourceFromLocalManifestStore } from '../../housekeeping/enrichment-pii-tag-source.js';
 import { CANONICAL_PII_ENTITY_SCHEMAS } from '../../canonical-pii-schemas.js';
-import type { EnrichmentPiiTagSource } from '../../housekeeping/registry.js';
+import type {
+  EnrichmentPiiTagSource,
+  HousekeepingTaskInstance,
+} from '../../housekeeping/registry.js';
 import { createLocalManifestStore } from '../../ingredient-authoring/local-manifest-store.js';
 import { liveVendorRegistry } from '../../connection-convention-families.js';
 import type { ContactEngagementsResolveDeps } from '../../contact-engagements-rpc-handler.js';
@@ -118,7 +122,10 @@ import type { CertSource } from '../../pairing/cert-source.js';
 import type { RotationEngine } from '../../keys/rotation/index.js';
 import type { HousekeepingLlmCallables } from './wire-llm-substrate.js';
 import type { HousekeepingRpcDeps } from '../../housekeeping-handler.js';
-import type { HousekeepingScopeReadEntry } from '@recued/contracts';
+import type {
+  HousekeepingEnrichmentInfo,
+  HousekeepingScopeReadEntry,
+} from '@recued/contracts';
 import type { LLMConfig, QuotaTracker } from '@recued/llm';
 import type { EnrichmentProducerEntry } from './housekeeping-scheduler-instance.js';
 import { listCollectionDataTables } from '../../collections/table.js';
@@ -247,6 +254,33 @@ export interface ComposeHousekeepingRpcDepsArgs {
   grantEntryStore?: ContractGrantEntryStore;
 }
 
+/** D-286 — the part of a standalone task's enrichment info that needs no IO,
+ *  split out so it can be tested against the REAL task objects rather than
+ *  through the composer's mocks.
+ *
+ *  Returns undefined for a task that is absent or not `kind: 'enrichment'`.
+ *  Otherwise reports the only two things a standalone task actually knows
+ *  about its own cost: whether it spends tokens, and (sometimes) how many per
+ *  record. Never a source-record count — see the caller. */
+export const standaloneEnrichmentBase = (
+  task: HousekeepingTaskInstance | undefined,
+): HousekeepingEnrichmentInfo | undefined => {
+  if (!task || task.meta.kind !== 'enrichment') return undefined;
+  if (task.is_ai_surface !== true) {
+    // Deterministic: zero is a REAL zero here, and the preview short-circuits
+    // on it without ever needing a record count.
+    return { token_estimate_per_record: 0, is_ai_surface: false };
+  }
+  // ⛔ The estimate is passed through, not defaulted. Five AI-surface
+  // standalone tasks declare none, and a 0 would read as "costs nothing".
+  return {
+    ...(task.token_estimate_per_record !== undefined
+      ? { token_estimate_per_record: task.token_estimate_per_record }
+      : {}),
+    is_ai_surface: true,
+  };
+};
+
 export const composeHousekeepingRpcDeps = (
   args: ComposeHousekeepingRpcDepsArgs,
 ): HousekeepingRpcDeps | undefined => {
@@ -265,6 +299,53 @@ export const composeHousekeepingRpcDeps = (
     enrichmentProducers,
     getScheduler,
   } = args;
+
+/** D-286 — enrichment info for a STANDALONE task: one registered directly
+   *  via `registerHousekeepingTask` rather than built by
+   *  `buildEnrichmentProducerTask`, so it has no walker and no entry in
+   *  `enrichmentProducers`.
+   *
+   *  ⛔ WHAT THIS FIXES. `getEnrichmentInfo` returned undefined for these, and
+   *  the panel's `runNowDisabled = !enrichment || trustState === 'off'` turned
+   *  that into a *Run now* button that could never be pressed — 26 of 74 rows,
+   *  including `confidence_drift_signal`, whose banner is the only drift
+   *  surface the owner has. Worse for the AI ones: `_record-ai-task`'s own
+   *  comment says `maybeBumpManualRun` counts a Run-Now toward promotion ONLY
+   *  for an AI-surface enrichment task, and D-139 slice 4 registered those
+   *  tasks precisely so `manual_run_count` could reach `MANUAL_RUN_THRESHOLD`.
+   *  The disabled button meant it still could not.
+   *
+   *  ⚠ WHAT IT DELIBERATELY DOES NOT CLAIM. A standalone task declares no
+   *  source scope, so `source_collection_count` is genuinely unknown and is
+   *  OMITTED rather than sent as 0 — a zero renders "0 tokens" on a run that
+   *  spends them. And five of these declare `is_ai_surface` with NO
+   *  `token_estimate_per_record`, so the estimate is omitted too: keying off
+   *  `tokens > 0` would have labelled `topic_cluster`, both
+   *  `lifecycle_stage_inferred*`, `memory_embed_backlog` and
+   *  `commitment_tracker` DETERMINISTIC — "pure SQL aggregation, no token
+   *  cost" on the confirm dialog of a producer that fires AI calls. */
+  const standaloneEnrichmentInfo = async (
+    task_id: string,
+  ): Promise<HousekeepingEnrichmentInfo | undefined> => {
+    const base = standaloneEnrichmentBase(getHousekeepingTask(task_id));
+    if (!base) return undefined;
+    if (!base.is_ai_surface) return base;
+    const task = getHousekeepingTask(task_id)!;
+    const tokens = task.token_estimate_per_record;
+    const probe = await probeAiPathAvailability(llmConfig, llmQuota);
+    const trust = task.topic && trustStore ? trustStore.read(task.topic, true) : undefined;
+    const global_byok_allowed = db ? isByokAllowedForBackground(db) : false;
+    return {
+      ...(tokens !== undefined ? { token_estimate_per_record: tokens } : {}),
+      is_ai_surface: true,
+      ai_path_available: probe.available,
+      ...(probe.reason ? { ai_path_reason: probe.reason } : {}),
+      effective_pool_policy: !global_byok_allowed
+        ? ('free_only' as const)
+        : (trust?.pool_policy ?? 'free_then_byok'),
+      global_byok_allowed,
+    };
+  };
 
   return {
     config: configStore,
@@ -285,8 +366,9 @@ export const composeHousekeepingRpcDeps = (
     // skip the probe — `ai_path_available` is left undefined so the
     // dialog renders the standard "no token cost" body.
     getEnrichmentInfo: async (task_id) => {
+      if (!db) return undefined;
       const entry = enrichmentProducers.get(task_id);
-      if (!entry || !db) return undefined;
+      if (!entry) return standaloneEnrichmentInfo(task_id);
       const tokens = entry.producer.estimate_per_record_tokens();
       const source_collection_count = countHousekeepingSourceRecords(
         db,
@@ -312,6 +394,7 @@ export const composeHousekeepingRpcDeps = (
       if (tokens === 0) {
         return {
           token_estimate_per_record: 0,
+          is_ai_surface: false,
           source_collection_count,
           scope_read,
         };
@@ -340,6 +423,7 @@ export const composeHousekeepingRpcDeps = (
         : (trust?.pool_policy ?? 'free_then_byok');
       return {
         token_estimate_per_record: tokens,
+        is_ai_surface: true,
         source_collection_count,
         ai_path_available: probe.available,
         ...(probe.reason ? { ai_path_reason: probe.reason } : {}),
@@ -1127,7 +1211,7 @@ export const composeHousekeepingScheduler = async (
 
   // Build the scheduler with its full ctx. LLM callables are spread
   // directly since their field names match the `HousekeepingContext`
-  // shape (`llm` / `llmWithMeta` / `resolveLLMModelId` / `embed`).
+  // shape (`llm` / `llmWithMeta` / `embed`).
   const scheduler = createHousekeepingScheduler({
     // D-269 — the owner's declared zone for the `custom` preset's window, so
     // "between 22:00 and 05:00" means their hours rather than the host's. The

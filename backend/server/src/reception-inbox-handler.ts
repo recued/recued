@@ -55,6 +55,8 @@ import {
   type ReceptionInboxView,
   isReceptionInboxTopTierKind,
   type ReceptionInboxTopTierKind,
+  testDeclaredPattern,
+  ARG_EDIT_STRING_MAX,
 } from '@recued/contracts';
 import type { ActivityAction, AuditEntry, AuditLogStore } from '@recued/storage';
 import type { CheckpointStore } from '@recued/storage';
@@ -1122,16 +1124,29 @@ const enforceFieldShape = (
     case 'string':
       if (typeof value !== 'string') refuse(`must be a string (got ${typeof value})`);
       if (field.required === true && (value as string).trim() === '') refuse('is required');
+      // ⛔ BOUND THE INPUT BEFORE THE REGEX SEES IT. `validation.min`/`max` are
+      //   NUMERIC (see the `number` branch below), so a string field has no
+      //   length bound the contract can express — and the pattern below is
+      //   pack-declared, run on a thread nothing can interrupt, with a cost that
+      //   grows with input length. The cap is the missing argument, supplied
+      //   here. See `ARG_EDIT_STRING_MAX`.
+      if ((value as string).length > ARG_EDIT_STRING_MAX) {
+        refuse(`must be ${ARG_EDIT_STRING_MAX} characters or fewer`);
+      }
       if (field.validation?.pattern !== undefined) {
-        let re: RegExp;
+        // ⛔ A PACK-declared pattern, a value from a PUBLIC submitter, on a thread
+        //   no timeout can interrupt. `testDeclaredPattern` routes the head of the
+        //   corpus to linear checks and caches the tail, and keeps the throwing
+        //   semantics the `catch` below depends on. See `declared-pattern.ts`.
+        let matched: boolean;
         try {
-          re = new RegExp(field.validation.pattern);
+          matched = testDeclaredPattern(field.validation.pattern, value as string);
         } catch {
           // A malformed pack pattern must not become an accidental allow-all NOR an
           // un-editable field with no stated cause. Refuse and name it.
           return refuse(`declares an invalid pattern (${field.validation.pattern})`);
         }
-        if (!re.test(value as string)) refuse(`does not match ${field.validation.pattern}`);
+        if (!matched) refuse(`does not match ${field.validation.pattern}`);
       }
       return value;
     case 'number':

@@ -34,6 +34,7 @@ import {
   ALL_ENRICHMENT_TRUST_STATES,
   TRUST_DEFAULT_AI,
   TRUST_DEFAULT_DETERMINISTIC,
+  isAiSurfaceEnrichment,
 } from '@recued/contracts';
 import { e } from '../../template.js';
 import { button } from '../../primitives/button.js';
@@ -173,7 +174,7 @@ const renderRow = (
 ): string => {
   const enrichment = status.enrichment;
   const topic = topicFromTaskId(status.meta.id);
-  const isAiSurface = enrichment ? enrichment.token_estimate_per_record > 0 : false;
+  const isAiSurface = isAiSurfaceEnrichment(enrichment);
   const trustState = trustStateForRow(topic, props.trustRows, isAiSurface);
   const lastStatus: HousekeepingLastStatus = status.state?.last_status ?? 'pending';
   const lastRun =
@@ -195,13 +196,25 @@ const renderRow = (
         ? { model_unit_cost_usd: props.modelUnitCostUsd }
         : {}),
     });
+    const count = enrichment.source_collection_count;
     if (preview.deterministic) {
-      return `Always the same answer, and it costs nothing (${enrichment.source_collection_count} source records).`;
+      return count === undefined
+        ? 'Always the same answer, and it costs nothing.'
+        : `Always the same answer, and it costs nothing (${String(count)} source records).`;
+    }
+    // A standalone task declares no source scope, so the sweep size is not
+    // knowable ahead of the run. Naming the per-record cost is the most that
+    // can honestly be said.
+    if (preview.estimated_tokens === undefined) {
+      const perRecord = enrichment.token_estimate_per_record;
+      return perRecord === undefined
+        ? 'Costs tokens; how much is not known ahead of the run.'
+        : `~${perRecord.toLocaleString()} tokens per record; how many records is not known ahead of the run.`;
     }
     if (preview.estimated_cost_usd !== undefined) {
-      return `~${preview.estimated_tokens.toLocaleString()} tokens × ${enrichment.source_collection_count} records ≈ $${preview.estimated_cost_usd.toFixed(2)}`;
+      return `~${preview.estimated_tokens.toLocaleString()} tokens × ${String(count)} records ≈ $${preview.estimated_cost_usd.toFixed(2)}`;
     }
-    return `~${preview.estimated_tokens.toLocaleString()} tokens (across ${enrichment.source_collection_count} source records)`;
+    return `~${preview.estimated_tokens.toLocaleString()} tokens (across ${String(count)} source records)`;
   })();
 
   // D-132 P6 — prefer the rpc-side scope-of-read over the state-side

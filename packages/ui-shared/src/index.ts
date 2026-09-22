@@ -286,6 +286,7 @@ export {
 // Namespaced (generic model verbs like `setQuery`/`closeList` would
 // otherwise pollute the flat barrel).
 export * from './output-table-edit.js';
+export * from './output-table-select.js';
 export * as RefPicker from './ref-picker/index.js';
 // Shared resumable-upload engine + widget — the CLIENT half of D-172 file
 // uploads (state machine over the binary `/ws/upload` transport + `upload.*`

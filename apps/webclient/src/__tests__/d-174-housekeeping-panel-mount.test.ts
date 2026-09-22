@@ -20,6 +20,7 @@ import {
 } from '../settings/housekeeping-panel-mount.js';
 import type { BroadcastSubscriber } from '../realtime/subscriber.js';
 import type {
+  ConfidenceDriftSignal,
   EnrichmentTrustRow,
   EnrichmentTrustState,
   HousekeepingConfigRow,
@@ -238,6 +239,11 @@ const makeDeps = () => {
     }),
   );
   const runTopicReset = vi.fn(() => Promise.resolve(resetResult(false)));
+  // D-285 — every mount now pulls the persisted drift signals. Empty by
+  // default so the existing cases exercise the addition without changing.
+  const runDriftRead = vi.fn(() =>
+    Promise.resolve({ rows: [] as ConfidenceDriftSignal[] }),
+  );
   const subscribe = vi.fn((kind: string, handler: (event?: unknown) => void) => {
     handlers[kind] = handler;
     return () => {
@@ -254,6 +260,7 @@ const makeDeps = () => {
     runDismissPromotion,
     runRegistryDescribe,
     runTopicReset,
+    runDriftRead,
     subscribe,
     fireCycle: () => handlers.housekeeping_cycle?.({}),
     fire: (kind: string, payload: unknown) => handlers[kind]?.(payload),
@@ -680,5 +687,150 @@ describe('mountHousekeepingPanel — trust-core slice', () => {
     expect(fakeHost.listenerCount()).toBe(0);
     expect(fakeHost.getHtml()).toBe('');
     expect(() => mount.dispose()).not.toThrow();
+  });
+});
+
+// ── D-285 — the persisted drift read ────────────────────────────────
+//
+// ⛔ WHAT THESE GUARD, MEASURED NOT ASSUMED. On a live paired browser, twice:
+// the banner rendered when the producer fired with the panel open (control)
+// and was GONE after a reload in the SAME tab seconds later — `cursor_since`
+// intact in sessionStorage, the row still stored, the task's own last-run
+// cell reading "5s ago". Drift was visible only to whoever happened to be
+// looking at that second. The first case below is that reload: a fresh mount
+// with a stored signal and NO broadcast ever fired.
+
+/** What the rpc returns — the stored row, bins and all. The broadcast cannot
+ *  carry these; `driftSignalFromEvent` fills them with `[]` and says so. */
+const storedSignal = (over: Partial<ConfidenceDriftSignal> = {}): ConfidenceDriftSignal => ({
+  source_topic: 'summary',
+  psi: 0.31,
+  severity: 'significant',
+  baseline_window: { start_at: 1_000, end_at: 2_000, sample_count: 300 },
+  recent_window: { start_at: 3_000, end_at: 4_000, sample_count: 100 },
+  baseline_distribution: [0.5, 0.5, 0, 0, 0, 0, 0, 0, 0, 0],
+  recent_distribution: [0.1, 0.9, 0, 0, 0, 0, 0, 0, 0, 0],
+  computed_at: NOW,
+  ...over,
+});
+
+describe('D-285 — drift survives a reload', () => {
+  it('raises the banner from the STORED row, with no broadcast at all', async () => {
+    const fakeHost = makeFakeHost();
+    const deps = makeDeps();
+    deps.runDriftRead.mockResolvedValue({ rows: [storedSignal()] });
+    const mount = mountHousekeepingPanel({ host: fakeHost.host, now: () => NOW, ...deps });
+    await mount.whenLoaded();
+    await flush();
+    await flush();
+
+    expect(deps.runDriftRead).toHaveBeenCalledTimes(1);
+    expect(fakeHost.getHtml()).toContain('housekeeping-drift-banner');
+    mount.dispose();
+  });
+
+  it('carries the distributions the event cannot, so the drawer has something to draw', async () => {
+    const fakeHost = makeFakeHost();
+    const deps = makeDeps();
+    deps.runDriftRead.mockResolvedValue({ rows: [storedSignal()] });
+    const mount = mountHousekeepingPanel({ host: fakeHost.host, now: () => NOW, ...deps });
+    await mount.whenLoaded();
+    await flush();
+    await flush();
+
+    expect(mount.getState().driftSignals.summary?.baseline_distribution).toHaveLength(10);
+    mount.dispose();
+  });
+
+  it('upgrades an event placeholder to the stored row one round-trip later', async () => {
+    const fakeHost = makeFakeHost();
+    const deps = makeDeps();
+    const mount = mountHousekeepingPanel({ host: fakeHost.host, now: () => NOW, ...deps });
+    await mount.whenLoaded();
+    await flush();
+    // The event paints first — that is what a broadcast is for — but carries
+    // no bins, so the drawer would have nothing to render from it alone.
+    deps.runDriftRead.mockResolvedValue({ rows: [storedSignal()] });
+    deps.fire('enrichment_drift_detected', {
+      kind: 'enrichment_drift_detected',
+      source_topic: 'summary',
+      psi: 0.31,
+      severity: 'significant',
+      computed_at: NOW,
+      cursor: 2,
+    });
+    expect(mount.getState().driftSignals.summary?.baseline_distribution).toHaveLength(0);
+    await flush();
+    await flush();
+
+    expect(mount.getState().driftSignals.summary?.baseline_distribution).toHaveLength(10);
+    expect(fakeHost.getHtml()).toContain('housekeeping-drift-banner');
+    mount.dispose();
+  });
+
+  it('does not re-raise a banner the owner just dismissed', async () => {
+    // ⛔ The regression this rpc would otherwise INTRODUCE. Dismissal is
+    // client-side state; without carrying it across the merge, the next read
+    // hands back the same verdict undismissed and the banner pops straight
+    // back up — the read would have made the surface naggier than the bug.
+    const fakeHost = makeFakeHost();
+    const deps = makeDeps();
+    deps.runDriftRead.mockResolvedValue({ rows: [storedSignal()] });
+    const mount = mountHousekeepingPanel({ host: fakeHost.host, now: () => NOW, ...deps });
+    await mount.whenLoaded();
+    await flush();
+    await flush();
+    fakeHost.clickActionAttrs('housekeeping-drift-dismiss', { 'data-source-topic': 'summary' });
+    expect(fakeHost.getHtml()).not.toContain('housekeeping-drift-banner');
+
+    await mount.refresh();
+    await flush();
+    await flush();
+
+    expect(mount.getState().driftSignals.summary?.dismissed_at).toBe(NOW);
+    expect(fakeHost.getHtml()).not.toContain('housekeeping-drift-banner');
+    mount.dispose();
+  });
+
+  it('re-arms on a NEWER computation, which is the transition rule', async () => {
+    const fakeHost = makeFakeHost();
+    const deps = makeDeps();
+    deps.runDriftRead.mockResolvedValue({ rows: [storedSignal()] });
+    const mount = mountHousekeepingPanel({ host: fakeHost.host, now: () => NOW, ...deps });
+    await mount.whenLoaded();
+    await flush();
+    await flush();
+    fakeHost.clickActionAttrs('housekeeping-drift-dismiss', { 'data-source-topic': 'summary' });
+    expect(fakeHost.getHtml()).not.toContain('housekeeping-drift-banner');
+
+    deps.runDriftRead.mockResolvedValue({ rows: [storedSignal({ computed_at: NOW + 1 })] });
+    await mount.refresh();
+    await flush();
+    await flush();
+
+    expect(mount.getState().driftSignals.summary?.dismissed_at).toBeUndefined();
+    expect(fakeHost.getHtml()).toContain('housekeeping-drift-banner');
+    mount.dispose();
+  });
+
+  it('degrades to bus-only when the server has no drift read', async () => {
+    const fakeHost = makeFakeHost();
+    const { runDriftRead: _omitted, ...deps } = makeDeps();
+    const mount = mountHousekeepingPanel({ host: fakeHost.host, now: () => NOW, ...deps });
+    await mount.whenLoaded();
+    await flush();
+
+    expect(fakeHost.getHtml()).not.toContain('housekeeping-drift-banner');
+    deps.fire('enrichment_drift_detected', {
+      kind: 'enrichment_drift_detected',
+      source_topic: 'summary',
+      psi: 0.31,
+      severity: 'significant',
+      computed_at: NOW,
+      cursor: 2,
+    });
+    await flush();
+    expect(fakeHost.getHtml()).toContain('housekeeping-drift-banner');
+    mount.dispose();
   });
 });

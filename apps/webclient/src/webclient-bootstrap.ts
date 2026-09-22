@@ -302,6 +302,7 @@ import type {
   HousekeepingDismissPromotionCaller,
   HousekeepingRegistryDescribeCaller,
   HousekeepingRunNowCaller,
+  HousekeepingDriftReadCaller,
   HousekeepingStatusReadCaller,
   HousekeepingTopicResetCaller,
   HousekeepingTrustReadCaller,
@@ -415,6 +416,8 @@ import {
   type DataRecordsDeleteCaller,
   type DataRecordsRetentionListCaller,
   type DataRecordsExportCaller,
+  type DataRecordsChangesListCaller,
+  type DataRecordsMarkReviewedCaller,
   type DataRecordsOutboxListCaller,
   type DataRecordsOutboxRetireCaller,
   type DataRecordsPurgeCaller,
@@ -756,6 +759,7 @@ import {
 import {
   RECIPE_DRAFT_CONFIRMATION,
   RECIPE_REFINE_CONFIRMATION,
+  getPref,
 } from '@recued/contracts';
 import {
   readExecutionCaseDraft,
@@ -913,6 +917,13 @@ export const WEBCLIENT_SHELL_DRAWER_BACKDROP_ATTR =
   'data-recued-webclient-drawer-backdrop';
 export const WEBCLIENT_SHELL_DRAWER_OPEN_ATTR =
   'data-recued-webclient-drawer-open';
+/** D-282 slice C — the owner's pinned apps section, and one seat inside it
+ *  (value = the pack slug). Exported so a test pins the SEATS rather than the
+ *  copy around them. */
+export const WEBCLIENT_SHELL_DRAWER_APPS_ATTR =
+  'data-recued-webclient-drawer-apps';
+export const WEBCLIENT_SHELL_DRAWER_APP_ATTR =
+  'data-recued-webclient-drawer-app';
 /** A disabled "coming soon" drawer seat (a not-yet-built destination).
  *  Carries the seat id. No seat uses it today — retained for a future stub. */
 export const WEBCLIENT_SHELL_DRAWER_STUB_ATTR =
@@ -1518,12 +1529,29 @@ interface WebclientShell {
     route: WebclientRouteId,
     segments?: readonly string[],
   ) => void;
+  /** D-282 slice C — replace the drawer's pinned-apps section.
+   *
+   *  Called by the bootstrap once prefs + the installed roster have resolved,
+   *  and again whenever either moves. Passing an empty list removes the
+   *  section entirely, which is what "reversible" means here: unpin everything
+   *  and the drawer is exactly the locked list it was. */
+  readonly setPinnedApps: (
+    apps: ReadonlyArray<{ readonly slug: string; readonly name: string }>,
+  ) => void;
   /** Close transient navigation before a global modal captures focus. */
   readonly closeDrawer: () => void;
   readonly dispose: () => void;
 }
 
 const WEBCLIENT_SHELL_DRAWER_ID = 'webclient-shell-drawer';
+/** D-282 slice C — how many pinned seats the drawer will draw.
+ *
+ *  ⚠ A SECOND CEILING, BELOW THE PREF'S OWN. `ui.pinned_apps` caps STORAGE at
+ *  12 so a corrupted blob cannot be unbounded; this caps what is DRAWN. They
+ *  are different questions and a shared number would answer only one: the
+ *  drawer is a flat list read at a glance, and its own § 6 note records that a
+ *  comparable grid is "poor at twenty-five". */
+const PINNED_APP_SEAT_LIMIT = 8;
 const SERVER_UPDATE_APPLY_RECEIPT_POLL_DELAY_MS = 2_500;
 
 /** Best-effort focus — guarded so the fake-DOM tests (no `.focus`) + detached
@@ -1665,6 +1693,15 @@ const createWebclientShell = (opts: {
     readonly route: WebclientRouteId;
     readonly segments: readonly string[];
     readonly fallback: boolean;
+    /** D-282 slice C — match on the segment PREFIX rather than the whole tail.
+     *
+     *  ⛔ A PINNED APP SEAT IS UNUSABLE WITHOUT THIS. Its address is
+     *  `#packs/<slug>`, and the packs route immediately canonicalizes to
+     *  `#packs/<slug>/use/<view>` — three segments, so the exact-tail test
+     *  fails and the seat un-highlights the instant you press it, falling back
+     *  to `Packs`. Every static seat wants exact matching (that is what keeps
+     *  `#data/task` off the `Data` row); an app owns its whole subtree. */
+    readonly prefix?: boolean;
     readonly link: HTMLElement;
   }> = [];
 
@@ -1715,6 +1752,70 @@ const createWebclientShell = (opts: {
       focusShellElement(toggleBtn);
     }
   };
+
+  /** D-282 slice C — the owner's pinned apps.
+   *
+   *  ⛔ PLACED AND EMPTY, rather than created on demand. The static sections
+   *  below are appended in order and the divider rule reads `sections[idx + 1]`
+   *  — inserting a node into that sequence later would have to reason about
+   *  which divider it lands between. An always-present section that renders
+   *  nothing when empty has no position to get wrong.
+   *
+   *  ⚠ FIRST, DIRECTLY UNDER CHATS. The drawer is ordered by frequency along
+   *  `do → look → manage → review → config`, and a seat the owner explicitly
+   *  pinned is the most intentional statement of frequency in the whole list.
+   *  It sits above the zero-config tier for that reason, not by accident of
+   *  where it was easy to splice. */
+  const appsSection = doc.createElement('div');
+  appsSection.className = 'webclient-shell-drawer-section';
+  appsSection.setAttribute(WEBCLIENT_SHELL_DRAWER_APPS_ATTR, '');
+  const appsDivider = doc.createElement('div');
+  appsDivider.className = 'webclient-shell-drawer-divider';
+  appsDivider.setAttribute('role', 'separator');
+
+  const setPinnedApps = (
+    apps: ReadonlyArray<{ readonly slug: string; readonly name: string }>,
+  ): void => {
+    // Drop the seats' link records first: a stale entry would keep claiming
+    // the current-page marker for a pack that is no longer pinned.
+    for (let i = destinationLinks.length - 1; i >= 0; i -= 1) {
+      if (destinationLinks[i]!.prefix === true) destinationLinks.splice(i, 1);
+    }
+    while (appsSection.firstChild !== null) {
+      appsSection.removeChild(appsSection.firstChild);
+    }
+    const drawn = apps.slice(0, PINNED_APP_SEAT_LIMIT);
+    // ⛔ THE DIVIDER HIDES WITH THE SECTION. An owner who has pinned nothing
+    // must see the drawer exactly as it was — a stray rule under Chats is a
+    // visible trace of a feature they are not using, and "reversible" has to
+    // mean invisible when empty, not merely inert.
+    for (const el of [appsSection, appsDivider]) {
+      if (drawn.length === 0) el.setAttribute('hidden', 'hidden');
+      else el.removeAttribute('hidden');
+    }
+    for (const app of drawn) {
+      const link = doc.createElement('a');
+      link.className = 'webclient-shell-drawer-link';
+      link.setAttribute(WEBCLIENT_SHELL_DRAWER_LINK_ATTR, `app:${app.slug}`);
+      link.setAttribute(WEBCLIENT_SHELL_DRAWER_APP_ATTR, app.slug);
+      link.setAttribute('href', serializeShellRoute('packs', app.slug));
+      link.addEventListener('click', () =>
+        setDrawerOpen(false, { returnFocus: false }));
+      const labelEl = doc.createElement('span');
+      labelEl.className = 'webclient-shell-drawer-label';
+      labelEl.textContent = app.name;
+      link.appendChild(labelEl);
+      destinationLinks.push({
+        route: 'packs',
+        segments: [app.slug],
+        fallback: false,
+        prefix: true,
+        link,
+      });
+      appsSection.appendChild(link);
+    }
+  };
+  setPinnedApps([]);
 
   WEBCLIENT_DRAWER_SECTIONS.forEach((section, idx) => {
     const sectionEl = doc.createElement('div');
@@ -1809,6 +1910,13 @@ const createWebclientShell = (opts: {
       sectionEl.appendChild(link);
     }
     drawer.appendChild(sectionEl);
+    // D-282 slice C — the pinned apps sit directly under the chat seats. Placed
+    // by INDEX rather than appended at the end, because the drawer's order is
+    // its meaning.
+    if (idx === 0) {
+      drawer.appendChild(appsSection);
+      drawer.appendChild(appsDivider);
+    }
     // A divider falls between consecutive non-pinned sections; the pinned
     // (config) section is set off by its own top rule instead.
     const next = WEBCLIENT_DRAWER_SECTIONS[idx + 1];
@@ -1870,7 +1978,16 @@ const createWebclientShell = (opts: {
       && item.segments.length === segments.length
       && item.segments.every((segment, index) => segment === segments[index]),
     );
-    const active = exact ?? destinationLinks.find(
+    // Then a seat that owns a whole subtree (a pinned app). Between exact and
+    // fallback on purpose: a deeper address with its own row still wins, and a
+    // route with no app seat is unaffected.
+    const owned = exact ?? destinationLinks.find((item) =>
+      item.prefix === true
+      && item.route === route
+      && item.segments.length <= segments.length
+      && item.segments.every((segment, index) => segment === segments[index]),
+    );
+    const active = owned ?? destinationLinks.find(
       (item) => item.route === route && item.fallback,
     );
     activeDrawerLink = active?.link ?? null;
@@ -1894,6 +2011,7 @@ const createWebclientShell = (opts: {
     connectionHost,
     accountHost,
     setActiveRoute,
+    setPinnedApps,
     closeDrawer: () => setDrawerOpen(false, { returnFocus: drawerOpen }),
     dispose: () => {
       docEvents.removeEventListener?.('keydown', onDocKeydown);
@@ -3197,6 +3315,117 @@ export const bootstrapWebclient = async (
     activeSegments: parseShellRoute(activeHash).segments,
     onCreateSeat: () => createSeatHandler?.(),
   });
+
+  // ── D-282 slice C — the owner's pinned apps in the navigation drawer ──
+  //
+  // Two facts, from two places, and neither alone is enough: WHICH packs are
+  // pinned is a per-device pref, and what to CALL each one is on the installed
+  // roster. A seat drawn from the slug alone would read "fleet-money" in a
+  // menu where everything else is a name.
+  //
+  // ⛔ FILTERED TO WHAT IS INSTALLED. A pin outlives an uninstall — the pref is
+  // per device and the pack is per server — so a stale slug would draw a seat
+  // that opens a pack detail for something this server does not have. The pin
+  // is left in the pref deliberately: reinstall the pack and the seat returns,
+  // which is what an owner who removed a pack for an afternoon expects.
+  let pinnedAppSlugs: readonly string[] = [];
+  let pinnedAppNames: ReadonlyMap<string, string> = new Map();
+  const refreshPinnedAppSeats = (): void => {
+    appShell.setPinnedApps(
+      pinnedAppSlugs
+        .filter((slug) => pinnedAppNames.has(slug))
+        .map((slug) => ({ slug, name: pinnedAppNames.get(slug)! })),
+    );
+  };
+  /** Names only. Split OUT of `loadPinnedApps` because the first pin needs the
+   *  roster WITHOUT re-reading prefs: at that moment the write is still in
+   *  flight, so a prefs read returns the OLD (empty) list and clobbers the
+   *  optimistic one. Fetching names is idempotent and races with nothing. */
+  const loadPinnedAppNames = async (): Promise<void> => {
+    try {
+      const roster = await (rpcConn.call('packs.list', undefined) as Promise<{
+        packs?: ReadonlyArray<{ slug?: unknown; name?: unknown; installed?: unknown }>;
+      }>);
+      pinnedAppNames = new Map(
+        (roster.packs ?? [])
+          .filter((row) => row?.installed === true && typeof row.slug === 'string')
+          .map((row) => [
+            row.slug as string,
+            typeof row.name === 'string' && row.name.trim() !== ''
+              ? row.name
+              : row.slug as string,
+          ]),
+      );
+      refreshPinnedAppSeats();
+    } catch {
+      // See `loadPinnedApps` — a drawer section is not worth a visible failure.
+    }
+  };
+
+  const loadPinnedApps = async (): Promise<void> => {
+    try {
+      const { prefs } = await (rpcConn.call('prefs.get', undefined) as
+        Promise<{ prefs: InstancePrefs }>);
+      pinnedAppSlugs = getPref(prefs, 'ui.pinned_apps');
+      // ⛔⛔ THE ROSTER IS FETCHED ONLY WHEN SOMETHING IS PINNED, AND THE FIRST
+      // VERSION FETCHED IT ALWAYS. `packs.list` returns every installed pack
+      // WITH ITS MANIFEST — a real read, at every boot, to label a menu section
+      // that most owners have not populated. Asking for prefs first costs one
+      // cheap call and skips the expensive one for everyone with no pins.
+      //
+      // ⚠ It also stopped two unrelated tests failing, and that was the signal
+      // rather than the fix: they resolve "the `packs.list` call" by finding the
+      // FIRST one, and a second caller at boot silently made that the wrong one
+      // — the connections panel's own request was then never answered and its
+      // flow stalled. A shared rpc gaining a new caller is a change to every
+      // reader that assumed it had only one.
+      if (pinnedAppSlugs.length === 0) {
+        pinnedAppNames = new Map();
+        refreshPinnedAppSeats();
+        return;
+      }
+      await loadPinnedAppNames();
+    } catch {
+      // A drawer section is not worth a visible failure. The seats simply do
+      // not appear, which is the same thing the owner sees before they pin
+      // anything — and `Packs` still reaches every one of them.
+    }
+  };
+  const togglePinnedApp = (slug: string, pinned: boolean): void => {
+    const next = pinned
+      ? [...pinnedAppSlugs.filter((entry) => entry !== slug), slug]
+      : pinnedAppSlugs.filter((entry) => entry !== slug);
+    // Optimistic, then authoritative — the same shape the display-mode pref
+    // uses. The seat appears now and the server's returned prefs win.
+    pinnedAppSlugs = next;
+    // ⛔⛔ A FIRST PIN HAS NO NAME TO DRAW, AND THE OPTIMISATION ABOVE IS WHY.
+    // `loadPinnedApps` skips the roster whenever the pin list is EMPTY — which
+    // it is, by definition, the first time anyone pins anything. So
+    // `pinnedAppNames` was empty, `refreshPinnedAppSeats` filtered the brand-new
+    // pin out for lack of a label, and the seat did not appear until a reload
+    // happened to re-enter `loadPinnedApps` with a non-empty list.
+    //
+    // ⚠ EVERY UNIT TEST PASSED. They either call `setPinnedApps` directly or
+    // drive `loadPinnedApps` with pins ALREADY in the pref — neither is the
+    // first-pin path. A live drive found it: press Pin, watch nothing happen,
+    // reload, watch the seat appear.
+    // ⛔ NAMES ONLY, NEVER `loadPinnedApps`. A first attempt called the latter
+    // and lost a race it created: the prefs read returned the old, still-empty
+    // list and overwrote the pin that had just been made. The roster is the
+    // only thing missing here.
+    if (next.some((slug) => !pinnedAppNames.has(slug))) void loadPinnedAppNames();
+    else refreshPinnedAppSeats();
+    void (rpcConn.call('prefs.set', { patch: { 'ui.pinned_apps': next } }) as
+      Promise<{ prefs: InstancePrefs }>)
+      .then(({ prefs }) => {
+        pinnedAppSlugs = getPref(prefs, 'ui.pinned_apps');
+        refreshPinnedAppSeats();
+      })
+      .catch(() => {
+        // A refused write must not leave a seat the server does not have.
+        void loadPinnedApps();
+      });
+  };
 
   // Live connection callout — a visually hidden topbar announcer plus the
   // route-independent offline/restoration banner, both driven by the
@@ -6983,6 +7212,13 @@ export const bootstrapWebclient = async (
     rpcConn.call('records.export', args);
   const dataRecordsOutboxListCaller: DataRecordsOutboxListCaller = (args) =>
     rpcConn.call('records.outbox.list', args);
+  const dataRecordsChangesListCaller: DataRecordsChangesListCaller = (args) =>
+    rpcConn.call('records.changes.list', args);
+  // P2/F2 — the mark rides the ordinary saved-view update; there is no separate
+  // review rpc, because a mark IS view state and `data_views.update` already
+  // CASes on the revision that protects it.
+  const dataRecordsMarkReviewedCaller: DataRecordsMarkReviewedCaller = (args) =>
+    rpcConn.call('data_views.update', args);
   const dataRecordsOutboxRetireCaller: DataRecordsOutboxRetireCaller = (args) =>
     switchWorkTracker.track(
       (input: typeof args) => rpcConn.call('records.outbox.retire', input),
@@ -8938,6 +9174,14 @@ export const bootstrapWebclient = async (
     options.enableHousekeepingPanel === false
       ? undefined
       : () => rpcConn.call('housekeeping.trust.read', undefined);
+  // D-285 — the persisted drift signals, so a reload (or a client that was
+  // simply not connected when the daily cycle fired) still sees the verdict.
+  const housekeepingPanelDriftReadCaller:
+    | HousekeepingDriftReadCaller
+    | undefined =
+    options.enableHousekeepingPanel === false
+      ? undefined
+      : () => rpcConn.call('housekeeping.drift.read', undefined);
   const housekeepingPanelTrustWriteCaller:
     | HousekeepingTrustWriteCaller
     | undefined =
@@ -10018,6 +10262,10 @@ export const bootstrapWebclient = async (
         ...(grantListContractsCaller !== undefined
           ? { accessContractsCaller: grantListContractsCaller }
           : {}),
+        // D-282 slice C — the drawer pins, read and written from the pack's own
+        // detail. The route holds no pin state; it forwards.
+        pinnedApps: () => pinnedAppSlugs,
+        onTogglePin: togglePinnedApp,
         // list→detail — seed the DETAIL selection from `#packs/<slug>` (mirrors
         // the recipes route). Undefined segment ⇒ the LIST view.
         ...(initialPacksAddress?.kind === 'pack'
@@ -10025,6 +10273,11 @@ export const bootstrapWebclient = async (
               initialPackSlug: initialPacksAddress.packSlug,
               ...(initialPacksAddress.viewId !== null
                 ? { initialPackViewId: initialPacksAddress.viewId }
+                : {}),
+              // D-282 B5 — a bookmarked lookup names the record too. Forwarded
+              // as-is; the app view decides whether it may be honoured.
+              ...(initialPacksAddress.target !== null
+                ? { initialPackViewTarget: initialPacksAddress.target }
                 : {}),
             }
           : {}),
@@ -10273,6 +10526,8 @@ export const bootstrapWebclient = async (
         recordsRetentionListCaller: dataRecordsRetentionListCaller,
         recordsExportCaller: dataRecordsExportCaller,
         recordsOutboxListCaller: dataRecordsOutboxListCaller,
+        recordsChangesListCaller: dataRecordsChangesListCaller,
+        recordsMarkReviewedCaller: dataRecordsMarkReviewedCaller,
         recordsOutboxRetireCaller: dataRecordsOutboxRetireCaller,
         recordsPurgeCaller: dataRecordsPurgeCaller,
         uploadCreateCaller: dataUploadCreateCaller,
@@ -11492,6 +11747,9 @@ export const bootstrapWebclient = async (
               ),
             }
           : {}),
+        ...(housekeepingPanelDriftReadCaller !== undefined
+          ? { housekeepingPanelDriftReadCaller }
+          : {}),
         ...(housekeepingPanelTrustReadCaller !== undefined
           ? { housekeepingPanelTrustReadCaller }
           : {}),
@@ -11923,6 +12181,7 @@ export const bootstrapWebclient = async (
           root: kitchenChrome.contentRoot,
           recipeId: kitchenRecipeId,
           listCaller: recipesListCaller,
+          getCaller: (args) => rpcConn.call('recipe.get', args),
           validateCaller: switchWorkTracker.track(
             (args) => rpcConn.call('recipe.validate', args),
           ),
@@ -12050,6 +12309,19 @@ export const bootstrapWebclient = async (
     navigateDeepLink?: (hash: string) => boolean;
     getRecoveryDraft?: () => ChatRouteRecoveryDraft | null;
   } = mountRoute(activeRoute);
+
+  // D-282 slice C — fill the drawer's app seats once the shell is up.
+  //
+  // ⛔ AFTER the first route mounts, not before: this is two rpcs for a
+  // navigation section, and putting them ahead of the route the owner actually
+  // asked for would trade their first paint for a menu they have not opened.
+  // Everything it needs is idempotent, so a later re-run is free.
+  void loadPinnedApps();
+  // A pack arriving or leaving changes what a seat can say — and an uninstall
+  // is the case that would otherwise leave a seat pointing at nothing.
+  const detachPinnedAppRoster = subscriber.on('pack_installed', () => {
+    void loadPinnedApps();
+  });
 
   recoveryIntentLandingHash = deferredRecoveryReturnArrival?.landingHash
     ?? recoveryIntentContinuationMarker?.landingHash
@@ -13910,6 +14182,7 @@ export const bootstrapWebclient = async (
       closeServerSwitchConvergence();
       appShell.dispose();
       detachExposureChanged();
+      detachPinnedAppRoster();
       receptionShell.dispose();
       certPin.dispose();
       if (certPinWatcher !== null) certPinWatcher.dispose();

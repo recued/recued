@@ -147,7 +147,9 @@ const LIFECYCLE_CLASSIFY_CONTEXT =
   'prior_customer: previously a customer, no recent activity (≥ 90d quiet) and Salesforce stage indicates churned / inactive. ' +
   'partner: alliance / channel / referral relationship — non-buying engagement at sustained cadence (use sparingly; defaults to Other when ambiguous). ' +
   'other: catch-all when none of the above fits — typically internal contacts, vendors, or roles outside the buying journey. ' +
-  'When in doubt between adjacent stages, pick the lower one and lower the confidence.';
+  'When in doubt between adjacent stages, pick the lower one and lower the confidence. ' +
+  // D-278 zero-anchor, tied to the catch-all this vocabulary already has.
+  'Use a confidence of 0 when you fall back to other because none of the stages fits.';
 
 // ────────────────────────────────────────────────────────────────
 // Pure helpers

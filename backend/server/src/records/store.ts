@@ -1,4 +1,8 @@
-import { csvCell as sharedCsvCell } from '@recued/contracts';
+import {
+  csvCell as sharedCsvCell,
+  ORDERED_FIELD_KINDS,
+  ORDERED_RECORD_KEYS,
+} from '@recued/contracts';
 import {
   createHash,
   randomBytes,
@@ -33,6 +37,8 @@ import {
   type IngredientManifest,
   type RecipeDefinition,
   type RecordsAuthorBinding,
+  type RecordsChangeFeed,
+  type RecordsChangeQuery,
   type RecordsCsvExportEnvelope,
   type RecordsEventPointer,
   type RecordsExportEnvelope,
@@ -312,6 +318,9 @@ export interface RecordsStore {
   isInstalledOperationId(operationId: string): boolean;
   isInstalledCatalogOperation(catalogSlug: string, operationKey: string): boolean;
   listOutbox(owner: RecordsPackRef, status?: 'pending' | 'delivered' | 'dead_letter'): RecordsEventPointer[];
+  /** P2/F2 — one bounded, chronological page of this pack's change history.
+   *  Read-only over the outbox rows the write path already emits; adds no state. */
+  listChanges(query: RecordsChangeQuery): RecordsChangeFeed;
   getOutboxOverview(owner: RecordsPackRef, status?: RecordsOutboxStatus, limit?: number): RecordsOutboxOverview;
   retireOutboxEvent(owner: RecordsPackRef, eventId: string, confirmation: string): boolean;
   acknowledgeEvent(eventId: string, subscriberDigest: string): boolean;
@@ -496,6 +505,35 @@ export interface CreateRecordsStoreOptions {
    *  boot wiring is asserted in `records-import-audit.test.ts` rather than
    *  trusted. */
   onImport?: (event: RecordsImportAudit) => void;
+  /** D-282 B4 — sink for "a row in this pack changed", so a screen can redraw.
+   *
+   *  ⛔⛔ AN UNWIRED SINK IS SILENCE, which is what this whole slice is repairing:
+   *  `packs-panel.ts` has declared and implemented `refreshAppView()` since the Use
+   *  tab shipped and NOTHING has ever called it, so every open pack view has gone
+   *  stale after a write by a schedule, a webhook, the AI, a peer or the owner's
+   *  other device. The boot wiring below is asserted by a test against the real
+   *  composer, exactly as `onImport`'s is, because "someone forgot to wire it" is the
+   *  failure this shape invites — twice now.
+   *
+   *  ⚠ CALLED WHERE THE WATCHER OUTBOX IS, so it inherits that suppression list:
+   *  `migration`, `retention`, `uninstall_purge` and `owner_bulk_delete` emit
+   *  nothing. Those exist to stop server-internal sweeps re-triggering RECIPES,
+   *  which is a different question from whether a SCREEN should redraw — an owner
+   *  bulk delete is a case a refresh would want. Splitting the two policies is a
+   *  change to the write path, not to this option.
+   *
+   *  ⚠ A throwing sink must never fail a write that already committed. */
+  onChange?: (event: RecordsChangeNotice) => void;
+}
+
+/** What changed, for a surface that only needs to know whether to re-read.
+ *  Deliberately thinner than `RecordsEventPointer`: no revision, no changed
+ *  fields, no causal chain — a screen redraws or it does not. */
+export interface RecordsChangeNotice {
+  owner: RecordsPackRef;
+  entity: string;
+  id: string;
+  op: 'insert' | 'update' | 'delete';
 }
 
 /** What one imported row did. `'skipped'` and `'updated'` are reachable only
@@ -975,6 +1013,18 @@ const ensureSchema = (db: Database.Database): void => {
       WHERE root_event_id IS NOT NULL;
     CREATE INDEX IF NOT EXISTS core_record_outbox_pack_idx
       ON ${OUTBOX_TABLE}(publisher, pack_slug, status, created_at, event_id);
+    -- P2/F2 change review. The history read is a keyset walk over
+    -- (created_at, event_id) for ONE pack across EVERY status, and
+    -- core_record_outbox_pack_idx cannot serve it: status sits in position 3,
+    -- so an all-status range degrades to a scan of the pack's whole history
+    -- (bounded at the 1M outbox quota, which is exactly the size D-230's note
+    -- above measured as a real cost).
+    -- ⚠ ONE index, not two: entity stays a residual predicate rather than
+    -- earning its own column, because the caller's watermark already bounds the
+    -- range to "since I last looked". A second index would buy a filter over an
+    -- already-small window and charge write amplification on every records write.
+    CREATE INDEX IF NOT EXISTS core_record_outbox_history_idx
+      ON ${OUTBOX_TABLE}(publisher, pack_slug, created_at, event_id);
 
     CREATE TABLE IF NOT EXISTS ${OUTBOX_DELIVERY_TABLE} (
       event_id TEXT NOT NULL,
@@ -1854,6 +1904,24 @@ export const createRecordsStore = (
         JSON.stringify([...changedFields].sort()), ns.activation_generation,
         ns.subscriber_digest, cause, rootEventId, depth, execution.watcher_digest ?? null, stamp,
       );
+    if (options.onChange !== undefined) {
+      try {
+        options.onChange({
+          owner: { publisher: ns.publisher, pack_slug: ns.pack_slug },
+          entity: kind,
+          id,
+          // ⛔ THE POINTER'S VOCABULARY IS `record.created`, NOT `created`. Comparing
+          // against the bare words matches nothing, so every event would have read as
+          // an `update` — a silent, uniformly-wrong mapping that no test of the write
+          // path would notice, because the write still happens.
+          op: type === 'record.created'
+            ? 'insert'
+            : type === 'record.deleted' ? 'delete' : 'update',
+        });
+      } catch {
+        /* a screen-refresh sink never breaks a write that already committed */
+      }
+    }
     const pointer: RecordsEventPointer = {
       event_id: eventId,
       type,
@@ -2572,8 +2640,11 @@ export const createRecordsStore = (
     }
     const entity = entityFor(schema, binding.entity);
     const sortField = entity.fields.find((field) => field.key === sortName);
-    if (sortName !== 'id' && sortName !== '_record.created_at' && sortName !== '_record.updated_at') {
-      if (!sortField || !['number','decimal','date','datetime','boolean'].includes(sortField.kind)) {
+    // ⛔ D-282 B2 — the ordered vocabulary moved to contracts so a UI can ask which
+    // columns are clickable without restating it. A second hand-written copy of a closed
+    // list typechecks fine and is quietly wrong; this is the only copy.
+    if (!ORDERED_RECORD_KEYS.has(sortName)) {
+      if (!sortField || !ORDERED_FIELD_KINDS.has(sortField.kind)) {
         fail('records_invalid', `sort field '${sortName}' is not ordered`);
       }
     }
@@ -4794,6 +4865,80 @@ export const createRecordsStore = (
     created_at: Number(row.created_at),
   });
 
+  /** P2/F2 change review — a bounded keyset page of this pack's change history.
+   *
+   *  🔑 THE CHANGE LOG ALREADY EXISTED; THIS ONLY READS IT. Every non-suppressed
+   *  mutation enqueues an outbox row carrying `changed_fields`, delivered rows are
+   *  never pruned (the quota counts `status='pending'` only, and the single DELETE
+   *  is pack uninstall), so the field-level history is durable and complete
+   *  without one byte of new storage.
+   *
+   *  ⛔ NOT `getOutboxOverview`, which is a DELIVERY diagnostic: it orders by
+   *  status priority (pending first) to surface a stuck queue, and joins every
+   *  event's delivery rows. History wants the opposite — chronological order,
+   *  no delivery detail, and a cursor.
+   *
+   *  ⚠ The four `SUPPRESSED_CAUSES` (`migration` / `retention` / `uninstall_purge`
+   *  / `owner_bulk_delete`) emit nothing, so they are invisible here. That is right
+   *  for a review feed — they are housekeeping, not something the owner changed —
+   *  but it does mean this is NOT an audit trail and must never be described as one. */
+  const listChanges = (query: RecordsChangeQuery): RecordsChangeFeed => {
+    const owner = query.owner;
+    assertPackRef(owner);
+    requireValue(namespaceRow(owner), 'records_not_found', 'Records namespace was not found');
+    const limit = query.limit ?? 100;
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500) {
+      fail('records_invalid', 'records change limit must be an integer in 1..500');
+    }
+    // ⛔ THE HANDLER CASTS, SO THIS IS THE ONLY VALIDATOR. `records-rpc-handler`
+    // does `requireObject(args, …) as unknown as RecordsChangeQuery` — the house
+    // pattern — which means every field below arrives UNCHECKED off the wire and
+    // the TYPES here are a claim about callers, not a guarantee about input.
+    // `?.` rather than a property read: `after: null` typechecks nowhere and
+    // arrives anyway, and `null.at` is a raw TypeError, not a 400.
+    const after = query.after;
+    if (after !== undefined) {
+      const at: unknown = after?.at;
+      const eventId: unknown = after?.event_id;
+      if (!Number.isSafeInteger(at) || (at as number) < 0
+        || typeof eventId !== 'string' || eventId.length === 0) {
+        fail('records_invalid', 'records change cursor is invalid');
+      }
+    }
+    if (query.entity !== undefined && typeof query.entity !== 'string') {
+      // better-sqlite3 THROWS on binding an object/array, so an unguarded
+      // `entity` is a 500 where the caller deserves a 400.
+      fail('records_invalid', 'records change entity must be a string');
+    }
+    const where = ['publisher=?', 'pack_slug=?'];
+    const params: Array<string | number> = [owner.publisher, owner.pack_slug];
+    if (after !== undefined) {
+      where.push('(created_at > ? OR (created_at = ? AND event_id > ?))');
+      params.push(after.at, after.at, after.event_id);
+    }
+    if (query.entity !== undefined) {
+      where.push('kind=?');
+      params.push(query.entity);
+    }
+    // One row PAST the limit, so `has_more` is a fact rather than the inference
+    // "the page came back full" (which is wrong exactly when the last page is
+    // exactly `limit` long, and sends the reader round again for nothing).
+    params.push(limit + 1);
+    const rows = db.prepare(`SELECT * FROM ${OUTBOX_TABLE}
+      WHERE ${where.join(' AND ')}
+      ORDER BY created_at, event_id LIMIT ?`).all(...params) as Array<Record<string, unknown>>;
+    const has_more = rows.length > limit;
+    const page = has_more ? rows.slice(0, limit) : rows;
+    const last = page[page.length - 1];
+    return {
+      changes: page.map(eventPointer),
+      ...(last === undefined ? {} : {
+        next: { at: Number(last.created_at), event_id: last.event_id as string },
+      }),
+      has_more,
+    };
+  };
+
   const getOutboxOverview = (
     owner: RecordsPackRef,
     status?: RecordsOutboxStatus,
@@ -5504,6 +5649,7 @@ export const createRecordsStore = (
         .all(...params) as Array<Record<string, unknown>>;
       return rows.map(eventPointer);
     },
+    listChanges,
     getOutboxOverview,
     retireOutboxEvent,
     listPendingDeliveries(limit = 100) {

@@ -3,7 +3,9 @@ import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import {
   RpcError, SAVED_DATA_VIEW_LIMIT, SAVED_DATA_VIEW_NAME_LIMIT,
-  parseSavedDataViewDefinition, parseSavedDataViewAlertSettings, sameSavedDataViewDefinition, savedDataViewSupportsAlerts, type SavedDataView,
+  parseSavedDataViewDefinition, parseSavedDataViewAlertSettings, parseRecordsChangeCursor,
+  sameSavedDataViewDefinition, sameSavedDataViewReviewScope,
+  savedDataViewSupportsAlerts, savedDataViewSupportsReview, type SavedDataView,
   type SavedDataViewCreateRequest, type SavedDataViewRenameRequest,
   type SavedDataViewDeleteRequest, type SavedDataViewUpdateRequest,
 } from '@recued/contracts';
@@ -78,8 +80,9 @@ export const createSavedDataViewStore = (
     }),
     update: db.transaction((request: SavedDataViewUpdateRequest) => {
       const view = current(request);
-      if (!Object.hasOwn(request, 'definition') && !Object.hasOwn(request, 'alert')) {
-        throw new RpcError('bad_request', 'Provide saved view settings or alert settings.', 400);
+      if (!Object.hasOwn(request, 'definition') && !Object.hasOwn(request, 'alert')
+        && !Object.hasOwn(request, 'review')) {
+        throw new RpcError('bad_request', 'Provide saved view settings, alert settings, or a review mark.', 400);
       }
       const definition = Object.hasOwn(request, 'definition')
         ? parseSavedDataViewDefinition(request.definition) : view.definition;
@@ -94,6 +97,30 @@ export const createSavedDataViewStore = (
         alerts.clear(view.id);
       } else if (view.alert?.enabled && !sameSavedDataViewDefinition(view.definition, definition)) {
         updated.alert = alerts.configure(updated, view.alert);
+      }
+      // P2/F2 review mark. Mirrors the alert block above and inherits its
+      // shape for the same reason: a mark, like an alert, is state ABOUT a view
+      // that a definition edit can invalidate.
+      if (Object.hasOwn(request, 'review')) {
+        if (request.review === null) {
+          delete updated.review;
+        } else {
+          if (!savedDataViewSupportsReview(definition)) {
+            throw new RpcError('bad_request',
+              'Only a Records view with a pack and kind selected can be marked reviewed.', 400);
+          }
+          const cursor = parseRecordsChangeCursor(request.review);
+          if (cursor === null) throw new RpcError('bad_request', 'Invalid review mark.', 400);
+          updated.review = { reviewed_through: cursor, reviewed_at: Date.now() };
+        }
+      } else if (!savedDataViewSupportsReview(definition)
+        || !sameSavedDataViewReviewScope(view.definition, definition)) {
+        // ⛔ DROP IT RATHER THAN CARRY IT. Repointing the view at another pack
+        // or entity leaves the stored cursor addressing a stream it was never
+        // taken from, and a stale mark there does not merely mislead — it makes
+        // the feed SILENTLY SKIP everything before that position in the new
+        // stream. Losing the mark costs one re-read; keeping it hides changes.
+        delete updated.review;
       }
       write(updated);
       return updated;

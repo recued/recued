@@ -121,9 +121,23 @@ const PURPOSE_CATEGORY_SET = new Set<string>(PURPOSE_CATEGORIES);
 /** Priority rule passed via `llm.context`. Keeps the picking-policy
  *  out of the prompt template (which lives in `packages/llm/`) so the
  *  producer owns the selection guidance for its own categories. */
-const PURPOSE_CONTEXT =
+export const PURPOSE_CONTEXT =
   'Pick the most specific business-context category when one applies; ' +
-  'fall back to a generic intent category otherwise; use "other" only as a last resort.';
+  'fall back to a generic intent category otherwise; use "other" only as a last resort. ' +
+  // ⛔⛔ D-278's ZERO-ANCHOR, and only the half that measured. Without it the
+  // classifier narrated 0.6-1.0 for everything, including a body of "ok" it
+  // could only file under "other" — so the documented
+  // `purpose.confidence greater 0.7` gate passed every row, and D-133's PSI
+  // had a cluster too narrow to move. With it, the `other` fallbacks answered
+  // exactly 0 (4/4) and separation went 0.117 → 0.650.
+  //
+  // ⚠ A SECOND CLAUSE WAS MEASURED AND DROPPED: "below 0.5 when two or more
+  // categories fit equally well" changed nothing — a double-charge-plus-login
+  // mail still scored 0.95-1.0 while FLIPPING between `billing` and
+  // `support_request` across runs. 🔑 An anchor works when it names an
+  // observable condition the model already commits to (falling back to
+  // "other"); it does not work when it asks for a graded self-assessment.
+  'Use a confidence of 0 when you fall back to "other" because no listed category fits.';
 
 /** Inline `IngredientManifest` matching `community/ingredients/ai-classify.json`.
  *  Local to the producer, same reason as `summary`'s `aiSummarizeManifest`:

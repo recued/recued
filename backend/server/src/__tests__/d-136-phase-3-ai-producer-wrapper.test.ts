@@ -103,7 +103,6 @@ let db: Database.Database;
 
 const mkCtx = (overrides?: {
   llmWithMetaImpl?: HousekeepingContext['llmWithMeta'];
-  resolveLLMModelIdImpl?: HousekeepingContext['resolveLLMModelId'];
 }) => {
   ensureHousekeepingSchema(db);
   const enrichmentStore = createEnrichmentStore(db, { now: () => NOW });
@@ -115,9 +114,6 @@ const mkCtx = (overrides?: {
         model_id: 'openai:gpt-4o-mini',
       })),
   );
-  const resolveLLMModelId = overrides?.resolveLLMModelIdImpl
-    ? vi.fn(overrides.resolveLLMModelIdImpl)
-    : undefined;
   const ctx: HousekeepingContext = {
     db,
     bus: { emit: vi.fn() } as unknown as HousekeepingContext['bus'],
@@ -126,10 +122,9 @@ const mkCtx = (overrides?: {
     now: () => NOW,
     emitAuditRow: vi.fn(),
     llmWithMeta,
-    ...(resolveLLMModelId ? { resolveLLMModelId } : {}),
     trustStore,
   };
-  return { ctx, enrichmentStore, trustStore, llmWithMeta, resolveLLMModelId };
+  return { ctx, enrichmentStore, trustStore, llmWithMeta };
 };
 
 beforeEach(() => {
@@ -306,81 +301,64 @@ describe('D-136 §A.3 — runAIProducer model_id capture', () => {
   });
 });
 
-describe('D-136 §A.3 — runAIProducer cross-model dedup invalidation (Codex item 2)', () => {
-  it('dedup miss when resolveLLMModelId probe returns a different model than the existing row', async () => {
-    // First cycle: resolves to free-pool Groq
-    const groqProbe = vi.fn(async () => 'groq:llama-3.1-70b-versatile');
+describe('D-136 §A.3 — runAIProducer dedup is model-independent (D-275)', () => {
+  it('a different model on the next call does not invalidate — model identity is provenance, not a cache key', async () => {
+    // ⛔ THIS ASSERTED THE OPPOSITE, AND THE STUB IS WHY IT PASSED.
+    // The dedup condition used to require `r.model_id ===
+    // probedModelId`, fed by `ctx.resolveLLMModelId`. This test wired
+    // that probe as a `vi.fn()` returning a fixed string — and a fixed
+    // string cannot rotate, while the real resolver routes through
+    // `matchLLM`'s default `'round_robin'` and rotates every cycle. So
+    // the clause could never hold on a multi-entry free pool and every
+    // idle cycle recomputed every row. D-275 deleted the clause AND the
+    // probe; see `ai-producer-dedup-pool-rotation.test.ts`.
+    //
+    // What survives is the property worth pinning: a model change is a
+    // routing/economic event, not a statement that stored values are
+    // wrong. Re-running is a user act (D-123 per-topic Run-Now).
+
+    // Cycle 1 computes on free-pool Groq and stamps it on the row.
     const { ctx: ctxGroq, llmWithMeta: llmGroq } = mkCtx({
       llmWithMetaImpl: async () => ({
         result: aiResponse,
         model_id: 'groq:llama-3.1-70b-versatile',
       }),
-      resolveLLMModelIdImpl: groqProbe as unknown as HousekeepingContext['resolveLLMModelId'],
     });
     const first = await runAIProducer(buildInput(ctxGroq));
     expect(first.status).toBe('computed');
     expect(llmGroq).toHaveBeenCalledTimes(1);
 
-    // Second cycle on the SAME db: probe now resolves to BYOK Anthropic.
-    // Existing row's model_id is groq:..., probe says anthropic:... →
-    // dedup miss → recompute fires.
-    const anthropicProbe = vi.fn(async () => 'anthropic:claude-haiku-4-5');
+    // Cycle 2 on the SAME db, now configured to answer from BYOK
+    // Anthropic. The row holds `groq:…`; nothing about the record
+    // changed, so the work stands and the model never runs.
     const llmAnthropic = vi.fn(async () => ({
       result: aiResponse,
       model_id: 'anthropic:claude-haiku-4-5',
     }));
-    const ctxAnthropic: HousekeepingContext = {
-      ...ctxGroq,
-      llmWithMeta: llmAnthropic,
-      resolveLLMModelId:
-        anthropicProbe as unknown as HousekeepingContext['resolveLLMModelId'],
-    };
+    const ctxAnthropic: HousekeepingContext = { ...ctxGroq, llmWithMeta: llmAnthropic };
     const second = await runAIProducer(buildInput(ctxAnthropic));
-    expect(second.status).toBe('computed');
-    expect(llmAnthropic).toHaveBeenCalledTimes(1);
-    expect(anthropicProbe).toHaveBeenCalledOnce();
-  });
-
-  it('dedup HIT when probe returns the same model as existing row (steady-state cycle)', async () => {
-    const stableProbe = vi.fn(async () => 'openai:gpt-4o-mini');
-    const { ctx, llmWithMeta } = mkCtx({
-      llmWithMetaImpl: async () => ({ result: aiResponse, model_id: 'openai:gpt-4o-mini' }),
-      resolveLLMModelIdImpl: stableProbe as unknown as HousekeepingContext['resolveLLMModelId'],
-    });
-    await runAIProducer(buildInput(ctx));
-    expect(llmWithMeta).toHaveBeenCalledTimes(1);
-
-    const second = await runAIProducer(buildInput(ctx));
     expect(second.status).toBe('dedup_hit');
-    // No new LLM call — steady state holds because probe's answer matches the row.
-    expect(llmWithMeta).toHaveBeenCalledTimes(1);
+    expect(second.tokens_consumed).toBe(0);
+    expect(llmAnthropic).not.toHaveBeenCalled();
   });
 
-  it("falls through to legacy dedup (no model match) when ctx.resolveLLMModelId is unwired", async () => {
-    // Without the probe, dedup stays on (input_fingerprint, producer_version)
-    // — same model assumption holds. Tests that pre-D-136 ctx instances
-    // keep working unchanged.
+  it('steady-state cycle on an unchanged record dedups', async () => {
     const { ctx, llmWithMeta } = mkCtx();
     await runAIProducer(buildInput(ctx));
+    expect(llmWithMeta).toHaveBeenCalledTimes(1);
+
     const second = await runAIProducer(buildInput(ctx));
     expect(second.status).toBe('dedup_hit');
     expect(llmWithMeta).toHaveBeenCalledTimes(1);
   });
 
-  it("falls through to legacy dedup when probe returns empty string (no AI path resolved)", async () => {
-    // Probe returns '' when no path resolves — wrapper falls back to
-    // legacy 2-field match so the call still fires (executeLLM throws
-    // AI_LLM_UNAVAILABLE downstream; that's the actual unavailability
-    // signal, not the probe's empty string).
-    const emptyProbe = vi.fn(async () => '');
-    const { ctx, llmWithMeta } = mkCtx({
-      resolveLLMModelIdImpl: emptyProbe as unknown as HousekeepingContext['resolveLLMModelId'],
-    });
-    await runAIProducer(buildInput(ctx));
-    const second = await runAIProducer(buildInput(ctx));
-    expect(second.status).toBe('dedup_hit'); // legacy 2-field match still hits
-    expect(llmWithMeta).toHaveBeenCalledTimes(1);
-  });
+  // ⚠ Two tests were REMOVED here rather than flipped: "falls through to
+  // legacy dedup when ctx.resolveLLMModelId is unwired" and "… when the
+  // probe returns empty string". Both existed to cover branches of the
+  // `(probedModelId === '' || …)` short-circuit. With the probe gone
+  // there is one path, and both scenarios are byte-identical to the
+  // steady-state test above — three copies of one assertion, not three
+  // cases.
 });
 
 describe('D-136 §A.3 — runAIProducer error propagation', () => {

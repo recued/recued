@@ -234,6 +234,22 @@ const entry = (overrides: Partial<PackListEntry> = {}): PackListEntry => {
     ...(typeof manifest.repo === 'string' ? { repo: manifest.repo } : {}),
     body_visibility_grant_count:
       manifest.mcp_body_visibility_grants?.length ?? 0,
+    // The four scalars `projectManifest` now sends as their own fields. The
+    // panel reads THESE, not `manifest.*` — a list row must never reach through
+    // a 36 KB object for a scalar, which is how `packs.list` reached 17.7 MB.
+    // Mirror the projection here or the fixture tests a wire shape the server
+    // stopped sending.
+    ...(Array.isArray(manifest.tags) ? { tags: [...manifest.tags] } : {}),
+    ...(typeof manifest.pack_kind === 'string' ? { pack_kind: manifest.pack_kind } : {}),
+    ...(manifest.connection_requirements !== undefined
+      ? { connection_requirements: manifest.connection_requirements }
+      : {}),
+    ...(manifest.connection_hints !== undefined
+      ? { connection_hints: manifest.connection_hints }
+      : {}),
+    // ⚠ `manifest` stays: a DETAIL row carries one once `ensureDetailResolved`
+    // has landed, which is the state these tests render. `packs.list` itself no
+    // longer sends it — see `PackListEntry.manifest`.
     manifest,
     ...overrides,
   };

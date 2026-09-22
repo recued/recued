@@ -22,6 +22,7 @@ import {
 } from './constants.js';
 import type { RecipeDefinition } from '@recued/contracts';
 import { guardRequiredVariables } from '../chat-catalog.js';
+import { parseStepRef } from './helpers.js';
 import type { AddFn } from './helpers.js';
 
 export const validateQualityChecks = (r: Record<string, unknown>, add: AddFn): void => {
@@ -34,6 +35,9 @@ export const validateQualityChecks = (r: Record<string, unknown>, add: AddFn): v
   const output = (r.output && typeof r.output === 'object' && !Array.isArray(r.output))
     ? (r.output as Record<string, unknown>)
     : {};
+
+  checkConfidenceZeroAnchor(steps, add, 'steps');
+  checkConfidenceZeroAnchor(prefetch, add, 'prefetch_steps');
 
   const aiStepIndices: number[] = [];
   for (let i = 0; i < steps.length; i++) {
@@ -58,6 +62,8 @@ export const validateQualityChecks = (r: Record<string, unknown>, add: AddFn): v
   detectDuplicateStepContent(prefetch, 'prefetch_steps', add);
   detectDuplicateStepContent(steps, 'steps', add);
   checkOptionalButRequired(r, prefetch, steps, add);
+  checkListWithoutRowAction(steps, output, add);
+  checkListPagingUnreachable(r, output, add);
 };
 
 /** A variable whose EMPTY default is now overridden by the guard — reported so
@@ -409,4 +415,186 @@ const detectDuplicateStepContent = (
       seen.set(body, { id, index: i });
     }
   }
+};
+
+/** D-278 — a self-rated confidence with no ZERO-ANCHOR does not discriminate.
+ *
+ *  ⛔⛔ MEASURED, NOT REASONED. `meeting-notes-to-action`'s shipped contract
+ *  says only *"Return extraction_confidence as a number from 0 to 1"*. Held
+ *  everything else constant — same model, same fields, same four inputs — and
+ *  varied ONE sentence:
+ *
+ *      shipped (range only)  distinct [0.85, 0.9, 0.95]  separation -0.037
+ *                            8/8 cleared the 0.7 floor, INCLUDING 4/4 inputs
+ *                            with no decision and no action in them
+ *      + "Use 0 when the      distinct [0, 0.9]           separation +0.900
+ *        notes record no      0/4 of those same inputs cleared the floor
+ *        decision and no
+ *        next action."
+ *
+ *  The same bimodal shape appears in `track-warranty-from-receipt`, the one
+ *  shipped gate measured to work (1.0 real / 0.0 non-warranty) — and it is the
+ *  one whose prose says *"Use 0 when the body states no warranty length."*
+ *
+ *  🔑 THE VARIABLE IS THE ANCHOR, NOT THE DESCRIPTION. Recipes whose
+ *  confidence field carries a paragraph of description but no "return 0 when
+ *  …" measured no better than ones with a bare invented key: without a case
+ *  the model is told to score zero, it narrates 0.85-0.95 for everything and
+ *  any floor beneath that passes all of it.
+ *
+ *  ⚠ THE PROSE MATCH IS A HEURISTIC AND THIS IS A `warn`. It reads the field
+ *  descriptions and `llm.data` for an anchor phrase; a differently-worded one
+ *  will be missed, and an anchor for a DIFFERENT field will be credited to
+ *  this one. It is a prompt for the author, never a proof. */
+const ZERO_ANCHOR = /(use|return|set|give)\s+[^.]{0,40}\b0\b[^.]{0,20}\bwhen\b|confidence\s+0\s+when|\b0\s+when\b/i;
+
+const checkConfidenceZeroAnchor = (steps: StepArr, add: AddFn, pathRoot: string): void => {
+  for (let i = 0; i < steps.length; i++) {
+    const s = steps[i];
+    const args = (s?.args && typeof s.args === 'object' && !Array.isArray(s.args))
+      ? (s.args as Record<string, unknown>)
+      : (s?.input && typeof s.input === 'object' && !Array.isArray(s.input))
+        ? (s.input as Record<string, unknown>)
+        : {};
+    const fields = args['llm.fields'];
+    if (!Array.isArray(fields)) continue;
+
+    const named: string[] = [];
+    let prose = typeof args['llm.data'] === 'string' ? (args['llm.data'] as string) : '';
+    for (const f of fields) {
+      if (typeof f === 'string') {
+        if (/confidence/i.test(f)) named.push(f);
+      } else if (f && typeof f === 'object') {
+        const name = (f as { name?: unknown }).name;
+        const desc = (f as { description?: unknown }).description;
+        if (typeof desc === 'string') prose += ` ${desc}`;
+        if (typeof name === 'string' && /confidence/i.test(name)) named.push(name);
+      }
+    }
+    if (named.length === 0) continue;
+    if (ZERO_ANCHOR.test(prose)) continue;
+
+    add('warn', 'confidence_without_zero_anchor', `${pathRoot}[${i}].args['llm.fields']`,
+      `step '${String(s?.id ?? i)}' asks the model for ${named.length === 1 ? `'${named[0]}'` : `${named.length} confidence fields`}`
+      + ' but never tells it when to answer 0 — measured, a self-rating with no zero-anchor'
+      + ' clusters at 0.85-0.95 for every input and any floor beneath it passes all of them.'
+      + ' Add one sentence naming the case that scores zero (see track-warranty-from-receipt).');
+  }
+};
+
+/** D-282 A2 — a list you can look at and cannot act on.
+ *
+ *  Measured 2026-09-20 over `community/`: 269 packs render a list or a detail
+ *  and **11** of them carry a single row action. 827 recipes render a `table`
+ *  or `record_fields`; 51 emit any `recipe.run` at all. The substrate for
+ *  list -> detail has been shipped and reachable the whole time (D-195 actions,
+ *  the result panel's row-action -> detail -> return-and-refresh loop); what is
+ *  missing is that nothing makes it the default and nothing notices its
+ *  absence. This is the noticing.
+ *
+ *  ⚠ IT FIRES ONLY WHERE THE LIST SAYS IT IS OVER OPENABLE THINGS — the block
+ *  declares an `entity`, or the `to_table` step names an id-ish column. A table
+ *  of aggregates (`to_summary` rollups, a count by week) has no row to open and
+ *  must not be nagged about one; the whole value of the hint is that an author
+ *  who sees it is looking at a row they could have opened.
+ *
+ *  ⛔ `info`, NEVER an error. 363 shipped recipes match today. An error turns
+ *  the corpus red on the day it lands, gets suppressed, and then catches
+ *  nothing; the point is the NEXT author's default, and a progress measure for
+ *  the D-282 A1 regeneration. */
+const ID_ISH = /(^id$|_id$|_ref$|^ref$)/;
+
+const checkListWithoutRowAction = (
+  steps: StepArr,
+  output: Record<string, unknown>,
+  add: AddFn,
+): void => {
+  const sections = outputSections(output);
+  const byId = new Map<string, Record<string, unknown>>();
+  for (const s of steps) {
+    if (typeof s?.id === 'string') byId.set(s.id, s);
+  }
+  const renderPath = Array.isArray(output.render) ? 'output.render' : 'output.sidebar';
+
+  for (let i = 0; i < sections.length; i++) {
+    const section = sections[i];
+    if (section?.type !== 'table') continue;
+
+    // The table's columns come from the `to_table` step it renders, from the
+    // entity schema, or from both. Only the step half is readable here — the
+    // entity schema lives on the installed pack manifest, not in the recipe —
+    // so `entity` is taken as its own evidence that the rows are records.
+    const source = typeof section.source === 'string' ? section.source : '';
+    const stepId = parseStepRef(source);
+    const step = stepId === null ? undefined : byId.get(stepId);
+    const columns = Array.isArray(step?.columns) ? step.columns as unknown[] : [];
+
+    const hasActionColumn = columns.some((c) =>
+      c !== null && typeof c === 'object'
+      && (c as Record<string, unknown>).type === 'action');
+    if (hasActionColumn) continue;
+
+    // ⛔ A SELECTABLE TABLE IS ALREADY ACTIONABLE, and this hint's own sentence
+    // ("offers no way to act on one") is FALSE there. D-282 B6 added `select`
+    // AFTER this rule, so the rule went on nagging every author who used the
+    // new facet correctly — including the first recipe that shipped with it.
+    // ⚠ A row action and a selection are different gestures, not substitutes:
+    // one opens a record, the other acts on a set. Either answers "can I do
+    // anything with these rows", which is all this hint asks.
+    if (section.select !== undefined) continue;
+
+    const namesAnId = columns.some((c) => {
+      if (c === null || typeof c !== 'object') return false;
+      const field = (c as Record<string, unknown>).field;
+      return typeof field === 'string' && ID_ISH.test(field);
+    });
+    if (typeof section.entity !== 'string' && !namesAnId) continue;
+
+    add('info', 'table_without_row_action', `${renderPath}[${i}]`,
+      'this table renders rows that identify a record and offers no way to act on one'
+      + ' — add an `actions` column (`{ field: "actions", type: "action" }`) whose cells'
+      + ' carry a `recipe.run` descriptor, and the row opens a detail recipe in the'
+      + ' result panel. See community/recipes/list-buildings.json.');
+  }
+};
+
+/** D-282 A2 — a row cap the owner cannot page past.
+ *
+ *  `filter` (D-222) is the ONLY surface that reaches a recipe's `cursor`: the
+ *  Next/Previous controls bind to the descriptor's hidden carrier
+ *  (`outputFilterPageConfig` writes `config.cursor`), so a recipe that declares
+ *  a cap or a cursor and renders no `filter` has paging that exists and cannot
+ *  be operated. The list silently stops at the cap, and nothing on the page
+ *  says there is more.
+ *
+ *  🔑 IT IS ONE RULE COVERING BOTH DIRECTIONS ON PURPOSE. Measured: 48 recipes
+ *  declare `limit` with neither a `cursor` nor a `filter`; **0** declare
+ *  `cursor` without a `filter`. The second half is therefore a RATCHET over a
+ *  currently-true invariant rather than a finding — which is exactly what it is
+ *  for, because the D-282 A1 emitter adds `cursor` to recipes mechanically and
+ *  the failure it could introduce is dropping the `filter` that reaches it. */
+const checkListPagingUnreachable = (
+  r: Record<string, unknown>,
+  output: Record<string, unknown>,
+  add: AddFn,
+): void => {
+  const variables = (r.variables && typeof r.variables === 'object' && !Array.isArray(r.variables))
+    ? (r.variables as Record<string, unknown>)
+    : {};
+  const declared = ['cursor', 'limit'].filter((key) =>
+    Object.prototype.hasOwnProperty.call(variables, key));
+  if (declared.length === 0) return;
+
+  const sections = outputSections(output);
+  const rendersAList = sections.some((s) =>
+    s?.type === 'table' || s?.type === 'record_fields');
+  if (!rendersAList) return;
+  if (sections.some((s) => s?.type === 'filter')) return;
+
+  add('info', 'list_paging_unreachable',
+    Array.isArray(output.render) ? 'output.render' : 'output.sidebar',
+    `this recipe declares ${declared.map((k) => `\`${k}\``).join(' and ')} but renders no`
+    + ' `filter` block, and `filter` is the only surface that reaches them — the list stops'
+    + ' at the cap with nothing on the page saying there is more. Add'
+    + ' `{ type: "filter", fields: [...], hidden: ["limit", "cursor"], submit: "Search" }`.');
 };

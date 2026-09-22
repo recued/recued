@@ -187,9 +187,23 @@ export type IdentityAggregation = 'scenario' | 'perspective';
  *    folding from non-time-travelable sources.
  *  - `'ttl'` — discard after `ttl_days` post-`event_at`;
  *    tombstone-with-id preserves D-120 link graph.
- *  - `'recompute_on_drift'` — regen when PSI fires (only valid for
+ *  - `'recompute_on_drift'` — ⛔⛔ **NOTHING ACTS ON THIS TODAY.** It read
+ *    "regen when PSI fires", and D-284 removed the regen. The five topics
+ *    still carrying the value are therefore labelled for a behaviour they
+ *    no longer have — a NAME THAT LIES, kept deliberately rather than
+ *    renamed across the registry, the validity matrix and the MCP type
+ *    union for a value that audit § 26 Q3's promotion path would bring
+ *    back. Read it as "eligible to regen on drift, should that ever be
+ *    promoted", never as a description of what happens.
+ *
+ *    Why the regen went: a stored AI result is invalidated by a change to
+ *    the QUESTION — input content, or the prompt/producer asking it — or
+ *    by the user saying so. Drift is a statement about the PRODUCER, and
+ *    re-asking an unchanged input measured 0/20 category changes over
+ *    three runs with no convergence. Detection is unaffected; the banner
+ *    fires (D-283). Validity constraint retained: only valid for
  *    `stable_truth`, OR `aggregate_window` whose `aggregates_from` is
- *    fully time-travelable).
+ *    fully time-travelable.
  *  - `'historical'` — append-with-supersede; preserve trajectory via
  *    the `superseded_by_id` chain. The right policy for time_bound
  *    topics whose history is the signal.
@@ -4872,7 +4886,13 @@ export const ENRICHMENT_REGISTRY = {
     producer_kind: 'housekeeping',
     value_schema: acceptObject,
     sidecar: 'fts',
-    emits_confidence: true,
+    // ⛔ D-279 — `emits_confidence` REMOVED, not set false: omission is
+    // the idiom here (the registry carries 0 `false` values). The flag
+    // claimed a value this producer cannot produce — `ai-summarize`'s contracted output is `{ summary, key_points }`,
+    // with no confidence anywhere in it. `confidenceEmittingEnrichmentTopics()`
+    // fed that claim to the D-133 drift producer, which ran a PSI query
+    // per cycle whose `json_extract(value, '$.confidence') IS NOT NULL`
+    // predicate could never match a row.
     temporal_class: 'stable_truth',
     identity_aggregation: 'scenario',
     lifecycle_policy: 'recompute_on_drift',
@@ -4889,7 +4909,13 @@ export const ENRICHMENT_REGISTRY = {
     producer_kind: 'housekeeping',
     value_schema: acceptObject,
     sidecar: 'none',
-    emits_confidence: true,
+    // ⛔ D-279 — `emits_confidence` REMOVED, not set false: omission is
+    // the idiom here (the registry carries 0 `false` values). The flag
+    // claimed a value this producer cannot produce — the producer declares `'llm.fields': ['action_items']` and stores `{ action_items }`,
+    // with no confidence anywhere in it. `confidenceEmittingEnrichmentTopics()`
+    // fed that claim to the D-133 drift producer, which ran a PSI query
+    // per cycle whose `json_extract(value, '$.confidence') IS NOT NULL`
+    // predicate could never match a row.
     temporal_class: 'stable_truth',
     identity_aggregation: 'scenario',
     lifecycle_policy: 'recompute_on_drift',

@@ -3,14 +3,14 @@
     "source": {
       "kind": "official_openapi",
       "url": "https://www.mongodb.com/docs/api/doc/atlas-admin-api-v2.json",
-      "bytes": 4801497,
-      "sha256": "610f6bcc8fd07eb06eb2c2f6ccdfefbeaea29b1d9a2428496269b229db8909c1",
+      "bytes": 4801561,
+      "sha256": "996845fbf3380f22d9f518e0ee4be190e3a7df151f3d373b318ed639580b90d8",
       "openapi": "3.0.1",
       "title": "MongoDB Atlas Administration API",
       "api_version": "2.0",
-      "x_xgen_sha": "555e3e3c2ba30d91aeb0670326bc12fae4e53135",
+      "x_xgen_sha": "ed73f8c64c28ad35db951609976573e62907e790",
       "official_path_count": 319,
-      "retrieved_on": "2026-07-20",
+      "retrieved_on": "2026-09-20",
       "mutability": "The vendor-hosted URL is mutable. Generation fails closed unless the bytes and SHA-256 match this reviewed contract.",
       "declared_server": [
         {
@@ -163,7 +163,7 @@
       "mongodb-atlas-clusters-compute": 122173,
       "mongodb-atlas-networking-integrations": 82795,
       "mongodb-atlas-backups-archive": 128151,
-      "mongodb-atlas-observability": 180511,
+      "mongodb-atlas-observability": 177903,
       "mongodb-atlas-search-streams": 153646
     },
     "body_mode_counts": {
@@ -404,7 +404,29 @@
         "GET /api/atlas/v2/orgs/{orgId}/users/{userId}:orgMembershipStatuses",
         "GET /api/atlas/v2/orgs/{orgId}/users:orgMembershipStatuses"
       ],
-      "dropped_vendor_patterns": [],
+      "dropped_vendor_patterns": [
+        "GET /api/atlas/v2/groups/{groupId}/clusters/{clusterName}/performanceAdvisor/suggestedIndexes:processIds",
+        "GET /api/atlas/v2/groups/{groupId}/clusters/{clusterName}/queryShapeInsights/summaries:processIds",
+        "GET /api/atlas/v2/groups/{groupId}/clusters/{clusterName}/queryShapeInsights/{queryShapeHash}/details:processIds",
+        "GET /api/atlas/v2/groups/{groupId}/clusters/{hostName}/logs/{logName}.gz:hostName",
+        "GET /api/atlas/v2/groups/{groupId}/hosts/{processId}/fts/metrics/indexes/{databaseName}/{collectionName}/measurements:processId",
+        "GET /api/atlas/v2/groups/{groupId}/hosts/{processId}/fts/metrics/indexes/{databaseName}/{collectionName}/{indexName}/measurements:processId",
+        "GET /api/atlas/v2/groups/{groupId}/hosts/{processId}/fts/metrics/measurements:processId",
+        "GET /api/atlas/v2/groups/{groupId}/hosts/{processId}/fts/metrics:processId",
+        "GET /api/atlas/v2/groups/{groupId}/processes/{processId}/collStats/namespaces:processId",
+        "GET /api/atlas/v2/groups/{groupId}/processes/{processId}/databases/{databaseName}/measurements:processId",
+        "GET /api/atlas/v2/groups/{groupId}/processes/{processId}/databases/{databaseName}:processId",
+        "GET /api/atlas/v2/groups/{groupId}/processes/{processId}/databases:processId",
+        "GET /api/atlas/v2/groups/{groupId}/processes/{processId}/disks/{partitionName}/measurements:processId",
+        "GET /api/atlas/v2/groups/{groupId}/processes/{processId}/disks/{partitionName}:processId",
+        "GET /api/atlas/v2/groups/{groupId}/processes/{processId}/disks:processId",
+        "GET /api/atlas/v2/groups/{groupId}/processes/{processId}/measurements:processId",
+        "GET /api/atlas/v2/groups/{groupId}/processes/{processId}/performanceAdvisor/namespaces:processId",
+        "GET /api/atlas/v2/groups/{groupId}/processes/{processId}/performanceAdvisor/slowQueryLogs:processId",
+        "GET /api/atlas/v2/groups/{groupId}/processes/{processId}/performanceAdvisor/suggestedIndexes:processId",
+        "GET /api/atlas/v2/groups/{groupId}/processes/{processId}/{databaseName}/{collectionName}/collStats/measurements:processId",
+        "GET /api/atlas/v2/groups/{groupId}/processes/{processId}:processId"
+      ],
       "binary_response_captures": [
         "GET /api/atlas/v2/groups/{groupId}/clusters/{clusterName}/onlineArchives/queryLogs.gz",
         "GET /api/atlas/v2/groups/{groupId}/clusters/{hostName}/logs/{logName}.gz",
@@ -31245,7 +31267,7 @@
           "admitted_type": "string",
           "serialization": "single_repeated_query_item",
           "authority": "official_openapi_parameter",
-          "dropped_pattern": false,
+          "dropped_pattern": true,
           "integer_as_decimal_string": false,
           "array_scalarized": true
         },
@@ -31527,7 +31549,7 @@
           "admitted_type": "string",
           "serialization": "single_repeated_query_item",
           "authority": "official_openapi_parameter",
-          "dropped_pattern": false,
+          "dropped_pattern": true,
           "integer_as_decimal_string": false,
           "array_scalarized": true
         },
@@ -31653,7 +31675,7 @@
           "admitted_type": "string",
           "serialization": "single_repeated_query_item",
           "authority": "official_openapi_parameter",
-          "dropped_pattern": false,
+          "dropped_pattern": true,
           "integer_as_decimal_string": false,
           "array_scalarized": true
         },
@@ -32786,7 +32808,7 @@
           "admitted_type": "string",
           "serialization": "scalar",
           "authority": "official_openapi_parameter",
-          "dropped_pattern": false,
+          "dropped_pattern": true,
           "integer_as_decimal_string": false,
           "array_scalarized": false
         },
@@ -36369,7 +36391,7 @@
           "admitted_type": "string",
           "serialization": "scalar",
           "authority": "official_openapi_parameter",
-          "dropped_pattern": false,
+          "dropped_pattern": true,
           "integer_as_decimal_string": false,
           "array_scalarized": false
         },
@@ -36450,7 +36472,7 @@
           "admitted_type": "string",
           "serialization": "scalar",
           "authority": "official_openapi_parameter",
-          "dropped_pattern": false,
+          "dropped_pattern": true,
           "integer_as_decimal_string": false,
           "array_scalarized": false
         },
@@ -36651,7 +36673,7 @@
           "admitted_type": "string",
           "serialization": "scalar",
           "authority": "official_openapi_parameter",
-          "dropped_pattern": false,
+          "dropped_pattern": true,
           "integer_as_decimal_string": false,
           "array_scalarized": false
         },
@@ -36837,7 +36859,7 @@
           "admitted_type": "string",
           "serialization": "scalar",
           "authority": "official_openapi_parameter",
-          "dropped_pattern": false,
+          "dropped_pattern": true,
           "integer_as_decimal_string": false,
           "array_scalarized": false
         },
@@ -39834,7 +39856,7 @@
           "admitted_type": "string",
           "serialization": "scalar",
           "authority": "official_openapi_parameter",
-          "dropped_pattern": false,
+          "dropped_pattern": true,
           "integer_as_decimal_string": false,
           "array_scalarized": false
         }
@@ -39900,7 +39922,7 @@
           "admitted_type": "string",
           "serialization": "scalar",
           "authority": "official_openapi_parameter",
-          "dropped_pattern": false,
+          "dropped_pattern": true,
           "integer_as_decimal_string": false,
           "array_scalarized": false
         },
@@ -40071,7 +40093,7 @@
           "admitted_type": "string",
           "serialization": "scalar",
           "authority": "official_openapi_parameter",
-          "dropped_pattern": false,
+          "dropped_pattern": true,
           "integer_as_decimal_string": false,
           "array_scalarized": false
         },
@@ -40272,7 +40294,7 @@
           "admitted_type": "string",
           "serialization": "scalar",
           "authority": "official_openapi_parameter",
-          "dropped_pattern": false,
+          "dropped_pattern": true,
           "integer_as_decimal_string": false,
           "array_scalarized": false
         }
@@ -40397,7 +40419,7 @@
           "admitted_type": "string",
           "serialization": "scalar",
           "authority": "official_openapi_parameter",
-          "dropped_pattern": false,
+          "dropped_pattern": true,
           "integer_as_decimal_string": false,
           "array_scalarized": false
         }
@@ -40523,7 +40545,7 @@
           "admitted_type": "string",
           "serialization": "scalar",
           "authority": "official_openapi_parameter",
-          "dropped_pattern": false,
+          "dropped_pattern": true,
           "integer_as_decimal_string": false,
           "array_scalarized": false
         },
@@ -40724,7 +40746,7 @@
           "admitted_type": "string",
           "serialization": "scalar",
           "authority": "official_openapi_parameter",
-          "dropped_pattern": false,
+          "dropped_pattern": true,
           "integer_as_decimal_string": false,
           "array_scalarized": false
         }
@@ -40834,7 +40856,7 @@
           "admitted_type": "string",
           "serialization": "scalar",
           "authority": "official_openapi_parameter",
-          "dropped_pattern": false,
+          "dropped_pattern": true,
           "integer_as_decimal_string": false,
           "array_scalarized": false
         }
@@ -40960,7 +40982,7 @@
           "admitted_type": "string",
           "serialization": "scalar",
           "authority": "official_openapi_parameter",
-          "dropped_pattern": false,
+          "dropped_pattern": true,
           "integer_as_decimal_string": false,
           "array_scalarized": false
         },
@@ -41146,7 +41168,7 @@
           "admitted_type": "string",
           "serialization": "scalar",
           "authority": "official_openapi_parameter",
-          "dropped_pattern": false,
+          "dropped_pattern": true,
           "integer_as_decimal_string": false,
           "array_scalarized": false
         },
@@ -41302,7 +41324,7 @@
           "admitted_type": "string",
           "serialization": "scalar",
           "authority": "official_openapi_parameter",
-          "dropped_pattern": false,
+          "dropped_pattern": true,
           "integer_as_decimal_string": false,
           "array_scalarized": false
         },
@@ -41458,7 +41480,7 @@
           "admitted_type": "string",
           "serialization": "scalar",
           "authority": "official_openapi_parameter",
-          "dropped_pattern": false,
+          "dropped_pattern": true,
           "integer_as_decimal_string": false,
           "array_scalarized": false
         },
@@ -41719,7 +41741,7 @@
           "admitted_type": "string",
           "serialization": "scalar",
           "authority": "official_openapi_parameter",
-          "dropped_pattern": false,
+          "dropped_pattern": true,
           "integer_as_decimal_string": false,
           "array_scalarized": false
         },

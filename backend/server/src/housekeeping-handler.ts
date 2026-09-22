@@ -30,6 +30,7 @@
  *  Spec: D-123 §5.1 + D-132 §A.7-A.9. */
 
 import {
+  ALL_DRIFT_SEVERITIES,
   ALL_ENRICHMENT_POOL_POLICIES,
   ALL_ENRICHMENT_TRUST_STATES,
   HOUSEKEEPING_CYCLE_BUDGET_MAX_MS,
@@ -47,6 +48,8 @@ import {
   type HousekeepingEnrichmentInfo,
   type HousekeepingPreset,
   type HousekeepingTaskStatus,
+  type ConfidenceDriftSignal,
+  type DriftSeverity,
   type ServerRpcRegistry,
 } from '@recued/contracts';
 
@@ -57,6 +60,9 @@ import type { HousekeepingStateStore } from './housekeeping/state-store.js';
 import type { HousekeepingTaskInstance } from './housekeeping/registry.js';
 import type { TrustStore } from './housekeeping/trust-store.js';
 import type { LlmResultCacheStore } from './housekeeping/llm-result-cache-store.js';
+// ⚠ Value import, not a type: the topic string must come FROM the producer
+// that writes it. A second literal here reads identical and drifts silently.
+import { CONFIDENCE_DRIFT_TOPIC } from './housekeeping/producers/confidence-drift-signal.js';
 import type { EnrichmentStore } from './storage/enrichment-store.js';
 import type { ContractGrantEntryStore } from './storage/contract-grant-entry-store.js';
 import { createGrantEntryResolver } from './contract-grant-resolve.js';
@@ -336,13 +342,17 @@ const maybeBumpManualRun = async (
 
   // Estimate cycle cost for the banner copy. Best-effort — undefined
   // info just emits zero, which the UI renders as "no estimate
-  // available" inline.
+  // available" inline. ⚠ Either HALF being unknown means the same thing: a
+  // standalone task declares no source scope, and five AI-surface ones
+  // declare no per-record estimate. Multiplying through an absent value would
+  // have put a confident 0 on a banner about token spend.
   const info = deps.getEnrichmentInfo
     ? await deps.getEnrichmentInfo(task.meta.id)
     : undefined;
-  const estimated = info
-    ? info.token_estimate_per_record * info.source_collection_count
-    : 0;
+  const perRecord = info?.token_estimate_per_record;
+  const records = info?.source_collection_count;
+  const estimated =
+    perRecord !== undefined && records !== undefined ? perRecord * records : 0;
 
   try {
     deps.eventBus?.emit({
@@ -356,6 +366,31 @@ const maybeBumpManualRun = async (
     // flip. The banner re-arms naturally once paired clients reconnect
     // and replay events from the bus ring.
   }
+};
+
+/** Upper bound on drift rows returned in one read. There is one row per
+ *  confidence-emitting topic (8 today), so this is a ceiling, not a page
+ *  size — the caller gets every signal or the server is misconfigured. */
+const DRIFT_READ_MAX_ROWS = 200;
+
+const isDriftSeverity = (v: unknown): v is DriftSeverity =>
+  typeof v === 'string' && (ALL_DRIFT_SEVERITIES as ReadonlyArray<string>).includes(v);
+
+/** Narrow a stored row's `value` to a drift signal, or null.
+ *
+ *  Checks the three fields every consumer dereferences — the topic it is
+ *  about, the verdict, and when it was reached. The optional analysis fields
+ *  (`shift`, `low_confidence_delta`, distributions) are deliberately NOT
+ *  required: they vary by which instrument decided (D-281's proportion test
+ *  vs PSI), and rejecting a row for missing one would silence a real verdict
+ *  over a presentational detail. */
+const asDriftSignal = (value: unknown): ConfidenceDriftSignal | null => {
+  if (typeof value !== 'object' || value === null) return null;
+  const v = value as Record<string, unknown>;
+  if (typeof v['source_topic'] !== 'string' || v['source_topic'] === '') return null;
+  if (!isDriftSeverity(v['severity'])) return null;
+  if (typeof v['computed_at'] !== 'number' || !Number.isFinite(v['computed_at'])) return null;
+  return value as ConfidenceDriftSignal;
 };
 
 // ────────────────────────────────────────────────────────────────
@@ -372,6 +407,46 @@ export const handleHousekeepingTrustRead = async (
     );
   }
   return { rows: deps.trustStore.list() };
+};
+
+/** D-285 — the persisted drift signals, one row per source topic.
+ *
+ *  ⛔ WHY A READ PATH EXISTS AT ALL. Until this, the only way a client
+ *  learned of drift was the `enrichment_drift_detected` broadcast, and a
+ *  broadcast is a moment rather than a state. Measured on a live paired
+ *  browser, twice: the banner renders when the producer fires with the panel
+ *  open (control), and is absent after a reload in the SAME tab seconds
+ *  later — `cursor_since` intact — while the task's own last-run cell still
+ *  reads "5s ago". So the row was there and nothing could ask for it.
+ *
+ *  The store hands back `value` as unknown, so every row is shape-checked
+ *  here rather than cast. ⚠ Not because the WRITER can produce garbage —
+ *  `upsert` validates against the registry's `value_schema` and throws — but
+ *  because `value` is NULLABLE since D-136 P6, for failure placeholders and
+ *  for tombstones that NULL the column on cleanup. A row that fails the check
+ *  is DROPPED, not defaulted: inventing a `'none'` for a row carrying no
+ *  measurement would be a false all-clear about the owner's AI, the one
+ *  failure this surface must not have. */
+export const handleHousekeepingDriftRead = async (
+  deps: HousekeepingRpcDeps,
+): Promise<{ rows: ReadonlyArray<ConfidenceDriftSignal> }> => {
+  if (!deps.enrichmentStore) {
+    throw new RpcError(
+      'unsupported',
+      'housekeeping.drift.read: enrichment store not wired on this server',
+    );
+  }
+  const rows: ConfidenceDriftSignal[] = [];
+  for (const record of deps.enrichmentStore.list({
+    topic: CONFIDENCE_DRIFT_TOPIC,
+    // One row per confidence-emitting topic — a handful, not a page. The
+    // explicit cap keeps the response bounded if the registry grows.
+    limit: DRIFT_READ_MAX_ROWS,
+  })) {
+    const signal = asDriftSignal(record.value);
+    if (signal !== null) rows.push(signal);
+  }
+  return { rows };
 };
 
 export const handleHousekeepingTrustWrite = async (
@@ -820,6 +895,7 @@ type HousekeepingMethods =
   | 'housekeeping.trust.read'
   | 'housekeeping.trust.write'
   | 'housekeeping.trust.dismiss_promotion'
+  | 'housekeeping.drift.read'
   | 'housekeeping.topic.reset'
   | 'housekeeping.registry.describe'
   | 'housekeeping.cache.stats'
@@ -881,6 +957,7 @@ export const makeHousekeepingHandlers = (
       'housekeeping.trust.read',
       'housekeeping.trust.write',
       'housekeeping.trust.dismiss_promotion',
+      'housekeeping.drift.read',
       'housekeeping.topic.reset',
       'housekeeping.registry.describe',
       'housekeeping.cache.stats',
@@ -910,6 +987,7 @@ export const makeHousekeepingHandlers = (
           deps,
           args as Parameters<typeof handleHousekeepingTrustDismissPromotion>[1],
         ),
+      'housekeeping.drift.read': async () => handleHousekeepingDriftRead(deps),
       'housekeeping.topic.reset': async (args, client) =>
         handleHousekeepingTopicReset(
           deps,

@@ -23,6 +23,7 @@ import {
   PACKS_DETAIL_RESOLVE_RETRY_ATTR,
   PACKS_DETAIL_RESOLVING_ATTR,
   PACKS_DETAIL_SECTION_ATTR,
+  PACKS_DETAIL_TAB_ATTR,
   PACKS_PANEL_STYLES,
   PACKS_ROW_DELETE_BTN_ATTR,
   PACKS_ROW_INSTALL_BTN_ATTR,
@@ -189,6 +190,12 @@ interface MountArgs {
   installBySlug?: ReturnType<typeof vi.fn>;
   uninstall?: ReturnType<typeof vi.fn>;
   recipeList?: ReturnType<typeof vi.fn>;
+  /** Wiring these is what makes the owner-operation controller `enabled`. A
+   *  mount WITHOUT them is not a lighter test of the same thing — it takes the
+   *  `if (!enabled) return null` path, which is a branch production never has.
+   *  That exact gap already shipped a bug here: a green test proved the
+   *  pre-install preview rendered, under a condition the real panel never met. */
+  ownerOps?: boolean;
 }
 
 const mount = (args: MountArgs) => {
@@ -223,6 +230,12 @@ const mount = (args: MountArgs) => {
     runUninstall: runUninstall as never,
     ...(args.recipeList !== undefined
       ? { runRecipeList: args.recipeList as never }
+      : {}),
+    ...(args.ownerOps === true
+      ? {
+          runOwnerOperationInventory: (async () => ({ ingredients: [] })) as never,
+          runOwnerOperationList: (async () => ({ overrides: [] })) as never,
+        }
       : {}),
   });
   return { host, mount: m, runList, runInstall, runInstallBySlug, runUninstall };
@@ -299,6 +312,57 @@ describe('packs panel — detail (marketplace resolve + install/uninstall)', () 
     expect(runInstall).toHaveBeenCalledTimes(1);
     const sent = runInstall.mock.calls[0]![0] as { manifest?: BulkPackManifest };
     expect(sent.manifest?.slug).toBe('bundled-pack');
+  });
+
+  it('⛔ an INSTALLED pack arrives without a manifest too, resolves it, and does NOT claim "nothing to change" while it is in flight', async () => {
+    // `packs.list` stopped forwarding `manifest` for EVERY pack, installed
+    // included — it reached 17.7 MB and the socket dropped the frame whole. So
+    // the path the test above proved for an uninstalled pack is now the ONLY
+    // path, and an installed pack's detail depends on it for its access,
+    // permissions, supervision and collision surfaces. If `ensureDetailResolved`
+    // ever stops firing here, all of them silently render empty against a server
+    // that answered fine — which is the failure this whole change came from.
+    let land = (): void => undefined;
+    const gate = new Promise<void>((r) => { land = r; });
+    const resolve = vi.fn<PacksResolveCaller>(async () => {
+      await gate;
+      return { manifest: manifest({ slug: 'bundled-pack', name: 'Bundled Pack' }) };
+    });
+    const installedNoManifest = entry({ manifest: undefined, installed: true });
+    expect(installedNoManifest.manifest).toBeUndefined();
+    const { host, mount: m } = mount({
+      initialSlug: 'bundled-pack',
+      roster: () => ({ packs: [installedNoManifest] }),
+      resolve,
+      ownerOps: true,
+    });
+    await m.whenLoaded();
+    await tick();
+
+    // Installed is no longer a reason to skip the resolve.
+    expect(resolve).toHaveBeenCalledWith('bundled-pack');
+
+    const permissionsTab = findByAttrValue(host, PACKS_DETAIL_TAB_ATTR, 'permissions');
+    expect(permissionsTab).not.toBeNull();
+    permissionsTab!.click();
+    await tick();
+
+    // 🔑 THE ASSERTION THAT MATTERS IS THE ABSENCE. An in-flight manifest makes
+    // the owner-operation matrix return null, and the branch that caught that
+    // said "There is nothing to change here for this Pack." — a confident, false
+    // answer about a pack with plenty to change. Loading and empty are different
+    // facts and must not share a sentence.
+    const whileResolving = text(host);
+    expect(whileResolving).toContain('Loading this Pack’s operations');
+    expect(whileResolving).not.toContain('nothing to change here');
+
+    land();
+    await tick();
+    await tick();
+
+    // Backfilled in place, and the loading state is gone — it was a state, not a
+    // permanent label.
+    expect(text(host)).not.toContain('Loading this Pack’s operations');
   });
 
   it('resolves a MARKETPLACE slug absent from the roster + renders its detail', async () => {

@@ -237,18 +237,54 @@ export const runAIProducer = async <TAi, TValue>(
   // object, so the `??` fallback keeps the call type-safe.
   const baseLlmWithMeta = ctx.llmWithMeta;
 
-  // 1. Dedup probe — input_fingerprint_hash + producer_version_hash + model_id.
-  // The probe folds the would-be resolved model id into the match
-  // condition: when no probe is wired (legacy ctx), we fall back to
-  // matching on (input_fingerprint_hash, producer_version_hash) only.
-  // When the probe succeeds, cross-pool changes (free-pool ↔ BYOK)
-  // invalidate the cached row because the existing row's `model_id`
-  // column reflects the model that actually computed the value, while
-  // the probe returns what the next call WOULD pick.
+  // 1. Dedup probe — (input_fingerprint_hash, producer_version_hash).
+  //
+  // ⛔ `model_id` IS DELIBERATELY NOT PART OF THIS MATCH, AND WAS.
+  // The clause read `(probedModelId === '' || r.model_id ===
+  // probedModelId)` — "invalidate when the model that WOULD answer
+  // differs from the model that DID". Two things killed it:
+  //
+  //  1. IT COULD NEVER HOLD STEADY ON A MULTI-ENTRY FREE POOL. The
+  //     probe routes through `matchLLM`, whose default strategy is
+  //     `'round_robin'`, selecting `group[cursor % group.length]`.
+  //     The executor advances that cursor after every successful call
+  //     (`executor.ts`, key `free:<tier>`); the probe only reads it
+  //     (`preflight.ts`). So the probed id rotated every cycle, the
+  //     match never hit again, and EVERY idle cycle recomputed EVERY
+  //     row — with no housekeeping spend cap to absorb it
+  //     (`task-token-meter.ts`: "NO CAP AND NO PERSISTENCE,
+  //     deliberately"). `ai-producer-dedup-pool-rotation.test.ts`
+  //     pins it: a single-entry pool deduped, and adding one tied
+  //     entry — the only difference — cost a call every cycle.
+  //
+  //  2. IT READ AN ECONOMIC DECISION AS A QUALITY SIGNAL. A user
+  //     moves BYOK → free pool to spend less, or free pool → BYOK
+  //     because the free quota ran out. Neither says "the values you
+  //     already have are wrong". The second is perverse: it
+  //     recomputes the corpus onto the paid key at exactly the moment
+  //     the user signalled scarcity.
+  //
+  // 🔑 `model_id` STAYS ON THE ROW AS PROVENANCE — what actually
+  // computed the value — and is never a control input. A user who
+  // does want fresh values after a model change re-runs the topic
+  // (Settings → Server → Housekeeping per-topic Run-Now, D-123).
+  //
+  // ⚠ If cross-model invalidation is ever wanted back, it cannot key
+  // on "what would we pick NOW": that value rotates by design. The
+  // only rotation-immune form is "is the stored model still among the
+  // candidates this config can reach" — and that one still misfires
+  // on quota exhaustion, which is case 2 above.
+  //
+  // 🏁 `ctx.resolveLLMModelId` WAS DELETED WITH THIS CLAUSE — the field,
+  // the `HousekeepingResolveModelId` type, the `wire-llm-substrate`
+  // callable and the force-layer pass-through in `enrichment-producer`.
+  // This clause was its only consumer and its doc named it. The
+  // `@recued/llm` `resolveLLMModelId` helper survives, uncalled by
+  // production: it is a pure router dry-run, and the guard test uses it
+  // to show the rotation is still live. ⚠ It is NOT a cache primitive —
+  // its own contract promises "no round-robin advancement", which is
+  // exactly why it can never agree with the next real call.
   const input_fingerprint_hash = computeInputFingerprintHash(input.inputFingerprint);
-  const probedModelId = ctx.resolveLLMModelId
-    ? await ctx.resolveLLMModelId(input.manifest, input.llmInput)
-    : '';
 
   if (input.scope !== undefined && input.target_id !== undefined) {
     const existing = ctx.enrichmentStore.list({
@@ -262,13 +298,7 @@ export const runAIProducer = async <TAi, TValue>(
     const hit = existing.find(
       (r) =>
         r.input_fingerprint_hash === input_fingerprint_hash &&
-        r.producer_version_hash === input.producer_version_hash &&
-        // Cross-pool invalidation: when the probe is wired AND it
-        // returned a model id (i.e. an AI path resolves), require the
-        // existing row's `model_id` to match. When the probe is not
-        // wired or returned empty, fall through to legacy behavior so
-        // tests and pre-D-136 ctx instances keep working unchanged.
-        (probedModelId === '' || r.model_id === probedModelId),
+        r.producer_version_hash === input.producer_version_hash,
     );
     if (hit) {
       // Refresh `last_evaluated_at` so the row's "we checked recently"

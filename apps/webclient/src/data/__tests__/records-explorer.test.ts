@@ -104,6 +104,12 @@ const state = (overrides: Partial<RecordsExplorerState> = {}): RecordsExplorerSt
   },
   outboxOpen: false,
   outboxRefreshing: false,
+  changes: null,
+  changesOpen: false,
+  changesRefreshing: false,
+  reviewMark: null,
+  canMarkReviewed: false,
+  markingReviewed: false,
   retention: { job: { mode: 'keep' } },
   loading: false,
   loadingNamespaceKey: null,
@@ -614,6 +620,213 @@ describe('D-221 Records route control-plane seam', () => {
     expect(root.children[0]!.innerHTML).toContain('data-recued-records-explorer');
     expect(root.children[0]!.innerHTML).toContain('All event backlog');
     expect(root.children[0]!.innerHTML).not.toContain('alice@example.test');
+    route.dispose();
+  });
+});
+
+describe('P2/F2 what-changed panel', () => {
+  const change = (id: string, at: number, fields: string[] = ['amount']) => ({
+    event_id: `evt-${id}`, type: 'record.updated' as const,
+    owner: { publisher: 'publisher-a', pack_slug: 'pack-a' },
+    entity: 'job', id, revision: 2, changed_fields: fields,
+    activation_generation: 1, subscriber_digest: 'd', cause: 'recipe' as const,
+    created_at: at,
+  });
+  const feed = (overrides: Record<string, unknown> = {}) => ({
+    changes: [change('job-1', Date.now() - 60_000)],
+    next: { at: Date.now() - 60_000, event_id: 'evt-job-1' },
+    has_more: false,
+    ...overrides,
+  });
+
+  it('renders nothing before the first read', () => {
+    expect(renderRecordsExplorer(state({ changes: null }))).not.toContain('What changed');
+  });
+
+  it('says "oldest first" when unmarked and "since you last reviewed" once marked', () => {
+    const unmarked = renderRecordsExplorer(state({ changes: feed(), reviewMark: null }));
+    expect(unmarked).toContain('What changed');
+    expect(unmarked).not.toContain('since you last reviewed');
+    // The walk is forward from the mark, so an unmarked view is showing the
+    // OLDEST page. "What changed" reads as "lately" unless it says otherwise.
+    expect(unmarked).toContain('oldest first');
+
+    const marked = renderRecordsExplorer(state({
+      changes: feed(),
+      reviewMark: { reviewed_through: { at: 1, event_id: 'e' }, reviewed_at: Date.now() - 3_600_000 },
+    }));
+    expect(marked).toContain('since you last reviewed');
+    expect(marked).toContain('Last reviewed');
+  });
+
+  /** ⛔ A PAGE SIZE IS NOT A TOTAL. The feed is bounded, so printing
+   *  `changes.length` bare over a larger backlog tells the reviewer they have
+   *  seen everything when they have seen the first page. The `+` is the whole
+   *  guard, and nothing else in the render would fail if it vanished. */
+  it('discloses a clipped count rather than reporting the page size as the total', () => {
+    const clipped = renderRecordsExplorer(state({
+      changes: feed({ changes: [change('a', Date.now()), change('b', Date.now())], has_more: true }),
+    }));
+    expect(clipped).toContain('2+ changes');
+    expect(clipped).toContain('More changes than fit one page');
+
+    const exact = renderRecordsExplorer(state({
+      changes: feed({ changes: [change('a', Date.now()), change('b', Date.now())], has_more: false }),
+    }));
+    expect(exact).toContain('2 changes');
+    expect(exact).not.toContain('2+ changes');
+  });
+
+  it('offers the mark only when a saved view can hold it, and says why when it cannot', () => {
+    const withView = renderRecordsExplorer(state({ changes: feed(), canMarkReviewed: true }));
+    expect(withView).toContain('Mark reviewed');
+
+    const without = renderRecordsExplorer(state({ changes: feed(), canMarkReviewed: false }));
+    expect(without).not.toContain('Mark reviewed');
+    expect(without).toContain('Open this pack through a saved view');
+  });
+
+  it('disables the mark when there is nothing new to mark', () => {
+    const html = renderRecordsExplorer(state({
+      changes: feed({ changes: [], next: undefined }), canMarkReviewed: true,
+      reviewMark: { reviewed_through: { at: 1, event_id: 'e' }, reviewed_at: Date.now() },
+    }));
+    expect(html).toContain('Nothing new since you last reviewed');
+    expect(html).toMatch(/records-mark-reviewed"[^>]*aria-disabled="true"/);
+  });
+
+  /** ⛔ The outbox forces itself open on dead letters — an exceptional state.
+   *  Having changes is the ORDINARY state here, so copying that made the panel
+   *  impossible to collapse: the `open` attribute came back on every render. */
+  it('stays collapsible when there are changes', () => {
+    const closed = renderRecordsExplorer(state({ changes: feed(), changesOpen: false }));
+    expect(closed).toContain('records-changes');
+    expect(closed).not.toMatch(/<details class="records-changes" open>/);
+
+    const open = renderRecordsExplorer(state({ changes: feed(), changesOpen: true }));
+    expect(open).toMatch(/<details class="records-changes" open>/);
+  });
+
+  it('names the fields that changed', () => {
+    const html = renderRecordsExplorer(state({
+      changes: feed({ changes: [change('job-9', Date.now(), ['amount', 'due_at'])] }),
+    }));
+    expect(html).toContain('amount, due_at');
+    expect(html).toContain('Changed');
+  });
+});
+
+/** ⛔ THE TEST THAT WOULD HAVE CAUGHT THE DEFECT THE RENDER TESTS COULD NOT.
+ *
+ *  Every test above hands `changes` to the renderer directly, so all of them
+ *  passed while NOTHING IN THE PRODUCT EVER SET IT: the panel's three triggers
+ *  (toggle, refresh, post-mark) are controls INSIDE the panel, and the panel
+ *  only renders once `changes` is non-null. The feature was reachable only from
+ *  itself. Injecting state tests a renderer; only booting the route tests the
+ *  feature. */
+describe('P2/F2 change feed route seam', () => {
+  const view = {
+    id: 'view_00000000-0000-4000-8000-000000000009', name: 'Jobs',
+    revision: 4, created_at: 1, updated_at: 1,
+    definition: { tab: 'records' as const, owner: namespace('publisher-a').owner, entity: 'job' },
+  };
+  const change = {
+    event_id: 'evt-1', type: 'record.updated' as const,
+    owner: namespace('publisher-a').owner, entity: 'job', id: 'job-1', revision: 2,
+    changed_fields: ['amount'], activation_generation: 1, subscriber_digest: 'd',
+    cause: 'recipe' as const, created_at: 1_800_000_000_000,
+  };
+  const boot = (overrides: Record<string, unknown> = {}) => {
+    const root = fakeElement();
+    const route = bootstrapDataRoute({
+      root: root as unknown as HTMLElement, document: fakeDocument(), initialTab: 'records',
+      savedView: view,
+      recordsNamespaceListCaller: async () => ({ namespaces: [namespace('publisher-a')], global_quota: globalQuota }),
+      recordsKindListCaller: async () => ({ kinds: [{ kind: 'job', rows: 1, payload_bytes: 42 }] }),
+      recordsSearchCaller: async () => ({ records: [record] }),
+      sharedListCaller: async () => ({ entries: [] }),
+      liveRefreshDebounceMs: 0,
+      ...overrides,
+    } as never);
+    const click = (action: string) => {
+      const control = { getAttribute: (key: string) => key === 'data-recued-data-action' ? action : null };
+      const target = { closest: (selector: string) => selector === '[data-recued-data-action]' ? control : null };
+      for (const listener of root.children[0]!.listeners.get('click') ?? []) listener({ target, preventDefault: () => {} } as unknown as Event);
+    };
+    return { root, route, click };
+  };
+
+  it('reads the feed when the pack loads, so the panel can exist at all', async () => {
+    const changesListCaller = vi.fn().mockResolvedValue({ changes: [change], next: { at: change.created_at, event_id: change.event_id }, has_more: false });
+    const { root, route } = boot({ recordsChangesListCaller: changesListCaller });
+    await route.whenLoaded();
+
+    expect(changesListCaller).toHaveBeenCalledTimes(1);
+    expect(root.children[0]!.innerHTML).toContain('What changed');
+    route.dispose();
+  });
+
+  it('renders without the panel when the host wires no caller', async () => {
+    const { root, route } = boot();
+    await route.whenLoaded();
+    expect(root.children[0]!.innerHTML).not.toContain('What changed');
+    route.dispose();
+  });
+
+  it('reads from the bound view mark rather than from the beginning', async () => {
+    const changesListCaller = vi.fn().mockResolvedValue({ changes: [], has_more: false });
+    const mark = { reviewed_through: { at: 5, event_id: 'evt-0' }, reviewed_at: 9 };
+    const { route } = boot({
+      recordsChangesListCaller: changesListCaller,
+      savedView: { ...view, review: mark },
+    });
+    await route.whenLoaded();
+    expect(changesListCaller).toHaveBeenCalledWith(
+      expect.objectContaining({ after: mark.reviewed_through }),
+    );
+    route.dispose();
+  });
+
+  /** ⛔ `detachSavedView` clears the LINK and leaves the binding object in
+   *  place, so a mark derived from the binding alone survives the one act that
+   *  means "stop associating this pack with that bookmark". */
+  it('stops offering the mark once the owner detaches the saved view', async () => {
+    const changesListCaller = vi.fn().mockResolvedValue({ changes: [change], next: { at: 1, event_id: 'e' }, has_more: false });
+    const markCaller = vi.fn();
+    const { root, route, click } = boot({
+      recordsChangesListCaller: changesListCaller,
+      recordsMarkReviewedCaller: markCaller,
+    });
+    await route.whenLoaded();
+    expect(root.children[0]!.innerHTML).toContain('Mark reviewed');
+
+    route.detachSavedView();
+    await route.whenLoaded();
+    // Re-read so the panel recomputes whether a view can hold the mark.
+    click('records-refresh-changes');
+    await route.whenLoaded();
+    expect(root.children[0]!.innerHTML).not.toContain('Mark reviewed');
+    expect(markCaller).not.toHaveBeenCalled();
+    route.dispose();
+  });
+
+  it('marks reviewed with the cursor that was on screen, not a fresh clock', async () => {
+    const next = { at: change.created_at, event_id: change.event_id };
+    const changesListCaller = vi.fn().mockResolvedValue({ changes: [change], next, has_more: false });
+    const markCaller = vi.fn().mockResolvedValue({
+      view: { ...view, revision: 5, review: { reviewed_through: next, reviewed_at: 123 } },
+    });
+    const { route, click } = boot({
+      recordsChangesListCaller: changesListCaller,
+      recordsMarkReviewedCaller: markCaller,
+    });
+    await route.whenLoaded();
+    click('records-mark-reviewed');
+    await route.whenLoaded();
+
+    expect(markCaller).toHaveBeenCalledWith({
+      id: view.id, expected_revision: view.revision, review: next,
+    });
     route.dispose();
   });
 });

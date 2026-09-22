@@ -21,6 +21,7 @@
 import type {
   LocalRecipeWebhookStatus,
   RecipeDefinition,
+  ServerRecipeFullEntry,
   ServerRecipeListEntry,
   WebhookIngressBindingSelection,
   WebhookIngressView,
@@ -246,9 +247,19 @@ export interface MountRecipeEditorRouteOptions {
   document?: Document;
   /** The recipe to load into the editor (seg 1 of `#kitchen/recipe/<id>`). */
   recipeId: string;
-  /** Resolves the full definition — reuses the recipes route's `recipe.list`
-   *  caller (each entry carries `recipe`; there is no `recipe.get`). */
+  /** Resolves the full definition. ⚠ KEPT AS THE FALLBACK, not the path:
+   *  `recipe.get` now exists and {@link getCaller} is tried first. This stays
+   *  because a webclient can meet an older server — self-hosted has no deploy
+   *  order — and that server answers `unknown_method`. */
   listCaller: RecipeListCaller;
+  /** Fetches ONE recipe by id (`recipe.get`). Preferred over
+   *  {@link listCaller}: the list carries every definition on the server
+   *  (9.86 MB of a 10.26 MB response on a 2,369-recipe realm) to hand this
+   *  route exactly one of them. Optional so an older server still opens the
+   *  editor through the list. */
+  getCaller?: (args: { recipe_id: string }) => Promise<{
+    recipe: ServerRecipeFullEntry | null;
+  }>;
   validateCaller: (args: { recipe: RecipeDefinition }) => Promise<RecipeValidateResult>;
   simulateCaller?: RecipeSimulationCaller;
   saveCaller: (args: {
@@ -392,11 +403,40 @@ export const mountRecipeEditorRoute = (
       renderStatus('Loading recipe…', 'loading');
     }
     try {
-      const result = await options.listCaller();
-      if (disposed) return;
-      const entry = result.recipes.find(
-        (r) => r.recipe_id === options.recipeId,
-      );
+      // ⛔ BY ID FIRST, LIST ONLY AS A FALLBACK. Scanning the list downloads
+      // every recipe body on the server to use one. `recipe.get` returns the
+      // identical entry — asserted in `recipe-list-handler.test.ts`, which
+      // requires the two doors to agree entry-for-entry.
+      //
+      // ⚠ The fallback is not defensive padding: a newer webclient against an
+      // older server gets `unknown_method`, and self-hosted installs have no
+      // deploy order that would prevent it.
+      let entry: ServerRecipeFullEntry | undefined;
+      let usedFallback = false;
+      if (options.getCaller !== undefined) {
+        try {
+          const got = await options.getCaller({ recipe_id: options.recipeId });
+          if (disposed) return;
+          entry = got.recipe ?? undefined;
+        } catch {
+          usedFallback = true;
+        }
+      } else {
+        usedFallback = true;
+      }
+      if (usedFallback) {
+        const result = await options.listCaller();
+        if (disposed) return;
+        // ⚠ THE FALLBACK CANNOT PRODUCE A BODY ANY MORE. `packs.list`-style
+        // trimming reached `recipe.list` too, so an older server's list row has
+        // no `steps` — the editor would open on a recipe it cannot save. Treat
+        // a list-only server as "cannot open by list" rather than opening
+        // something hollow.
+        const row = result.recipes.find((r) => r.recipe_id === options.recipeId);
+        entry = row === undefined || (row.recipe as { steps?: unknown }).steps === undefined
+          ? undefined
+          : (row as unknown as ServerRecipeFullEntry);
+      }
       if (entry === undefined) {
         const focusOwner = statusFocusOwner();
         renderStatus(

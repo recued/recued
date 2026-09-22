@@ -118,12 +118,23 @@ describe('runYieldIsTotalRefusal', () => {
 
 describe('D-237 P2 — deriveRunYield', () => {
   it('separates steps that RAN from steps a condition SKIPPED', () => {
+    // ⚠ D-276 added `skipped_step_ids`. These step logs carry no `id`, so
+    // the count still says 2 while the list stays empty — the two are
+    // deliberately allowed to disagree rather than invent a placeholder.
     const y = deriveRunYield([
       { skipped: false },
       { skipped: true },
       { skipped: true },
     ]);
-    expect(y).toEqual({ steps_run: 1, steps_skipped: 2, items_total: 0, items_failed: 0 });
+    expect(y).toEqual({
+      steps_run: 1, steps_skipped: 2, items_total: 0, items_failed: 0, skipped_step_ids: [],
+    });
+
+    // Named steps ARE listed, which is what makes a single gate's rate a query.
+    expect(deriveRunYield([
+      { id: 'ran', skipped: false },
+      { id: 'gate', skipped: true },
+    ]).skipped_step_ids).toEqual(['gate']);
   });
 
   it('sums foreach tallies across every step', () => {
@@ -365,7 +376,7 @@ describe('D-237 P2 — the wiring: a real run stamps its own yield', () => {
     expect(entry?.commit_status).toBe('succeeded');
     expect(entry?.errors ?? []).toEqual([]);
     expect(entry?.run_yield).toEqual({
-      steps_run: 1, steps_skipped: 0, items_total: 3, items_failed: 3,
+      steps_run: 1, steps_skipped: 0, items_total: 3, items_failed: 3, skipped_step_ids: [],
     });
   });
 
@@ -373,7 +384,7 @@ describe('D-237 P2 — the wiring: a real run stamps its own yield', () => {
     const entry = await runReal(['ok_1', 'ok_2', 'ok_3']);
     expect(entry?.commit_status).toBe('succeeded');
     expect(entry?.run_yield).toEqual({
-      steps_run: 1, steps_skipped: 0, items_total: 3, items_failed: 0,
+      steps_run: 1, steps_skipped: 0, items_total: 3, items_failed: 0, skipped_step_ids: [],
     });
   });
 
@@ -387,8 +398,11 @@ describe('D-237 P2 — the wiring: a real run stamps its own yield', () => {
 
   it('an EMPTY collection stamps a real zero, not an absent yield', async () => {
     const entry = await runReal([]);
+    // ⚠ D-276 — `skipped_step_ids: []` is EMITTED, not omitted, for the same
+    // reason this test exists: absent would have to mean "not recorded", and an
+    // omitted-when-empty field could not say which.
     expect(entry?.run_yield).toEqual({
-      steps_run: 1, steps_skipped: 0, items_total: 0, items_failed: 0,
+      steps_run: 1, steps_skipped: 0, items_total: 0, items_failed: 0, skipped_step_ids: [],
     });
   });
 });

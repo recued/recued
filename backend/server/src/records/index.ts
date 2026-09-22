@@ -2,6 +2,7 @@ export {
   createRecordsStore,
   RECORDS_TABLES,
   type CreateRecordsStoreOptions,
+  type RecordsChangeNotice,
   type RecordsInstallInput,
   type RecordsNamespaceSummary,
   type RecordsOwnerSearchInput,

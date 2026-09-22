@@ -36,6 +36,18 @@ const isKernelRecipe = (recipe: { metadata?: { author?: string } } | undefined):
   recipe?.metadata?.author === 'recued';
 
 import { hashRecipe } from '@recued/recipes';
+
+import {
+  buildPackOperationIndex,
+  isProvablyReadOnly,
+  recipeRequiredConnections,
+  type RecipeListRecipeView,
+  type ServerRecipeFullEntry,
+  type ConnectionKind,
+  type RecipeDefinition,
+  type PackOperationIndex,
+  type RecordsUsagePack,
+} from '@recued/contracts';
 import {
   type HandlerSlice,
   type ServerRecipeListEntry,
@@ -46,6 +58,21 @@ import type { WsClient } from './ws-server.js';
 
 export interface RecipeListHandlerDeps {
   store: RecipeStore;
+  /** The installed pack roster, for the `provably_read_only` projection.
+   *
+   *  ⛔ WHY THE SERVER DECIDES THIS AND NOT THE CLIENT. The webclient used to
+   *  answer it by walking each recipe's steps against a roster built from
+   *  `packs.list` manifests. That list no longer forwards manifests, so the
+   *  roster resolves nothing and the rule fails CLOSED — a genuine view shown
+   *  as an operation. And once the step bodies come off this list it would
+   *  fail OPEN instead, which is worse: `stepsAreAnalysable(undefined)` is
+   *  `true`, so a stripped body passes every check vacuously and a recipe that
+   *  DELETES answers "read only". A permissions answer must not be derivable
+   *  from data the answerer no longer holds.
+   *
+   *  Optional: a server without it projects `undefined` and the client keeps
+   *  its own full-body answer. */
+  packRoster?: () => readonly RecordsUsagePack[];
   /** Epoch ms — the server process's startup time. Used as the
    *  fallback `installed_at` for bundled recipes that don't track
    *  their own first-seen time. */
@@ -55,35 +82,149 @@ export interface RecipeListHandlerDeps {
 /** Shape used internally so the bundled-vs-stored branches converge
  *  on one return type before the rpc envelope wraps it. */
 type ListEntry = ServerRecipeListEntry;
+/** The same row with its body intact — what `recipe.get` answers with. */
+type FullEntry = ServerRecipeFullEntry;
+
+/** Strip the execution body for a LIST row.
+ *
+ *  ⚠ APPLIED LAST, NEVER FIRST. `hashRecipe` must cover what this drops (it is
+ *  the client's drift check), and both projections — `provably_read_only` and
+ *  `required_connections` — read the very steps being removed. That ordering
+ *  is the whole reason those answers are computed here and not by the client. */
+const listView = (recipe: RecipeDefinition): RecipeListRecipeView => {
+  const { steps: _s, prefetch_steps: _p, ...rest } = recipe as RecipeDefinition & {
+    prefetch_steps?: unknown;
+  };
+  return rest as RecipeListRecipeView;
+};
+
+/** The facts a trimmed row can no longer derive for itself. */
+const projections = (
+  recipe: RecipeDefinition,
+  ops: PackOperationIndex | null,
+): {
+  provably_read_only?: boolean;
+  required_connections?: { kind: ConnectionKind | null; name: string }[];
+} => ({
+  ...(ops === null ? {} : { provably_read_only: isProvablyReadOnly(recipe as never, ops) }),
+  // ⚠ `kind` is `ConnectionKind | null` and the NULL IS MEANINGFUL — it means
+  // the need came from a `read_connection_*` permission rather than a typed
+  // `connection.<kind>.<name>` ref. An earlier version of this line did
+  // `String(c.kind)` and shipped the literal string "null" to every client.
+  required_connections: recipeRequiredConnections(recipe)
+    .map((c) => ({ kind: c.kind, name: c.name })),
+});
+
+/** The stored (pair-sync / imported) row as a list entry, or null when the row
+ *  is a kernel recipe. */
+const storedEntry = (row: {
+  recipe_id: string; publisher_id: string; version: number;
+  recipe_hash: string; recipe_json: string;
+  source: string; installed_at: number;
+}, ops: PackOperationIndex | null): FullEntry | null => {
+  const recipe = JSON.parse(row.recipe_json);
+  // ⚠ A kernel recipe should never reach the stored table — it is not in
+  // `installRegistry` — but the same rule applies if one ever does.
+  if (isKernelRecipe(recipe)) return null;
+  return {
+    recipe_id: row.recipe_id,
+    publisher_id: row.publisher_id || 'local',
+    version: row.version,
+    recipe_hash: row.recipe_hash,
+    recipe,
+    // Stored 'imported' rows from older server builds are renamed to
+    // 'pair-sync' on the wire — the contract shape only carries the three
+    // values, and 'imported' is the legacy alias for 'pair-sync'.
+    source: row.source === 'bundled' ? 'bundled' : 'pair-sync',
+    installed_at: row.installed_at,
+    ...projections(recipe, ops),
+  };
+};
+
+/** The bundled recipe as a list entry, or null when it is a kernel recipe.
+ *  Bundled recipes have no row, so `installed_at` / `publisher_id` / the hash
+ *  are derived — see this module's header. */
+const bundledEntry = (
+  recipe: { recipe_id: string; version: number; metadata?: { author?: string } },
+  serverStartedAt: number,
+  ops: PackOperationIndex | null,
+): FullEntry | null => {
+  if (isKernelRecipe(recipe)) return null;
+  return {
+    recipe_id: recipe.recipe_id,
+    publisher_id: 'recued-core',
+    version: recipe.version,
+    recipe_hash: hashRecipe(recipe as never),
+    recipe: recipe as never,
+    source: 'bundled',
+    installed_at: serverStartedAt,
+    ...projections(recipe as never, ops),
+  };
+};
+
+/** The op index for one call. ⛔ BUILT ONCE, NEVER PER RECIPE: the roster is
+ *  ~26k operations, and the webclient's own note records that walking it once
+ *  per recipe cost ~58s of a one-minute sweep. */
+const opsFor = (deps: RecipeListHandlerDeps): PackOperationIndex | null =>
+  deps.packRoster === undefined ? null : buildPackOperationIndex(deps.packRoster());
+
+/** D-119 — `recipe.get`: ONE recipe by id, in the same entry shape
+ *  `recipe.list` returns.
+ *
+ *  ⛔ WHY IT EXISTS, HAVING NOT EXISTED FOR A LONG TIME.
+ *  `ServerRecipeListEntry.recipe` carries the whole definition, on a trade its
+ *  own comment states: *"Bigger than necessary on first paint, but avoids a
+ *  per-row `recipe.get` round-trip on scope switch."* That round-trip was never
+ *  built, so every caller of `recipe.list` pays for the entire corpus. Measured
+ *  on a 2,369-recipe realm the `recipe` field is **9,855,263 B, 96.0%** of a
+ *  10.26 MB response, and the webclient issues `recipe.list` **23 times** in one
+ *  session. A 10.26 MB frame takes seconds to drain, and a 12.73 MB
+ *  `chat.inbound_token.tool_catalog` landing behind one of them blew the 16 MiB
+ *  per-socket cap — the socket was terminated while the server logged `ok=true`.
+ *  See internal design notes.
+ *
+ *  🔑 THIS IS THE PREREQUISITE, NOT THE FIX. Trimming the list body is the fix;
+ *  it cannot happen while the Kitchen editor initialises from
+ *  `entry.recipe` (`mount-recipe-editor-route.ts` — `initialRecipe: entry.recipe`)
+ *  and `packs/pack-app-model.ts` reads `recipe.output` off a list row. Those
+ *  callers move here first, THEN the body comes off the list.
+ *
+ *  ⚠ SAME PRECEDENCE AND SAME EXCLUSIONS AS THE LIST, by sharing the builders
+ *  rather than restating them: stored wins over bundled (the user's chosen
+ *  version), and kernel recipes are invisible. This module's header records
+ *  what it cost when one store had three readers and only two applied the rule;
+ *  a second door that re-derived the logic would be the fourth. */
+export const getServerRecipe = (
+  deps: RecipeListHandlerDeps,
+  recipe_id: string,
+): { recipe: FullEntry | null } => {
+  const id = typeof recipe_id === 'string' ? recipe_id.trim() : '';
+  if (id === '') return { recipe: null };
+  const ops = opsFor(deps);
+  for (const row of deps.store.listStored()) {
+    if (row.recipe_id !== id) continue;
+    return { recipe: storedEntry(row, ops) };
+  }
+  const bundled = deps.store.get(id);
+  if (!bundled) return { recipe: null };
+  return { recipe: bundledEntry(bundled, deps.serverStartedAt, ops) };
+};
 
 export const listServerRecipes = (
   deps: RecipeListHandlerDeps,
 ): { recipes: ListEntry[] } => {
   const seen = new Set<string>();
-  const out: ListEntry[] = [];
+  const out: FullEntry[] = [];
+  const ops = opsFor(deps);
 
   // SQLite-stored (pair-sync / imported) wins on conflict — those are
   // the user's chosen versions, bundled is the fallback.
   for (const row of deps.store.listStored()) {
+    // ⚠ Marked `seen` even when the entry is dropped: that is what stops the
+    // bundled copy of a kernel recipe re-adding it in the loop below.
     seen.add(row.recipe_id);
-    const recipe = JSON.parse(row.recipe_json);
-    // ⚠ A kernel recipe should never reach the stored table — it is not in
-    // `installRegistry` — but the same rule applies if one ever does, and marking
-    // it `seen` above still stops the bundled copy re-adding it.
-    if (isKernelRecipe(recipe)) continue;
-    out.push({
-      recipe_id: row.recipe_id,
-      publisher_id: row.publisher_id || 'local',
-      version: row.version,
-      recipe_hash: row.recipe_hash,
-      recipe,
-      // Stored 'imported' rows from older server builds are renamed
-      // to 'pair-sync' on the wire — the contract shape only carries
-      // the three values, and 'imported' is the legacy alias for
-      // 'pair-sync' at the row layer.
-      source: row.source === 'bundled' ? 'bundled' : 'pair-sync',
-      installed_at: row.installed_at,
-    });
+    const entry = storedEntry(row, ops);
+    if (entry !== null) out.push(entry);
   }
 
   // Bundled — every recipe the disk-loader saw at boot. Skip any id
@@ -93,17 +234,8 @@ export const listServerRecipes = (
     if (seen.has(id)) continue;
     const recipe = deps.store.get(id);
     if (!recipe) continue; // shouldn't happen; defensive
-    if (isKernelRecipe(recipe)) continue;
-    // Bundled recipes have no row, so we have to derive these.
-    out.push({
-      recipe_id: recipe.recipe_id,
-      publisher_id: 'recued-core',
-      version: recipe.version,
-      recipe_hash: hashRecipe(recipe),
-      recipe,
-      source: 'bundled',
-      installed_at: deps.serverStartedAt,
-    });
+    const entry = bundledEntry(recipe, deps.serverStartedAt, ops);
+    if (entry !== null) out.push(entry);
   }
 
   // Stable order: most recent first, then alphabetical by recipe_id.
@@ -112,19 +244,23 @@ export const listServerRecipes = (
     return a.recipe_id.localeCompare(b.recipe_id);
   });
 
-  return { recipes: out };
+  // ⛔ THE TRIM HAPPENS HERE, ON THE WAY OUT, AND ONLY HERE. The builders hand
+  // back whole entries so `recipe.get` and the projections above both see a
+  // real body; the list is the one surface that ships without one.
+  return { recipes: out.map((entry) => ({ ...entry, recipe: listView(entry.recipe) })) };
 };
 
-export type RecipeListMethods = 'recipe.list';
+export type RecipeListMethods = 'recipe.list' | 'recipe.get';
 
 export const makeRecipeListHandlers = (
   deps: RecipeListHandlerDeps | undefined,
 ): HandlerSlice<ServerRpcRegistry, RecipeListMethods, WsClient> | undefined => {
   if (!deps) return undefined;
   return {
-    methods: ['recipe.list'],
+    methods: ['recipe.list', 'recipe.get'],
     handlers: {
       'recipe.list': async () => listServerRecipes(deps),
+      'recipe.get': async (args) => getServerRecipe(deps, args.recipe_id),
     },
   };
 };

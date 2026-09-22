@@ -16,7 +16,7 @@ import {
   recipeOpIds,
   recipeRecordsUsage,
   type RecordsUsagePack,
-} from '../recipes/recipe-records-usage.js';
+} from '@recued/contracts';
 
 type OpSpec = {
   op: string;

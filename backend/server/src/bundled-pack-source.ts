@@ -40,7 +40,7 @@
  *  Production leaves `packDir` undefined (`serve/compose-rpc-context.ts` builds
  *  all three `packs.*` dep bundles without it). */
 
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
 import { parseBulkPackManifest, type BulkPackManifest } from '@recued/contracts';
@@ -169,11 +169,57 @@ export const isCoreFeaturePack = (manifest: BulkPackManifest): boolean =>
  *  cannot manage belongs in none of them. The BOOT WIRE reads its own scan
  *  (`foundation-pack-pre-install.ts`) precisely because it needs the packs this
  *  one hides. */
+/** Cheap proof that a pack tree has not changed: the walked file set with each
+ *  file's size + mtime. Stat'ing 1,052 files is ~5ms against the ~660ms the
+ *  parse costs, so validating is two orders cheaper than redoing the work.
+ *
+ *  ⚠ SIZE **AND** MTIME, NOT EITHER. An edit that preserves length (flipping a
+ *  digit, a boolean) moves only mtime; a write inside the same millisecond as
+ *  the last one moves only size. Together they miss only a same-millisecond
+ *  same-length rewrite, which no release path produces. */
+const packTreeFingerprint = (dir: string): string => {
+  const parts: string[] = [];
+  for (const file of walkJsonFiles(dir)) {
+    try {
+      const st = statSync(file);
+      parts.push(`${file}\u0000${st.size}\u0000${st.mtimeMs}`);
+    } catch {
+      parts.push(`${file}\u0000?`);
+    }
+  }
+  return `${parts.length}\u0001${parts.join('\u0001')}`;
+};
+
+interface RosterCacheEntry {
+  fingerprint: string;
+  manifests: readonly BulkPackManifest[];
+}
+const rosterCache = new Map<string, RosterCacheEntry>();
+
+/** Drop the roster cache. Tests that write a pack tree and re-read it inside
+ *  one millisecond call this rather than depend on mtime resolution. */
+export const clearBundledPackRosterCache = (): void => { rosterCache.clear(); };
+
 export const loadBundledPackManifests = (
   packDir?: string,
   moduleDir?: string,
 ): BulkPackManifest[] => {
   const dir = packDir ?? findCommunityPackDir(moduleDir);
+  // ⛔ The embed union is keyed into the cache, not just the directory: the
+  // SAME dir yields a different roster depending on whether `packDir` was
+  // explicit (see this function's contract — an explicit dir means "this
+  // fixture is the corpus" and the foundation embed is withheld). Caching on
+  // `dir` alone would let a harness poison the default path, or the reverse.
+  const key = `${packDir === undefined ? 'default' : 'explicit'}\u0000${dir}`;
+  const fingerprint = packTreeFingerprint(dir);
+  const hit = rosterCache.get(key);
+  // 🔑 A COPY, ALWAYS. `handlePacksList` sorts the returned array IN PLACE, so
+  // handing back the cached array would let one caller reorder every later
+  // caller's roster. The manifests inside are shared and must be treated as
+  // read-only — every caller today either reads fields or spreads them into
+  // fresh arrays.
+  if (hit !== undefined && hit.fingerprint === fingerprint) return [...hit.manifests];
+
   const bySlug = new Map<string, BulkPackManifest>();
   for (const file of walkJsonFiles(dir)) {
     const manifest = readManifestFile(file);
@@ -185,7 +231,9 @@ export const loadBundledPackManifests = (
       if (!bySlug.has(manifest.slug)) bySlug.set(manifest.slug, manifest);
     }
   }
-  return [...bySlug.values()].filter((manifest) => !isCoreFeaturePack(manifest));
+  const manifests = [...bySlug.values()].filter((manifest) => !isCoreFeaturePack(manifest));
+  rosterCache.set(key, { fingerprint, manifests });
+  return [...manifests];
 };
 
 /** Resolve one pack by manifest `slug`, disk first, embed second.

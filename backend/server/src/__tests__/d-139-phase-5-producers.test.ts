@@ -487,7 +487,6 @@ describe('D-139 P5 — processOneSentimentTrend integration', () => {
       }
       return { result: llmResponses.shift(), model_id: llmModelId };
     }),
-    resolveLLMModelId: vi.fn(async () => llmModelId),
   });
 
   const buildInput = (rows: EngagementRow[]) => ({
@@ -651,7 +650,7 @@ describe('D-139 P5 — processOneSentimentTrend integration', () => {
     expect(llmCalls).toHaveLength(1);
   });
 
-  it('cross-pool invalidation — switching model_id forces recompute', async () => {
+  it('switching model_id does NOT force recompute — a pool switch is an economic decision', async () => {
     const rows = [
       buildRow({ event_at: FIXED_NOW - 10 * day, target_id: 'r1', vendor_modstamp: 'mod_1' }),
       buildRow({ event_at: FIXED_NOW - 5 * day, target_id: 'r2', vendor_modstamp: 'mod_2' }),
@@ -663,11 +662,20 @@ describe('D-139 P5 — processOneSentimentTrend integration', () => {
     expect(llmCalls).toHaveLength(1);
 
     // Switch the resolved model_id (simulating free→BYOK pool flip).
+    // ⛔ FLIPPED, NOT DELETED: this asserted `produced === true` and 2
+    // calls. The `r.model_id === probedModelId` dedup clause that made
+    // it true could never hold on a multi-entry free pool — round-robin
+    // rotated the probed id every cycle, so every idle cycle recomputed
+    // every row, unmetered. A pool switch is a cost decision, not a
+    // statement that existing values are wrong; re-running is the
+    // user's call (D-123 per-topic Run-Now). See
+    // `ai-producer-dedup-pool-rotation.test.ts`.
     llmModelId = 'anthropic:claude-haiku-4-5';
     llmResponses.push({ category: 'cooling', confidence: 0.4, reasoning: 'second call' });
     const second = await processOneSentimentTrend(ctxInst, buildInput(rows));
-    expect(second.produced).toBe(true);
-    expect(llmCalls).toHaveLength(2);
+    expect(second.produced).toBe(false);
+    expect(second.reason).toBe('dedup_hit');
+    expect(llmCalls).toHaveLength(1);
   });
 
   it('returns no_llm when ctx.llmWithMeta is unwired', async () => {
@@ -724,7 +732,6 @@ describe('D-139 P5 — processOneNextBestAction integration', () => {
       }
       return { result: llmResponses.shift(), model_id: llmModelId };
     }),
-    resolveLLMModelId: vi.fn(async () => llmModelId),
   });
 
   const buildInput = (rows: EngagementRow[]) => ({
@@ -829,7 +836,7 @@ describe('D-139 P5 — processOneNextBestAction integration', () => {
     expect(llmCalls).toHaveLength(1);
   });
 
-  it('cross-pool invalidation — switching model_id forces recompute', async () => {
+  it('switching model_id does NOT force recompute — a pool switch is an economic decision', async () => {
     const rows = [
       buildRow({ event_at: FIXED_NOW - 5 * day, target_id: 'r1', vendor_modstamp: 'mod_1' }),
       buildRow({ event_at: FIXED_NOW - 1 * day, target_id: 'r2', vendor_modstamp: 'mod_2' }),
@@ -838,11 +845,13 @@ describe('D-139 P5 — processOneNextBestAction integration', () => {
     const ctxInst = ctx();
     await processOneNextBestAction(ctxInst, buildInput(rows));
     expect(llmCalls).toHaveLength(1);
+    // ⛔ FLIPPED, NOT DELETED — see the sentiment-trend twin above.
     llmModelId = 'anthropic:claude-haiku-4-5';
     llmResponses.push({ category: 'investigate', confidence: 0.4, reasoning: 'second' });
     const second = await processOneNextBestAction(ctxInst, buildInput(rows));
-    expect(second.produced).toBe(true);
-    expect(llmCalls).toHaveLength(2);
+    expect(second.produced).toBe(false);
+    expect(second.reason).toBe('dedup_hit');
+    expect(llmCalls).toHaveLength(1);
   });
 
   it('returns no_llm when llmWithMeta is unwired', async () => {
@@ -1010,7 +1019,6 @@ describe('D-139 P5 — Codex P2 fold-back: zero-row tombstone (sentiment)', () =
       }
       return { result: llmResponses.shift(), model_id: 'groq:llama-3-70b' };
     }),
-    resolveLLMModelId: vi.fn(async () => 'groq:llama-3-70b'),
   });
 
   const buildInput = (rows: EngagementRow[]) => ({
@@ -1120,7 +1128,6 @@ describe('D-139 P5 — Codex P2 fold-back: zero-row tombstone (NBA)', () => {
       if (llmResponses.length === 0) throw new Error('no llm response queued');
       return { result: llmResponses.shift(), model_id: 'groq:llama-3-70b' };
     }),
-    resolveLLMModelId: vi.fn(async () => 'groq:llama-3-70b'),
   });
 
   const buildInput = (rows: EngagementRow[]) => ({
@@ -1224,7 +1231,6 @@ describe('D-139 P5 — Codex P2 fold-back: window enforcement integration', () =
       if (llmResponses.length === 0) throw new Error('no llm response queued');
       return { result: llmResponses.shift(), model_id: 'groq:llama-3-70b' };
     }),
-    resolveLLMModelId: vi.fn(async () => 'groq:llama-3-70b'),
   });
 
   beforeEach(() => {

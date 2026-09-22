@@ -68,12 +68,13 @@ import {
 } from '@recued/contracts';
 
 import {
+  isProvablyReadOnly,
   buildPackOperationIndex,
   recipeDeclaredOps,
   recipeRecordsUsage,
   type PackOperationIndex,
   type RecordsUsagePack,
-} from '../recipes/recipe-records-usage.js';
+} from '@recued/contracts';
 import { classifyRecipeAction } from '../recipes/recipe-action-kind.js';
 
 /** Output blocks that mean "there is something here to read". A `summary` is
@@ -138,6 +139,32 @@ const shippedVisibleSlugs = (manifest: BulkPackManifest): string[] => {
 const rendersReadingSurface = (recipe: ServerRecipeListEntry['recipe']): boolean =>
   recipeOutputSections(recipe).some((section) => READING_BLOCKS.has(section.type));
 
+/** The variables the engine will demand from the caller — `null`, or a
+ *  non-optional ValueHint with no `default`. `null` when the boundary itself is
+ *  malformed, which must never read as "takes no input".
+ *
+ *  ⛔ ONE RULE, TWO CALLERS. `needsAnArgument` asks whether the list is empty;
+ *  D-282 B5 asks which variable a URL's value binds to. Deriving the second from
+ *  a second copy is how a recipe becomes a tab on one axis and a lookup on the
+ *  other. */
+export const requiredVariables = (
+  recipe: ServerRecipeListEntry['recipe'],
+): string[] | null => {
+  const variables = (recipe as unknown as { variables?: unknown }).variables;
+  if (variables === undefined) return [];
+  if (variables === null || typeof variables !== 'object' || Array.isArray(variables)) {
+    return null;
+  }
+  const required: string[] = [];
+  for (const [key, spec] of Object.entries(variables as Record<string, unknown>)) {
+    if (spec === null) return null;
+    if (typeof spec !== 'object' || Array.isArray(spec)) continue;
+    const hint = spec as Record<string, unknown>;
+    if (hint.optional !== true && hint.default === undefined) required.push(key);
+  }
+  return required;
+};
+
 /** Does the recipe require caller-supplied input or page context?
  *
  *  `deriveRecipeTargeting` is the shared modal/server rule for record and page
@@ -147,61 +174,46 @@ const rendersReadingSurface = (recipe: ServerRecipeListEntry['recipe']): boolean
  *  themselves defaults. Together these keep auto-run tabs self-sufficient. */
 const needsAnArgument = (recipe: ServerRecipeListEntry['recipe']): boolean => {
   if (deriveRecipeTargeting(recipe).targeted) return true;
-  const variables = (recipe as unknown as { variables?: unknown }).variables;
-  if (variables === undefined) return false;
+  const required = requiredVariables(recipe);
   // Installed recipes are validated, but this is the auto-run classifier: a
   // malformed variable boundary must cost a tab, never be interpreted as
   // "takes no input".
-  if (variables === null || typeof variables !== 'object' || Array.isArray(variables)) {
-    return true;
-  }
-  return Object.values(variables as Record<string, unknown>).some((spec) => {
-    if (spec === null) return true;
-    if (typeof spec !== 'object' || Array.isArray(spec)) return false;
-    const hint = spec as Record<string, unknown>;
-    return hint.optional !== true && hint.default === undefined;
-  });
+  return required === null || required.length > 0;
 };
 
-/** Step kinds whose effects this module can actually account for: `transform`
- *  and `guard` are pure, `op` is what the two read-only axes inspect. A step
- *  matching none of them — an `ingredient` step, or a kind added later — is not
- *  understood, and "not understood" cannot be allowed to read as "harmless".
- *  See the header. */
-const stepsAreAnalysable = (steps: unknown): boolean => {
-  if (steps === undefined || steps === null) return true;
-  if (!Array.isArray(steps)) return false;
-  return steps.every((step) => {
-    if (step === null || typeof step !== 'object') return false;
-    const row = step as Record<string, unknown>;
-    return typeof row.transform === 'string'
-      || typeof row.op === 'string'
-      || row.guard !== undefined;
-  });
-};
-
-/** Can we PROVE this recipe only reads? See the header — every step kind
- *  understood, both axes clean, and an unresolved op is a no. */
-const isProvablyReadOnly = (
+/** The ONE variable a URL tail may bind for a lookup — or null, meaning this
+ *  lookup is not addressable and its argument must be collected by the modal.
+ *
+ *  🔑 D-282 B5. A detail page is a place: `#packs/rental-book/use/show-building/
+ *  bld_42` should be bookmarkable, shareable, and a real Back step. That is only
+ *  honest when the address names exactly one thing, so this refuses every case
+ *  where a single segment would be a guess:
+ *
+ *   - MORE THAN ONE required variable — the segment cannot say which it fills,
+ *     and filling the first would run a different query than the one the URL
+ *     appears to describe.
+ *   - ZERO required variables — nothing to bind. (A lookup can land here by
+ *     being TARGETED, below.)
+ *   - A MALFORMED variable boundary (`requiredVariables` → null) — the same
+ *     fail-closed reading `needsAnArgument` takes.
+ *   - TARGETED. `deriveRecipeTargeting` says the argument comes from page /
+ *     record CONTEXT, which a hash cannot carry. Binding the variable alone
+ *     would run it with half its input, which fails in the recipe rather than
+ *     here, where the reason is legible.
+ *
+ *  ⛔ THIS IS NOT A PERMISSION CHECK, AND MUST NEVER BE READ AS ONE. It answers
+ *  "can one segment express this argument", nothing more. Whether the recipe may
+ *  be run from a URL at all is `surface.lookups` membership — the read-only
+ *  proof — and the caller checks that SEPARATELY, against the roster installed
+ *  right now. A pack version bump can move a recipe from lookup to operation,
+ *  and this function would not notice. */
+export const lookupTargetVariable = (
   recipe: ServerRecipeListEntry['recipe'],
-  roster: PackOperationIndex,
-): boolean => {
-  const r = recipe as unknown as {
-    steps?: unknown; prefetch_steps?: unknown; trigger_steps?: unknown;
-  };
-  if (
-    !stepsAreAnalysable(r.steps)
-    || !stepsAreAnalysable(r.prefetch_steps)
-    || !stepsAreAnalysable(r.trigger_steps)
-  ) {
-    return false;
-  }
-  const declared = recipeDeclaredOps(recipe, roster);
-  if (declared.unresolved.length > 0) return false;
-  if (declared.risk !== null && declared.risk !== 'read') return false;
-  return recipeRecordsUsage(recipe, roster).every((pack) =>
-    pack.entities.every((entity) =>
-      !entity.effects.includes('write') && !entity.effects.includes('delete')));
+): string | null => {
+  if (deriveRecipeTargeting(recipe).targeted) return null;
+  const required = requiredVariables(recipe);
+  if (required === null || required.length !== 1) return null;
+  return required[0]!;
 };
 
 /** Map the installed pack roster into the shape the usage join reads. Every
@@ -283,8 +295,16 @@ export const packAppSurface = (
       automations.push(item);
       continue;
     }
+    // ⛔ THE SERVER'S ANSWER WINS. It computes this against the whole bundled
+    // roster with the step bodies in hand; this client has neither reliably —
+    // `packs.list` no longer forwards manifests, so the local roster resolves
+    // almost nothing and the local rule fails CLOSED on genuine views. The
+    // local compute stays only for a server too old to project it, and only
+    // while the row still carries `steps`: once it does not, the type stops
+    // this line compiling, which is the point.
     const readOnlyRenderer = rendersReadingSurface(entry.recipe)
-      && isProvablyReadOnly(entry.recipe, index.ops);
+      && (entry.provably_read_only
+        ?? isProvablyReadOnly(entry.recipe as never, index.ops));
     const bucket = !readOnlyRenderer
       ? operations
       : needsAnArgument(entry.recipe) ? lookups : views;

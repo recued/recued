@@ -8,11 +8,13 @@
  *    2. PSI `'significant'` transition on a stable_truth +
  *       recompute_on_drift source topic enqueues
  *       `lifecycle_action_pending = 'recompute'` for every row of
- *       that source topic; the realtime event is suppressed.
+ *       that source topic; the realtime event ALSO fires, carrying
+ *       `recompute_enqueued: true` (D-283 restored it — P4 had
+ *       suppressed it, which hid the topic-wide spend).
  *    3. PSI `'moderate'` transition on the same topic does NOT
- *       enqueue (only `'significant'` enqueues per spec §P4) AND
- *       suppresses the realtime event (the banner doesn't fire for
- *       recompute_on_drift topics regardless of severity).
+ *       enqueue (only `'significant'` enqueues per spec §P4) but
+ *       DOES raise the banner, without the `recompute_enqueued` flag
+ *       (D-283).
  *    4. `enqueueLifecycleActionForTopic` store method — idempotent
  *       on already-pending rows, returns the count actually
  *       updated, no-ops on unknown topics.
@@ -42,7 +44,6 @@ import {
   MIN_SAMPLE_COUNT_RECENT,
   confidenceDriftSignalTask,
   processOneConfidenceDriftTopic,
-  sourceTopicAutoRecomputesOnDrift,
 } from '../housekeeping/index.js';
 
 import {
@@ -127,298 +128,64 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-describe('D-136 P4 — sourceTopicAutoRecomputesOnDrift closed-list', () => {
-  it('returns true for purpose (stable_truth + recompute_on_drift)', () => {
-    expect(sourceTopicAutoRecomputesOnDrift('purpose')).toBe(true);
-  });
-
-  it('returns true for summary', () => {
-    expect(sourceTopicAutoRecomputesOnDrift('summary')).toBe(true);
-  });
-
-  it('returns true for action_items', () => {
-    expect(sourceTopicAutoRecomputesOnDrift('action_items')).toBe(true);
-  });
-
-  it('returns false for embedding (stable_truth but pre-D-136 PSI revoke)', () => {
-    // `embedding` is `stable_truth + recompute_on_drift` per the
-    // classification snapshot but does NOT emit confidence post-D-136
-    // (PSI eligibility revoked at P1 since vectors don't have
-    // confidence). The drift producer never iterates it (per
-    // `confidenceEmittingEnrichmentTopics`), but if it ever did, the
-    // helper would still report true since the registry-side gates are
-    // independent. Regression assertion only.
-    expect(sourceTopicAutoRecomputesOnDrift('embedding')).toBe(true);
-  });
-
-  it('returns false for attribution_signal (stable_truth + forward_only)', () => {
-    expect(sourceTopicAutoRecomputesOnDrift('attribution_signal')).toBe(false);
-  });
-
-  it('returns false for company (time_bound + historical)', () => {
-    expect(sourceTopicAutoRecomputesOnDrift('company')).toBe(false);
-  });
-
-  it('returns false for thread_signals (aggregate_window + forward_only)', () => {
-    expect(sourceTopicAutoRecomputesOnDrift('thread_signals')).toBe(false);
-  });
-
-  it('returns false for confidence_drift_signal itself (aggregate_window + historical post-P4)', () => {
-    expect(sourceTopicAutoRecomputesOnDrift('confidence_drift_signal')).toBe(false);
-  });
-
-  it('returns false for an unregistered topic name', () => {
-    expect(
-      sourceTopicAutoRecomputesOnDrift('not_a_real_topic' as never),
-    ).toBe(false);
-  });
-
-  it('exactly 15 topics auto-recompute on drift today (post-D-145 PA9 widening)', () => {
-    // Closed-list ratchet — every topic registered with
-    // `temporal_class: 'stable_truth' + lifecycle_policy:
-    // 'recompute_on_drift'` qualifies. Original D-136 P4 close was 4
-    // (action_items / embedding / purpose / summary; `embedding`
-    // qualifies but doesn't emit confidence so the drift task never
-    // visits it). D-145 PA9 added 11 more producers per spec § A.7.1
-    // + § A.7.2 (8 work-entity + 7 engine + reliability; of those, 11
-    // carry stable_truth + recompute_on_drift — the others are
-    // aggregate_window + forward_only): commitment_followthrough_score
-    // + outbound_commitment_overdue_count + task_completion_velocity +
-    // project_stall_signal + project_velocity + open_loop_pressure +
-    // commitment_reliability_band + project_next_action_gap +
-    // task_duplicate_candidate + source_freshness_degradation +
-    // context_packet_quality. The
-    // classification triple for each is asserted in
-    // `d-136-phase-1-classification-snapshot.test.ts`.
-    const auto: string[] = [];
-    for (const topic of Object.keys(ENRICHMENT_REGISTRY)) {
-      if (sourceTopicAutoRecomputesOnDrift(topic as never)) {
-        auto.push(topic);
-      }
-    }
-    expect(auto.sort()).toEqual([
-      'action_items',
-      'commitment_followthrough_score',
-      'commitment_reliability_band',
-      'context_packet_quality',
-      'embedding',
-      'open_loop_pressure',
-      'outbound_commitment_overdue_count',
-      'project_next_action_gap',
-      'project_stall_signal',
-      'project_velocity',
-      'purpose',
-      'source_freshness_degradation',
-      'summary',
-      'task_completion_velocity',
-      'task_duplicate_candidate',
-    ]);
-  });
-});
-
-describe('D-136 P4 — drift producer enqueues recompute', () => {
+describe('D-284 — a drift fire enqueues NOTHING', () => {
+  /** ⛔⛔ THREE SUITES WERE REMOVED HERE, NOT FLIPPED, because the thing
+   *  they tested no longer exists: the `sourceTopicAutoRecomputesOnDrift`
+   *  closed list (helper deleted), the producer's enqueue-on-significant,
+   *  and the round-12 governor call that admitted that enqueue. What
+   *  replaces them is one guard on the property that now holds.
+   *
+   *  🔑 THE INVARIANT: a stored AI result is invalidated by a change to
+   *  the QUESTION — input content, or the prompt/producer asking it — or
+   *  by the user saying so. Never by a change in who answered or how they
+   *  have been answering lately. D-275 applied it to the dedup key, D-279
+   *  to the comparison; this was the last place it did not hold.
+   *
+   *  ⚠ Content-change already covers what matters: `purpose` fingerprints
+   *  on `per_record_source_hash`, so an edited body misses the dedup probe
+   *  and the next cycle recomputes that row unaided. Drift added exactly
+   *  one case — re-ask an UNCHANGED input — and that measured 0/20
+   *  category changes over three runs with no convergence.
+   *
+   *  ⏭ Detection is untouched: the banner still fires (D-283). */
+  /** A refusal-rate crossing, so D-281's proportion test is what decides —
+   *  the primary path, not the PSI fallback. */
   const seedSignificantShift = (): void => {
     const baselineStart = now - DRIFT_BASELINE_WINDOW_MS - DRIFT_RECENT_WINDOW_MS - 100_000;
-    seedManyPurposeRows(MIN_SAMPLE_COUNT_BASELINE * 2, baselineStart, 0.85, 'b');
-    seedManyPurposeRows(MIN_SAMPLE_COUNT_RECENT * 3, now - DRIFT_RECENT_WINDOW_MS / 2, 0.55, 'r');
+    seedManyPurposeRows(MIN_SAMPLE_COUNT_BASELINE * 2, baselineStart, 0.9, 'b');
+    seedManyPurposeRows(MIN_SAMPLE_COUNT_RECENT * 3, now - DRIFT_RECENT_WINDOW_MS / 2, 0.2, 'r');
   };
 
-  /** Seed a 50/50 baseline split between bins 7/8 and a 70/30 recent
-   *  split. PSI works out to ~0.17 — squarely in the `'moderate'`
-   *  bracket (>= 0.10 and < 0.25). PSI on uniform-confidence
-   *  distributions is too coarse (Laplace smoothing makes single-bin
-   *  flips significant), so the producer-level moderate-test must
-   *  spread mass across at least two bins. */
-  const seedModerateShift = (): void => {
-    const baselineStart = now - DRIFT_BASELINE_WINDOW_MS - DRIFT_RECENT_WINDOW_MS - 100_000;
-    seedManyPurposeRows(MIN_SAMPLE_COUNT_BASELINE, baselineStart, 0.75, 'b1');
-    seedManyPurposeRows(
-      MIN_SAMPLE_COUNT_BASELINE,
-      baselineStart + MIN_SAMPLE_COUNT_BASELINE,
-      0.85,
-      'b2',
-    );
-    // Recent: 70/30 split between bins 7/8 — pulls mass into bin 7.
-    seedManyPurposeRows(70, now - DRIFT_RECENT_WINDOW_MS / 2, 0.75, 'r1');
-    seedManyPurposeRows(30, now - DRIFT_RECENT_WINDOW_MS / 2 + 100, 0.85, 'r2');
-  };
-
-  const countPendingRecompute = (topic: string): number => {
-    const row = db
-      .prepare(
-        `SELECT COUNT(*) AS n
-           FROM data_enrichment
-          WHERE topic = ?
-            AND lifecycle_action_pending = 'recompute'`,
-      )
-      .get(topic) as { n: number };
-    return row.n;
-  };
-
-  it("'significant' transition on purpose enqueues recompute on every purpose row", () => {
+  it('a significant transition on purpose writes the signal and queues no rows', () => {
     seedSignificantShift();
-    const before = countPendingRecompute('purpose');
-    expect(before).toBe(0);
-
     const result = processOneConfidenceDriftTopic(ctx(), 'purpose', now);
     expect(result.fired).toBe('significant');
 
-    const after = countPendingRecompute('purpose');
-    expect(after).toBeGreaterThan(0);
-    // Should match the count of seeded purpose rows (baseline + recent).
-    const totalPurposeRows = db
-      .prepare(`SELECT COUNT(*) AS n FROM data_enrichment WHERE topic = 'purpose'`)
-      .get() as { n: number };
-    expect(after).toBe(totalPurposeRows.n);
-  });
+    // The drift row itself is written…
+    expect(store.getDerived(CONFIDENCE_DRIFT_TOPIC, 'drift_purpose')).not.toBeNull();
 
-  it("'significant' transition on purpose suppresses the realtime event", () => {
-    seedSignificantShift();
-    processOneConfidenceDriftTopic(ctx(), 'purpose', now);
-    expect(emitted).toHaveLength(0);
-  });
-
-  it("'moderate' transition on purpose does NOT enqueue (only 'significant' enqueues)", () => {
-    seedModerateShift();
-    const result = processOneConfidenceDriftTopic(ctx(), 'purpose', now);
-    // Some seeds may not produce moderate exactly — accept any
-    // non-significant fire and assert the queue stays clean.
-    expect(result.fired).not.toBe('significant');
-
-    const queued = db
+    // …and not one source row was marked for recompute.
+    const pending = db
       .prepare(
-        `SELECT COUNT(*) AS n
-           FROM data_enrichment
+        `SELECT COUNT(*) AS n FROM data_enrichment
           WHERE topic = 'purpose' AND lifecycle_action_pending IS NOT NULL`,
       )
       .get() as { n: number };
-    expect(queued.n).toBe(0);
+    expect(pending.n).toBe(0);
   });
 
-  it("'moderate' transition on purpose ALSO suppresses the event (banner only fires for non-recompute_on_drift)", () => {
-    seedModerateShift();
-    processOneConfidenceDriftTopic(ctx(), 'purpose', now);
-    expect(emitted).toHaveLength(0);
-  });
-
-  it('enqueue is idempotent across cycles within the same severity bucket', () => {
-    const countPending = (): number =>
-      (
-        db
-          .prepare(
-            `SELECT COUNT(*) AS n
-               FROM data_enrichment
-              WHERE topic = 'purpose' AND lifecycle_action_pending = 'recompute'`,
-          )
-          .get() as { n: number }
-      ).n;
-
+  it('and the banner still fires — detection was never the thing removed', () => {
     seedSignificantShift();
     processOneConfidenceDriftTopic(ctx(), 'purpose', now);
-    const firstCount = countPending();
-    expect(firstCount).toBeGreaterThan(0);
-
-    // Second cycle, same severity — `driftTransitionFires` returns
-    // null so the enqueue branch doesn't even run. The pending set
-    // remains stable.
-    now += 24 * 60 * 60_000;
-    processOneConfidenceDriftTopic(ctx(), 'purpose', now);
-    expect(countPending()).toBe(firstCount);
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0]).toMatchObject({
+      kind: 'enrichment_drift_detected',
+      source_topic: 'purpose',
+      severity: 'significant',
+    });
   });
 });
 
-// Round-12 audit fix (T1 § 8.1) — the drift producer was the THIRD writer of
-// the topic-wide recompute enqueue and the only one that consulted no queue
-// governor. It now asks `ctx.cascadeTopicAdmission` (bound to the cascade
-// engine's own reservation) BEFORE the signal+enqueue transaction, and a
-// declined topic skips BOTH writes so the prior severity re-fires next cycle.
-describe('round-12 T1 § 8.1 — drift enqueue consults the cascade queue governor', () => {
-  const seedSignificantShift = (): void => {
-    const baselineStart = now - DRIFT_BASELINE_WINDOW_MS - DRIFT_RECENT_WINDOW_MS - 100_000;
-    seedManyPurposeRows(MIN_SAMPLE_COUNT_BASELINE * 2, baselineStart, 0.85, 'b');
-    seedManyPurposeRows(MIN_SAMPLE_COUNT_RECENT * 3, now - DRIFT_RECENT_WINDOW_MS / 2, 0.55, 'r');
-  };
-  const countPending = (): number =>
-    (
-      db
-        .prepare(
-          `SELECT COUNT(*) AS n
-             FROM data_enrichment
-            WHERE topic = 'purpose' AND lifecycle_action_pending IS NOT NULL`,
-        )
-        .get() as { n: number }
-    ).n;
-
-  it('a DECLINED admission skips BOTH writes — and the same transition re-fires next cycle', () => {
-    seedSignificantShift();
-    const admission = vi.fn(() => ({ admitted: false, candidates: 5, dropped: 5 }));
-    const declined = processOneConfidenceDriftTopic(
-      { ...ctx(), cascadeTopicAdmission: admission },
-      'purpose',
-      now,
-    );
-    // Consulted with the topic, before any write.
-    expect(admission).toHaveBeenCalledWith('purpose');
-    // R13 T1-Q2 — the decline is DISTINGUISHABLE from a calm cycle: it
-    // carries the governor's dropped count instead of discarding it.
-    expect(declined).toEqual({ processed: true, fired: null, governor_declined: { dropped: 5 } });
-    // Neither the enqueue NOR the severity advance happened — the atomicity
-    // invariant the transaction exists for, preserved on the skip path.
-    expect(countPending()).toBe(0);
-    // The falsifiable half: because the prior severity did not advance, the
-    // NEXT cycle sees the same null→significant transition and, under fresh
-    // headroom, performs both writes. Had the signal been upserted on the
-    // declined pass, this would fire null and enqueue nothing — silent loss
-    // of recompute coverage.
-    now += 24 * 60 * 60_000;
-    const retried = processOneConfidenceDriftTopic(
-      { ...ctx(), cascadeTopicAdmission: () => ({ admitted: true, candidates: 5, dropped: 0 }) },
-      'purpose',
-      now,
-    );
-    expect(retried.fired).toBe('significant');
-    expect(countPending()).toBeGreaterThan(0);
-  });
-
-  it('an ADMITTED admission changes nothing — both writes proceed as before', () => {
-    seedSignificantShift();
-    const result = processOneConfidenceDriftTopic(
-      { ...ctx(), cascadeTopicAdmission: () => ({ admitted: true, candidates: 5, dropped: 0 }) },
-      'purpose',
-      now,
-    );
-    expect(result.fired).toBe('significant');
-    expect(countPending()).toBeGreaterThan(0);
-  });
-
-  it('the hook is NOT consulted below significant or off the auto-recompute path', () => {
-    // A moderate/no-transition cycle enqueues nothing, so reserving budget for
-    // it would leak governor reservations on every quiet day.
-    const admission = vi.fn(() => ({ admitted: true, candidates: 0, dropped: 0 }));
-    processOneConfidenceDriftTopic({ ...ctx(), cascadeTopicAdmission: admission }, 'purpose', now);
-    expect(admission).not.toHaveBeenCalled();
-  });
-
-  it('R13 T1-Q2 — the task step AGGREGATES declines into governor telemetry; a calm step carries none', async () => {
-    seedSignificantShift();
-    const declinedStep = await confidenceDriftSignalTask.step(
-      { ...ctx(), cascadeTopicAdmission: () => ({ admitted: false, candidates: 5, dropped: 5 }) },
-      { kind: 'complete' },
-      1_000,
-    );
-    // Only 'purpose' has a seeded significant transition, so exactly one
-    // topic reached (and was declined by) the governor this step.
-    expect(declinedStep.governor).toEqual({ declined_topics: 1, dropped_rows: 5 });
-    // Under headroom the same transition admits — and the result carries NO
-    // governor field at all (absent ≠ zero; a calm cycle stays clean).
-    const admittedStep = await confidenceDriftSignalTask.step(
-      { ...ctx(), cascadeTopicAdmission: () => ({ admitted: true, candidates: 5, dropped: 0 }) },
-      { kind: 'complete' },
-      1_000,
-    );
-    expect(admittedStep.governor).toBeUndefined();
-  });
-});
 
 describe('D-136 P4 — enqueueLifecycleActionForTopic store method', () => {
   it('returns 0 for an unregistered topic (no-op)', () => {
@@ -498,85 +265,5 @@ describe('D-136 P4 — confidence_drift_signal lifecycle_policy', () => {
   it("declares lifecycle_policy: 'historical' (D-133 amendment)", () => {
     const def = ENRICHMENT_REGISTRY.confidence_drift_signal;
     expect(def.lifecycle_policy).toBe('historical');
-  });
-});
-
-describe('D-136 P4 — drift signal + lifecycle enqueue atomicity (Codex P2 fix)', () => {
-  /** Stub store wrapping the real one: every method delegates,
-   *  except `enqueueLifecycleActionForTopic` throws. Models the
-   *  failure case where the queue write fails after the drift signal
-   *  upsert. Without the producer-side transaction wrap, the upsert
-   *  would commit before the throw and the next cycle would see
-   *  prior severity = current severity → `driftTransitionFires`
-   *  returns null → rows never enqueue while the banner stays
-   *  suppressed. The transaction wrap rolls back the upsert too, so
-   *  the next cycle re-fires both writes. */
-  const wrapStoreWithThrowingEnqueue = (real: EnrichmentStore): EnrichmentStore => ({
-    ...real,
-    enqueueLifecycleActionForTopic: (): number => {
-      throw new Error('synthetic enqueue failure');
-    },
-  });
-
-  const seedSignificantShift = (): void => {
-    const baselineStart = now - DRIFT_BASELINE_WINDOW_MS - DRIFT_RECENT_WINDOW_MS - 100_000;
-    seedManyPurposeRows(MIN_SAMPLE_COUNT_BASELINE * 2, baselineStart, 0.85, 'b');
-    seedManyPurposeRows(MIN_SAMPLE_COUNT_RECENT * 3, now - DRIFT_RECENT_WINDOW_MS / 2, 0.55, 'r');
-  };
-
-  it('rolls back the drift-signal upsert when the enqueue throws', () => {
-    seedSignificantShift();
-
-    // Build a ctx whose enrichmentStore throws on enqueue. The
-    // producer's transaction wrap must roll back the drift-signal
-    // upsert when this happens.
-    const throwingStore = wrapStoreWithThrowingEnqueue(store);
-    const throwingCtx: HousekeepingContext = {
-      ...ctx(),
-      enrichmentStore: throwingStore,
-    };
-
-    // The transaction throws synchronously; assert + verify rollback.
-    expect(() => processOneConfidenceDriftTopic(throwingCtx, 'purpose', now))
-      .toThrow('synthetic enqueue failure');
-
-    // Drift-signal row must NOT have been persisted. If atomicity is
-    // working, getDerived returns null (no row written). If broken,
-    // we'd see a row with severity 'significant' here.
-    const row = store.getDerived(CONFIDENCE_DRIFT_TOPIC, 'drift_purpose');
-    expect(row).toBeNull();
-  });
-
-  it('next cycle re-fires both writes after a transient enqueue failure', () => {
-    seedSignificantShift();
-
-    // First cycle: enqueue throws, both writes roll back.
-    const throwingStore = wrapStoreWithThrowingEnqueue(store);
-    const throwingCtx: HousekeepingContext = {
-      ...ctx(),
-      enrichmentStore: throwingStore,
-    };
-    expect(() => processOneConfidenceDriftTopic(throwingCtx, 'purpose', now))
-      .toThrow();
-    expect(store.getDerived(CONFIDENCE_DRIFT_TOPIC, 'drift_purpose')).toBeNull();
-
-    // Second cycle: store is healthy again; transition fires
-    // identically (prior was never persisted, so the gating sees
-    // null → significant → fires significant) and both writes
-    // commit cleanly.
-    now += 24 * 60 * 60_000;
-    const result = processOneConfidenceDriftTopic(ctx(), 'purpose', now);
-    expect(result.fired).toBe('significant');
-
-    const row = store.getDerived(CONFIDENCE_DRIFT_TOPIC, 'drift_purpose');
-    expect(row).not.toBeNull();
-    const queued = db
-      .prepare(
-        `SELECT COUNT(*) AS n
-           FROM data_enrichment
-          WHERE topic = 'purpose' AND lifecycle_action_pending = 'recompute'`,
-      )
-      .get() as { n: number };
-    expect(queued.n).toBeGreaterThan(0);
   });
 });

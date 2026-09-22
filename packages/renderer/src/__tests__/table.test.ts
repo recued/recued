@@ -10,7 +10,13 @@ describe('renderTableBlock', () => {
       ],
       rows: [{ name: 'Acme', amount: 50_000 }],
     });
-    expect(html).toContain('data-sort-field="name"');
+    // ⛔ D-282 B2 — this asserted `data-sort-field="name"`, an attribute nothing bound
+    // and no stylesheet styled, on a surface (reception) whose CSP forbids the script
+    // that would have bound it. The header is now plain; sorting lives where it can
+    // reach the store.
+    expect(html).not.toContain('data-sort-field');
+    expect(html).not.toContain('sortable-th');
+    expect(html).toContain('<th>Name</th>');
     expect(html).toContain('Acme');
     expect(html).toContain('$50.0K');
   });
@@ -67,9 +73,32 @@ describe('renderTableBlock', () => {
     expect(html).not.toContain('<Approve>');
   });
 
-  it('renders missing columns/rows/bad-shape input as safe placeholders', () => {
-    expect(renderTableBlock({ columns: [], rows: [] })).toContain('No table data');
-    expect(renderTableBlock({ columns: [{ field: 'x' }], rows: [] })).toContain('No table data');
+  /** ⛔⛔ D-282 B3 — THESE TWO USED TO PRODUCE THE SAME SENTENCE. "No table data" was
+   *  returned both for a table that could not be DRAWN (no columns anywhere) and for one
+   *  that simply had no ROWS. The first is a broken block; the second is a first-run
+   *  moment in a business app, and a reader could not tell which they were looking at. */
+  it('tells a block it cannot draw apart from a list that is empty', () => {
+    const noColumns = renderTableBlock({ columns: [], rows: [] });
+    expect(noColumns).toContain('block-error');
+    expect(noColumns).toContain('no columns to draw');
+
+    const noRows = renderTableBlock({ columns: [{ field: 'x' }], rows: [] });
+    expect(noRows).toContain('block-empty');
+    expect(noRows).toContain('Nothing here yet.');
+    expect(noRows).not.toContain('block-error');
+
     expect(renderTableBlock(null)).toContain('block-error');
+  });
+
+  /** ⚠ The entity is NOT pluralised — `company` → "companys" and `person` → "persons"
+   *  are wrong, and the keys belong to the pack author. "records" is the plural. */
+  it('names the entity in an empty list when the block declared one', () => {
+    const html = renderTableBlock(
+      { columns: [], rows: [] },
+      undefined,
+      { entity: 'item_price', columns: [{ field: 'id', label: 'Id', kind: 'string' }] },
+    );
+    expect(html).toContain('No item price records yet.');
+    expect(html).toContain('block-empty');
   });
 });

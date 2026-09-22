@@ -20,7 +20,7 @@
 
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
-import { MIN_RESERVE_BYTES, createStorageGate } from '@recued/storage-gate';
+import { createStorageGate } from '@recued/storage-gate';
 
 import { ensureAuditIndexes } from '../audit-indexes.js';
 import { readAuditUsageBytes } from '../audit-usage-counter.js';
@@ -39,13 +39,23 @@ const mkDb = (rows: number): Database.Database => {
   return db;
 };
 
-/** ⚠ QUOTA MUST EXCEED `MIN_RESERVE_BYTES` (10 MB). The first cut used 100 KB;
- *  `reserve = max(MIN_RESERVE_BYTES, quota × pct)` then swallowed the whole
- *  quota, `available` was 0, and the gate sat in `writes_blocked` from the
- *  first byte — so three state assertions failed for a fixture reason with
- *  nothing to do with the provider. */
+/** ⚠ QUOTA MUST EXCEED THE RESERVE. The first cut used 100 KB; the reserve
+ *  swallowed the whole quota, `available` was 0, and the gate sat in
+ *  `writes_blocked` from the first byte — so three state assertions failed for
+ *  a fixture reason with nothing to do with the provider.
+ *
+ *  ⛔⛔ AND THE SECOND CUT FIXED THAT BY RESTATING THE RESERVE FORMULA HERE —
+ *  `(QUOTA - MIN_RESERVE_BYTES) * 0.8` — WHICH IS WHAT BROKE NEXT. When the
+ *  gate gained `MAX_RESERVE_FRACTION`, a 12 MB quota went from reserving 10 MB
+ *  to reserving 6 MB: `available` 2 MB → 6 MB, pressure 1.6 MB → 4.8 MB, and a
+ *  fill sized to the old arithmetic stopped reaching pressure at all. Both
+ *  assertions then read as *the gate never pressures* — a defect in the
+ *  subject, reported by a fixture that was the thing out of date.
+ *
+ *  🔑 A TEST THAT RESTATES A FORMULA OWNS A SECOND COPY OF IT. `info()` already
+ *  publishes `pressureAt`, so the fill target is ASKED OF THE GATE and cannot
+ *  disagree with it, whatever the reserve rule becomes next. */
 const QUOTA = 12 * 1024 * 1024;
-const PRESSURE_AT = Math.floor((QUOTA - MIN_RESERVE_BYTES) * 0.8);
 
 const mkGate = (db: Database.Database) =>
   createStorageGate({
@@ -88,7 +98,7 @@ describe('audit gate usage provider', () => {
     const gate = mkGate(db);
     // ⚠ Valid JSON: `ensureAuditIndexes` builds `json_extract` expression
     // indexes over `data`, so a bare string throws "malformed JSON" at INSERT.
-    fill(db, 'p', PRESSURE_AT + 50_000);
+    fill(db, 'p', gate.info().pressureAt + 50_000);
 
     expect(gate.info().state).not.toBe('running');   // pressured on writes alone
     db.prepare(`DELETE FROM audit_entries`).run();   // raw, unreported
@@ -107,7 +117,7 @@ describe('audit gate usage provider', () => {
 
     const row = JSON.stringify({ pad: 'z'.repeat(4000) });
     const ins = db.prepare('INSERT INTO audit_entries (key, data) VALUES (?, ?)');
-    const n = Math.ceil((PRESSURE_AT + 50_000) / row.length);
+    const n = Math.ceil((gate.info().pressureAt + 50_000) / row.length);
     for (let i = 0; i < n; i++) {
       ins.run(`q-${i}`, row);
       gate.addUsed(row.length); // what `onBytesChanged` does on every write

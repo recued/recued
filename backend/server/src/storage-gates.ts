@@ -138,13 +138,21 @@ export interface GateRegistry {
  *  schema carries every key, these fallbacks are dead code — kept here
  *  so boot doesn't crash if an older config TOML is pointed at a newer
  *  daemon. */
-const QUOTA_FALLBACKS: Readonly<Record<GatedSurface, number>> = {
+export const QUOTA_FALLBACKS: Readonly<Record<GatedSurface, number>> = {
   vault: 50 * 1024 * 1024,
-  account_store: 10 * 1024 * 1024,
+  // ⚠ Raised past MIN_RESERVE_BYTES (10 MB). At exactly the floor this surface
+  //    computed `available = 0` and was permanently `writes_blocked`; the
+  //    clamp now prevents that arithmetic, and the quota no longer sits on the
+  //    boundary that made it possible.
+  account_store: 25 * 1024 * 1024,
   shared_store: 100 * 1024 * 1024,
   cache: 200 * 1024 * 1024,
   audit: 50 * 1024 * 1024,
-  schedules: 5 * 1024 * 1024,
+  // ⛔ WAS 5 MB — BELOW the 10 MB reserve floor, so `schedules.create` was
+  //    rejected on every server from boot with `storage_pressure:
+  //    writes_blocked`, at zero usage. Schedule rows are small; the number was
+  //    never the constraint, the arithmetic was.
+  schedules: 25 * 1024 * 1024,
 };
 
 /** Reserve percentage applied per surface. Surfaces that need reserved

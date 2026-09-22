@@ -13,8 +13,12 @@ import { renderFileLifecyclePanel, type FileLifecyclePanelState } from './file-l
 import type {
   FileLifecycleMutation,
   FileLifecyclePreview,
+  RecordsChangeFeed,
+  RecordsChangeQuery,
   SavedDataView,
   SavedDataViewDefinition,
+  SavedDataViewReview,
+  SavedDataViewUpdateRequest,
   TaskViewFilters,
   CollectionSourceFreshness,
   ConnectionVendorEntity,
@@ -301,10 +305,13 @@ import {
   RECORDS_OPEN_RECORD_ACTION,
   RECORDS_PURGE_ACTION,
   RECORDS_PURGE_CONFIRMATION_ATTR,
+  RECORDS_MARK_REVIEWED_ACTION,
+  RECORDS_REFRESH_CHANGES_ACTION,
   RECORDS_REFRESH_OUTBOX_ACTION,
   RECORDS_RETIRE_EVENT_ACTION,
   RECORDS_SELECT_KIND_ACTION,
   RECORDS_SELECT_NAMESPACE_ACTION,
+  RECORDS_TOGGLE_CHANGES_ACTION,
   RECORDS_TOGGLE_OUTBOX_ACTION,
   renderRecordsExplorer,
   type RecordsExplorerState,
@@ -789,6 +796,15 @@ export type DataRecordsOutboxListCaller = (
 export type DataRecordsOutboxRetireCaller = (
   args: RecordsOutboxRetireRequest,
 ) => Promise<{ retired: boolean }>;
+/** P2/F2 — one bounded page of a pack's change history. */
+export type DataRecordsChangesListCaller = (
+  args: RecordsChangeQuery,
+) => Promise<RecordsChangeFeed>;
+/** P2/F2 — stamp the review mark onto the BOUND saved view. Absent, or no view
+ *  bound, and the panel still reads; only the mark is unavailable. */
+export type DataRecordsMarkReviewedCaller = (
+  args: SavedDataViewUpdateRequest,
+) => Promise<{ view: SavedDataView }>;
 export type DataRecordsPurgeCaller = (
   args: RecordsPurgeRequest,
 ) => Promise<{ rows_deleted: number; events_deleted: number }>;
@@ -941,6 +957,8 @@ export interface BootstrapDataRouteOptions {
   recordsRetentionListCaller?: DataRecordsRetentionListCaller;
   recordsExportCaller?: DataRecordsExportCaller;
   recordsOutboxListCaller?: DataRecordsOutboxListCaller;
+  recordsChangesListCaller?: DataRecordsChangesListCaller;
+  recordsMarkReviewedCaller?: DataRecordsMarkReviewedCaller;
   recordsOutboxRetireCaller?: DataRecordsOutboxRetireCaller;
   recordsPurgeCaller?: DataRecordsPurgeCaller;
   /** Test/non-browser seam for the friendly, generation-pinned JSON export. */
@@ -5445,6 +5463,12 @@ export const bootstrapDataRoute = (
     outbox: null,
     outboxOpen: false,
     outboxRefreshing: false,
+    changes: null,
+    changesOpen: false,
+    changesRefreshing: false,
+    reviewMark: null,
+    canMarkReviewed: false,
+    markingReviewed: false,
     retention: {},
     loading: false,
     loadingNamespaceKey: null,
@@ -5480,6 +5504,12 @@ export const bootstrapDataRoute = (
       outbox: null,
       outboxOpen: false,
       outboxRefreshing: false,
+      changes: null,
+      changesOpen: false,
+      changesRefreshing: false,
+      reviewMark: null,
+      canMarkReviewed: false,
+      markingReviewed: false,
       retention: {},
       loading: false,
       loadingNamespaceKey: null,
@@ -5587,6 +5617,17 @@ export const bootstrapDataRoute = (
     summary?.scrollIntoView?.({ block: 'nearest' });
     return summary !== null;
   };
+  const focusRecordsChangesSummary = (): boolean => {
+    const queryable = routeRoot as unknown as {
+      querySelector?: (selector: string) => HTMLElement | null;
+    };
+    const summary = queryable.querySelector?.(
+      `summary[${SHARED_ACTION_ATTR}="${RECORDS_TOGGLE_CHANGES_ACTION}"]`,
+    ) ?? null;
+    summary?.focus?.({ preventScroll: true });
+    summary?.scrollIntoView?.({ block: 'nearest' });
+    return summary !== null;
+  };
   const focusRecordsPurgeInput = (): boolean => {
     const queryable = routeRoot as unknown as {
       querySelector?: (selector: string) => HTMLElement | null;
@@ -5620,6 +5661,8 @@ export const bootstrapDataRoute = (
       return recordsState.exportingAction;
     }
     if (recordsState.outboxRefreshing) return RECORDS_REFRESH_OUTBOX_ACTION;
+    if (recordsState.markingReviewed) return RECORDS_MARK_REVIEWED_ACTION;
+    if (recordsState.changesRefreshing) return RECORDS_REFRESH_CHANGES_ACTION;
     return null;
   };
   const hasRecordsInFlightWork = (): boolean =>
@@ -8514,6 +8557,12 @@ export const bootstrapDataRoute = (
       detail: null,
       diagnostics: null,
       outbox: null,
+      changes: null,
+      changesOpen: false,
+      changesRefreshing: false,
+      reviewMark: null,
+      canMarkReviewed: false,
+      markingReviewed: false,
       retention: {},
       loading: true,
       deletePending: false,
@@ -8540,12 +8589,23 @@ export const bootstrapDataRoute = (
       return;
     }
     try {
-      const [kindResponse, retentionResponse, outboxResponse] = await Promise.all([
+      const [kindResponse, retentionResponse, outboxResponse, changesResponse] = await Promise.all([
         kindsCaller({ owner: namespace.owner }),
         opts.recordsRetentionListCaller?.({ owner: namespace.owner })
           ?? Promise.resolve({ policies: {} }),
         opts.recordsOutboxListCaller?.({ owner: namespace.owner, limit: 100 })
           ?? Promise.resolve(null),
+        // ⛔ P2/F2 — WITHOUT THIS THE PANEL CANNOT EXIST. `renderChanges`
+        // returns '' while `changes` is null, and every other trigger (toggle,
+        // refresh, post-mark) is a control INSIDE that panel — so the feature
+        // was reachable only from itself. Loading here, beside the outbox, is
+        // what gives the collapsed summary something to count.
+        opts.recordsChangesListCaller?.({
+          owner: namespace.owner,
+          limit: 50,
+          ...(reviewMarkFor(namespace.owner) === null
+            ? {} : { after: reviewMarkFor(namespace.owner)!.reviewed_through }),
+        }).catch(() => null) ?? Promise.resolve(null),
       ]);
       if (disposed || seq !== recordsSeq) return;
       // The store normally includes zero-row schema kinds. Merge defensively so
@@ -8568,6 +8628,10 @@ export const bootstrapDataRoute = (
         selectedKind,
         retention: retentionResponse.policies,
         outbox: outboxResponse,
+        changes: changesResponse,
+        reviewMark: reviewMarkFor(namespace.owner),
+        canMarkReviewed: reviewBindingFor(namespace.owner) !== null
+          && opts.recordsMarkReviewedCaller !== undefined,
       };
       if (selectedKind === null) {
         recordsState = { ...recordsState, loading: false };
@@ -8630,6 +8694,7 @@ export const bootstrapDataRoute = (
       if (selected === null) {
         recordsState = { ...recordsState, records: [], kinds: [], selectedKind: null, detail: null,
           diagnostics: null, outbox: null, outboxOpen: false, retention: {}, loading: false,
+          changes: null, changesOpen: false, reviewMark: null, canMarkReviewed: false,
           ...(previous === undefined ? {} : { error: 'The Pack you picked is gone. Choose another one to carry on.' }) };
         return;
       }
@@ -8951,6 +9016,90 @@ export const bootstrapDataRoute = (
       };
       render();
       if (stillOwnsFocus) focusRecordsAction(action);
+    }
+  };
+
+  /** P2/F2 — the review mark lives on the BOUND saved view, so a pack opened by
+   *  clicking through the namespace nav has changes to read and nowhere to
+   *  record that they were read. Both halves are derived here, together, so the
+   *  panel can never offer a "Mark reviewed" button with no view behind it. */
+  const reviewBindingFor = (owner: RecordsPackRef): SavedDataView | null => {
+    const view = savedViewBinding;
+    // ⛔ `savedViewLinked` TOO, not just the binding. `detachSavedView` clears
+    // the LINK and leaves `savedViewBinding` populated, so reading the binding
+    // alone would keep stamping a mark onto a bookmark the owner explicitly
+    // unbound — the one act that says "stop associating this with that view".
+    if (view === undefined || !savedViewLinked) return null;
+    const definition = view.definition;
+    if (definition.tab !== 'records' || definition.owner === null) return null;
+    return recordsOwnerKey(definition.owner) === recordsOwnerKey(owner) ? view : null;
+  };
+  const reviewMarkFor = (owner: RecordsPackRef): SavedDataViewReview | null =>
+    reviewBindingFor(owner)?.review ?? null;
+  const recordsReviewBinding = (): SavedDataView | null => {
+    const namespace = recordsState.selectedNamespace;
+    return namespace === null ? null : reviewBindingFor(namespace.owner);
+  };
+
+  const refreshRecordsChanges = async (): Promise<void> => {
+    const namespace = recordsState.selectedNamespace;
+    const caller = opts.recordsChangesListCaller;
+    if (namespace === null || caller === undefined || recordsState.changesRefreshing) return;
+    const bound = recordsReviewBinding();
+    const initialFocus = activeRecordsFocusIdentity();
+    recordsState = { ...recordsState, changesRefreshing: true, error: undefined };
+    render();
+    focusRecordsIdentity(initialFocus);
+    try {
+      const changes = await caller({
+        owner: namespace.owner,
+        limit: 50,
+        // ⛔ Read from the MARK, never from "recently". An unmarked view shows
+        // its most recent page; a marked one shows only what came after.
+        ...(bound?.review === undefined ? {} : { after: bound.review.reviewed_through }),
+      });
+      if (disposed || recordsState.selectedNamespace === null
+        || recordsOwnerKey(recordsState.selectedNamespace.owner) !== recordsOwnerKey(namespace.owner)) return;
+      recordsState = {
+        ...recordsState,
+        changes,
+        changesRefreshing: false,
+        reviewMark: bound?.review ?? null,
+        canMarkReviewed: bound !== null && opts.recordsMarkReviewedCaller !== undefined,
+        error: undefined,
+      };
+    } catch (error) {
+      if (disposed || recordsState.selectedNamespace === null
+        || recordsOwnerKey(recordsState.selectedNamespace.owner) !== recordsOwnerKey(namespace.owner)) return;
+      recordsState = { ...recordsState, changesRefreshing: false, error: humanizeRpcError(error) };
+    }
+    render();
+  };
+
+  const markRecordsReviewed = async (): Promise<void> => {
+    const caller = opts.recordsMarkReviewedCaller;
+    const bound = recordsReviewBinding();
+    const next = recordsState.changes?.next;
+    if (caller === undefined || bound === null || next === undefined
+      || recordsState.markingReviewed) return;
+    recordsState = { ...recordsState, markingReviewed: true, error: undefined };
+    render();
+    try {
+      // ⛔ `next` is the cursor of what was ON SCREEN, not `Date.now()`. Anything
+      // that landed while the owner was reading is NOT reviewed, and stamping a
+      // server clock here would bury it unseen.
+      const { view } = await caller({
+        id: bound.id, expected_revision: bound.revision, review: next,
+      });
+      if (disposed) return;
+      savedViewBinding = view;
+      recordsState = { ...recordsState, markingReviewed: false, reviewMark: view.review ?? null };
+      render();
+      await refreshRecordsChanges();
+    } catch (error) {
+      if (disposed) return;
+      recordsState = { ...recordsState, markingReviewed: false, error: humanizeRpcError(error) };
+      render();
     }
   };
 
@@ -13511,6 +13660,28 @@ export const bootstrapDataRoute = (
     if (action === RECORDS_EXPORT_KIND_CSV_ACTION) {
       if (recordsNavigationLocked) return;
       if (recordsState.selectedKind !== null) void exportRecords('csv', recordsState.selectedKind);
+      return;
+    }
+    if (action === RECORDS_REFRESH_CHANGES_ACTION) {
+      if (recordsNavigationLocked) return;
+      void refreshRecordsChanges();
+      return;
+    }
+    if (action === RECORDS_MARK_REVIEWED_ACTION) {
+      if (recordsNavigationLocked) return;
+      void markRecordsReviewed();
+      return;
+    }
+    if (action === RECORDS_TOGGLE_CHANGES_ACTION) {
+      ev.preventDefault();
+      if (recordsNavigationLocked) return;
+      const opening = !recordsState.changesOpen;
+      recordsState = { ...recordsState, changesOpen: opening };
+      render();
+      // Read on FIRST open only. The panel is collapsed for most visits and a
+      // fetch per toggle would bill a query to closing it.
+      focusRecordsChangesSummary();
+      if (opening && recordsState.changes === null) void refreshRecordsChanges();
       return;
     }
     if (action === RECORDS_REFRESH_OUTBOX_ACTION) {

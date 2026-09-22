@@ -52,6 +52,37 @@ import type {
  *  used for replay-on-reconnect. */
 export type ServerEvent =
   | {
+      /** D-282 B4 — a row in a PACK'S OWN Records store changed.
+       *
+       *  ⛔⛔ DISTINCT FROM `warehouse`, WHICH IS THE PERSONAL COLLECTIONS. That kind
+       *  carries mail / calendar / contact / file — the adapters' data. This one carries
+       *  a pack's relational rows, which no broadcast reached at all: a write by a
+       *  schedule, a webhook, the AI, a peer or the owner's other device left every open
+       *  pack view stale until its tab was re-selected.
+       *
+       *  ⚠ WHAT IT DELIBERATELY DOES NOT COVER. It is emitted where the watcher outbox
+       *  is, so it inherits that suppression list — `migration`, `retention`,
+       *  `uninstall_purge` and `owner_bulk_delete` produce no event. Those exist to stop
+       *  server-internal sweeps re-triggering RECIPES, which is a different question from
+       *  whether a SCREEN should redraw; an owner bulk delete in particular is a case a
+       *  refresh would want. Splitting the two policies is a change to the write path,
+       *  not to this union, and until then those four fall back to the pre-B4 behaviour:
+       *  the view refreshes when the owner returns to it.
+       *
+       *  ⚠ And it names the PACK, not a recipe. A client cannot tell from this whether a
+       *  given view reads the entity that changed — only that this pack's data moved. */
+      kind: 'records';
+      publisher: string;
+      pack_slug: string;
+      /** Entity kind (`building`, `invoice`) — a client filtering finer than the pack
+       *  may use it, but a view may join several entities, so pack-level is the honest
+       *  granularity for "should I redraw". */
+      entity: string;
+      op: 'insert' | 'update' | 'delete';
+      id: string;
+      cursor: number;
+    }
+  | {
       kind: 'warehouse';
       /** Warehouse collection slug (`mail`, `calendar`, `contact`,
        *  `files`, …). Clients filter on this against their own
@@ -473,8 +504,17 @@ export type ServerEvent =
       kind: 'enrichment_drift_detected';
       /** AI-surface topic whose confidence distribution shifted. */
       source_topic: string;
-      /** PSI scalar at the crossing. */
+      /** PSI scalar at the crossing.
+       *  ⛔ D-281 — DIAGNOSTIC. Severity is decided by the
+       *  low-confidence rate whenever the cut partitions the data; PSI
+       *  decides only in the fallback case. Rendering this beside the
+       *  severity implies it produced it, which it usually did not. */
       psi: number;
+      /** D-281 — change in the low-confidence rate, `recent - baseline`,
+       *  when THAT is what decided. Absent when the cut partitioned
+       *  nothing and PSI decided instead, and on events emitted before
+       *  D-281 — in both cases "no number to show", never "no change". */
+      low_confidence_delta?: number;
       /** Severity at the crossing — never `'none'` on this event
        *  (transitions OUT of moderate/significant don't fire). */
       severity: 'moderate' | 'significant';
@@ -1340,6 +1380,7 @@ export const ALL_BROADCAST_EVENT_KINDS = [
   'reception.endpoint_changed',
   'reception_inbox',
   'recipe_runnability_changed',
+  'records',
   'remerge_prompt',
   'schedule',
   'service',

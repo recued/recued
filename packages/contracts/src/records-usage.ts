@@ -22,20 +22,8 @@
  *  a partial roster must not render as "touches nothing".
  */
 
-import {
-  RECORDS_ACTIONS,
-  RISK_TIER_RANK,
-  isRecordsAction,
-  isRiskTier,
-  parseOpId,
-  type BulkPackManifest,
-  type OperationApproval,
-  type PackOperationRow,
-  isRecordsBatchAction,
-  type RecordsAction,
-  type RecordsBatchAllow,
-  type RiskTier,
-} from '@recued/contracts';
+import { RECORDS_ACTIONS, RISK_TIER_RANK, isRecordsAction, isRiskTier, parseOpId, isRecordsBatchAction } from './index.js';
+import type { BulkPackManifest, OperationApproval, PackOperationRow, RecordsAction, RecordsBatchAllow, RiskTier } from './index.js';
 
 /** The subset of a `packs.list` row this join needs. The caller maps a
  *  `PackListEntry` into it. */
@@ -331,3 +319,58 @@ export const recipeDeclaredOps = (
     resolved_count: resolved,
   };
 };
+
+/** Step kinds whose effects this module can actually account for: `transform`
+ *  and `guard` are pure, `op` is what the two read-only axes inspect. A step
+ *  matching none of them — an `ingredient` step, or a kind added later — is not
+ *  understood, and "not understood" cannot be allowed to read as "harmless".
+ *  See the header. */
+export const stepsAreAnalysable = (steps: unknown): boolean => {
+  if (steps === undefined || steps === null) return true;
+  if (!Array.isArray(steps)) return false;
+  return steps.every((step) => {
+    if (step === null || typeof step !== 'object') return false;
+    const row = step as Record<string, unknown>;
+    return typeof row.transform === 'string'
+      || typeof row.op === 'string'
+      || row.guard !== undefined;
+  });
+};
+
+/** Can we PROVE this recipe only reads? See the header — every step kind
+ *  understood, both axes clean, and an unresolved op is a no. */
+/** ⛔⛔ TAKES THE FULL DEFINITION, AND THE TYPE IS THE GUARD.
+ *  `stepsAreAnalysable(undefined)` is `true` — correct for the optional
+ *  `prefetch_steps` / `trigger_steps`, and a trap for `steps`, which every
+ *  recipe has. Hand this a body whose `steps` were stripped and every check
+ *  passes vacuously: no steps, so no ops, so nothing unresolved and no write
+ *  effect — it answers TRUE for a recipe that deletes. That is a permissions
+ *  answer failing OPEN.
+ *
+ *  So the parameter is `RecordsUsageRecipe & { steps: unknown }`: a
+ *  `recipe.list` row whose body has been trimmed cannot be passed without the
+ *  compiler saying so. Consumers of a trimmed row read the server's projected
+ *  `provably_read_only` instead — computed HERE, on the server, where the
+ *  whole definition is. */
+export const isProvablyReadOnly = (
+  recipe: RecordsUsageRecipe & { steps: unknown },
+  roster: PackOperationIndex,
+): boolean => {
+  const r = recipe as unknown as {
+    steps?: unknown; prefetch_steps?: unknown; trigger_steps?: unknown;
+  };
+  if (
+    !stepsAreAnalysable(r.steps)
+    || !stepsAreAnalysable(r.prefetch_steps)
+    || !stepsAreAnalysable(r.trigger_steps)
+  ) {
+    return false;
+  }
+  const declared = recipeDeclaredOps(recipe, roster);
+  if (declared.unresolved.length > 0) return false;
+  if (declared.risk !== null && declared.risk !== 'read') return false;
+  return recipeRecordsUsage(recipe, roster).every((pack) =>
+    pack.entities.every((entity) =>
+      !entity.effects.includes('write') && !entity.effects.includes('delete')));
+};
+

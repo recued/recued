@@ -9,6 +9,10 @@ const housekeepingMocks = vi.hoisted(() => ({
   createEngineBusySignal: vi.fn(),
   registerHousekeepingTask: vi.fn(),
   listHousekeepingTasks: vi.fn(),
+  // D-286 — `getEnrichmentInfo` falls back to the task itself for a STANDALONE
+  // task (no walker ⇒ no `enrichmentProducers` entry). Defaults to undefined,
+  // which is what the real lookup returns for an id that is not registered.
+  getHousekeepingTask: vi.fn(),
   buildEnrichmentProducerTask: vi.fn(),
   createMailSourceWalker: vi.fn(),
   createSourceWalkerRegistry: vi.fn(),
@@ -54,6 +58,7 @@ const resetMockDefaults = () => {
   getScheduler = vi.fn(() => undefined);
 
   housekeepingMocks.listHousekeepingTasks.mockReturnValue([{ id: 'registered' }]);
+  housekeepingMocks.getHousekeepingTask.mockReturnValue(undefined);
   housekeepingMocks.probeAiPathAvailability.mockResolvedValue({ available: true });
   housekeepingMocks.probeEmbeddingsPathAvailability.mockReturnValue({ available: true });
   housekeepingMocks.isByokAllowedForBackground.mockReturnValue(true);
@@ -209,6 +214,36 @@ describe('composeHousekeepingRpcDeps getEnrichmentInfo', () => {
   beforeEach(resetForTest);
   afterEach(() => db?.close());
 
+  it('routes a task with NO producer entry to the standalone fallback', async () => {
+    // ⛔ D-286 — the wiring this file is the only place to check. The fallback
+    // itself is pinned against the REAL registry in
+    // `d-286-standalone-enrichment-info.test.ts`; what is proved HERE is that
+    // a task absent from `enrichmentProducers` reaches it at all, instead of
+    // returning undefined and leaving its Run-now button disabled forever.
+    housekeepingMocks.getHousekeepingTask.mockReturnValue({
+      meta: { id: 'enrichment.standalone', description: 'x', interruptible: true, kind: 'enrichment' },
+      topic: 'standalone',
+      is_ai_surface: false,
+    });
+    const deps = composeWithDeps();
+
+    // Nothing was added to `enrichmentProducers`, so the producer path cannot
+    // answer — before D-286 this resolved to undefined.
+    await expect(deps.getEnrichmentInfo('enrichment.standalone')).resolves.toEqual({
+      token_estimate_per_record: 0,
+      is_ai_surface: false,
+    });
+  });
+
+  it('declines a registered task that is not an enrichment task', async () => {
+    housekeepingMocks.getHousekeepingTask.mockReturnValue({
+      meta: { id: 'core.audit', description: 'x', interruptible: true, kind: 'core' },
+    });
+    const deps = composeWithDeps();
+
+    await expect(deps.getEnrichmentInfo('core.audit')).resolves.toBeUndefined();
+  });
+
   it('returns undefined when the task is missing or db is undefined', async () => {
     const deps = composeWithDeps();
 
@@ -236,6 +271,9 @@ describe('composeHousekeepingRpcDeps getEnrichmentInfo', () => {
     expect(producer.estimate_per_record_tokens).toHaveBeenCalledOnce();
     expect(result).toEqual({
       token_estimate_per_record: 0,
+      // D-286 — stated rather than derived from `tokens > 0`, which could not
+      // tell "costs nothing" apart from "cost unknown".
+      is_ai_surface: false,
       source_collection_count: 3,
       scope_read: [
         { collection: 'mail', sample_field_paths: ['subject'], record_count: 3 },

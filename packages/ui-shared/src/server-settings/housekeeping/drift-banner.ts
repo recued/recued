@@ -44,6 +44,26 @@ export interface HousekeepingDriftBannerProps {
   writeError: Record<string, string>;
 }
 
+/** ⛔ D-281 — SHOW THE NUMBER THAT DECIDED, OR NO NUMBER.
+ *  This read `(PSI=0.31)`. Severity now comes from the two-proportion
+ *  test on the low-confidence rate whenever the cut partitions the
+ *  data; PSI decides only in the fallback case. Printing PSI beside a
+ *  severity it did not produce tells the reader the wrong story — and
+ *  a bare severity is more honest than a confident wrong figure. */
+const driftMagnitude = (signal: ConfidenceDriftSignal): string => {
+  // ⚠ `low_confidence_delta`, NOT `shift.delta`. A banner raised from the
+  // realtime event holds a synthesised signal with no `shift` — reading
+  // `shift` here meant the number never rendered on the path the banner
+  // actually takes.
+  const delta = signal.low_confidence_delta ?? signal.shift?.delta;
+  if (delta === undefined) return '';
+  const points = Math.round(Math.abs(delta) * 100);
+  if (points === 0) return '';
+  return delta > 0
+    ? ` — low-confidence answers up ${points} points`
+    : ` — low-confidence answers down ${points} points`;
+};
+
 const SEVERITY_COPY: Record<Exclude<DriftSeverity, 'none'>, string> = {
   moderate: 'has drifted moderately',
   significant: 'has drifted significantly',
@@ -70,7 +90,7 @@ const renderOne = (
          data-severity="${e(sev)}">
       <div class="housekeeping-drift-banner-body">
         <p class="housekeeping-drift-banner-headline">
-          Confidence on <code>${e(signal.source_topic)}</code> ${e(SEVERITY_COPY[sev])} (PSI=${e(signal.psi.toFixed(2))}).
+          Confidence on <code>${e(signal.source_topic)}</code> ${e(SEVERITY_COPY[sev])}${e(driftMagnitude(signal))}.
         </p>
         <p class="housekeeping-drift-banner-meta">
           This often signals a model swap or input-distribution shift.

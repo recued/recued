@@ -374,8 +374,35 @@ export interface HousekeepingScopeReadEntry {
  *  (`thread_signals`) report `token_estimate_per_record: 0` — the
  *  dialog renders "no token cost" inline. */
 export interface HousekeepingEnrichmentInfo {
-  token_estimate_per_record: number;
-  source_collection_count: number;
+  /** Per-record token cost.
+   *
+   *  ⛔ OPTIONAL, AND ABSENT MEANS *UNKNOWN* — never zero. Five AI-surface
+   *  standalone tasks (`topic_cluster`, both `lifecycle_stage_inferred*`,
+   *  `memory_embed_backlog`, `commitment_tracker`) declare `is_ai_surface`
+   *  and no estimate at all. Reporting 0 for those made them read as
+   *  DETERMINISTIC — the Run-now dialog offered "pure SQL aggregation, no
+   *  token cost" for a producer that fires AI calls. A zero here must mean a
+   *  real zero. */
+  token_estimate_per_record?: number;
+  /** Whether running this spends tokens — the authoritative fact.
+   *
+   *  🔑 Callers used to derive this as `token_estimate_per_record > 0`, which
+   *  silently equates "costs nothing" with "cost unknown". Given explicitly,
+   *  it separates them; when absent, consumers fall back to the old
+   *  derivation so a pre-existing payload keeps its meaning. */
+  is_ai_surface?: boolean;
+  /** How many source records one full sweep would walk.
+   *
+   *  ⛔ OPTIONAL, AND ABSENT MEANS *UNKNOWN* — never zero. A per-record
+   *  producer declares a `source_scope`, so the count is a real query. A
+   *  STANDALONE enrichment task (D-133 drift, the D-131 derived-entity trio,
+   *  the D-139 record aggregates) declares no scope and is not walked by
+   *  collection at all, so there is no number to give. Reporting 0 there put
+   *  "0 tokens" on a run that spends them, which is why callers now have to
+   *  handle the absence: {@link HousekeepingCostPreview.estimated_tokens} is
+   *  likewise optional, so the type refuses to let a total be printed from a
+   *  count nobody has. */
+  source_collection_count?: number;
   /** Pre-confirm AI availability probe — set when the producer is
    *  AI-driven (`token_estimate_per_record > 0`). `true` means at
    *  least one slot or free-pool entry resolves at probe time;
@@ -415,6 +442,27 @@ export interface HousekeepingEnrichmentInfo {
    *  for deterministic producers. */
   global_byok_allowed?: boolean;
 }
+
+/** Does running this producer spend tokens?
+ *
+ *  🔑 ONE derivation, imported by every consumer. It used to be written out
+ *  twice — the row badge and the producer filter — with a comment on the
+ *  second saying it "mirrors" the first "so the filter and the row badge never
+ *  disagree". A mirror held by hand is a copy waiting to drift, and this
+ *  change alters the rule, which is exactly when a copy diverges.
+ *
+ *  Prefers the stated {@link HousekeepingEnrichmentInfo.is_ai_surface}; falls
+ *  back to the old `tokens > 0` reading when absent, and treats an ABSENT
+ *  estimate as not-AI only because the fallback has nothing else to go on —
+ *  which is why the server sends the flag explicitly. */
+export const isAiSurfaceEnrichment = (
+  info: HousekeepingEnrichmentInfo | undefined,
+): boolean => {
+  if (!info) return false;
+  if (info.is_ai_surface !== undefined) return info.is_ai_surface;
+  return (info.token_estimate_per_record ?? 0) > 0;
+};
+
 
 /** Denormalized join of `HousekeepingTaskMeta` + `HousekeepingStateRow`
  *  returned by `housekeeping.status.read`. The persisted state may

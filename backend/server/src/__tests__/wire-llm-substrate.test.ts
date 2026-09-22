@@ -30,7 +30,6 @@ const llmMocks = vi.hoisted(() => {
     createQuotaTracker: vi.fn(),
     executeLLM: vi.fn(),
     executeEmbedding: vi.fn(),
-    resolveLLMModelId: vi.fn(),
     transcribe: vi.fn(),
     // D-208 follow-on phase 4 — durable endpoint capabilities. ⚠ This mock is a
     // FULL replacement, so an export missing here throws at compose time and
@@ -90,7 +89,6 @@ const transcriptionRegistry = { kind: 'transcription-registry' };
 const llmResult = { text: 'llm-result' };
 const embeddingResult = { vector: [0.1, 0.2], dimensions: 2, model: 'text-embedding-3-small' };
 const transcriptionResult = { text: 'voice transcript', model_id: 'whisper-1' };
-const resolvedModelId = 'openai:gpt-4.1-mini';
 const manifest = { id: 'manifest' };
 const input = { prompt: 'summarize' };
 const transcribeRequest = {
@@ -167,7 +165,6 @@ beforeEach(() => {
   llmMocks.createDefaultTranscriptionRegistry.mockReturnValue(transcriptionRegistry);
   llmMocks.executeLLM.mockResolvedValue(llmResult);
   llmMocks.executeEmbedding.mockResolvedValue(embeddingResult);
-  llmMocks.resolveLLMModelId.mockResolvedValue(resolvedModelId);
   llmMocks.transcribe.mockResolvedValue(transcriptionResult);
   llmConfigMocks.createLLMConfigManager.mockReturnValue(managerStub);
 });
@@ -381,7 +378,6 @@ describe('composeHousekeepingLlmCallables happy path', () => {
       'llm',
       'llmWithMeta',
       'probeAiPath',
-      'resolveLLMModelId',
       'taskTokenMeter',
       'transcribe',
     ].sort());
@@ -553,29 +549,6 @@ describe('composeHousekeepingLlmCallables happy path', () => {
     await expect(bundle.transcribe(transcribeRequest)).resolves.toBe(transcriptionResult);
   });
 
-  it('resolveLLMModelId returns an empty string when llmConfig is undefined', async () => {
-    const bundle = composeHousekeepingLlmCallables({
-      substrate: makeSubstrate({ llmConfig: undefined }),
-    });
-
-    await expect(bundle.resolveLLMModelId(manifest as never, input as never)).resolves.toBe('');
-    expect(llmMocks.resolveLLMModelId).not.toHaveBeenCalled();
-  });
-
-  it('resolveLLMModelId invokes the LLM resolver with config, quota, tab probe, and webChatSupported=false', async () => {
-    const substrate = makeSubstrate();
-    const bundle = composeHousekeepingLlmCallables({ substrate });
-
-    await expect(bundle.resolveLLMModelId(manifest as never, input as never)).resolves.toBe(resolvedModelId);
-
-    expect(llmMocks.resolveLLMModelId).toHaveBeenCalledTimes(1);
-    expect(llmMocks.resolveLLMModelId).toHaveBeenCalledWith(manifest, input, {
-      config: substrate.llmConfig,
-      quota: substrate.llmQuota,
-      tabProbe: substrate.emptyTabProbe,
-      webChatSupported: false,
-    });
-  });
 
   it('llmWithMeta forwards the executeLLM result and exposes the unresolved default model_id', async () => {
     const bundle = composeHousekeepingLlmCallables({ substrate: makeSubstrate() });

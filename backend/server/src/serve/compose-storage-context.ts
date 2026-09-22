@@ -168,6 +168,7 @@ import type { BootTrace } from '../cli/boot-trace.js';
 import {
   createRecordsStore,
   createRecordsImportAuditEmitter,
+  type RecordsChangeNotice,
   type RecordsImportAudit,
   type RecordsStore,
 } from '../records/index.js';
@@ -494,10 +495,37 @@ export const composeStorageContext = async (
   // against a hand-built store, precisely because "someone forgot to wire it"
   // is the failure this shape invites.
   let emitRecordsImportAudit: ((event: RecordsImportAudit) => void) | undefined;
+  // ⛔⛔ D-282 B4 — THE SECOND UNWIRED SINK IN THIS FILE'S HISTORY. `packs-panel.ts`
+  // has declared and implemented `refreshAppView()` since the Use tab shipped and
+  // nothing ever called it, so a write by a schedule, a webhook, the AI, a peer or
+  // the owner's other device left every open pack view stale until its tab was
+  // re-selected. The same late-assignment shape as the audit sink above, for the
+  // same reason: the store is constructed before the bus exists, and reordering the
+  // two is a bigger change than a one-line indirection.
+  //
+  // ⚠ The assignment below is asserted by `records-change-broadcast.test.ts` against
+  // THIS composer, never a hand-built store — an unwired sink is silence, and this
+  // slice exists because that silence lasted.
+  let emitRecordsChange: ((event: RecordsChangeNotice) => void) | undefined;
   const recordsStore = createRecordsStore(db, {
     onImport: (event) => emitRecordsImportAudit?.(event),
+    onChange: (event) => emitRecordsChange?.(event),
   });
   const eventBus = createEventBus();
+  emitRecordsChange = (event) => {
+    try {
+      eventBus.emit({
+        kind: 'records',
+        publisher: event.owner.publisher,
+        pack_slug: event.owner.pack_slug,
+        entity: event.entity,
+        op: event.op,
+        id: event.id,
+      });
+    } catch {
+      /* never abort a write that already committed on bus failure */
+    }
+  };
   const approvalStore = createApprovalStore(undefined, {
     onPending: (id) => emitApprovalPending(eventBus, id),
     onResolved: (id) => emitApprovalResolved(eventBus, id),

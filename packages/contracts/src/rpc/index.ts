@@ -28,6 +28,8 @@ export type {
   RecipeRunFacts,
   ServerExecuteResponse,
   ServerMigrationResult,
+  RecipeListRecipeView,
+  ServerRecipeFullEntry,
   ServerRecipeListEntry,
   ServerPendingApproval,
   ServerApprovalResolveResult,

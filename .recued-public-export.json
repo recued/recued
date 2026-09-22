@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
   "source": {
-    "commit": "77ed9ddffbdaba18525983c62ffb59ba5717513a",
-    "tree": "e43ba7eed145f5457f2e619f642d34895c627221",
-    "committed_at": "2026-09-20T02:32:43-07:00"
+    "commit": "3024e7f033cfe87c82becd65d6e1de926ed3e8db",
+    "tree": "493a6b8fdf9b99a432ee5e85738f5c9d3764da2b",
+    "committed_at": "2026-09-21T19:52:58-07:00"
   },
-  "export_manifest_sha256": "568d1a762c4b7f71b8c99a330c0817891493e4a3e70295477763a56510f8bd52",
-  "version": "26.9.20",
+  "export_manifest_sha256": "f6439a71a80ceaf117f74d2165626212f501e469b58b26b7ebd61b3fffdb2dfe",
+  "version": "26.9.21",
   "license": "AGPL-3.0-only",
   "entrypoints": [
     "backend/server",
@@ -16,6 +16,7 @@
     "apps/webclient/e2e/harness/kitchen-harness.ts",
     "apps/webclient/e2e/kitchen-render.spec.ts",
     "apps/webclient/e2e/staging-smoke.spec.ts",
+    "apps/webclient/src/__tests__/d-282-list-detail-guide.test.ts",
     "apps/webclient/wrangler.toml",
     "backend/server/scripts/enroll-bench-recovery-key.ts",
     "backend/server/scripts/release-build.mjs",
@@ -49,6 +50,7 @@
       "apps/webclient/e2e/live-update-path.spec.ts",
       "apps/webclient/src/__tests__/d-148-i15-no-smart-redirect.test.ts",
       "apps/webclient/src/__tests__/d-200-slice6g4-intake-recipe-pair-section.test.ts",
+      "apps/webclient/src/__tests__/d-282-b6-bulk-action.test.ts",
       "apps/webclient/src/__tests__/pack-app-model.test.ts",
       "apps/webclient/src/__tests__/recipes-required-file-slugs.test.ts",
       "apps/webclient/src/__tests__/settings-connect-device-readability.test.ts",
@@ -151,6 +153,8 @@
       "backend/server/src/__tests__/d-261-browser-fixture.ts",
       "backend/server/src/__tests__/d-261-service.test.ts",
       "backend/server/src/__tests__/d-272-one-listen-site.ratchet.test.ts",
+      "backend/server/src/__tests__/d-282-b6-bulk-accept-drive.test.ts",
+      "backend/server/src/__tests__/d-282-repair-blank-lines-drive.test.ts",
       "backend/server/src/__tests__/dependency-manifest.test.ts",
       "backend/server/src/__tests__/dispatch-canonical-resolve.test.ts",
       "backend/server/src/__tests__/door-standing-closure-e2e.test.ts",
@@ -217,6 +221,7 @@
       "backend/server/src/__tests__/supervisor-contract.test.ts",
       "backend/server/src/__tests__/supervisor-join.test.ts",
       "backend/server/src/__tests__/watch-canonical-poll.test.ts",
+      "backend/server/src/__tests__/wire-observability-rpc-deps.test.ts",
       "backend/server/src/__tests__/zoho-desk-tickets-pack.test.ts",
       "backend/server/src/collections/service/__tests__/starter-pack.test.ts",
       "backend/server/src/ingredient-authoring/__tests__/install-composition-accounting-op-steps.test.ts",
@@ -239,6 +244,7 @@
       "packages/contracts/src/__tests__/d-194-connection-requirements.test.ts",
       "packages/contracts/src/__tests__/d-200-transactional-offer-retirement.ratchet.test.ts",
       "packages/contracts/src/__tests__/d-220-slice-b-pack-intake-template.test.ts",
+      "packages/contracts/src/__tests__/declared-pattern.test.ts",
       "packages/contracts/src/__tests__/value-hint-authored-set.test.ts",
       "packages/engine/src/__tests__/authored-pii-content-roundtrip.test.ts",
       "packages/engine/src/__tests__/connection-agnostic-contact-account-pack.test.ts",
@@ -483,6 +489,11 @@
       "packages/recipes/src/__tests__/d-145-phase-10-pack-recipes.test.ts",
       "packages/recipes/src/__tests__/d-195-operation-bundles.test.ts",
       "packages/recipes/src/__tests__/d-218-fanout-publish-recipe.test.ts",
+      "packages/recipes/src/__tests__/d-278-confidence-zero-anchor.test.ts",
+      "packages/recipes/src/__tests__/d-282-b2-sort-carrier.test.ts",
+      "packages/recipes/src/__tests__/d-282-b6-table-select.test.ts",
+      "packages/recipes/src/__tests__/d-282-pack-app-authoring-hints.test.ts",
+      "packages/recipes/src/__tests__/d-282-row-action-config-corpus.test.ts",
       "packages/recipes/src/__tests__/databricks-pack-audit.test.ts",
       "packages/recipes/src/__tests__/datadog-cost-truth-window-pack-audit.test.ts",
       "packages/recipes/src/__tests__/deel-payout-blockers-pack-audit.test.ts",
@@ -591,9 +602,10 @@
       "packages/recipes/src/__tests__/woocommerce-customer-reply-desk.test.ts",
       "packages/recipes/src/__tests__/xero-first-page-ceiling-pack-audit.test.ts",
       "packages/recipes/src/__tests__/zendesk-ticket-count-truth-pack-audit.test.ts",
-      "packages/recipes/src/__tests__/zendesk-ticket-reply-closure-loop.test.ts"
+      "packages/recipes/src/__tests__/zendesk-ticket-reply-closure-loop.test.ts",
+      "packages/transforms/src/__tests__/d-282-map-item-refs-corpus.test.ts"
     ],
-    "sha256": "ed731774e418f084e14275fc27bc511f959c89fc089d726b48decedf0c6b530b",
+    "sha256": "15eec473a7986b106eb02cf025a8c7d794b29f89ade76b25054ac4c0319cda57",
     "roots": [
       "apps/auth-worker",
       "apps/bridge",
@@ -610,15 +622,15 @@
     ]
   },
   "internal_reference_scrub": {
-    "files_changed": 1077,
+    "files_changed": 1083,
     "rules": [
       {
         "id": "internal-spec-reference",
-        "comments_rewritten": 1014
+        "comments_rewritten": 1015
       },
       {
         "id": "internal-design-document",
-        "comments_rewritten": 119
+        "comments_rewritten": 127
       },
       {
         "id": "internal-handover-note",
@@ -708,7 +720,7 @@
     "packages/warehouse-events"
   ],
   "payload": {
-    "file_count": 6123,
-    "sha256": "cafcafb7017f211314982711e7f59885d546d53d6f2eaebed711ec51b75388aa"
+    "file_count": 6149,
+    "sha256": "93672de6d1fcfc6cafe4a6ffa4f280a585cbf5713244fdf7a93ffd658bd2d3b4"
   }
 }

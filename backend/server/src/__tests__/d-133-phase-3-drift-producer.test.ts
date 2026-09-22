@@ -243,9 +243,17 @@ describe('D-133 P3 — drift detection + persistence', () => {
     // the producer suppresses the realtime event AND enqueues
     // `lifecycle_action_pending = 'recompute'` for source rows. The
     // banner-firing path is now covered separately for non-recompute
-    // source topics; cross-reference d-136-phase-4-drift-as-input
-    // for the P4 substrate-specific tests.
-    expect(emitted).toHaveLength(0);
+    // 🏁 D-283 RESTORED THIS. D-136 P4 flipped it to `0` when it
+    // suppressed the banner for `recompute_on_drift` topics; D-283 put
+    // the banner back, because suppression hid a topic-wide token spend
+    // AND starved the click-through telemetry that audit § 26 Q3 made
+    // the precondition for auto-recompute in the first place.
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0]).toMatchObject({
+      kind: 'enrichment_drift_detected',
+      source_topic: 'purpose',
+      severity: 'significant',
+    });
   });
 
   it('emits no event when severity stays none on stable distribution', () => {
@@ -270,14 +278,15 @@ describe('D-133 P3 — state-transition gating', () => {
     // `driftTransitionFires` still suppresses re-fires within the
     // same bucket (covered exhaustively by the pure-helper tests
     // above); this assertion just confirms the integrated path on
-    // a recompute_on_drift topic does not double-write the
-    // suppressed event.
-    expect(emitted).toHaveLength(0);
+    // D-283 — the banner fires once on the crossing.
+    expect(emitted).toHaveLength(1);
 
-    // Re-run on the next "day" — same severity, no new event.
+    // Re-run on the next "day" — same severity, NO second event. This is
+    // the state-transition gate D-133 built to defend against banner
+    // spam, and restoring the banner puts it back under load.
     now += 24 * 60 * 60_000;
     processOneConfidenceDriftTopic(ctx(), 'purpose', now);
-    expect(emitted).toHaveLength(0);
+    expect(emitted).toHaveLength(1);
   });
 
   it('preserves dismissed_at when severity stays the same', () => {
@@ -326,10 +335,10 @@ describe('D-133 P3 — task instance', () => {
     await confidenceDriftSignalTask.step(ctx(), { kind: 'complete' }, 60_000);
     const row = store.getDerived(CONFIDENCE_DRIFT_TOPIC, 'drift_purpose');
     expect(row).not.toBeNull();
-    // D-136 P4 — `purpose` is recompute_on_drift, so the realtime
-    // event is suppressed; the producer instead enqueues recompute
-    // through the lifecycle queue (covered by
-    // d-136-phase-4-drift-as-input).
-    expect(emitted).toHaveLength(0);
+    // 🏁 D-283 — `purpose` is recompute_on_drift, so the producer
+    // enqueues recompute through the lifecycle queue AND raises the
+    // banner saying so. D-136 P4 suppressed the second half; that hid
+    // the spend from the person paying for it.
+    expect(emitted).toHaveLength(1);
   });
 });

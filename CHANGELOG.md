@@ -7,6 +7,105 @@ checkpoint was cut. One entry per published export; the machine-readable
 provenance for each — source commit, tree, payload digest, and what was omitted
 — lives in `.recued-public-export.json`.
 
+## 26.9.21 — 2026-09-21
+
+Two kinds of work dominate this release. An installed pack stopped being a card
+you press and became something you navigate: a row opens where it sits, at an
+address you can bookmark and send to someone else, and the apps you actually use
+can be pinned where you can reach them. And a measurement pass on what crosses
+the connection between your server and your browser found three responses
+carrying data nothing on the other end wanted — one of them large enough that
+your browser received none of it while the server recorded a success.
+
+### Added
+
+- **A row in a pack's list opens where it is, at its own address.** Pressing a
+  row action used to open a form over the list. It now runs in place and gives
+  the result a real address, so you can bookmark it, send it to someone, and use
+  Back to return to the list you came from. A link is honoured only if the pack
+  still offers that view as a read — so a pack update that turns a view into an
+  action quietly disarms every link pointing at it, rather than replaying an
+  action you did not mean to run.
+- **Pick rows, then act on the set.** A list can select several rows and run one
+  thing over all of them.
+- **Pin the apps you use to the navigation drawer.** A pack's Use tab has a Pin
+  control, and pinned apps sit directly under Chats on that device. Unpin
+  everything and the drawer is exactly the list it was before — the section
+  disappears rather than sitting there empty.
+- **A pack's view refreshes when its own data moves**, instead of showing you
+  what was true when you opened it.
+- **See what changed since you last reviewed.** A saved Records view can show
+  the rows that changed since you last said you had looked, and you decide when
+  "last looked" is. Nothing new is recorded to make this work; the change log
+  was already being kept and simply had no reader.
+- **A drift notice is still there when you come back.** A verdict about an
+  assistant's confidence drifting used to be shown once, to whoever happened to
+  be looking at that moment — a check that ran at 3am was seen by nobody. The
+  verdict is stored and the notice is drawn from it, so a reload or a fresh tab
+  shows it.
+- **A recipe can be fetched by name.** Opening one in the editor used to mean
+  downloading every recipe on the server to use one of them.
+
+### Changed
+
+- **Your browser stops downloading things it never reads.** The recipe list no
+  longer carries the body of every recipe (10.3 MB to 3.8 MB on a large server,
+  and the browser asks for that list many times in a session), the pack list no
+  longer carries each pack's full manifest, and opening one recipe in the editor
+  now costs about two kilobytes instead of ten megabytes. The two answers that
+  genuinely needed a recipe's body are computed on the server and sent along.
+- **Confidence drift is decided on how often the assistant declines to answer**,
+  which can be stated in a sentence, rather than on the distance between two
+  histograms, which cannot. Where that rate is unavailable the older measure is
+  still used, but only where it can see.
+- **A drift warning now needs enough evidence to mean something.** The sample
+  floors were raised after measuring how often the old ones fired on two
+  samples drawn from the same distribution — where every warning is false by
+  construction. Roughly one in seven was.
+- **A stored assistant result is final until the question changes or you say
+  otherwise.** It is invalidated by a change to what was asked — the content, or
+  the prompt asking about it — or by you. Never by a change in which model
+  answered, or in how it has been answering lately.
+
+### Fixed
+
+- **Two storage areas were blocked from writing on every server, from first
+  boot.** Creating a schedule could not succeed anywhere — not under load, not on
+  a full disk, but on an empty install, always. Each area keeps a reserve, and
+  the reserve has a floor; where the floor was larger than the whole allowance,
+  the "full" threshold computed to zero bytes and an empty area was already over
+  it. The reserve can no longer take more than half of an allowance, so this
+  cannot happen to a new area either.
+- **The Packs panel could wait forever.** The response was built correctly and
+  was too large to send, so the connection was closed and the browser received
+  nothing, while the server's own record said the call had succeeded. Attaching
+  every pack's manifest to a list was the cost, and it grew with the number of
+  packs installed.
+- **A reply that cannot be delivered now says so** instead of leaving whoever
+  asked waiting for an answer that was already dropped.
+- **A list placeholder appeared as literal text in seven recipes.** A reference
+  to the current item resolved in one kind of loop and not in another, so the
+  characters themselves were written out — and, in one recipe, saved into your
+  records as a label and then matched against. A cleanup is included for rows
+  that already have those lines, since the pack that wrote them offers no way to
+  delete a row.
+- **Nineteen row actions were refused the moment you pressed them**, because
+  permission was being looked up under the wrong name.
+- **A "Run now" button that could never be pressed.** Some maintenance tasks were
+  shown with the control permanently disabled, so you could not ask for a fresh
+  result even where you had allowed one.
+- **A pattern declared by a pack could hang the process.** Packs can describe
+  what a field must look like, and that description is run against whatever is
+  supplied — including at the door that accepts messages from outside. Only one
+  of the three places that did this was checked. All three are bounded now, and
+  the check made when a pack is installed takes the field's declared maximum
+  length into account, which is the difference between a pattern that is cheap
+  and the same pattern that is not.
+- **Pin took a reload to appear**, a column the store cannot sort is no longer
+  drawn as a sort control, an empty list and a view that cannot be drawn now say
+  different things, and a few detail views were named after the pack rather than
+  the service they show.
+
 ## 26.9.20 — 2026-09-20
 
 This release is mostly about files and about being called correctly. A recipe

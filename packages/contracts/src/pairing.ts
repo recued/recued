@@ -152,6 +152,7 @@ export const DEFAULT_SUBSCRIPTIONS: BroadcastEventKind[] = [
   // the recipes view live-refreshes each recipe's runnable/degraded/blocked
   // status after a connection / grant / pack mutation, off the bus snapshot.
   'recipe_runnability_changed',
+  'records',
   'remerge_prompt',
   'schedule',
   'service',

@@ -228,23 +228,42 @@ describe('D-136 P1 — classification snapshot (audit §3-§4 + §23.3)', () => 
   });
 });
 
-describe('D-136 P1 — emits_confidence post-revoke state (D-145 PA9 widened)', () => {
+describe('D-136 P1 — emits_confidence post-revoke state (D-279 narrowed)', () => {
   // D-136 P5b narrowed PSI eligibility 9→3 (purpose / summary /
-  // action_items). D-145 PA9 adds 4 PSI-eligible producers per spec
-  // § A.7.2 (3 + 1 narrowing): commitment_followthrough_score /
-  // task_completion_velocity / project_velocity (work-entity) +
-  // context_packet_quality (engine + reliability). Total post-PA9: 7.
+  // action_items). D-145 PA9 added 4 PSI-eligible producers per spec
+  // § A.7.2: commitment_followthrough_score / task_completion_velocity /
+  // project_velocity (work-entity) + context_packet_quality (engine +
+  // reliability). That made 7.
+  //
+  // ⛔⛔ D-279 REMOVED `summary` AND `action_items`, 7 → 5, because the
+  // flag claimed a value their producers CANNOT PRODUCE:
+  //
+  //    summary       persists `AiSummarizeOutput` = { summary, key_points };
+  //                  the contracted ai-summarize output has no confidence
+  //                  field at all.
+  //    action_items  declares `'llm.fields': ['action_items']` — one field —
+  //                  and stores `{ action_items }`.
+  //
+  // `confidenceEmittingEnrichmentTopics()` fed that claim to the D-133
+  // drift producer, whose per-topic query filters on
+  // `json_extract(value, '$.confidence') IS NOT NULL` — a predicate no row
+  // of either topic could ever match. Two of the three topics D-133's own
+  // header names as its PSI surfaces were structurally dead.
+  //
+  // 🔑 A flag is a CLAIM ABOUT THE DATA, and nothing was checking it
+  // against the producer that writes the data. `context_packet_quality`
+  // stays: it has no producer yet, so its flag is a forward declaration
+  // consistent with its D-145 PA9 `confidence_kind` declaration, not a
+  // claim contradicted by shipped code.
   const EXPECTED_PSI_TOPICS: ReadonlyArray<EnrichmentTopic> = [
     'purpose',
-    'summary',
-    'action_items',
     'commitment_followthrough_score',
     'task_completion_velocity',
     'project_velocity',
     'context_packet_quality',
   ];
 
-  it('PSI topics post-D-136 P5b + D-145 PA9 = 7 emits_confidence flagged topics', () => {
+  it('PSI topics post-D-279 = 5 emits_confidence flagged topics', () => {
     const flagged: string[] = [];
     for (const [topic, def] of Object.entries(ENRICHMENT_REGISTRY)) {
       if ((def as { emits_confidence?: boolean }).emits_confidence === true) {

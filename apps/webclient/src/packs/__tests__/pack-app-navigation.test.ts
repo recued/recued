@@ -7,6 +7,7 @@ import {
   packAppViewAddress,
   packDetailAddress,
   packsListAddress,
+  packAppLookupAddress,
   parsePacksAddress,
   projectPackAppNavigation,
 } from '../pack-app-navigation.js';
@@ -40,14 +41,49 @@ describe('dynamic Business Pack navigation adapter', () => {
       kind: 'pack',
       packSlug: 'rental-book',
       viewId: null,
+      target: null,
     });
     expect(parsePacksAddress(parseShellRoute('#packs/rental-book/use/list-buildings')))
       .toEqual({
         kind: 'pack',
         packSlug: 'rental-book',
         viewId: 'list-buildings',
+        target: null,
       });
     expect(parsePacksAddress(parseShellRoute('#recipes/x'))).toBeNull();
+  });
+
+  /** D-282 B5 — a detail page is a place. */
+  it('builds and parses a lookup address, round-trip', () => {
+    const address = packAppLookupAddress('rental-book', 'show-building', 'bld 42');
+    expect(address.hash).toBe('#packs/rental-book/use/show-building/bld%2042');
+    expect(parsePacksAddress(parseShellRoute(address.hash))).toEqual({
+      kind: 'pack',
+      packSlug: 'rental-book',
+      viewId: 'show-building',
+      target: 'bld 42',
+    });
+  });
+
+  /** ⛔ A TARGET WITH NO VIEW IS A TRUNCATED ADDRESS, NOT A SHORTER ONE.
+   *  `#packs/<slug>/nonsense/bld_42` has no recipe to hang the record on, and
+   *  honouring the record alone would point it at whatever opened by default.
+   *
+   *  ⚠ NOTE WHAT IS *NOT* TESTED HERE. `#packs/rental-book/use//bld_42` does
+   *  NOT land in this case: the shell router collapses empty segments, so that
+   *  hash parses as `use/bld_42` and `bld_42` IS the view id. That is the
+   *  router's rule, not this parser's, and asserting otherwise here would have
+   *  encoded a belief about a module this one only consumes. */
+  it('drops a target whose view segment is missing or blank', () => {
+    expect(parsePacksAddress(parseShellRoute('#packs/rental-book/nope/bld_42')))
+      .toEqual({ kind: 'pack', packSlug: 'rental-book', viewId: null, target: null });
+    expect(parsePacksAddress(parseShellRoute('#packs/rental-book/use/show-building/%20')))
+      .toEqual({
+        kind: 'pack',
+        packSlug: 'rental-book',
+        viewId: 'show-building',
+        target: null,
+      });
   });
 
   it('projects only dynamically classified views into navigation nodes', () => {

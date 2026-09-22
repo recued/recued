@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type {
   RecipeDefinition,
   RecipeEventTrigger,
-  ServerRecipeListEntry,
+  ServerRecipeFullEntry,
 } from '@recued/contracts';
 import {
   validateRecipeContent,
@@ -227,7 +227,11 @@ const automationRecipe = (
   event_triggers: triggers,
 });
 
-const entryFor = (recipe: RecipeDefinition): ServerRecipeListEntry => ({
+/** ⚠ A **FULL** entry. These fixtures stand in for `recipe.get`, which is the
+ *  only surface that carries a body now — a `recipe.list` row's `recipe` has
+ *  no `steps` / `prefetch_steps`, so a test that reads them off a list row is
+ *  asserting a shape production no longer sends. */
+const entryFor = (recipe: RecipeDefinition): ServerRecipeFullEntry => ({
   recipe_id: recipe.recipe_id,
   publisher_id: 'recued-core',
   version: recipe.version ?? 1,
@@ -238,8 +242,8 @@ const entryFor = (recipe: RecipeDefinition): ServerRecipeListEntry => ({
 });
 
 const workflowTemplateEntry = (
-  overrides: Partial<ServerRecipeListEntry> = {},
-): ServerRecipeListEntry => {
+  overrides: Partial<ServerRecipeFullEntry> = {},
+): ServerRecipeFullEntry => {
   const recipe: RecipeDefinition = {
     ...sampleRecipe('start-paid-document-fulfillment'),
     metadata: {
@@ -287,7 +291,8 @@ const okSave = async (args: { recipe: RecipeDefinition }) => ({
 
 const mount = (opts: {
   recipeId?: string;
-  listCaller: () => Promise<{ recipes: ReadonlyArray<ServerRecipeListEntry> }>;
+  listCaller: () => Promise<{ recipes: ReadonlyArray<ServerRecipeFullEntry> }>;
+  getCaller?: (args: { recipe_id: string }) => Promise<{ recipe: ServerRecipeFullEntry | null }>;
   saveCaller?: (args: {
     recipe: RecipeDefinition;
     publisher_id?: string;
@@ -317,6 +322,7 @@ const mount = (opts: {
     document: doc as unknown as Document,
     recipeId: opts.recipeId ?? 'daily-brief',
     listCaller: opts.listCaller,
+    ...(opts.getCaller ? { getCaller: opts.getCaller } : {}),
     validateCaller: okValidate,
     saveCaller: opts.saveCaller ?? okSave,
     ...(opts.webhookIngressListCaller
@@ -446,8 +452,8 @@ describe('mountRecipeEditorRoute — Edit→Kitchen loader', () => {
 
   it('keeps a failed-load Retry single-flight and mounts the recovered recipe', async () => {
     let calls = 0;
-    let resolveRetry!: (value: { recipes: ServerRecipeListEntry[] }) => void;
-    const retryResult = new Promise<{ recipes: ServerRecipeListEntry[] }>((resolve) => {
+    let resolveRetry!: (value: { recipes: ServerRecipeFullEntry[] }) => void;
+    const retryResult = new Promise<{ recipes: ServerRecipeFullEntry[] }>((resolve) => {
       resolveRetry = resolve;
     });
     const listCaller = vi.fn(async () => {
@@ -488,8 +494,8 @@ describe('mountRecipeEditorRoute — Edit→Kitchen loader', () => {
   });
 
   it('a dispose BEFORE the list resolves never mounts the editor (disposed guard)', async () => {
-    let resolveList!: (v: { recipes: ServerRecipeListEntry[] }) => void;
-    const pending = new Promise<{ recipes: ServerRecipeListEntry[] }>((res) => {
+    let resolveList!: (v: { recipes: ServerRecipeFullEntry[] }) => void;
+    const pending = new Promise<{ recipes: ServerRecipeFullEntry[] }>((res) => {
       resolveList = res;
     });
     const { root, handle } = mount({ listCaller: () => pending });
@@ -982,8 +988,8 @@ describe('mountFormResponseRecipeSeedRoute — Data → Kitchen handoff', () => 
   });
 
   it('ignores a late discovery result after disposal', async () => {
-    let resolveList!: (value: { recipes: ServerRecipeListEntry[] }) => void;
-    const pending = new Promise<{ recipes: ServerRecipeListEntry[] }>((resolve) => {
+    let resolveList!: (value: { recipes: ServerRecipeFullEntry[] }) => void;
+    const pending = new Promise<{ recipes: ServerRecipeFullEntry[] }>((resolve) => {
       resolveList = resolve;
     });
     const doc = makeFakeDocument();
@@ -1008,5 +1014,49 @@ describe('mountFormResponseRecipeSeedRoute — Data → Kitchen handoff', () => 
     expect(findByAttr(root, MOUNT_RECIPE_EDITOR_HOST_ATTR)).toBeUndefined();
     expect(findByAttr(root, FORM_RESPONSE_AUTOMATION_DISCOVERY_ATTR)).toBeUndefined();
     expect(findByAttr(root, RECIPE_EDITOR_ROUTE_ATTR)).toBeUndefined();
+  });
+});
+
+/** The by-id load path (`recipe.get`).
+ *
+ *  ⛔⛔ EVERY OTHER TEST IN THIS FILE WIRES ONLY `listCaller`, SO THEY ALL
+ *  EXERCISE THE FALLBACK. That is exactly the shape of green that has misled
+ *  this codebase before — a harness that omits a caller the composition root
+ *  supplies proves the branch production never takes. These two assert the
+ *  path production DOES take, and that the fallback still catches an older
+ *  server. */
+describe('mountRecipeEditorRoute — recipe.get', () => {
+  it('⛔ loads BY ID and never downloads the list', async () => {
+    const recipe = sampleRecipe('daily-brief');
+    let listCalls = 0;
+    const getCalls: string[] = [];
+    const handle = mount({
+      recipeId: 'daily-brief',
+      listCaller: async () => { listCalls += 1; return { recipes: [entryFor(recipe)] }; },
+      getCaller: async ({ recipe_id }) => {
+        getCalls.push(recipe_id);
+        return { recipe: entryFor(recipe) };
+      },
+    });
+    await tick();
+    // The whole point of the rpc: one recipe fetched, the corpus left alone.
+    expect(getCalls).toStrictEqual(['daily-brief']);
+    expect(listCalls).toBe(0);
+    handle.handle.dispose?.();
+  });
+
+  it('falls back to the list when the server has no `recipe.get`', async () => {
+    // Self-hosted has no deploy order: a current webclient meets an older
+    // server, which answers `unknown_method`. The editor must still open.
+    const recipe = sampleRecipe('daily-brief');
+    let listCalls = 0;
+    const handle = mount({
+      recipeId: 'daily-brief',
+      listCaller: async () => { listCalls += 1; return { recipes: [entryFor(recipe)] }; },
+      getCaller: async () => { throw new Error('unknown_method: recipe.get'); },
+    });
+    await tick();
+    expect(listCalls).toBe(1);
+    handle.handle.dispose?.();
   });
 });

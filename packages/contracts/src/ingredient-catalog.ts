@@ -567,6 +567,30 @@ export interface PathScopeContract {
  *  which `bulk-pack.ts` already imports from) so the lowering target and
  *  the authoring source share ONE shape; `bulk-pack.ts` re-exports it for
  *  the authoring-side `OperationRow`. */
+/** Longest string an approval-card edit may carry.
+ *
+ *  ⛔ WHY A CAP EXISTS AT ALL. `validation` is `{ min, max, pattern }` and its
+ *  `min`/`max` are applied to a NUMBER — for a string field the contract can
+ *  express no length bound whatsoever. So `enforceFieldShape` ran a
+ *  PACK-DECLARED `pattern` against a caller-supplied string of any size, on
+ *  Node's single thread where a synchronous regex cannot be interrupted. Cost is
+ *  exponential in input length; nothing bounded the input.
+ *
+ *  ⚠ AND THE CALLER IS NOT ALWAYS THE OWNER. `resolveApprover` admits two
+ *  authorities — `paired_admin` AND `ask_landing`, a holder of an approval-link
+ *  capability — and `validateEditsAgainstSchema` runs before any approver-kind
+ *  branching, so nothing restricts edits to the owner. An older comment on that
+ *  function still reads "Admin-only, so never a privilege hole"; it predates the
+ *  second authority.
+ *
+ *  🔑 4,096 BECAUSE OF THE SURFACE, NOT THE PATTERN. These values are retyped by
+ *  a person on an approval card — cli arguments, paths, a query. The corpus's
+ *  own longest peer is `sqlite3`'s `query` at `maxLength: 4096`, and PATH_MAX is
+ *  the same number. It is a denial-of-service ceiling, not a claim about what a
+ *  field means, and it refuses rather than truncates: silently shortening an
+ *  argument changes what the operation does. */
+export const ARG_EDIT_STRING_MAX = 4096;
+
 export interface ArgEditField {
   /** Arg path on the operation's `request_schema` (e.g. `title`,
    *  `start_at`, `request.email`). */

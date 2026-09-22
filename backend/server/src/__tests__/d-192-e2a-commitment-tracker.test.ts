@@ -329,7 +329,6 @@ describe('E2a — processOneCommitmentTracker integration', () => {
       if (llmResponses.length === 0) throw new Error('no llm response queued');
       return { result: llmResponses.shift(), model_id: 'groq:llama-3-70b' };
     }),
-    resolveLLMModelId: vi.fn(async () => 'groq:llama-3-70b'),
   });
 
   const input = (rows: EngagementsResolverRow[]) => ({

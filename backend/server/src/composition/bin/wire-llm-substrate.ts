@@ -32,8 +32,8 @@
  *     cleanly rather than silently.
  *
  *  2. `composeHousekeepingLlmCallables` — inside-cmdServe. Builds the
- *     five `HousekeepingContext` LLM callables (`llm`, `llmWithMeta`,
- *     `resolveLLMModelId`, `embed`, `transcribe`) closed over a substrate bundle.
+ *     four `HousekeepingContext` LLM callables (`llm`, `llmWithMeta`,
+ *     `embed`, `transcribe`) closed over a substrate bundle.
  *     Returned with field names matching `HousekeepingContext` so the
  *     caller spreads the bundle directly into the scheduler ctx.
  *
@@ -59,7 +59,6 @@ import {
   createDefaultTranscriptionRegistry,
   executeLLM,
   executeEmbedding,
-  resolveLLMModelId,
   transcribe as transcribeAudio,
   LLMError,
   type ForceLayer,
@@ -80,7 +79,6 @@ import type {
   HousekeepingEmbedExecute,
   HousekeepingLlmExecute,
   HousekeepingLlmExecuteWithMeta,
-  HousekeepingResolveModelId,
   HousekeepingTranscribe,
 } from '../../housekeeping/index.js';
 
@@ -302,7 +300,6 @@ export interface HousekeepingLlmCallables {
   taskTokenMeter: HousekeepingTaskTokenMeter;
   llm: HousekeepingLlmExecute;
   llmWithMeta: HousekeepingLlmExecuteWithMeta;
-  resolveLLMModelId: HousekeepingResolveModelId;
   embed: HousekeepingEmbedExecute;
   transcribe: HousekeepingTranscribe;
   /** D-262 follow-on — "is any AI path usable right now", for the scheduler's
@@ -447,21 +444,6 @@ export const composeHousekeepingLlmCallables = (
   };
 
   // D-136 P3 — pre-call probe for the resolved provider model id.
-  // Producer wrappers fold the result into their dedup key BEFORE the
-  // LLM call so cross-pool changes (free-pool ↔ BYOK) invalidate
-  // cached rows authored by a different model. Returns empty string
-  // when no LLM path is configured at all — wrapper falls back to the
-  // static producer-version hash and the subsequent `executeLLM` call
-  // throws AI_LLM_UNAVAILABLE if the call still can't resolve.
-  const resolveLLMModelIdCallable: HousekeepingResolveModelId = async (manifest, input) => {
-    const liveConfig = resolveLlmConfig();
-    if (!liveConfig) return '';
-    return resolveLLMModelId(manifest, input, {
-      config: liveConfig,
-      quota: llmQuota,
-      tabProbe: emptyTabProbe,
-      webChatSupported: false,    });
-  };
 
   // D-131 A.3 — embeddings sibling. Same shared `llmConfig` +
   // `llmQuota` (cooldowns cross-pollinate per the share-quota
@@ -528,7 +510,6 @@ export const composeHousekeepingLlmCallables = (
     probeAiPath: () => probeAiPathAvailability(resolveLlmConfig(), llmQuota),
     llm,
     llmWithMeta,
-    resolveLLMModelId: resolveLLMModelIdCallable,
     embed,
     transcribe,
   };

@@ -17,7 +17,7 @@
  *  Spec: internal design notes §R25 (LOCKED) points 2 + 5/7E. */
 
 import type { HousekeepingTaskStatus } from '@recued/contracts';
-import { ENRICHMENT_REGISTRY } from '@recued/contracts';
+import { ENRICHMENT_REGISTRY, isAiSurfaceEnrichment } from '@recued/contracts';
 import { e } from '../../template.js';
 import { topicFromTaskId } from './detail-drawer.js';
 
@@ -41,11 +41,13 @@ export const HOUSEKEEPING_PRODUCER_SEARCH_ACTION = 'housekeeping-producer-search
 export const HOUSEKEEPING_PRODUCER_COST_ACTION = 'housekeeping-producer-cost-filter';
 
 /** True iff the producer is AI-surface — a positive per-record token
- *  estimate. Deterministic producers (`token_estimate_per_record === 0`)
- *  are `false`. Mirrors `enrichment-producer-section.ts`'s row-level
- *  derivation so the filter and the row badge never disagree. */
+ *  estimate. Deterministic producers are `false`.
+ *
+ *  🔑 The hand-held mirror of `enrichment-producer-section.ts`'s derivation is
+ *  gone — both now call the SAME contracts helper, so the filter and the row
+ *  badge cannot disagree by construction rather than by comment. */
 const isAiSurfaceRow = (status: HousekeepingTaskStatus): boolean =>
-  status.enrichment ? status.enrichment.token_estimate_per_record > 0 : false;
+  isAiSurfaceEnrichment(status.enrichment);
 
 /** The user-facing one-liner for a producer row — the registry's
  *  `user_value` (the "you can use this to…" copy) falling back to the

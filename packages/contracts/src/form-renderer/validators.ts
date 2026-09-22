@@ -22,6 +22,7 @@ import type {
   ShowIfCondition,
   ValidationHooks,
 } from './types.js';
+import { testDeclaredPattern } from '../declared-pattern.js';
 
 // ────────────────────────────────────────────────────────────────
 // Built-in per-type validators
@@ -40,13 +41,16 @@ const checkTextish = (field: FormField, value: unknown): string | null => {
     return `Must be ≤ ${field.max_length} characters`;
   }
   if (field.pattern !== undefined && value !== '') {
-    let re: RegExp;
+    // ⛔ This runs a PACK-declared pattern against a value the visitor typed, on
+    //   a thread nothing can interrupt. `testDeclaredPattern` keeps the throwing
+    //   semantics this `catch` depends on. See `../declared-pattern.ts`.
+    let matched: boolean;
     try {
-      re = new RegExp(field.pattern);
+      matched = testDeclaredPattern(field.pattern, value);
     } catch {
       return 'Invalid pattern in field definition';
     }
-    if (!re.test(value)) return 'Must match the required format';
+    if (!matched) return 'Must match the required format';
   }
   return null;
 };

@@ -11,6 +11,7 @@
  *  that listens on the state-change events emitted here. */
 
 import {
+  MAX_RESERVE_FRACTION,
   MIN_RESERVE_BYTES,
   type CanWriteOptions,
   type GateConfig,
@@ -83,7 +84,12 @@ export const createStorageGate = (opts: CreateGateOptions): StorageGate => {
   };
 
   const computeThresholds = () => {
-    const reserve = Math.max(MIN_RESERVE_BYTES, Math.floor(quota * (reservePct / 100)));
+    // ⛔ The floor is CLAMPED so it can never consume the whole quota. Without
+    //    this, any quota at or below MIN_RESERVE_BYTES computed
+    //    `available = 0`, and the gate blocks on `used >= blockedAt` — so an
+    //    empty surface rejected every write, forever. See MAX_RESERVE_FRACTION.
+    const desiredReserve = Math.max(MIN_RESERVE_BYTES, Math.floor(quota * (reservePct / 100)));
+    const reserve = Math.min(desiredReserve, Math.floor(quota * MAX_RESERVE_FRACTION));
     const available = Math.max(0, quota - reserve);
     const pressureAt = Math.floor(available * pressureRatio);
     const blockedAt = available;
