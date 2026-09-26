@@ -230,6 +230,31 @@ describe('kernel adapter — notification-send', () => {
     expect(calls).toBe(0);
   });
 
+  // Names typed with spaces where commas were meant. The box's help asks for
+  // commas; the channel names are a list that can tell one name from two.
+  it.each([
+    ['as text', 'slack email'],
+    ['in a list a box saved before the checkboxes', ['slack email']],
+  ])('⛔ reads `slack email` %s as the two channels it names', async (_label, channels) => {
+    let captured: unknown;
+    const adapter = createKernelAdapter({
+      notificationSend: async (input) => {
+        captured = input;
+        return { delivered_to: [], failed: [] };
+      },
+    });
+    await adapter(mkCall('notification-send', { channels, text: 'hi' }));
+    expect(captured).toEqual({ channels: ['slack', 'email'], text: 'hi' });
+  });
+
+  it('still refuses names typed with spaces when one of them is no channel, by the whole name', async () => {
+    const adapter = createKernelAdapter({
+      notificationSend: async () => ({ delivered_to: [], failed: [] }),
+    });
+    await expect(adapter(mkCall('notification-send', { channels: 'slack emial', text: 'hi' })))
+      .rejects.toThrow(/"slack emial" is not a channel\./);
+  });
+
   it('still refuses an empty list: it names no channel, which is not "any"', async () => {
     const adapter = createKernelAdapter({
       notificationSend: async () => ({ delivered_to: [], failed: [] }),

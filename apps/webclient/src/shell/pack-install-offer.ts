@@ -16,6 +16,14 @@
  *  already follows: the scheduler gate, the uninstall disclosure and this offer
  *  all read `missingPackDependencies`, so no surface names a different pack.
  *
+ *  ── The install dialog offers the same way ───────────────────────────
+ *  `settings/packs-install-dialog.ts` names and links a missing pack with
+ *  {@link packInstallOfferName} / {@link packInstallOfferHref}, so both offers
+ *  send the owner to the same place. Its list is not `depends_on`: it is the
+ *  packs whose operations the install could not bind (`unboundPackRefs`),
+ *  because that dialog HOLDS Install on it, and a pack a recipe declares but
+ *  never calls must not hold an install that would succeed.
+ *
  *  ── ⛔ IT LINKS, IT DOES NOT INSTALL ─────────────────────────────────
  *  The obvious build is an Install button calling `packs.installBySlug`. That
  *  would be a consent bypass: the rpc takes `granted_permissions` and an
@@ -54,11 +62,18 @@ const e = (value: string): string =>
 
 /** The pack slug a user recognises — `recued-core.officecli` → `officecli`.
  *  The publisher-qualified ref stays the machine identity (and the button's
- *  value); showing it whole would put an implementation detail in a sentence. */
-const displayName = (packRef: string): string => {
+ *  value); showing it whole would put an implementation detail in a sentence.
+ *  Exported with {@link packInstallOfferHref} so the install dialog's offer
+ *  names and links a missing pack exactly as this one does. */
+export const packInstallOfferName = (packRef: string): string => {
   const dot = packRef.indexOf('.');
   return dot === -1 ? packRef : packRef.slice(dot + 1);
 };
+
+/** Where an offer sends the owner for a missing pack: its `#packs/<slug>`
+ *  detail, which resolves it and holds its own install dialog. */
+export const packInstallOfferHref = (packRef: string): string =>
+  serializeShellRoute('packs', packInstallOfferName(packRef));
 
 /** The packs a failed run says it needs, or null when this error is not that.
  *
@@ -90,12 +105,12 @@ export const renderPackInstallOffer = (missing: readonly string[]): string => {
   if (missing.length === 0) return '';
   const many = missing.length > 1;
   const rows = missing.map((ref) => {
-    const slug = displayName(ref);
+    const slug = packInstallOfferName(ref);
     // The link text IS the pack name — a separate label beside it rendered the
     // slug twice per row ("officecli   Get officecli"), which the render test
     // was happy to assert and only the browser made obvious.
     return `<a class="recipes-button pack-offer-link"`
-      + ` href="${e(serializeShellRoute('packs', slug))}"`
+      + ` href="${e(packInstallOfferHref(ref))}"`
       + ` ${PACK_INSTALL_OFFER_REF_ATTR}="${e(ref)}"`
       + `>Get ${e(slug)}</a>`;
   }).join('');

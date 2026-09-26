@@ -23,7 +23,10 @@ const result: ContactBusinessContextResult = {
     same_company: false,
     same_company_contact_count: 0,
   },
-  deals: { active_count: 0, historical_count: 0, observed_count: 0, coverage: 'not_configured' as const },
+  deals: {
+    active_count: 0, historical_count: 0, won_count: 0, lost_count: 0, observed_count: 0,
+    coverage: 'not_configured' as const,
+  },
   tasks: { active_count: 1, historical_count: 0, observed_count: 1, coverage: 'complete' as const },
   calendar: { active_count: 0, historical_count: 0, observed_count: 0, coverage: 'complete' as const },
   bookings: { active_count: 0, historical_count: 0, observed_count: 0, coverage: 'complete' as const },

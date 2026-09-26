@@ -30,7 +30,8 @@ import {
 } from './notifications.js';
 
 /** Items are separated by commas, semicolons or new lines. Not spaces: an item
- *  can hold one ("In progress"). */
+ *  can hold one ("In progress"). A list that can tell an item from two may split
+ *  on spaces too ({@link splitSpacedItems}). */
 const ITEM_SEPARATOR = /[,;\n]/u;
 
 /** True when a setting's default is a list of numbers, so typed items are
@@ -40,16 +41,49 @@ export const isListOfNumbers = (sample: unknown): boolean =>
   && sample.length > 0
   && sample.every((value) => typeof value === 'number');
 
+/** What a reader knows about a list's items: that they are numbers, or which
+ *  choices the setting offers. */
+export interface ListReading {
+  readonly numbers?: boolean;
+  readonly choices?: ListChoices;
+}
+
+/** Items typed with spaces where commas were meant, `slack email` or `1 3`, read
+ *  as the items they spell.
+ *
+ *  ⛔ ONLY WHERE THE LIST CAN TELL AN ITEM FROM TWO: its items are numbers, or it
+ *  offers choices. An item is split only when it is not itself an item and every
+ *  part is one. An open list keeps it whole: "In progress" is one status, and
+ *  nothing here can tell it from two words. Anything that is not text is kept
+ *  as it is. */
+export const splitSpacedItems = (
+  items: readonly unknown[],
+  { numbers = false, choices }: ListReading = {},
+): unknown[] => {
+  if (!numbers && choices === undefined) return [...items];
+  const isItem = (part: string): boolean =>
+    (numbers && Number.isFinite(Number(part)))
+    || (choices !== undefined && choices.normalize(part) !== undefined);
+  return items.flatMap((item) => {
+    if (typeof item !== 'string') return [item];
+    const whole = item.trim();
+    if (!/\s/u.test(whole) || isItem(whole)) return [item];
+    const parts = whole.split(/\s+/u);
+    return parts.every(isItem) ? parts : [item];
+  });
+};
+
 /** The list that `text` spells.
  *
  *  - Blank text is no value (`undefined`), so the setting falls back to its
  *    default, or to none.
  *  - Text that is a JSON array is that array, for items that contain commas.
  *  - Otherwise each item is trimmed and empty ones are dropped.
+ *  - Where the list can tell, spaces separate items too ({@link splitSpacedItems}).
  *  - With `numbers`, an item that reads as a number becomes one. */
 export const listFromTypedText = (
   text: string,
-  { numbers = false }: { numbers?: boolean } = {},
+  { numbers = false, choices }: ListReading = {},
 ): unknown[] | undefined => {
   const trimmed = text.trim();
   if (trimmed.length === 0) return undefined;
@@ -61,9 +95,12 @@ export const listFromTypedText = (
       // Not JSON: read it as typed items.
     }
   }
-  const items = trimmed.split(ITEM_SEPARATOR)
-    .map((item) => item.trim())
-    .filter((item) => item.length > 0);
+  const items = splitSpacedItems(
+    trimmed.split(ITEM_SEPARATOR)
+      .map((item) => item.trim())
+      .filter((item) => item.length > 0),
+    { numbers, ...(choices !== undefined ? { choices } : {}) },
+  ) as string[];
   if (items.length === 0) return undefined;
   return numbers
     ? items.map((item) => {
@@ -93,7 +130,11 @@ export const readTypedListSettings = <C extends Readonly<Record<string, unknown>
     const value = config[key];
     if (typeof value !== 'string') continue;
     out ??= { ...config };
-    const list = listFromTypedText(value, { numbers: isListOfNumbers((hint as { default?: unknown }).default) });
+    const choices = listSettingChoices(hint);
+    const list = listFromTypedText(value, {
+      numbers: isListOfNumbers((hint as { default?: unknown }).default),
+      ...(choices !== undefined ? { choices } : {}),
+    });
     if (list === undefined) delete out[key];
     else out[key] = list;
   }

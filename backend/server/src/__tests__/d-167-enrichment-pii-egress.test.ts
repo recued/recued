@@ -126,27 +126,124 @@ describe('D-167 enrichment-pii-egress — wrapHousekeepingCtxForRecord', () => {
     expect(wrapHousekeepingCtxForRecord(ctx, 'mail', RECORD)).toBe(ctx);
   });
 
-  it('passes a non-string llm.data through raw (comfort miss, never a throw)', async () => {
+  // D-316 — background AI gets the chat's standard: the WHOLE input is aliased,
+  // structured included, and an aliasing error means no call. Until D-316 a
+  // batched `llm.data` went out raw ("a comfort miss") and every aliasing error
+  // fell open to the raw input.
+  it('aliases a batched (array) llm.data, the D-162 batch shape', async () => {
+    let sent: unknown;
+    const llm = vi.fn(async (_m: IngredientManifest, input: Record<string, unknown>) => {
+      sent = input['llm.data'];
+      return [{ id: 'r1', summary: 'asked by pii.Person1' }];
+    });
+    const wrapped = wrapHousekeepingCtxForRecord(makeCtx({ llm }), 'mail', RECORD);
+    const batch = [{ id: 'r1', body: 'Alice Chen (alice@acme.com) asked about renewal' }];
+    const result = (await wrapped.llm!(MANIFEST, {
+      'llm.data': batch,
+      'llm.id_field': 'id',
+    })) as Array<{ summary: string }>;
+    const sentJson = JSON.stringify(sent);
+    expect(sentJson).toContain('pii.Person1');
+    expect(sentJson).not.toContain('Alice Chen');
+    expect(sentJson).not.toContain('alice@acme.com');
+    // The caller's own value is never mutated.
+    expect(batch[0]?.body).toContain('Alice Chen');
+    // Restore: the producer sees real values again.
+    expect(result[0]?.summary).toBe('asked by Alice Chen');
+  });
+
+  it('aliases a nested object llm.data', async () => {
     let sent: unknown;
     const llm = vi.fn(async (_m: IngredientManifest, input: Record<string, unknown>) => {
       sent = input['llm.data'];
       return { ok: true };
     });
     const wrapped = wrapHousekeepingCtxForRecord(makeCtx({ llm }), 'mail', RECORD);
-    const batch = [{ body: 'Alice Chen' }];
-    await wrapped.llm!(MANIFEST, { 'llm.data': batch });
-    // Non-string payload is not aliased (a documented Slice-1 limitation).
-    expect(sent).toEqual(batch);
+    await wrapped.llm!(MANIFEST, {
+      'llm.data': { thread: { messages: [{ from: 'Alice Chen <alice@acme.com>' }] } },
+    });
+    const sentJson = JSON.stringify(sent);
+    expect(sentJson).not.toContain('Alice Chen');
+    expect(sentJson).not.toContain('alice@acme.com');
   });
 
-  it('fails open to the raw ctx when the tag source throws (producer never breaks)', () => {
-    const llm = vi.fn();
+  it('aliases a known value used as a key, and restores the key in the output', async () => {
+    let sent: unknown;
+    const llm = vi.fn(async (_m: IngredientManifest, input: Record<string, unknown>) => {
+      sent = input['llm.data'];
+      // The model keys its answer by the (aliased) key it was shown.
+      const keys = Object.keys(input['llm.data'] as Record<string, unknown>);
+      return { by_sender: { [keys[0]!]: 'renewal' } };
+    });
+    const wrapped = wrapHousekeepingCtxForRecord(makeCtx({ llm }), 'mail', RECORD);
+    const result = (await wrapped.llm!(MANIFEST, {
+      'llm.data': { 'alice@acme.com': 'asked about renewal' },
+    })) as { by_sender: Record<string, string> };
+    expect(JSON.stringify(sent)).not.toContain('alice@acme.com');
+    expect(result.by_sender).toEqual({ 'alice@acme.com': 'renewal' });
+  });
+
+  it('makes no call when aliasing the input throws', async () => {
+    const llm = vi.fn(async () => ({ ok: true }));
+    const llmWithMeta = vi.fn(async () => ({ result: { ok: true }, model_id: 'prov:m' }));
+    const wrapped = wrapHousekeepingCtxForRecord(makeCtx({ llm, llmWithMeta }), 'mail', RECORD);
+    // A value the aliasing walk cannot read: its getter throws mid-walk.
+    const unreadable = (): Record<string, unknown> => {
+      const data: Record<string, unknown> = {};
+      Object.defineProperty(data, 'body', {
+        enumerable: true,
+        get: () => {
+          throw new Error('unreadable');
+        },
+      });
+      return data;
+    };
+    await expect(wrapped.llm!(MANIFEST, { 'llm.data': unreadable() })).rejects.toThrow(
+      /could not alias/,
+    );
+    await expect(wrapped.llmWithMeta!(MANIFEST, { 'llm.data': unreadable() })).rejects.toThrow(
+      /could not alias/,
+    );
+    expect(llm).not.toHaveBeenCalled();
+    expect(llmWithMeta).not.toHaveBeenCalled();
+  });
+
+  it('makes no call when the tag source throws, instead of sending raw', async () => {
+    const llm = vi.fn(async () => ({ ok: true }));
     const ctx = makeCtx({
       llm,
       enrichmentPiiTagSource: () => {
         throw new Error('boom');
       },
     });
-    expect(wrapHousekeepingCtxForRecord(ctx, 'mail', RECORD)).toBe(ctx);
+    const wrapped = wrapHousekeepingCtxForRecord(ctx, 'mail', RECORD);
+    await expect(
+      wrapped.llm!(MANIFEST, { 'llm.data': 'note from Alice Chen' }),
+    ).rejects.toThrow(/could not alias/);
+    expect(llm).not.toHaveBeenCalled();
+  });
+
+  it('keeps an alias-shaped literal in the content as written (the chat pre-scan)', async () => {
+    // Seeding gives Alice Chen `pii.Person1`. Without the chat's collision
+    // pre-scan, a literal `pii.Person1` in the text is restored to her name.
+    const llm = vi.fn(async (_m: IngredientManifest, input: Record<string, unknown>) => ({
+      echo: input['llm.data'],
+    }));
+    const wrapped = wrapHousekeepingCtxForRecord(makeCtx({ llm }), 'mail', RECORD);
+    const text = 'pii.Person1 is a placeholder; the sender is Alice Chen';
+    const result = (await wrapped.llm!(MANIFEST, { 'llm.data': text })) as { echo: string };
+    expect(result.echo).toBe(text);
+  });
+
+  it('sends a string with nothing to alias unchanged — that is not a failure', async () => {
+    let sent: unknown;
+    const llm = vi.fn(async (_m: IngredientManifest, input: Record<string, unknown>) => {
+      sent = input['llm.data'];
+      return { ok: true };
+    });
+    const wrapped = wrapHousekeepingCtxForRecord(makeCtx({ llm }), 'mail', RECORD);
+    await wrapped.llm!(MANIFEST, { 'llm.data': 'quarterly renewal reminder' });
+    expect(sent).toBe('quarterly renewal reminder');
+    expect(llm).toHaveBeenCalledTimes(1);
   });
 });

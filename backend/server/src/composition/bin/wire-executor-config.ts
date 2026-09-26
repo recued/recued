@@ -275,7 +275,7 @@ export interface ComposeExecutorConfigDeps {
     ContactStore,
     'resolveCanonicalEmail' | 'get' | 'addressSet' | 'countCompanyPeers'
   > | undefined;
-  businessContextCrmMirrorStore?: Pick<CrmRecordMirrorStore, 'listByRef'> | undefined;
+  businessContextCrmMirrorStore?: Pick<CrmRecordMirrorStore, 'listByRef' | 'list'> | undefined;
   /** Optional table-only calendar reader for runtimes (notably stdio MCP) that
    * intentionally do not compose a provider-owning CalendarStack. */
   businessContextCalendars?: ContactBusinessContextCalendarReader | undefined;

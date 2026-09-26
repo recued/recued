@@ -2,6 +2,7 @@ import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
+  composePlatformRecordTargetId,
   RECUED_BUILTIN_SOURCE_ID,
   type CanonicalEvent,
   type WorkEntityKind,
@@ -204,6 +205,8 @@ describe('resolveContactBusinessContext', () => {
     expect(output.deals).toEqual({
       active_count: 1,
       historical_count: 1,
+      won_count: 1,
+      lost_count: 0,
       observed_count: 2,
       coverage: 'partial',
     });
@@ -396,5 +399,115 @@ describe('resolveContactBusinessContext', () => {
     expect(output.calendar.coverage).toBe('unavailable');
     expect(output.deals.coverage).toBe('not_configured');
     expect(output.level).toBe('none');
+  });
+});
+
+/** Deals for a sender with NO contact link, found by matching the sender's email
+ *  against the mirrored CRM contacts.
+ *
+ *  ⛔ Before this, deals were reached only through the contact graph's platform
+ *  links, which only a contact Source the owner sets up creates. A merely-connected
+ *  CRM therefore read zero deals for every sender, and the three "inquiry from an
+ *  existing customer" recipes could never fire. */
+describe('resolveContactBusinessContext — deals by email through the CRM mirror', () => {
+  const SENDER = 'sam@buyer.example';
+  const PERSON_SCOPE = 'connection.api.pipedrive.person';
+  const personId = (native: string): string => composePlatformRecordTargetId('pipedrive', 'person', 'work', native);
+
+  const seedPerson = (mirror: ReturnType<typeof createCrmRecordMirrorStore>, target_id: string, email: string): void => {
+    mirror.upsert({
+      scope: PERSON_SCOPE as never,
+      target_id,
+      meta: { email, name: 'Sam', snapshot_at: AS_OF - 900, snapshot_hash: `${target_id}-hash` } as never,
+      now: AS_OF - 900,
+    });
+  };
+  const seedDeal = (
+    mirror: ReturnType<typeof createCrmRecordMirrorStore>,
+    native: string,
+    contact_id: string,
+    close_state: 'open' | 'won' | 'lost',
+  ): void => {
+    mirror.upsert({
+      scope: DEAL_SCOPE,
+      target_id: composePlatformRecordTargetId('pipedrive', 'deal', 'work', native),
+      meta: { contact_id, close_state, name: 'private deal', snapshot_at: AS_OF - 500, snapshot_hash: `${native}-hash` } as never,
+      now: AS_OF - 500,
+    });
+  };
+  const resolve = (mirror: ReturnType<typeof createCrmRecordMirrorStore>) => resolveContactBusinessContext({
+    contacts,
+    crmMirror: mirror,
+    getBoundCrmSources: () => [{ source_id: 'pipedrive', scope: DEAL_SCOPE }],
+  }, { email: SENDER, as_of: AS_OF, known_before_at: AS_OF });
+
+  it('finds an unlinked first-time sender\'s deals and splits won from lost', () => {
+    const mirror = createCrmRecordMirrorStore(db);
+    seedPerson(mirror, personId('person-9'), SENDER);
+    seedDeal(mirror, 'd-open', 'person-9', 'open');
+    seedDeal(mirror, 'd-won', 'person-9', 'won');
+    seedDeal(mirror, 'd-lost', 'person-9', 'lost');
+    // Someone else's deal must not leak in.
+    seedDeal(mirror, 'd-other', 'person-10', 'won');
+
+    const output = resolve(mirror);
+
+    expect(output.identity.resolved).toBe(false); // no local contact at all
+    expect(output.deals).toEqual({
+      active_count: 1,
+      historical_count: 2,
+      won_count: 1,
+      lost_count: 1,
+      observed_count: 3,
+      coverage: 'partial',
+    });
+    expect(output.level).toBe('active');
+    expect(JSON.stringify(output)).not.toContain('private');
+  });
+
+  it('matches the address case-insensitively, as a mailbox reports it', () => {
+    const mirror = createCrmRecordMirrorStore(db);
+    seedPerson(mirror, personId('person-9'), 'Sam@Buyer.Example');
+    seedDeal(mirror, 'd-won', 'person-9', 'won');
+
+    expect(resolve(mirror).deals.won_count).toBe(1);
+  });
+
+  it('counts a linked contact whose email also matches ONCE', () => {
+    contacts.upsertManual({ email: SENDER, name: 'Sam', first_seen: AS_OF - 40_000 }, AS_OF - 30_000);
+    contacts.linkPlatformId({
+      canonical_email: SENDER,
+      vendor: 'pipedrive',
+      platform_id: 'person-9',
+      state: 'confirmed',
+      linked_at: AS_OF - 20_000,
+      linked_by: 'user',
+    });
+    const mirror = createCrmRecordMirrorStore(db);
+    seedPerson(mirror, personId('person-9'), SENDER);
+    seedDeal(mirror, 'd-won', 'person-9', 'won');
+
+    const output = resolve(mirror);
+    expect(output.deals.won_count).toBe(1);
+    expect(output.deals.observed_count).toBe(1);
+  });
+
+  it('finds nothing through a mirrored contact with a DIFFERENT email', () => {
+    const mirror = createCrmRecordMirrorStore(db);
+    seedPerson(mirror, personId('person-9'), 'someone-else@buyer.example');
+    seedDeal(mirror, 'd-won', 'person-9', 'won');
+
+    expect(resolve(mirror).deals).toEqual(expect.objectContaining({ won_count: 0, observed_count: 0 }));
+  });
+
+  it('never guesses a native id from a target id that does not parse', () => {
+    // `pipedrive_person_person-9` has no connection segment, so it carries no
+    // routing (`parsePlatformRecordTargetId` → null). Stripping a prefix by hand
+    // would "find" person-9 here; the rule is to skip it.
+    const mirror = createCrmRecordMirrorStore(db);
+    seedPerson(mirror, 'pipedrive_person_person-9', SENDER);
+    seedDeal(mirror, 'd-won', 'person-9', 'won');
+
+    expect(resolve(mirror).deals.observed_count).toBe(0);
   });
 });

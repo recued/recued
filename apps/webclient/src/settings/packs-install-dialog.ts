@@ -50,6 +50,14 @@ import {
   type PackRecipeCollision,
 } from './packs-collisions.js';
 import type { PackGrantOverlap } from './packs-grant-overlap.js';
+// The run surfaces' "Get <pack>" offer: the dialog names and links a missing pack
+// the same way, so both send the owner to the same place.
+import {
+  PACK_INSTALL_OFFER_ATTR,
+  PACK_INSTALL_OFFER_REF_ATTR,
+  packInstallOfferHref,
+  packInstallOfferName,
+} from '../shell/pack-install-offer.js';
 
 // ════════════════════════════════════════════════════════════════
 // Attribute constants — stable hooks for DOM tests + host introspection
@@ -70,6 +78,11 @@ export const PACKS_DIALOG_DEPENDENCY_ATTR = 'data-recued-packs-dialog-dependency
 export const PACKS_DIALOG_DEPENDENCY_ACCESS_ATTR = 'data-recued-packs-dialog-dependency-access';
 /** D-310 — what the other packs of the install do with it; value = its slug. */
 export const PACKS_DIALOG_DEPENDENCY_NEEDS_ATTR = 'data-recued-packs-dialog-dependency-needs';
+/** The packs this install needs and does not bring in, offered with a "Get
+ *  <pack>" link each. Value: `preview` (said before the owner chooses anything,
+ *  with Install held) or `refusal` (under a refusal the preview did not foresee).
+ *  Each link carries `data-pack-install-ref` = its `<publisher>.<pack>` ref. */
+export const PACKS_DIALOG_MISSING_PACKS_ATTR = 'data-recued-packs-dialog-missing-packs';
 /** D-247 D15 — the "installing makes N recipes reachable" disclosure. Carries
  *  `data-count`, and each row carries `data-recipe` + `data-class`, so a test can
  *  assert the NAMES and the D10 class rather than a rendered sentence. */
@@ -425,12 +438,28 @@ export interface InstallPreview {
   /** D-310 REV 2 — the tier this Pack's own workflows need, when above Read.
    *  Advisory: shown beside the picker, never sent back; absent from an older server. */
   readonly own_needs?: 'write' | 'all';
+  /** The packs this install needs and does not bring in, with the packs of the
+   *  install that need each. The install refuses while one is missing, so the
+   *  dialog offers them first and holds Install. Absent from an older server. */
+  readonly missing_packs?: ReadonlyArray<InstallMissingPack>;
   /** D-303 — settings the owner saved that this update stops using. */
   readonly settings_no_longer_used?: ReadonlyArray<{
     readonly recipe_id: string;
     readonly recipe: string;
     readonly setting: string;
   }>;
+}
+
+/** One pack an install needs and does not bring in (`packs.install_preview`
+ *  `missing_packs`). */
+export interface InstallMissingPack {
+  /** `<publisher>.<pack>`, as the recipes' operations name it. */
+  readonly pack_ref: string;
+  /** The packs of this install whose recipes need it, by name. Absent for the
+   *  refusal's list, which carries refs only. */
+  readonly needed_by?: readonly string[];
+  /** What the pack is called, where the server could tell; else its slug is shown. */
+  readonly name?: string;
 }
 
 /** D-310 — one pack an install brings in with it (`packs.install_preview`
@@ -477,6 +506,120 @@ const highestNeed = (
   a: 'write' | 'all' | undefined,
   b: 'write' | 'all' | undefined,
 ): 'write' | 'all' | undefined => (a === 'all' || b === 'all' ? 'all' : a ?? b);
+
+/** A `<publisher>.<pack>` ref from the wire, or null. The offer renders it as a
+ *  name and a link, so a malformed entry is dropped rather than drawn. */
+const packRefOrNull = (value: unknown): string | null =>
+  typeof value === 'string' && value.length > 0 ? value : null;
+
+/** The packs the preview says to install first. Entries that are not well formed
+ *  are dropped: a server's malformed answer must not take the dialog down. */
+export const missingPacksToInstallFirst = (
+  preview: InstallPreview | undefined,
+): InstallMissingPack[] => {
+  const listed: unknown = preview?.missing_packs;
+  if (!Array.isArray(listed)) return [];
+  const out: InstallMissingPack[] = [];
+  for (const entry of listed as unknown[]) {
+    const packRef = packRefOrNull((entry as { pack_ref?: unknown } | null)?.pack_ref);
+    if (packRef === null) continue;
+    const neededBy: unknown = (entry as { needed_by?: unknown }).needed_by;
+    const name: unknown = (entry as { name?: unknown }).name;
+    out.push({
+      pack_ref: packRef,
+      needed_by: Array.isArray(neededBy)
+        ? neededBy.filter((needer): needer is string => typeof needer === 'string' && needer.length > 0)
+        : [],
+      ...(typeof name === 'string' && name.trim().length > 0 ? { name: name.trim() } : {}),
+    });
+  }
+  return out;
+};
+
+/** The packs a refused install says to install first (`failure.missing_packs`).
+ *  ⛔ Read from the typed field, never from the message: the message names only
+ *  the first, and its wording is the owner's to read, not a contract. */
+export const missingPacksFromFailure = (
+  failure: { readonly missing_packs?: unknown } | undefined,
+): string[] => {
+  const listed = failure?.missing_packs;
+  if (!Array.isArray(listed)) return [];
+  return listed.map(packRefOrNull).filter((ref): ref is string => ref !== null);
+};
+
+/** What a missing pack is called: its name where the server could tell, else the
+ *  slug the run offer shows (`federated-projects`). */
+const missingPackName = (pack: InstallMissingPack): string =>
+  pack.name ?? packInstallOfferName(pack.pack_ref);
+
+/** "This Pack needs Federated Projects. It is not installed, and this Pack does
+ *  not bring it in. Install it first, then come back to install this one." Names
+ *  the packs of the install that need them, when they are not only this one. */
+export const missingPacksText = (
+  packName: string,
+  missing: readonly InstallMissingPack[],
+  isUpdate = false,
+): string => {
+  const names = joinNames(missing.map(missingPackName));
+  const needers = [...new Set(missing.flatMap((pack) => pack.needed_by ?? []))];
+  const others = needers.filter((name) => name !== packName);
+  const subject = others.length === 0
+    ? 'This Pack needs'
+    : needers.includes(packName)
+      ? `This Pack and ${joinNames(others)} need`
+      : `${joinNames(others)}, which this Pack brings in, ${others.length === 1 ? 'needs' : 'need'}`;
+  const one = missing.length === 1;
+  return `${subject} ${names}. ${one ? 'It is' : 'They are'} not installed, and this Pack does not `
+    + `bring ${one ? 'it' : 'them'} in. Install ${one ? 'it' : 'them'} first, then come back to `
+    + `${isUpdate ? 'update' : 'install'} this one.`;
+};
+
+/** The id the held Install button points at (`aria-describedby`). */
+const MISSING_PACKS_NOTICE_ID = 'packs-dialog-missing-packs';
+
+/** The packs to install first, each with a "Get <pack>" link to its own page,
+ *  where its own dialog asks what it may do.
+ *
+ *  ⛔ A LINK, NOT AN INSTALL — for the reason the run surfaces' offer gives
+ *  (`shell/pack-install-offer.ts`): an Install here would have to invent that
+ *  pack's consent. And a pack an install does not bring in is left out on
+ *  purpose: Federated Projects is installed deliberately, as the entry point of
+ *  the meeting packs that call it. */
+const renderMissingPacks = (
+  doc: Document,
+  packName: string,
+  missing: readonly InstallMissingPack[],
+  where: 'preview' | 'refusal',
+  isUpdate: boolean,
+): HTMLElement => {
+  const section = doc.createElement('section');
+  section.setAttribute(PACKS_DIALOG_MISSING_PACKS_ATTR, where);
+  section.setAttribute(PACK_INSTALL_OFFER_ATTR, '');
+  section.setAttribute('role', 'group');
+  section.setAttribute('aria-label', 'Packs to install first');
+  section.className = 'packs-dialog-missing';
+  const lead = doc.createElement('p');
+  lead.className = 'packs-dialog-missing-lead';
+  if (where === 'preview') {
+    // Install points here while it is held.
+    lead.id = MISSING_PACKS_NOTICE_ID;
+    lead.setAttribute('role', 'alert');
+  }
+  lead.textContent = `${where === 'preview' ? '⚠ ' : ''}${missingPacksText(packName, missing, isUpdate)}`;
+  section.appendChild(lead);
+  const links = doc.createElement('div');
+  links.className = 'packs-dialog-missing-links';
+  for (const pack of missing) {
+    const link = doc.createElement('a');
+    link.className = 'rx-btn rx-btn-secondary rx-btn-sm packs-dialog-missing-link';
+    link.setAttribute('href', packInstallOfferHref(pack.pack_ref));
+    link.setAttribute(PACK_INSTALL_OFFER_REF_ATTR, pack.pack_ref);
+    link.textContent = `Get ${missingPackName(pack)}`;
+    links.appendChild(link);
+  }
+  section.appendChild(links);
+  return section;
+};
 
 /** D-310 — "Month-end closer adds and changes things in it." and, while the pick
  *  is below what that needs, what happens then. D-310 REV 2 — and what the pack's
@@ -807,6 +950,9 @@ export interface PacksInstallDialogProps {
   deleting: boolean;
   /** Inline error from the most recent failed submit, or null. */
   error: string | null;
+  /** The packs that refusal said to install first (`failure.missing_packs`),
+   *  offered under the error. Absent or empty ⇒ none. */
+  errorMissingPacks?: readonly string[];
   onTogglePermission(permission: string): void;
   onPickAccess(tier: InstallAccessTier): void;
   onPickAudience(audience: InstallAudienceSelection): void;
@@ -975,6 +1121,13 @@ export const renderPacksInstallDialog = (
       container.appendChild(line);
     }
   }
+  // The packs this install needs and does not bring in: said before the owner
+  // chooses anything, since the install refuses without them. Install is held.
+  const missingFirst = missingPacksToInstallFirst(props.installPreview);
+  if (missingFirst.length > 0) {
+    container.appendChild(renderMissingPacks(doc, pack.name, missingFirst, 'preview', isUpdate));
+  }
+
   // The whole-pack operation diff, when the server sent one. It covers every
   // operation — the owner's rules first — so the D-211 card below, which lists
   // only ruled operations, is the fallback for a server that sends no diff.
@@ -1476,6 +1629,14 @@ export const renderPacksInstallDialog = (
     errBox.className = 'packs-dialog-error';
     errBox.textContent = props.error;
     container.appendChild(errBox);
+    // A refusal for packs the preview did not name (it had not landed, or the
+    // server sends none): offer them under it. Named above already ⇒ not twice.
+    const refused = props.errorMissingPacks ?? [];
+    if (refused.length > 0 && missingFirst.length === 0) {
+      container.appendChild(renderMissingPacks(
+        doc, pack.name, refused.map((packRef) => ({ pack_ref: packRef })), 'refusal', isUpdate,
+      ));
+    }
   }
 
   const actions = doc.createElement('div');
@@ -1504,6 +1665,11 @@ export const renderPacksInstallDialog = (
     installBtn.setAttribute('aria-busy', 'true');
   } else if (props.deleting) {
     installBtn.disabled = true;
+  } else if (missingFirst.length > 0) {
+    // ⛔ The install refuses while a pack it needs is missing, whatever else the
+    // owner chooses here; the notice at the top says which, with a link to each.
+    installBtn.disabled = true;
+    installBtn.setAttribute('aria-describedby', MISSING_PACKS_NOTICE_ID);
   } else if (webhooksUnchosen) {
     // ⛔ D-295 — the install refuses without one webhook per binding; say what
     // is missing here rather than after a round trip.

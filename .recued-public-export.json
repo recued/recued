@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
   "source": {
-    "commit": "443a12c80b7a74a7da98e012341ee30c9ec2cff9",
-    "tree": "fea64902c6c59374cfb368496c8f7c60428eda11",
-    "committed_at": "2026-09-25T17:31:04-07:00"
+    "commit": "7117fd7a16d5129577e95b273761e77a7eb53f93",
+    "tree": "a6bbdc331286207074d4933be49c9b1cbdd3c1f1",
+    "committed_at": "2026-09-26T15:30:14-07:00"
   },
-  "export_manifest_sha256": "37a8999501f2aa6dbf8cc8467d90df0e648494c1984f38d9b57d5a04419d9cf2",
-  "version": "26.9.25",
+  "export_manifest_sha256": "85e794b865cb82b954184e5d8626a65f25ac5f8351265c2bb484f96117525ae6",
+  "version": "26.9.26",
   "license": "AGPL-3.0-only",
   "entrypoints": [
     "backend/server",
@@ -49,16 +49,17 @@
     "paths": [
       "apps/webclient/e2e/live-update-path.spec.ts",
       "apps/webclient/src/__tests__/d-148-i15-no-smart-redirect.test.ts",
-      "apps/webclient/src/__tests__/d-174-p4-recipes-route.test.ts",
       "apps/webclient/src/__tests__/d-200-slice6g4-intake-recipe-pair-section.test.ts",
       "apps/webclient/src/__tests__/d-282-b6-bulk-action.test.ts",
       "apps/webclient/src/__tests__/d-282-unprompted-run-corpus.test.ts",
+      "apps/webclient/src/__tests__/d-292-recipes-route-guided-import.test.ts",
       "apps/webclient/src/__tests__/d-292-spreadsheet-import-flow.test.ts",
       "apps/webclient/src/__tests__/d-292-spreadsheet-import-model.test.ts",
       "apps/webclient/src/__tests__/pack-app-model.test.ts",
       "apps/webclient/src/__tests__/recipes-required-file-slugs.test.ts",
       "apps/webclient/src/__tests__/settings-connect-device-readability.test.ts",
       "apps/webclient/src/storage/token-aad-migration-bridge.test.ts",
+      "backend/server/src/__tests__/a-pack-brings-the-packs-its-recipes-call.test.ts",
       "backend/server/src/__tests__/audit-exempt-records-read.test.ts",
       "backend/server/src/__tests__/broadcast-kind-reachability.test.ts",
       "backend/server/src/__tests__/build-externals-declared.test.ts",
@@ -161,7 +162,7 @@
       "backend/server/src/__tests__/d-282-repair-blank-lines-drive.test.ts",
       "backend/server/src/__tests__/d-294-records-dependency-update-needs-review.test.ts",
       "backend/server/src/__tests__/d-301-import-number-and-date-formats.test.ts",
-      "backend/server/src/__tests__/d-302-retired-variables-run.test.ts",
+      "backend/server/src/__tests__/d-302-retired-variables-shipped-importers.test.ts",
       "backend/server/src/__tests__/d-310-install-asks-access-for-each-pack-it-brings-in.test.ts",
       "backend/server/src/__tests__/d-311-marketplace-pack-brings-its-dependencies.test.ts",
       "backend/server/src/__tests__/d-312-a-notification-reaches-every-channel-set-up.test.ts",
@@ -186,6 +187,7 @@
       "backend/server/src/__tests__/foundation-pack-visibility.test.ts",
       "backend/server/src/__tests__/helpers/records-pack-harness.ts",
       "backend/server/src/__tests__/horizon-plan-classifier.test.ts",
+      "backend/server/src/__tests__/install-names-the-packs-it-needs.test.ts",
       "backend/server/src/__tests__/install-sh-local-feed.test.ts",
       "backend/server/src/__tests__/installer-safety-guards.test.ts",
       "backend/server/src/__tests__/installer-shell-functions.test.ts",
@@ -203,6 +205,7 @@
       "backend/server/src/__tests__/month-end-closer-business-workflow.test.ts",
       "backend/server/src/__tests__/month-end-closer-past-one-page.test.ts",
       "backend/server/src/__tests__/notification-send-is-declared.ratchet.test.ts",
+      "backend/server/src/__tests__/notify-new-inquiry-from-existing-customer-live.test.ts",
       "backend/server/src/__tests__/officecli-template-live-drive.test.ts",
       "backend/server/src/__tests__/pack-cross-pack-tier-p-install.test.ts",
       "backend/server/src/__tests__/pack-install-first-party-op-steps.test.ts",
@@ -242,6 +245,8 @@
       "backend/server/src/__tests__/stranger-first-walk-e2e.test.ts",
       "backend/server/src/__tests__/supervisor-contract.test.ts",
       "backend/server/src/__tests__/supervisor-join.test.ts",
+      "backend/server/src/__tests__/track-meeting-reschedule-patterns-live.test.ts",
+      "backend/server/src/__tests__/trigger-payload-reads.test.ts",
       "backend/server/src/__tests__/watch-canonical-poll.test.ts",
       "backend/server/src/__tests__/wire-observability-rpc-deps.test.ts",
       "backend/server/src/__tests__/zoho-desk-tickets-pack.test.ts",
@@ -435,7 +440,7 @@
       "packages/ingredient-authoring/src/__tests__/d-234-peer-review-pack-audit.test.ts",
       "packages/ingredient-authoring/src/__tests__/d-254-hubspot-record-id-arg.test.ts",
       "packages/ingredient-authoring/src/__tests__/d-259-cli-corpus-ratchet.test.ts",
-      "packages/ingredient-authoring/src/__tests__/d-282-spends-per-call-validate.test.ts",
+      "packages/ingredient-authoring/src/__tests__/d-282-spends-per-call-shipped-pack.test.ts",
       "packages/ingredient-authoring/src/__tests__/decision-log-pack-audit.test.ts",
       "packages/ingredient-authoring/src/__tests__/deeptutor-daily-mastery-pack-audit.test.ts",
       "packages/ingredient-authoring/src/__tests__/derivable-request-schema-ratchet.test.ts",
@@ -635,7 +640,7 @@
       "packages/recipes/src/__tests__/zendesk-ticket-reply-closure-loop.test.ts",
       "packages/transforms/src/__tests__/d-282-map-item-refs-corpus.test.ts"
     ],
-    "sha256": "174d74d738476fc7161b39ac058c1fa82e58aab88f8e2b6d371bb96565d48384",
+    "sha256": "85603c5c142879a88639ac245e98d880318b8a14bc49b7202881b2f634fa5dcf",
     "roots": [
       "apps/auth-worker",
       "apps/bridge",
@@ -652,11 +657,11 @@
     ]
   },
   "internal_reference_scrub": {
-    "files_changed": 1088,
+    "files_changed": 1089,
     "rules": [
       {
         "id": "internal-spec-reference",
-        "comments_rewritten": 1017
+        "comments_rewritten": 1018
       },
       {
         "id": "internal-design-document",
@@ -750,7 +755,7 @@
     "packages/warehouse-events"
   ],
   "payload": {
-    "file_count": 6226,
-    "sha256": "7133fe13c3d198bd62a922e31b11927de7beaf2df3e58de30e20d97bd3309cca"
+    "file_count": 6232,
+    "sha256": "6456df6f875a24c1e92c1edd8a40d4de1c7687ccdde043919b2c40cf8b79256c"
   }
 }

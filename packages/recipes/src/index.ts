@@ -235,7 +235,7 @@ export { lowerOpStep } from './op-step-lower.js';
 // Increment 2b — Tier-P pack-op resolution (pack_ref → installed catalog binding)
 // + the recipe-level lowering pass that runs as a pre-pass before
 // resolveConnectionAgnosticRecipe (kernel/canonical/Tier-P; legacy bare-op passthrough).
-export { lowerOpStepRecipe, type PackOpBinding, type PackOpResolution } from './op-step-lower.js';
+export { lowerOpStepRecipe, unboundPackRefs, type PackOpBinding, type PackOpResolution } from './op-step-lower.js';
 
 // D-182 §10 step 8 / R1 — the runtime verb-split applied to a recipe. Pure: a
 // recipe's `core.crm.*`/`core.acct.*` op-steps × the bound connection families →

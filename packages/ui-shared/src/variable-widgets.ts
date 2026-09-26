@@ -30,7 +30,7 @@
  *  + change-event path.
  */
 
-import { isListOfNumbers, listFromTypedText, listSettingChoices } from '@recued/contracts';
+import { isListOfNumbers, listFromTypedText, listSettingChoices, splitSpacedItems } from '@recued/contracts';
 import type { ListChoices, VariableDefault, ValueHint } from '@recued/contracts';
 import { initialRefPickerState } from './ref-picker/model.js';
 import { renderRefPicker } from './ref-picker/render.js';
@@ -317,9 +317,10 @@ const choiceListState = (
   listChoices: ListChoices,
   numbers: boolean,
 ): Pick<WidgetShape, 'choices' | 'value'> => {
+  // Names saved with spaces for commas (`slack email`) tick each box they name.
   const items = Array.isArray(saved)
-    ? saved
-    : typeof saved === 'string' ? listFromTypedText(saved, { numbers }) ?? [] : [];
+    ? splitSpacedItems(saved, { numbers, choices: listChoices })
+    : typeof saved === 'string' ? listFromTypedText(saved, { numbers, choices: listChoices }) ?? [] : [];
   const picked = new Set<string>();
   const extras: Array<{ value: string; label: string }> = [];
   for (const item of items) {

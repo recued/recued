@@ -44,8 +44,15 @@ if (unavailable && process.env.E2E_REQUIRE_LIVE === '1') {
 }
 test.skip(!!unavailable, `live-binary leg not configured — ${unavailable ?? ''}`);
 
-const cacheNameOf = (source: string): string | undefined =>
-  /const CACHE_NAME = '([^']+)'/.exec(source)?.[1];
+/** ⛔ ANCHORED, AND EXACTLY ONE. sw.js quotes the parity test's pattern in a
+ *  comment ABOVE the real declaration (7fcd2e211), and the unanchored form this
+ *  used to be matched the comment first: it read `([^` from the working tree AND
+ *  from the origin, so the check below passed against staging while staging
+ *  served v23 and the tree was v30. Same shape as the parity test's reader. */
+const cacheNameOf = (source: string): string | undefined => {
+  const names = [...source.matchAll(/^const CACHE_NAME = '([^']+)';$/gm)].map((m) => m[1]);
+  return names.length === 1 ? names[0] : undefined;
+};
 
 test('the deployed origin is serving the current webclient', async ({ page, baseURL }) => {
   // ⛔ NOT a sha comparison against apps/webclient/build. That directory holds
@@ -58,7 +65,9 @@ test('the deployed origin is serving the current webclient', async ({ page, base
   // an unchanged CACHE_NAME. That refusal is what makes this a proxy for the
   // whole bundle rather than for one string.
   const expected = cacheNameOf(readFileSync(join(WEBCLIENT, 'public/sw.js'), 'utf8'));
-  expect(expected, 'apps/webclient/public/sw.js must declare a CACHE_NAME').toBeTruthy();
+  // A cache name, not merely a non-empty capture: `([^` was truthy for a month.
+  expect(expected, 'apps/webclient/public/sw.js must declare exactly one CACHE_NAME')
+    .toMatch(/^webclient-/);
 
   const res = await page.request.get(`${baseURL}/sw.js`);
   expect(res.status()).toBe(200);

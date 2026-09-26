@@ -7,9 +7,13 @@
 
 import {
   canonicalizeEmail,
+  composeVendorEntityScope,
   crmRefFields,
+  getVendorEntityByCrmAlias,
+  parsePlatformRecordTargetId,
   type ContactBusinessContextCoverage,
   type ContactBusinessContextResult,
+  type ContactBusinessDealSummary,
   type ContactBusinessRelationshipFamily,
   type ContactBusinessRelationshipSummary,
   type EnrichmentScope,
@@ -62,7 +66,9 @@ export interface ContactBusinessContextDeps {
     'summarizeContactRelationships' | 'listSources'
   >;
   calendars?: ContactBusinessContextCalendarReader;
-  crmMirror?: Pick<CrmRecordMirrorStore, 'listByRef'>;
+  /** `list` matches the sender's email against mirrored CRM contacts;
+   *  `listByRef` finds their deals. */
+  crmMirror?: Pick<CrmRecordMirrorStore, 'listByRef' | 'list'>;
   getBoundCrmSources?: () => readonly ContactBusinessContextCrmSource[];
 }
 
@@ -171,44 +177,94 @@ const summarizeCalendar = (
   };
 };
 
+const zeroDeals = (coverage: ContactBusinessContextCoverage): ContactBusinessDealSummary => ({
+  ...zeroRelation(coverage),
+  won_count: 0,
+  lost_count: 0,
+});
+
+/** The vendor's OWN contact ids (the D-206 key space `deal.contact_id` holds) for
+ *  every mirrored contact of `vendor` whose email is one of the sender's addresses.
+ *
+ *  ⛔ WHY THIS EXISTS. Deals were found only through the contact graph's platform
+ *  links, and only a contact Source the owner sets up mints those. With a CRM merely
+ *  connected, a sender with deals had no link, so every deal count read zero — and the
+ *  three "inquiry from an existing customer" recipes could never fire. The mirror
+ *  already carries each contact's email; the chat's contact search matches on it the
+ *  same way (`email_exact`).
+ *
+ *  ⚠ The composed target id (`<vendor>_<entity>_<connection>_<native id>`) is NOT
+ *  the key a deal stores, and matching on it would silently find nothing. A row whose
+ *  id does not parse carries no routing and is skipped rather than guessed. */
+const mirroredContactIds = (
+  mirror: Pick<CrmRecordMirrorStore, 'list'>,
+  vendor: string,
+  addresses: readonly string[],
+): string[] => {
+  const entity = getVendorEntityByCrmAlias(vendor, 'contact');
+  if (entity === null) return [];
+  const scope = composeVendorEntityScope(vendor, entity.entity) as EnrichmentScope;
+  const ids: string[] = [];
+  for (const email of addresses) {
+    for (const row of mirror.list(scope, { email_exact: email, limit: 50 })) {
+      const parsed = parsePlatformRecordTargetId(row.target_id);
+      if (parsed !== null && parsed.vendor === vendor) ids.push(parsed.native_id);
+    }
+  }
+  return ids;
+};
+
 const summarizeDeals = (
   deps: ContactBusinessContextDeps,
   platformIds: readonly { vendor: string; platform_id: string }[],
-): ContactBusinessRelationshipSummary => {
+  addresses: readonly string[],
+): ContactBusinessDealSummary => {
   if (!deps.crmMirror || !deps.getBoundCrmSources) {
-    return zeroRelation('unavailable');
+    return zeroDeals('unavailable');
   }
   const sources = deps.getBoundCrmSources();
-  if (sources.length === 0) return zeroRelation('not_configured');
+  if (sources.length === 0) return zeroDeals('not_configured');
   const ref = crmRefFields('deal').find((candidate) => candidate.entity === 'contact');
-  if (!ref) return zeroRelation('unavailable');
+  if (!ref) return zeroDeals('unavailable');
 
   let active_count = 0;
-  let historical_count = 0;
+  let won_count = 0;
+  let lost_count = 0;
   let observed_count = 0;
   // CRM association models are not uniformly property-backed (HubSpot and
   // Salesforce can associate through separate endpoints), so even a fully
   // walked mirror cannot prove a zero across every vendor. Keep coverage
   // partial; positive reverse-reference rows are still deterministic evidence.
   for (const source of sources) {
+    // Linked ids AND email-matched ids, deduped: a linked contact whose email
+    // also matches is one contact, and its deals count once.
+    const nativeIds = new Set<string>();
     for (const platformId of platformIds) {
-      if (platformId.vendor !== source.source_id) continue;
+      if (platformId.vendor === source.source_id) nativeIds.add(platformId.platform_id);
+    }
+    for (const nativeId of mirroredContactIds(deps.crmMirror, source.source_id, addresses)) {
+      nativeIds.add(nativeId);
+    }
+    for (const nativeId of nativeIds) {
       const result = deps.crmMirror.listByRef(source.scope, {
         field: ref.field,
-        value: platformId.platform_id,
+        value: nativeId,
         limit: 200,
       });
       observed_count += result.total;
       for (const row of result.rows) {
         const closeState = (row.meta as Record<string, unknown>)['close_state'];
         if (closeState === 'open') active_count += 1;
-        else if (closeState === 'won' || closeState === 'lost') historical_count += 1;
+        else if (closeState === 'won') won_count += 1;
+        else if (closeState === 'lost') lost_count += 1;
       }
     }
   }
   return {
     active_count,
-    historical_count,
+    historical_count: won_count + lost_count,
+    won_count,
+    lost_count,
     observed_count,
     coverage: 'partial',
   };
@@ -263,7 +319,7 @@ export const resolveContactBusinessContext = (
   const work = summarizeWork(deps, contact?.contact_id, addresses);
   const { tasks, bookings, projects } = work;
   const calendar = summarizeCalendar(deps, addresses, input.as_of);
-  const deals = summarizeDeals(deps, contact?.platform_ids ?? []);
+  const deals = summarizeDeals(deps, contact?.platform_ids ?? [], addresses);
 
   const same_company_contact_count = contact?.company_norm && contact.contact_id
     ? deps.contacts.countCompanyPeers(contact.company_norm, contact.contact_id)

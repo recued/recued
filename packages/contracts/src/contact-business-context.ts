@@ -45,6 +45,15 @@ export interface ContactBusinessRelationshipSummary {
   coverage: ContactBusinessContextCoverage;
 }
 
+/** Deals carry their closed outcome, because the two closed outcomes mean opposite
+ * things: a won deal makes a customer and a lost one does not. `historical_count`
+ * keeps its meaning (every closed deal, `won_count + lost_count`) for the readers
+ * that score relationship tiers from it. */
+export interface ContactBusinessDealSummary extends ContactBusinessRelationshipSummary {
+  won_count: number;
+  lost_count: number;
+}
+
 export interface ContactBusinessIdentitySummary {
   /** Contact/company truth is a locally observed projection, not a complete
    * external address book. Negative booleans must be read with this coverage. */
@@ -72,7 +81,7 @@ export interface ContactBusinessContextResult {
   /** Source-event cutoff used only for the `identity.known_before` fact. */
   known_before_at: number;
   identity: ContactBusinessIdentitySummary;
-  deals: ContactBusinessRelationshipSummary;
+  deals: ContactBusinessDealSummary;
   tasks: ContactBusinessRelationshipSummary;
   calendar: ContactBusinessRelationshipSummary;
   bookings: ContactBusinessRelationshipSummary;

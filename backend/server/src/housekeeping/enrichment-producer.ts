@@ -12,12 +12,20 @@
  *  walker's hash of the current source. Cascade-engine staling +
  *  hash mismatch are the two paths back into producer execution.
  *
- *  Cursor: forward-only `{ kind: 'topic', topic, scope?,
- *  max_target_id_seen }`. Aggregate-policy producers rely on
- *  `recompute_cadence` (out-of-scope for P4 — wired through the
- *  scheduler in a later D) to periodically reset the cursor; for
- *  P4 the skip-rule alone gives correct first-walk behaviour and
- *  the cascade-engine staling pathway covers in-window drift.
+ *  Cursor: `{ kind: 'topic', topic, scope?, max_target_id_seen }`. It
+ *  resumes a pass that yielded, and REWINDS when a pass completes, so the
+ *  next cycle walks from the start again and the skip-rule makes every
+ *  already-produced row a cheap no-op.
+ *
+ *  ⛔ WHY IT REWINDS: a source's ids are not arrival order. Mail record
+ *  ids are hashes (`mail:<sha256>`), so a message that arrives after a
+ *  pass lands at a random position — usually below the last id walked.
+ *  This cursor used to stay at the end of the completed pass, and the
+ *  periodic reset meant to follow (`recompute_cadence`, "a later D") was
+ *  never wired, so new mail was produced only if its hash happened to
+ *  sort after every id already seen. The cascade-engine staling pathway
+ *  covers in-window drift of rows that EXIST; only a re-walk reaches a
+ *  record that has no row yet.
  *
  *  Stale-row sweep: each step also re-derives stale rows authored
  *  by this producer (FK CASCADE took care of the row payload + sidecar
@@ -805,9 +813,10 @@ export const buildEnrichmentProducerTask = <TData>(
           walker.walkAfter(max_target_id_seen, ENRICHMENT_BATCH_SIZE),
         );
         if (batch.length === 0) {
+          // A completed pass rewinds (see the cursor note at the top of this file).
           return {
             status: 'complete',
-            cursor: { ...topicCursor, max_target_id_seen },
+            cursor: { ...topicCursor, max_target_id_seen: '' },
           };
         }
 
@@ -964,11 +973,11 @@ export const buildEnrichmentProducerTask = <TData>(
         }
 
         // Walker returned a non-empty batch smaller than the
-        // requested size — assume the source is exhausted.
+        // requested size — assume the source is exhausted, and rewind.
         if (batch.length < ENRICHMENT_BATCH_SIZE) {
           return {
             status: 'complete',
-            cursor: { ...topicCursor, max_target_id_seen },
+            cursor: { ...topicCursor, max_target_id_seen: '' },
           };
         }
       }

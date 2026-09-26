@@ -5214,6 +5214,24 @@ export type ServerRpcRegistry = {
        *  says so beside the picker. Advisory: absent from an older server, and
        *  nothing is sent back. */
       own_needs?: 'write' | 'all';
+      /** The packs this install's recipes call that are not installed and that the
+       *  install does not bring in (`pack_ref` is `<publisher>.<pack>`), with the
+       *  names of the packs of this install whose recipes call them. The install
+       *  refuses while one is missing, so the dialog offers each before the owner
+       *  chooses anything, and holds Install.
+       *
+       *  Found the way the install finds them: the recipes' Tier-P operations
+       *  against the installed packs, plus the packs this install brings in. Absent
+       *  when that cannot be told (no inventory, or the dependency walk fails; the
+       *  install then says why), and from an older server; empty when none. */
+      missing_packs?: Array<{
+        pack_ref: string;
+        needed_by: string[];
+        /** What the pack is called, where the server can tell: its own copy, else
+         *  (on a `marketplace` preview) the marketplace's, fetched unmarked. Absent
+         *  otherwise, and the dialog shows the slug. */
+        name?: string;
+      }>;
       /** D-296 — automations the owner has ON that this update will switch
        *  off (a changed trigger that cannot be carried over). Absent when none. */
       triggers_switched_off?: Array<{ recipe_id: string; name: string; reason: 'changed' | 'removed' }>;

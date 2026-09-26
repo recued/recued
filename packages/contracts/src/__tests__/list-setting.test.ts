@@ -2,7 +2,14 @@
  *  The form has no list control, so the box's text is what gets saved. */
 
 import { describe, expect, it } from 'vitest';
-import { isListOfNumbers, listFromTypedText, readTypedListSettings } from '../list-setting.js';
+import {
+  LIST_VOCABULARIES,
+  isListOfNumbers,
+  listFromTypedText,
+  listSettingChoices,
+  readTypedListSettings,
+  splitSpacedItems,
+} from '../list-setting.js';
 
 describe('listFromTypedText', () => {
   it.each([
@@ -75,5 +82,67 @@ describe('readTypedListSettings', () => {
   it('a recipe with no variables passes its config through', () => {
     const config = { channels: 'slack' };
     expect(readTypedListSettings(undefined, config)).toBe(config);
+  });
+});
+
+/** Typed with spaces where commas were meant: `slack email`, `1 3`. The form's
+ *  help asks for commas, and open lists still need them; a list that can tell an
+ *  item from two reads the spaces too. */
+describe('splitSpacedItems', () => {
+  const channels = LIST_VOCABULARIES.notification_channels!;
+  const statuses = listSettingChoices({ type: 'array', options: ['In progress', 'Done', 'Blocked'] })!;
+
+  it('⛔ splits names every part of which is a choice: `slack email` is two channels', () => {
+    expect(splitSpacedItems(['slack email'], { choices: channels })).toEqual(['slack', 'email']);
+    expect(splitSpacedItems(['Slack  In-App'], { choices: channels })).toEqual(['Slack', 'In-App']);
+  });
+
+  it('⛔ splits numbers typed with spaces: `1 3 5`', () => {
+    expect(splitSpacedItems(['1 3 5'], { numbers: true })).toEqual(['1', '3', '5']);
+  });
+
+  it('⛔ keeps an item that is itself a choice, spaces and all', () => {
+    expect(splitSpacedItems(['In progress'], { choices: statuses })).toEqual(['In progress']);
+    // Even when every part is a choice too: "Sales Ops" is the one team it names.
+    const teams = listSettingChoices({ type: 'array', options: ['Sales', 'Ops', 'Sales Ops'] })!;
+    expect(splitSpacedItems(['Sales Ops'], { choices: teams })).toEqual(['Sales Ops']);
+    expect(splitSpacedItems(['Ops Sales'], { choices: teams })).toEqual(['Ops', 'Sales']);
+  });
+
+  it('keeps an item whole when a part is not one: it is refused by name, as before', () => {
+    expect(splitSpacedItems(['slack emial'], { choices: channels })).toEqual(['slack emial']);
+    expect(splitSpacedItems(['1 Mon'], { numbers: true })).toEqual(['1 Mon']);
+  });
+
+  it('⛔ leaves an open list alone: nothing can tell "In progress" from two words', () => {
+    expect(splitSpacedItems(['In progress', 'slack email'])).toEqual(['In progress', 'slack email']);
+  });
+
+  it('keeps what is not text as it is', () => {
+    expect(splitSpacedItems(['slack', 7, null], { choices: channels })).toEqual(['slack', 7, null]);
+  });
+});
+
+describe('listFromTypedText, with a list that can tell', () => {
+  it('reads spaces as separators beside commas', () => {
+    expect(listFromTypedText('slack email, in-app', { choices: LIST_VOCABULARIES.notification_channels! }))
+      .toEqual(['slack', 'email', 'in-app']);
+    expect(listFromTypedText('1 3, 5', { numbers: true })).toEqual([1, 3, 5]);
+  });
+
+  it('an open list still needs commas', () => {
+    expect(listFromTypedText('slack email')).toEqual(['slack email']);
+  });
+});
+
+describe('readTypedListSettings, with a list that can tell', () => {
+  it('⛔ reads a setting that offers choices, or holds numbers, typed with spaces', () => {
+    const variables = {
+      channels: { label: 'Notification channels', type: 'array', options: ['@notification_channels'] },
+      weekdays: { label: 'Weekdays', type: 'array', default: [1, 2, 3, 4, 5] },
+      tags: { label: 'Tags', type: 'array' },
+    };
+    expect(readTypedListSettings(variables, { channels: 'slack email', weekdays: '1 3', tags: 'to do' }))
+      .toEqual({ channels: ['slack', 'email'], weekdays: [1, 3], tags: ['to do'] });
   });
 });

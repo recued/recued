@@ -224,7 +224,11 @@ describe('buildEnrichmentProducerTask — forward walk', () => {
     }
   });
 
-  it('advances the cursor to the last seen cursor_token on complete', async () => {
+  it('rewinds the cursor to the start on complete', async () => {
+    // This asserted `max_target_id_seen: 'c'` — the position at the END of the
+    // pass — which is what stranded every record arriving below it (see the
+    // rewind test below). A yield still resumes mid-pass: 'persists the cursor
+    // at yield so the next call resumes'.
     const records = ['a', 'b', 'c'].map((id) => sourceRecord(id));
     const task = buildEnrichmentProducerTask({
       producer: aggregateProducer(),
@@ -235,8 +239,29 @@ describe('buildEnrichmentProducerTask — forward walk', () => {
       kind: 'topic',
       topic: 'thread_signals',
       scope: 'mail',
-      max_target_id_seen: 'c',
+      max_target_id_seen: '',
     });
+  });
+
+  it('a completed pass rewinds, so a record whose id sorts BEFORE the last one seen is still produced', async () => {
+    // ⛔ MAIL RECORD IDS ARE HASHES (`mail:<sha256>`), NOT ARRIVAL ORDER. A message that
+    // arrives after a pass lands at a random position — usually BELOW the last id walked —
+    // and the walk used to resume after that id forever, so new mail went unenriched unless
+    // its hash happened to sort last. The stub below keeps `cursor_token = id` sorted, so a
+    // mid-list insert is exactly the hash case.
+    const records = [sourceRecord('b'), sourceRecord('d')];
+    const task = buildEnrichmentProducerTask({
+      producer: aggregateProducer(),
+      walker: stubWalker(records),
+    });
+    const first = await stepWith(task, { kind: 'complete' });
+    expect(first.status).toBe('complete');
+
+    records.splice(1, 0, sourceRecord('c')); // arrives after the pass; sorts before 'd'
+    const second = await stepWith(task, first.cursor);
+    expect(second.status).toBe('complete');
+    expect(store.list({ topic: 'thread_signals' }).map((r) => r.target_id).sort())
+      .toEqual(['b', 'c', 'd']);
   });
 
   it('skips records whose source_record_hash matches existing fresh enrichment row', async () => {

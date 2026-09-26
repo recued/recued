@@ -62,6 +62,8 @@ describe('weekdays', () => {
   it('⛔ show what is saved: a saved 0 ticks Sunday, and text an older box saved still reads', () => {
     expect(toWidgetShape('weekdays', WEEKDAYS, [0, 6]).value).toEqual([6, 7]);
     expect(toWidgetShape('weekdays', WEEKDAYS, '1, 3').value).toEqual([1, 3]);
+    // Typed with spaces for commas.
+    expect(toWidgetShape('weekdays', WEEKDAYS, '1 3').value).toEqual([1, 3]);
   });
 
   it('⛔ read back as numbers, which is all the time watcher accepts', () => {
@@ -103,6 +105,14 @@ describe('notification channels', () => {
     expect(saved.value).toEqual(['slack', 'in_app']);
     expect(tickedIn(renderVariableWidget(saved))).toEqual(['slack', 'in_app']);
     expect(toWidgetShape('channels', CHANNELS, 'email, slack').value).toEqual(['slack', 'email']);
+  });
+
+  it('⛔ tick each name saved with spaces for commas, as text or in an older box\'s list', () => {
+    // `slack email` is two channels, and the adapter sends to both.
+    expect(toWidgetShape('channels', CHANNELS, 'slack email').value).toEqual(['slack', 'email']);
+    expect(toWidgetShape('channels', CHANNELS, ['slack email']).value).toEqual(['slack', 'email']);
+    // A name one part of which is no channel stays whole, visible and ticked.
+    expect(toWidgetShape('channels', CHANNELS, ['slack emial']).value).toEqual(['slack emial']);
   });
 
   it('⛔ keep a saved name that is no channel visible and ticked, not dropped on the next save', () => {

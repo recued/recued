@@ -7,6 +7,81 @@ checkpoint was cut. One entry per published export; the machine-readable
 provenance for each — source commit, tree, payload digest, and what was omitted
 — lives in `.recued-public-export.json`.
 
+## 26.9.26 — 2026-09-26
+
+A smaller release. Installing a pack now tells you, before you choose anything,
+when it needs another pack that is not installed and does not come with it, and
+links to that pack. The enrichment that runs in the background now aliases your
+data before it reaches a model, the way the chat does. And five watchers that
+read mail and calendar events were reading fields the event never carries, so
+they did nothing; they now read the record itself. No schema change: you can go
+back to 26.9.25.
+
+### Added
+
+- **The install dialog says what a pack needs first.** When a pack's workflows
+  call a pack that is not installed and that it does not bring in, the dialog
+  says so before you choose anything ("This Pack needs Federated Projects. It is
+  not installed, and this Pack does not bring it in."), with a "Get Federated
+  Projects" link to that pack's own page, and holds Install. That pack's own
+  dialog then asks what it may do. Such an install used to be refused only after
+  you had made every choice, and it left the packs it brought in installed. The
+  server now refuses it before anything is installed, whoever asks, and names
+  every missing pack.
+
+### Changed
+
+- **OCRmyPDF brings PDFToText in with it.** Its notes workflow uses it, and the
+  install was refused on any server that did not already have it. A server that
+  has PDFToText keeps it as it is.
+- **The install dialog no longer tells you to choose "Read + write" for a local
+  tool another pack brings in.** Its commands are allowed in the tools dialog,
+  whatever its Access, so the note was wrong either way.
+- **A list you type with spaces reads as the list it spells, where the list can
+  tell.** For a list of numbers or of choices, such as notification channels and
+  weekdays, `slack email` is Slack and email, and `1 3` is Monday and Wednesday.
+  A name that is not one is still refused by name, and an open list, such as
+  tags, still needs commas.
+- **An existing customer is someone with an open or won deal**, for the "new
+  inquiry from an existing customer" notifications. A lost deal alone no longer
+  counts, and a sender is also matched against the contacts mirrored from your
+  CRM. The cross-vendor version no longer asks for HubSpot and Salesforce
+  permissions it never used, so its update asks for nothing new.
+
+### Fixed
+
+- **Five watchers did nothing.** The contact timeline rollup, the three "new
+  inquiry from an existing customer" notifications and the meeting reschedule
+  tracker read the sender, or the meeting's start time and attendees, from the
+  event, which carries only a pointer to the record. Each reported success and
+  did nothing. They now read the record.
+- **New mail was rarely enriched once a pass had finished.** A finished pass
+  remembered the last message it walked, and new mail usually sorts before it.
+  Each pass now starts over; it re-reads what it already did but spends nothing
+  doing it again.
+- **Daily Ops took a sender whose address merely contained yours for you**, so
+  the unanswered-inbound radar dropped that thread from "waiting on you". It now
+  matches your address exactly.
+- **A pack you had not installed showed a Use tab** on a server running from a
+  source checkout, and its view ran only to be refused because the pack was not
+  installed. Such a pack now opens on its details and runs nothing, and a link
+  to its Use tab lands there too.
+
+### Security
+
+- **Background enrichment now aliases your data the way the chat does.** It
+  sent structured record content to the model as it was, and fell back to the
+  raw input whenever aliasing failed. The whole content of each call is now
+  aliased, keys included, and an aliasing error means no call is made: the
+  record is retried and marked failed at the fifth attempt, and a task that
+  works across many records pauses after three failed cycles in a row. This
+  change does not cover AI steps in recipes, or documents.
+
+### A note on upgrading
+
+- There is no schema change, so going back to 26.9.25 is clean.
+- Updating OCRmyPDF installs PDFToText if you do not have it.
+
 ## 26.9.25 — 2026-09-25
 
 Three kinds of work dominate this release. An update now keeps what you chose —

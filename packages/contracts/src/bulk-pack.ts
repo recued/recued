@@ -1069,6 +1069,13 @@ export interface BulkPackInstallResultLike {
      *  Empty for pack-level failures (`permission_denied` /
      *  `version_mismatch` / `unresolved`). */
     failed_at?: { slug: string; version: number };
+    /** The packs this install's recipes call that are not installed and that
+     *  the install does not bring in, as `<publisher>.<pack>` refs, all of them
+     *  (the message names only the first the install met). Set on the
+     *  `validator_rejected` refusal they cause, so the install dialog can offer
+     *  each without reading the message. Absent on every other failure, and from
+     *  a server that cannot say. */
+    missing_packs?: string[];
   };
 }
 

@@ -30,21 +30,38 @@
  *  behavior-preservation invariant for the activation slice that wires the
  *  real schema-driven tag source.
  *
- *  Scope: producers calling `ctx.llm` / `ctx.llmWithMeta` with STRING content
- *  fields (`llm.data` / `llm.context` / `llm.prompt` / `llm.data_block`), in two
+ *  Scope: producers calling `ctx.llm` / `ctx.llmWithMeta` with content fields
+ *  (`llm.data` / `llm.context` / `llm.prompt` / `llm.data_block`), in two
  *  shapes — `wrapHousekeepingCtxForRecord` seeds the ledger from ONE source
  *  record (the per-record harness + own-walk single-record producers), and
  *  `wrapHousekeepingCtxForFanIn` seeds it from MANY (fan-in producers whose
  *  corpus blob folds subjects / body previews across N rows — topic_cluster, the
  *  engagement aggregates). Both share one core: the identifier pass runs over
  *  every seed record BEFORE the content scan, so cross-record PII can't leak by
- *  iteration order. Non-string (D-162 batch / structured) `llm.data` passes
- *  through raw (a comfort miss, not a break); `ctx.embed` (vectorisation) is
- *  intentionally NOT aliased — aliasing would corrupt the embedding's semantic
- *  value. Both are documented follow-ons.
+ *  iteration order. `ctx.embed` (vectorisation) is intentionally NOT aliased —
+ *  aliasing would corrupt the embedding's semantic value.
  *
- *  Spec: D-167 §"Runtime flow", §"Scope", §Integration/D-165
- *  (amended — enrichment egress is a comfort-layer surface).
+ *  ⛔ D-316 (2026-09-26) — THE CHAT'S STANDARD, NOT A COMFORT LAYER. Until then
+ *  this seam differed from the chat's (`chat-pii-egress.ts`) in two ways that
+ *  each sent raw PII to a model: a structured `llm.data` (a D-162 batch array, a
+ *  nested object) passed through unaliased, and every aliasing error fell open to
+ *  the raw input. Now, as the chat does:
+ *    - the WHOLE content is aliased — structured values walked leaf by leaf,
+ *      keys included (`aliasArgsForEgress`, what the chat runs on tool args) —
+ *      after ONE collision pre-scan per call (`preScanPacketForEgress`), so an
+ *      alias-shaped literal already in the text round-trips as written;
+ *    - an aliasing ERROR means NO call: the wrapped `llm` / `llmWithMeta` throws
+ *      `EnrichmentPiiAliasingError` before the real call. The per-record harness
+ *      records it as a per-row producer failure (backoff, retry); a fan-in
+ *      producer's cycle fails, visibly;
+ *    - the model output is restored keys included, since keys were aliased.
+ *  Nothing to alias is NOT a failure: a record with no tagged value, or text
+ *  with no known value in it, is sent as it is. Out of scope, on purpose:
+ *  recipe AI steps (aliased by the recipe) and document bytes
+ *  (`llm.content_parts`; `extracted_text` runs only when the owner starts it).
+ *
+ *  Spec: D-167 §"Runtime flow", §"Scope", §Integration/D-165;
+ *  D-316.
  */
 
 import { piiEgress } from '@recued/gateway';
@@ -130,6 +147,39 @@ const collectSeedValues = (
 type LlmExecute = NonNullable<HousekeepingContext['llm']>;
 type LlmExecuteWithMeta = NonNullable<HousekeepingContext['llmWithMeta']>;
 
+/** D-316 — the privacy layer could not alias a model-bound input, so the call
+ *  was NOT made. Thrown by the wrapped `ctx.llm` / `ctx.llmWithMeta` before the
+ *  real call; its message is the reason the harness records. */
+export class EnrichmentPiiAliasingError extends Error {
+  constructor(cause: unknown) {
+    super(
+      `the privacy layer could not alias this model input, so no call was made: ${
+        cause instanceof Error ? cause.message : String(cause)
+      }`,
+      { cause },
+    );
+    this.name = 'EnrichmentPiiAliasingError';
+  }
+}
+
+/** D-316 — a ctx whose model calls refuse without calling, for a record whose
+ *  input cannot be aliased at all (the ledger could not be seeded). Every other
+ *  field — including `embed`, which is never aliased — is the caller's own. */
+const refuseModelCalls = (ctx: HousekeepingContext, cause: unknown): HousekeepingContext => {
+  const refused: HousekeepingContext = { ...ctx };
+  if (ctx.llm !== undefined) {
+    refused.llm = async () => {
+      throw new EnrichmentPiiAliasingError(cause);
+    };
+  }
+  if (ctx.llmWithMeta !== undefined) {
+    refused.llmWithMeta = async () => {
+      throw new EnrichmentPiiAliasingError(cause);
+    };
+  }
+  return refused;
+};
+
 /** Collect the DISTINCT PII seed values across many source records per the
  *  resolved tags, preserving first-seen order. The shared ledger already
  *  dedupes by `(kind, real_value)` (its `getOrAllocate` is idempotent), so this
@@ -167,13 +217,17 @@ const collectDistinctSeedValues = (
  *  per-record wrap would scan the corpus against a ledger seeded from one row
  *  and leak every other row's PII based purely on iteration order.)
  *
- *  Returns the context UNCHANGED (byte-identical producer behaviour, the comfort
- *  default no-op) when:
+ *  Returns the context UNCHANGED (byte-identical producer behaviour) when there
+ *  is nothing to alias:
  *    - no tag source is wired (`enrichmentPiiTagSource` absent);
  *    - the scope resolves no tags;
  *    - no record carries a tagged string value to seed (incl. an empty
- *      `records` list);
- *    - seeding throws (fail-open: a comfort miss, never a producer break).
+ *      `records` list).
+ *
+ *  ⛔ When seeding THROWS, returns a context whose model calls refuse
+ *  (`EnrichmentPiiAliasingError`) — D-316: an input that cannot be aliased is
+ *  not sent. It never throws itself: the harness calls it outside its per-row
+ *  `try`, so a throw here would fail the whole step instead of one row.
  *
  *  Caller gates on `is_ai_surface` so deterministic producers skip the work. */
 const wrapHousekeepingCtxWithSeedRecords = (
@@ -211,49 +265,46 @@ const wrapHousekeepingCtxWithSeedRecords = (
       resolver: seedResolver,
       mode: 'alias',
     });
-  } catch {
-    // Seeding failure → fall open to the raw producer path. The substrate is
-    // allowed to MISS (comfort tradeoff); it must never break the producer.
-    return ctx;
+  } catch (error) {
+    // D-316 — seeding failed, so this input cannot be aliased: refuse the
+    // model calls rather than fall open to the raw producer path (the chat's
+    // standard; until D-316 this returned `ctx` and the input went out raw).
+    return refuseModelCalls(ctx, error);
   }
 
-  /** Content-scan the input's string content fields against the seeded ledger.
-   *  Control fields and non-string values pass through untouched. Fail-open:
-   *  any error returns the raw input (a comfort miss, never a throw). */
+  /** D-316 — alias the whole content of one model call, the chat's way:
+   *   1. collision-proof it ONCE against alias-shaped literals already in it
+   *      (`preScanPacketForEgress`, D-167 Slice 3 — once per packet, never per
+   *      field), so a literal `pii.Person1` round-trips instead of restoring to
+   *      a real name;
+   *   2. alias every content value against the seeded ledger — strings, and
+   *      structured values (a D-162 batch array, a nested object) walked leaf by
+   *      leaf, keys included (`aliasArgsForEgress`, what the chat runs on tool
+   *      args).
+   *  Control fields pass through untouched; the caller's value is never mutated.
+   *  ANY error throws `EnrichmentPiiAliasingError`, so no call is made. */
   const aliasInput = (input: Record<string, unknown>): Record<string, unknown> => {
     try {
-      const contentKeys = CONTENT_INPUT_KEYS.filter(
-        (key) => typeof input[key] === 'string' && (input[key] as string).length > 0,
-      );
-      if (contentKeys.length === 0) return input;
-      const packet: Record<string, string> = {};
-      contentKeys.forEach((key, i) => {
-        packet[`c${i}`] = input[key] as string;
-      });
-      const resolver: piiEgress.FieldPrivacyResolver = () =>
-        contentKeys.map((_, i): PiiFieldTag => ({ path: `c${i}`, kind: 'content' }));
-      const { aliased } = piiEgress.aliasPacketForEgress({
-        ledger,
-        packet: packet as PiiAliasableData,
-        resolver,
-        mode: 'alias',
-      });
-      const aliasedRecord = aliased as Record<string, unknown>;
-      const out: Record<string, unknown> = { ...input };
-      contentKeys.forEach((key, i) => {
-        out[key] = aliasedRecord[`c${i}`];
-      });
-      return out;
-    } catch {
-      return input;
+      const content: Record<string, unknown> = {};
+      for (const key of CONTENT_INPUT_KEYS) {
+        const value = input[key];
+        if (value !== undefined && value !== null) content[key] = value;
+      }
+      if (Object.keys(content).length === 0) return input;
+      const { value: collisionProof } = piiEgress.preScanPacketForEgress(ledger, content);
+      const { aliased } = piiEgress.aliasArgsForEgress(ledger, collisionProof);
+      return { ...input, ...aliased };
+    } catch (error) {
+      throw new EnrichmentPiiAliasingError(error);
     }
   };
 
   /** Restore aliases in the model result before the producer parses it, so the
-   *  enrichment value + downstream reads see real values. `restoreArgs` never
-   *  throws (unknown aliases pass through) — the §Hard invariant restore. */
+   *  enrichment value + downstream reads see real values. Keys too: the content
+   *  pass aliases keys, so a model that keys its answer by one is restored.
+   *  Restore never throws (unknown aliases pass through) — the §Hard invariant. */
   const restoreModelResult = <T>(result: T): T =>
-    piiEgress.restoreArgsForApproval(ledger, result);
+    piiEgress.restoreArgsAndKeysForApproval(ledger, result);
 
   const wrapped: HousekeepingContext = { ...ctx };
   if (ctx.llm !== undefined) {
@@ -300,8 +351,9 @@ export const wrapHousekeepingCtxForRecord = (
  *  source rows whose tagged fields seed the ledger; the caller then passes its
  *  corpus blob through the returned ctx's `llm` / `llmWithMeta` as usual, and
  *  the wrap content-scans the blob against the fully-seeded ledger on egress +
- *  restores the model output. Same no-op + fail-open invariants as the
- *  single-record seam (incl. an empty `records` list → returns the raw ctx). */
+ *  restores the model output. Same invariants as the single-record seam: nothing
+ *  to alias (incl. an empty `records` list) returns the raw ctx, and an aliasing
+ *  error refuses the call (D-316). */
 export const wrapHousekeepingCtxForFanIn = (
   ctx: HousekeepingContext,
   scope: EnrichmentScope,

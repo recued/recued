@@ -79,7 +79,7 @@ import {
   type BulkPackInstallRecipe,
   type MarketplaceRecipeResult,
 } from '@recued/marketplace';
-import { hashRecipe, validateRecipe } from '@recued/recipes';
+import { hashRecipe, unboundPackRefs, validateRecipe, type PackOpResolution } from '@recued/recipes';
 import type { IngredientManifest } from '@recued/contracts';
 import type { ContractGrantEntryStore } from './storage/contract-grant-entry-store.js';
 
@@ -994,6 +994,34 @@ const carryOverUpdateChoices = (
   };
 };
 
+/** D-182 Slice 4 — the Tier-P `pack_ref → catalog` map an install of `manifest`
+ *  lowers its recipes against: the installed packs, less the pack itself (a
+ *  reinstall's stale prior row must not resolve its own recipes'
+ *  self-references). `undefined` without the inventory store and the registry (a
+ *  db-less boot). The install and its preview both build it here, so the preview
+ *  cannot count as installed a pack the install would not bind. */
+const installPackOpResolution = (
+  deps: Pick<PackInstallRpcDeps, 'contractStore' | 'registry'>,
+  manifest: Pick<BulkPackManifest, 'publisher' | 'slug'>,
+): PackOpResolution | undefined =>
+  deps.contractStore !== undefined && deps.registry !== undefined
+    ? buildPackOpResolution(
+        () => deps.contractStore!.scan('installed_pack'),
+        (slug) => deps.registry!.get(slug) ?? null,
+        `${manifest.publisher}.${manifest.slug}`,
+      )
+    : undefined;
+
+/** The packs an install can count on for a recipe's Tier-P operations: the ones
+ *  installed that `resolution` binds, and the ones the install itself writes
+ *  (`installing`, as `<publisher>.<pack>` refs). */
+const packsBoundFor = (
+  resolution: PackOpResolution,
+  installing: ReadonlySet<string>,
+): { has(packRef: string): boolean } => ({
+  has: (packRef) => resolution.has(packRef) || installing.has(packRef),
+});
+
 const installSinglePack = async (
   deps: PackInstallRpcDeps,
   requestArgs: PacksInstallArgs,
@@ -1346,16 +1374,7 @@ const installSinglePack = async (
     // recued-core.whisper) resolves its already-installed dependency packs' ops.
     // Empty unless BOTH the inventory store + registry are present (db-less boot);
     // INERT on the current corpus (no two-tier op ids until the Slice-4 rewrite).
-    const packOpResolution =
-      deps.contractStore !== undefined && deps.registry !== undefined
-        ? buildPackOpResolution(
-            () => deps.contractStore!.scan('installed_pack'),
-            (slug) => deps.registry!.get(slug) ?? null,
-            // Exclude this pack's own pack_ref — a reinstall's stale prior row
-            // must not resolve its own recipes' self-references.
-            `${manifest.publisher}.${manifest.slug}`,
-          )
-        : undefined;
+    const packOpResolution = installPackOpResolution(deps, manifest);
     const resolvedDefs = resolvePackOpStepRecipes(
       composition,
       plan.contents,
@@ -1377,6 +1396,11 @@ const installSinglePack = async (
       `${manifest.publisher}.${manifest.slug}`,
     );
     if (!resolvedDefs.ok) {
+      // ⚠ A pack the recipes call and the install neither finds nor brings in is
+      // refused before this, with the packs as data (`missingPacksRefusal`, in
+      // `handlePacksInstall`), before anything installs. Reaching here is the
+      // backstop: what that check could not tell, and every other refusal the
+      // lowering raises.
       return {
         result: {
           ok: false,
@@ -2170,7 +2194,16 @@ export const dependencyPacksFor = async (
  *  write), and nothing on screen asked for Read + write.
  *
  *  🔑 The same join as `needs`, on the pack's OWN composition rows, counting only
- *  a row its Access actually grants (`installGrantableOps`: not a local tool's). */
+ *  a row its Access actually grants (`installGrantableOps`: not a local tool's).
+ *
+ *  ⛔ AND `needs` COUNTS ONLY SUCH A ROW TOO (2026-09-26). It counted every row
+ *  another pack of the install calls, so a local tool brought in was listed with
+ *  "OCRmyPDF Pack adds and changes things in it. Choose Read + write, or those
+ *  steps will be refused." That was untrue both ways: a `cli` operation is
+ *  authorized by the tools dialog's reachability grant, whatever the tool's Access
+ *  (`execute-handler.ts`, `cliReachabilityResolver`), so Read + write would not
+ *  help and Read only would not refuse. It showed once OCRmyPDF brought in
+ *  pdftotext, which its notes workflow calls. */
 export const installAccessNeedsFor = async (
   deps: PackInstallRpcDeps,
   manifest: BulkPackManifest,
@@ -2183,8 +2216,10 @@ export const installAccessNeedsFor = async (
   })));
   const needs = new Map<string, { rank: number; by: Set<string> }>();
   const ownNeeds = new Map<string, number>();
+  // What each pack's Access choice grants: a row outside it needs nothing from that choice.
+  const grantableBySlug = new Map(touched.map((pack) =>
+    [pack.slug, new Set(installGrantableOps(pack).map((op) => op.id))] as const));
   for (const pack of touched) {
-    const grantable = new Set(installGrantableOps(pack).map((op) => op.id));
     for (const entry of await resolvePackRecipeBodies(normalizeBulkPackInstallPlan(pack), pack.publisher, deps)) {
       if (entry.recipe === null) continue;
       for (const opId of recipeOpIds(entry.recipe.recipe)) {
@@ -2192,8 +2227,9 @@ export const installAccessNeedsFor = async (
         if (target === undefined) continue;
         const rank = RISK_RANK[target.row.risk];
         if (rank === undefined || rank === 0) continue;
+        if (grantableBySlug.get(target.pack.slug)?.has(target.row.op) !== true) continue;
         if (target.pack.slug === pack.slug) {
-          if (grantable.has(target.row.op)) ownNeeds.set(pack.slug, Math.max(ownNeeds.get(pack.slug) ?? 0, rank));
+          ownNeeds.set(pack.slug, Math.max(ownNeeds.get(pack.slug) ?? 0, rank));
           continue;
         }
         const need = needs.get(target.pack.slug) ?? { rank: 0, by: new Set<string>() };
@@ -2233,6 +2269,107 @@ export const installAccessNeedsFor = async (
   }
   const own = ownNeeds.get(manifest.slug);
   return { dependency_packs: out, ...(own !== undefined ? { own_needs: accessTierForRisk(own) } : {}) };
+};
+
+/** One pack an install needs and neither finds installed nor brings in, as
+ *  `packs.install_preview` `missing_packs` lists it. */
+export interface InstallMissingPack {
+  /** `<publisher>.<pack>`, as the recipes' operations name it. */
+  pack_ref: string;
+  /** The packs of this install whose recipes call it, by name. */
+  needed_by: string[];
+  /** What the pack is called, where the preview could tell (`nameMissingPacks`). */
+  name?: string;
+}
+
+/** The packs an install of `manifest` would be refused for: called by its recipes,
+ *  or by those of a pack it brings in, and neither installed nor brought in.
+ *
+ *  ⛔ THE INSTALL REFUSED THEM ONLY AFTER EVERY CHOICE WAS MADE ("step 'x' uses the
+ *  recued-core.federated-projects pack, which is not installed"), and the dialog
+ *  could not offer them. Seven shipped meeting packs call Federated Projects
+ *  without bringing it in, on purpose: the owner installs it deliberately, as their
+ *  entry point.
+ *
+ *  🔑 The install's own reading throughout: its walk (`installTouchedManifests`),
+ *  its recipe bodies, the lowering's view of a step (`unboundPackRefs`), and the
+ *  installed packs it binds (`installPackOpResolution`). A pack the install brings
+ *  in counts as there, since the recursion installs it first. `undefined` when
+ *  that cannot be told: no inventory, or a walk that fails (the install says why). */
+export const installMissingPacksFor = async (
+  deps: PackInstallRpcDeps,
+  manifest: BulkPackManifest,
+): Promise<InstallMissingPack[] | undefined> => {
+  const resolution = installPackOpResolution(deps, manifest);
+  if (resolution === undefined) return undefined;
+  const touched = installTouchedManifests(deps, manifest);
+  if (touched === null) return undefined;
+  const bound = packsBoundFor(resolution, new Set(touched.map((pack) => `${pack.publisher}.${pack.slug}`)));
+  const missing = new Map<string, Set<string>>();
+  for (const pack of touched) {
+    for (const entry of await resolvePackRecipeBodies(normalizeBulkPackInstallPlan(pack), pack.publisher, deps)) {
+      if (entry.recipe === null) continue;
+      for (const packRef of unboundPackRefs(entry.recipe.recipe, bound)) {
+        const neededBy = missing.get(packRef) ?? new Set<string>();
+        neededBy.add(pack.name);
+        missing.set(packRef, neededBy);
+      }
+    }
+  }
+  return [...missing].map(([pack_ref, neededBy]) => ({ pack_ref, needed_by: [...neededBy] }));
+};
+
+/** The name each missing pack goes by, for the dialog to offer it by: the
+ *  server's own copy, else the marketplace's (`fetchFn`, a marketplace preview's),
+ *  fetched UNMARKED since a preview installs nothing. A copy counts only when it
+ *  names the same slug and the same publisher, or it is not the pack the recipes
+ *  call. One that cannot be found keeps no name, and the dialog shows its slug. */
+export const nameMissingPacks = async (
+  deps: Pick<PackInstallRpcDeps, 'packDir' | 'resolveDependencyManifest'>,
+  missing: readonly InstallMissingPack[],
+  fetchFn: typeof globalThis.fetch | undefined,
+): Promise<InstallMissingPack[]> => {
+  const resolve = dependencyManifestResolver(deps);
+  return mapBounded(missing, MARKETPLACE_FETCH_CONCURRENCY, async (pack) => {
+    const dot = pack.pack_ref.indexOf('.');
+    const publisher = pack.pack_ref.slice(0, dot);
+    const slug = pack.pack_ref.slice(dot + 1);
+    let manifest = resolve(slug);
+    if (manifest === null && fetchFn !== undefined) {
+      manifest = await fetchBulkPackBySlug(slug, fetchFn, { install: false }).catch(() => null);
+    }
+    return manifest !== null && manifest.slug === slug && manifest.publisher === publisher
+      ? { ...pack, name: manifest.name }
+      : pack;
+  });
+};
+
+/** "a", "a and b", "a, b and c". */
+const joinNames = (names: readonly string[]): string =>
+  names.length <= 1 ? (names[0] ?? '') : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+
+/** The refusal for an install that needs packs it neither finds installed nor
+ *  brings in, all of them, in the words the dialog shows after "Recued did not
+ *  install it: …", with the packs as data for its offer. */
+export const missingPacksRefusal = (
+  missing: readonly InstallMissingPack[],
+): BulkPackInstallResultLike => {
+  const needers = [...new Set(missing.flatMap((pack) => pack.needed_by))];
+  const one = missing.length === 1;
+  const packs = `${joinNames(missing.map((pack) => pack.pack_ref))} ${one ? 'pack' : 'packs'}`;
+  return {
+    ok: false,
+    installed: [],
+    rolled_back: [],
+    failure: {
+      code: 'validator_rejected',
+      message:
+        `packs.install: ${joinNames(needers)} ${needers.length === 1 ? 'needs' : 'need'} the ${packs}, `
+        + `which ${one ? 'is' : 'are'} not installed, and this install does not bring ${one ? 'it' : 'them'} `
+        + `in. Install ${one ? 'that pack' : 'those packs'}, then try again.`,
+      missing_packs: missing.map((pack) => pack.pack_ref),
+    },
+  };
 };
 
 /** ⛔ D-295 — AN UPDATE THAT BRINGS NO WEBHOOK CHOICE KEEPS THE WEBHOOKS THE PACK
@@ -2366,6 +2503,19 @@ export const handlePacksInstall = async (
   // D-311 — on the marketplace path, fetch every recipe the install writes, many at
   // once, now that it is going ahead: a refused install counts no recipe installs.
   await deps.warmMarketplaceRecipes?.(installTouchedManifests(deps, manifest) ?? [manifest]);
+  // ⛔ A PACK ITS RECIPES CALL THAT IT NEITHER FINDS INSTALLED NOR BRINGS IN: refused
+  // HERE, before the recursion installs anything. The lowering refuses it too, but
+  // only once the packs this install brings in are installed, so a refused meeting
+  // pack left Personal Organizer Foundation behind. The dialog holds Install on the
+  // same list (`missing_packs` on the preview); this is for every caller that did
+  // not ask first: an older webclient, an rpc caller, an Install pressed before the
+  // preview landed.
+  // ⚠ After the warm-up, deliberately: it reads the recipe bodies that fetched, and
+  // a refusal here counts the same installs the lowering's refusal counted.
+  const missingPacks = await installMissingPacksFor(deps, manifest);
+  if (missingPacks !== undefined && missingPacks.length > 0) {
+    return { result: missingPacksRefusal(missingPacks) };
+  }
   const { result } = await handlePacksInstallInternal(
     deps,
     args,
@@ -3452,7 +3602,8 @@ export const makePackInstallHandlers = (
         // `packs.installBySlug`, which takes its recipes and the packs it brings in
         // from the marketplace. The preview resolves them the same way, or it
         // describes an install that will not happen.
-        const previewDeps = (args as { marketplace?: unknown }).marketplace === true
+        const fromMarketplace = (args as { marketplace?: unknown }).marketplace === true;
+        const previewDeps = fromMarketplace
           ? await marketplacePreviewDeps(deps, manifest)
           : deps;
         const preview = await buildPackInstallPreview(manifest, {
@@ -3469,6 +3620,16 @@ export const makePackInstallHandlers = (
         // REV 2 — and what this pack's own workflows need from its own Access.
         const accessNeeds = await installAccessNeedsFor(previewDeps, manifest);
         const dependencyPacks = accessNeeds?.dependency_packs;
+        // The packs it needs and does not bring in, which the install would refuse
+        // it for: named before the owner chooses anything, so the dialog can offer them.
+        const missing = await installMissingPacksFor(previewDeps, manifest);
+        // …each by its name where the server can tell, so the dialog offers "Federated
+        // Projects" rather than a slug.
+        const missingPacks = missing === undefined ? undefined : await nameMissingPacks(
+          previewDeps,
+          missing,
+          fromMarketplace ? (deps.marketplaceFetch ?? defaultMarketplaceFetch) : undefined,
+        );
         // D-296 — an armed automation this update switches off, named before
         // the owner presses Update.
         const triggerPreview = deps.getTriggerPreview?.();
@@ -3510,6 +3671,7 @@ export const makePackInstallHandlers = (
           ...(dependencyRequires !== undefined ? { dependency_requires: dependencyRequires } : {}),
           ...(dependencyPacks !== undefined ? { dependency_packs: dependencyPacks } : {}),
           ...(accessNeeds?.own_needs !== undefined ? { own_needs: accessNeeds.own_needs } : {}),
+          ...(missingPacks !== undefined ? { missing_packs: missingPacks } : {}),
           ...(switchedOff.length > 0 ? { triggers_switched_off: switchedOff } : {}),
           ...(receptionsOff.length > 0 ? { receptions_switched_off: receptionsOff } : {}),
           ...(settingsDropped.length > 0 ? { settings_no_longer_used: settingsDropped } : {}),

@@ -122,6 +122,10 @@ import {
   type NotificationDeliveryChannel,
   // D-312 — a channel setting given as text reads as the list it spells.
   listFromTypedText,
+  // `slack email` reads as two channels: the channel names are a list that can
+  // tell an item from two.
+  LIST_VOCABULARIES,
+  splitSpacedItems,
   // D-314 — the one reading of a channel name, shared with the settings form.
   notificationChannelName,
   // D-207 slice 3d — the artifact pin is VERIFIED against `data.file` source
@@ -3848,9 +3852,16 @@ export const createKernelAdapter = (dispatchers: KernelDispatchers): Adapter => 
         // text still reads as the list it spells ("slack, email"; "" is no
         // choice). A name that is no channel is refused by name: sending to the
         // rest would leave the owner sure it went there too.
+        // ⚠ AND NAMES TYPED WITH SPACES FOR COMMAS, `slack email`, READ AS THE CHANNELS
+        // THEY SPELL, in text and in a list a box saved before the checkboxes
+        // (`["slack email"]`). Only where every part is a channel: `slack emial` is
+        // still refused by name.
+        const channelChoices = LIST_VOCABULARIES.notification_channels;
         const requested = typeof input.channels === 'string'
-          ? listFromTypedText(input.channels)
-          : input.channels;
+          ? listFromTypedText(input.channels, { choices: channelChoices })
+          : Array.isArray(input.channels)
+            ? splitSpacedItems(input.channels, { choices: channelChoices })
+            : input.channels;
         const noPreference = requested === undefined || requested === null;
         if (!noPreference && (!Array.isArray(requested) || requested.length === 0)) {
           throw new IngredientError(

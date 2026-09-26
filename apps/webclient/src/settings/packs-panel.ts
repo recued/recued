@@ -402,6 +402,8 @@ import {
   dependencyPacksToChoose,
   installDialogGrantModel,
   installFailureCopy,
+  missingPacksFromFailure,
+  missingPacksToInstallFirst,
   renderPacksInstallDialog,
   resolveDependencyAccess,
   resolveInstallDialogAccess,
@@ -584,6 +586,7 @@ export {
   PACKS_DIALOG_RECORDS_REVIEW_ATTR,
   PACKS_DIALOG_RECORDS_REVIEW_CHANGE_ATTR,
   PACKS_DIALOG_RECORDS_REVIEW_DESTRUCTIVE_ATTR,
+  PACKS_DIALOG_MISSING_PACKS_ATTR,
 } from './packs-install-dialog.js';
 // D-145 PA10 follow-on Slice B — per-row Delete affordance attributes.
 export const PACKS_ROW_DELETE_BTN_ATTR = 'data-recued-packs-row-delete';
@@ -1274,7 +1277,11 @@ export const mountPacksPanel = (
   let dialogOpenFor: string | null = null;
   /** True while the dialog's `packs.install` rpc is in flight. */
   let installing = false;
-  let dialogError: string | null = null;
+  /** The last failed submit's copy, and the packs its refusal said to install
+   *  first (`failure.missing_packs`), which the dialog offers under it. ONE
+   *  value, so every one of the places that clears the error clears the offer
+   *  with it — an offer left behind would sit under someone else's error. */
+  let dialogError: { text: string; missingPacks: readonly string[] } | null = null;
   /** Per-pack permission selections. The active dialog's permission
    *  set lives at `dialogPermissions.get(dialogOpenFor)`. Map entries
    *  clear on dialog close (DD#6). */
@@ -1493,6 +1500,9 @@ export const mountPacksPanel = (
     appViewSlug = null;
   };
 
+  /** A pack with nothing to open: what a pack that is not installed has. */
+  const NO_APP: PackAppSurface = { views: [], lookups: [], operations: [], automations: [], missing: [] };
+
   /** The pack's app, or null while it cannot be classified yet.
    *
    *  ⛔ NOT ANSWERED UNTIL BOTH HALVES ARE IN HAND: the installed recipes AND
@@ -1501,8 +1511,20 @@ export const mountPacksPanel = (
    *  and the deep-link collapse below took that for an answer. Measured on a
    *  booted server: a reloaded `#packs/rental-book/use/show-building/<id>` was
    *  discarded at 3.3 s, the manifest landed at 8.3 s, and the Use tab opened on
-   *  its first view. */
+   *  its first view.
+   *
+   *  ⛔ AND NO APP FOR A PACK THAT IS NOT INSTALLED, at any version. A source
+   *  checkout lists every bundled recipe in `recipe.list`, installed or not, so an
+   *  uninstalled pack classified as an app: its Use tab opened first and ran its
+   *  first view, which was refused for the pack itself, "This recipe needs a pack
+   *  you don't have installed yet" with a "Get federated-projects" link to the
+   *  page it was on, under the real Install button (found driving D-310 REV 3,
+   *  2026-09-26). A deployed server lists only what is installed, so it never
+   *  showed there. That answer needs neither half above, so it is given at once,
+   *  as an EMPTY surface rather than null: a `#packs/<slug>/use/<view>` link to a
+   *  pack not installed collapses to its detail instead of waiting. */
   const appSurfaceFor = (pack: PackListEntry): PackAppSurface | null => {
+    if (pack.installed !== true && pack.installed_any_version !== true) return NO_APP;
     const manifest = pack.manifest;
     if (installedRecipes === null || manifest === undefined) return null;
     if (
@@ -2768,7 +2790,10 @@ export const mountPacksPanel = (
       || (target.manifest !== undefined
         && webhooksLoadingFor(target as PackListEntry & { manifest: BulkPackManifest }))
       || (target.manifest !== undefined
-        && dependenciesLoadingFor(target as PackListEntry & { manifest: BulkPackManifest }))) {
+        && dependenciesLoadingFor(target as PackListEntry & { manifest: BulkPackManifest }))
+      // A pack it needs and does not bring in: the install would refuse, and the
+      // dialog says which (the button is held there too).
+      || missingPacksToInstallFirst(installPreviewFor(submittingSlug, target.manifest)).length > 0) {
       return Promise.resolve();
     }
     const webhookBindings = webhookChoices?.map((choice) => ({
@@ -2841,7 +2866,10 @@ export const mountPacksPanel = (
           // codes fall back defensively there — Codex MINOR 4 fold). The
           // dialog stays open so the user can adjust permissions + retry,
           // or cancel.
-          dialogError = installFailureCopy(failureCode, failureDetail);
+          dialogError = {
+            text: installFailureCopy(failureCode, failureDetail),
+            missingPacks: missingPacksFromFailure(response.result.failure),
+          };
           return;
         }
         // Successful install — close the dialog + refresh the list so
@@ -2877,7 +2905,7 @@ export const mountPacksPanel = (
         await refreshRows({ refreshRecipes: true });
       } catch (err) {
         if (disposed) return;
-        dialogError = humanizeRpcError(err);
+        dialogError = { text: humanizeRpcError(err), missingPacks: [] };
       } finally {
         installing = false;
         pendingInstallPromise = null;
@@ -3176,7 +3204,10 @@ export const mountPacksPanel = (
       connectExpanded: dialogConnectExpanded.has(pack.slug),
       installing,
       deleting,
-      error: dialogError,
+      error: dialogError?.text ?? null,
+      ...(dialogError !== null && dialogError.missingPacks.length > 0
+        ? { errorMissingPacks: dialogError.missingPacks }
+        : {}),
       onTogglePermission: (permission) => {
         togglePermissionInternal(permission);
       },
@@ -4403,6 +4434,12 @@ export const mountPacksPanel = (
     broadcastUnsubscribers.push(
       opts.subscribe('pack_installed', () => {
         if (disposed) return;
+        // A preview that named a pack to install first holds Install, and the pack
+        // that just installed may be that one (from another tab, or the AI). Drop
+        // it, so the dialog asks again rather than stay held on a stale answer.
+        for (const [slug, entry] of dialogInstallPreview) {
+          if (missingPacksToInstallFirst(entry.preview).length > 0) dialogInstallPreview.delete(slug);
+        }
         void refreshRows({ refreshRecipes: true });
       }),
     );
@@ -4461,7 +4498,7 @@ export const mountPacksPanel = (
     getDialogOpenFor: () => dialogOpenFor,
     isInstalling: () => installing,
     getListError: () => listError,
-    getDialogError: () => dialogError,
+    getDialogError: () => dialogError?.text ?? null,
     getDialogPermissions: () => {
       if (dialogOpenFor === null) return new Set<string>();
       // Defensive copy — togglePermission is the single writer; a
@@ -5195,6 +5232,39 @@ export const PACKS_PANEL_STYLES = `
   line-height: 1.5;
   overflow-wrap: anywhere;
 }
+/* The packs an install needs and does not bring in: the warning's look, with a
+   "Get <pack>" link each. The links are anchors dressed as buttons. */
+[${PACKS_PANEL_ATTR}] .packs-dialog-missing {
+  display: grid;
+  min-width: 0;
+  max-width: 100%;
+  gap: 8px;
+  margin: 0;
+  padding: 10px 12px;
+  background: var(--warn-bg);
+  color: var(--fg);
+  border: 1px solid var(--warn);
+  border-left: 3px solid var(--warn);
+  border-radius: 9px;
+}
+[${PACKS_PANEL_ATTR}] .packs-dialog-missing-lead {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+[${PACKS_PANEL_ATTR}] .packs-dialog-missing-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+[${PACKS_PANEL_ATTR}] .packs-dialog-missing-link {
+  box-sizing: border-box;
+  max-width: 100%;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
 [${PACKS_PANEL_ATTR}] .packs-dialog-actions {
   display: flex;
   min-width: 0;
@@ -5510,6 +5580,7 @@ export const PACKS_PANEL_STYLES = `
   [${PACKS_PANEL_ATTR}] .packs-dialog-heading { font-size: 19px; }
   [${PACKS_PANEL_ATTR}] .packs-dialog-perm-list { grid-template-columns: 1fr; }
   [${PACKS_PANEL_ATTR}] .packs-dialog-actions .rx-btn { flex: 1 1 auto; }
+  [${PACKS_PANEL_ATTR}] .packs-dialog-missing-link { min-height: 44px; }
   [${PACKS_PANEL_ATTR}] [${PACKS_DIALOG_ATTR}] [data-recued-install-grant-picker] :is(
     .igp-access-list, .igp-scope-list
   ) { grid-template-columns: minmax(0, 1fr); }

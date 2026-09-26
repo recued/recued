@@ -349,3 +349,38 @@ const lowerSequentialStep = (step: RecipeStep, packs: PackOpResolution): RecipeS
   }
   return lowered;
 };
+
+/** The packs a recipe's Tier-P op-steps name that `packs` cannot bind: every pack
+ *  `lowerOpStepRecipe` would refuse as not installed, in first-use order, each once.
+ *
+ *  ⛔ ALL OF THEM, NOT THE FIRST. The lowering throws at the first op-step it cannot
+ *  bind, so its message names one pack. An owner who installs that one and tries
+ *  again is then told about the next. The install dialog offers every missing pack
+ *  at once from this list.
+ *
+ *  🔑 The lowering's own reading of a step: `steps`, `trigger_steps` and
+ *  `prefetch_steps`, and a Tier-P op is one `parseOpId` reads as `tier: 'pack'`,
+ *  which is the only kind `lowerPackOpStep` binds. A pack that is bound but lacks
+ *  the operation is not listed: that refusal says to update it, not install it.
+ *
+ *  `packs` is anything that answers "can this `pack_ref` be bound", so a caller
+ *  can add the packs an install is about to bring in. */
+export const unboundPackRefs = (
+  recipe: Pick<RecipeDefinition, 'steps' | 'trigger_steps' | 'prefetch_steps'>,
+  packs: { has(packRef: string): boolean },
+): string[] => {
+  const out: string[] = [];
+  const consider = (op: string): void => {
+    const parsed = parseOpId(op);
+    if (parsed === null || parsed.tier !== 'pack') return;
+    if (packs.has(parsed.pack_ref) || out.includes(parsed.pack_ref)) return;
+    out.push(parsed.pack_ref);
+  };
+  for (const step of [...(recipe.steps ?? []), ...(recipe.trigger_steps ?? [])]) {
+    if (isOpStep(step)) consider(step.op);
+  }
+  for (const step of recipe.prefetch_steps ?? []) {
+    if (isPrefetchOpStep(step)) consider(step.op);
+  }
+  return out;
+};

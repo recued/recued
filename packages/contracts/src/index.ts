@@ -943,8 +943,9 @@ export {
   listVocabularyRef,
   notificationChannelName,
   readTypedListSettings,
+  splitSpacedItems,
 } from './list-setting.js';
-export type { ListChoice, ListChoices } from './list-setting.js';
+export type { ListChoice, ListChoices, ListReading } from './list-setting.js';
 export {
   recipeCodeForRpcRefusal,
   recipeCodeForRpcStatus,
@@ -2315,6 +2316,7 @@ export type {
   ContactBusinessContextCoverage,
   ContactBusinessContextLevel,
   ContactBusinessRelationshipSummary,
+  ContactBusinessDealSummary,
   ContactBusinessRelationshipFamily,
   ContactBusinessIdentitySummary,
   ContactBusinessContextResult,

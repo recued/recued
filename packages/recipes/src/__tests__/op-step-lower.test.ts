@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { OpStep, PackResolutionContext, RecipeDefinition, RecipeStep } from '@recued/contracts';
 import { OP_STEP_PASSTHROUGH_KNOBS } from '@recued/contracts';
-import { lowerOpStep, lowerOpStepRecipe, type PackOpResolution } from '../op-step-lower.js';
+import { lowerOpStep, lowerOpStepRecipe, unboundPackRefs, type PackOpResolution } from '../op-step-lower.js';
 import { CanonicalOpResolutionError, resolveConnectionAgnosticRecipe } from '../connection-agnostic.js';
 
 describe('lowerOpStep (D-182 Slice 5 Increment 2a — unified lowering dispatcher)', () => {
@@ -448,6 +448,90 @@ describe('Tier-P lowering — total knob carry (round-12 T2 Q1)', () => {
     });
     for (const knob of OP_STEP_PASSTHROUGH_KNOBS) {
       expect(knob in step, `knob '${knob}' must survive the Tier-P lowering`).toBe(true);
+    }
+  });
+});
+
+describe('unboundPackRefs — every pack the lowering would refuse as not installed', () => {
+  const withPhases = (
+    steps: RecipeStep[],
+    trigger: RecipeStep[] = [],
+    prefetch: unknown[] = [],
+  ): RecipeDefinition => ({
+    ...mkRecipe(steps),
+    ...(trigger.length > 0 ? { trigger_steps: trigger } : {}),
+    prefetch_steps: prefetch as RecipeDefinition['prefetch_steps'],
+  });
+
+  it('⛔ names ALL of them, across steps, trigger_steps and prefetch_steps, each once in first-use order', () => {
+    // The lowering throws at the first; an owner who installed that one and tried
+    // again would be told about the next.
+    const recipe = withPhases(
+      [
+        { id: 'a', op: 'alice.ledger.batch.post' },
+        { id: 'b', op: 'recued-core.whisper.audio.transcribe' }, // bound
+        { id: 'c', op: 'alice.ledger.entry.get' }, // same pack again
+        { id: 'd', op: 'bob.bank.line.search' },
+      ],
+      [{ id: 'w', op: 'carol.feed.watch.new' }],
+      [{ id: 'pf', op: 'dave.sheet.row.read' }],
+    );
+    expect(unboundPackRefs(recipe, PACKS)).toEqual([
+      'alice.ledger', 'bob.bank', 'carol.feed', 'dave.sheet',
+    ]);
+  });
+
+  it('lists nothing the lowering can bind or never binds against a pack', () => {
+    const recipe = withPhases([
+      { id: 'k', op: 'core.ai.prompt', args: {} }, // kernel
+      { id: 'd', op: 'core.crm.deal.read', connection: '{{config.crm}}' }, // canonical convention
+      { id: 'bare', op: 'deal.search', connection: '{{config.crm}}' } as RecipeStep, // legacy bare op
+      { id: 'c', ingredient: 'mail-get', input: { id: '1' } }, // concrete
+      { id: 't', op: 'recued-core.gdrive.file.list' }, // bound
+    ]);
+    expect(unboundPackRefs(recipe, PACKS)).toEqual([]);
+  });
+
+  it('a pack that is bound but lacks the operation is not listed: that refusal says to update it', () => {
+    const recipe = mkRecipe([{ id: 'x', op: 'recued-core.whisper.audio.translate' }]);
+    expect(unboundPackRefs(recipe, PACKS)).toEqual([]);
+    expect(() => lowerOpStepRecipe(recipe, PACKS)).toThrow(/Update that pack/);
+  });
+
+  it('takes any "can this be bound" answer, so a caller can count the packs an install brings in', () => {
+    const recipe = mkRecipe([
+      { id: 'a', op: 'alice.ledger.batch.post' },
+      { id: 'd', op: 'bob.bank.line.search' },
+    ]);
+    const coming = new Set(['alice.ledger']);
+    expect(unboundPackRefs(recipe, { has: (ref) => PACKS.has(ref) || coming.has(ref) })).toEqual(['bob.bank']);
+  });
+
+  it('⛔ agrees with the lowering: empty exactly when it lowers, and its first is the pack the lowering names', () => {
+    const cases: RecipeDefinition[] = [
+      mkRecipe([{ id: 't', op: 'recued-core.whisper.audio.transcribe' }]),
+      mkRecipe([{ id: 'x', op: 'alice.ledger.batch.post' }, { id: 'y', op: 'bob.bank.line.search' }]),
+      withPhases([{ id: 'k', op: 'core.ai.prompt', args: {} }], [{ id: 'w', op: 'carol.feed.watch.new' }]),
+      withPhases([{ id: 'k', op: 'core.ai.prompt', args: {} }], [], [
+        { id: 'pf', op: 'dave.sheet.row.read' },
+      ]),
+      withPhases([{ id: 'g', op: 'recued-core.gdrive.file.download' }], [], [
+        { id: 'pf', op: 'recued-core.gdrive.file.list' },
+      ]),
+    ];
+    for (const recipe of cases) {
+      const unbound = unboundPackRefs(recipe, PACKS);
+      let thrown: string | null = null;
+      try {
+        lowerOpStepRecipe(recipe, PACKS);
+      } catch (e) {
+        thrown = (e as Error).message;
+      }
+      if (unbound.length === 0) {
+        expect(thrown, JSON.stringify(recipe.steps)).toBeNull();
+      } else {
+        expect(thrown).toMatch(new RegExp(`uses the ${unbound[0]!.replace('.', '\\.')} pack, which is not installed`));
+      }
     }
   });
 });

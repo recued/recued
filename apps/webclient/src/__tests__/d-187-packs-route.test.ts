@@ -950,6 +950,120 @@ describe('Packs R22 — route list→detail wiring', () => {
     route.dispose();
   });
 
+  /** ⛔ A SOURCE CHECKOUT LISTS EVERY BUNDLED RECIPE in `recipe.list`, installed
+   *  or not, so a pack not installed classified as an app: its Use tab opened
+   *  first and ran its first view, the server refused the run for the pack
+   *  itself, and the page offered "Get federated-projects" for the page it was
+   *  on, under the real Install button (found driving D-310 REV 3, 2026-09-26).
+   *  These list the recipes as a checkout does, and the pack as not installed. */
+  describe('a pack that is not installed has no app', () => {
+    const mountWith = (
+      pack: PackListEntry,
+      extra: Partial<Parameters<typeof bootstrapPacksRoute>[0]> = {},
+    ) => {
+      const calls: string[] = [];
+      const doc = makeFakeDocument() as FakeDoc & {
+        defaultView?: {
+          history: {
+            replaceState: (s: unknown, t: string, url: string) => void;
+            pushState: (s: unknown, t: string, url: string) => void;
+          };
+        };
+      };
+      doc.defaultView = {
+        history: {
+          replaceState: (_s, _t, url) => { calls.push(`replace ${url}`); },
+          pushState: (_s, _t, url) => { calls.push(`push ${url}`); },
+        },
+      };
+      const root = doc.createElement('div');
+      const execute = vi.fn<PackAppExecuteCaller>(async ({ recipe_id }) => ({
+        recipe_id,
+        recipe_hash: `run-${recipe_id}`,
+        success: true,
+        duration_ms: 1,
+        steps: [],
+        errors: [],
+        output: { render: [{ type: 'table', data: { rows: [] } }], sidebar: [] },
+      }));
+      const route = bootstrapPacksRoute({
+        root: root as unknown as HTMLElement,
+        document: doc as unknown as Document,
+        packsListCaller: vi.fn(async () => ({ packs: [pack] })),
+        recipesListCaller: vi.fn(async () => ({
+          recipes: [viewRecipe('view-a'), viewRecipe('view-b')],
+        })),
+        recipeExecuteCaller: execute,
+        initialPackSlug: 'app-pack',
+        pinnedApps: () => [],
+        onTogglePin: vi.fn(),
+        ...extra,
+      });
+      return { root, route, execute, calls };
+    };
+
+    it('⛔ its detail opens on Manage: no Use tab, no view runs, nothing to pin', async () => {
+      const { root, route, execute } = mountWith({ ...appPack(), installed: false });
+      await route.packsPanel()!.whenLoaded();
+      await tick(20);
+
+      expect(findByAttrValue(root, PACKS_DETAIL_TAB_ATTR, 'use')).toBeNull();
+      expect(findByAttrValue(root, PACKS_DETAIL_TAB_ATTR, 'detail')).not.toBeNull();
+      expect(execute).not.toHaveBeenCalled();
+      expect(route.packsPanel()!.getActiveViewId()).toBeNull();
+      expect(findByAttr(root, PACKS_DETAIL_PIN_ATTR)).toBeNull();
+      route.dispose();
+    });
+
+    it('⛔ a link to one of its views lands on its detail, and runs nothing', async () => {
+      const { route, execute, calls } = mountWith(
+        { ...appPack(), installed: false },
+        { initialPackViewId: 'view-b' },
+      );
+      await route.packsPanel()!.whenLoaded();
+      await tick(20);
+
+      expect(execute).not.toHaveBeenCalled();
+      expect(calls).toEqual(['replace #packs/app-pack']);
+      route.dispose();
+    });
+
+    it('an older version installed keeps its app: an update pending takes nothing away', async () => {
+      const { root, route, execute } = mountWith({
+        ...appPack(), installed: false, installed_any_version: true,
+      });
+      await route.packsPanel()!.whenLoaded();
+      await tick(20);
+
+      expect(findByAttrValue(root, PACKS_DETAIL_TAB_ATTR, 'use')).not.toBeNull();
+      expect(execute).toHaveBeenCalledWith({ recipe_id: 'view-a', config: {} });
+      route.dispose();
+    });
+
+    it('once it installs, its app appears', async () => {
+      let installed = false;
+      const handlers: Array<() => void> = [];
+      const { root, route, execute } = mountWith(appPack(), {
+        packsListCaller: vi.fn(async () => ({ packs: [{ ...appPack(), installed }] })),
+        subscribe: ((kind: string, handler: () => void) => {
+          if (kind === 'pack_installed') handlers.push(handler);
+          return () => undefined;
+        }) as never,
+      });
+      await route.packsPanel()!.whenLoaded();
+      await tick(20);
+      expect(findByAttrValue(root, PACKS_DETAIL_TAB_ATTR, 'use')).toBeNull();
+
+      installed = true;
+      for (const handler of handlers) handler();
+      await tick(40);
+
+      expect(findByAttrValue(root, PACKS_DETAIL_TAB_ATTR, 'use')).not.toBeNull();
+      expect(execute).toHaveBeenCalledWith({ recipe_id: 'view-a', config: {} });
+      route.dispose();
+    });
+  });
+
   it('replace-canonicalizes a stale generated view to the first valid view', async () => {
     const replaceState = vi.fn();
     const onHashSync = vi.fn();
